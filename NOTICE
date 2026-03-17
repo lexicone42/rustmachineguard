@@ -1,0 +1,17 @@
+Dev Machine Guard (Rust)
+Copyright 2025 lexicone42
+
+This project is a Rust rewrite of dev-machine-guard, originally created by
+StepSecurity Inc. and licensed under the Apache License, Version 2.0.
+
+Original project: https://github.com/step-security/dev-machine-guard
+Original copyright: Copyright 2025 StepSecurity Inc.
+
+This derivative work extends the original with:
+- Linux platform support
+- Cloud credential detection (AWS, GCP, Azure)
+- Container tool detection (Docker, Podman, etc.)
+- SSH key auditing with passphrase detection
+- Shell config scanning for AI-related environment variables
+- Notebook server detection (Jupyter, Marimo)
+- Additional AI tool and framework detections

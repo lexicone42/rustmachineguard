@@ -1,0 +1,23 @@
+[package]
+name = "rustmachineguard"
+version = "0.1.0"
+edition = "2024"
+description = "Scan your dev machine for AI agents, MCP servers, IDE extensions, and suspicious packages"
+license = "Apache-2.0"
+# Rust rewrite of https://github.com/step-security/dev-machine-guard (Apache-2.0)
+
+[[bin]]
+name = "dev-machine-guard"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+colored = "3"
+glob = "0.3"
+which = "7"
+whoami = "1"
+base64 = "0.22"
