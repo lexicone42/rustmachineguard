@@ -15,9 +15,9 @@ impl Scanner for McpScanner {
                 continue;
             }
 
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let content = match crate::scanners::read_bounded(&path) {
+                Some(c) => c,
+                None => continue,
             };
 
             let json: serde_json::Value = match serde_json::from_str(&content) {
@@ -51,7 +51,7 @@ impl Scanner for McpScanner {
 /// - Cursor: { "mcpServers": { "name": {...} } }
 /// - VS Code: { "mcp": { "servers": { "name": {...} } } }  (or mcpServers at top level)
 /// - Claude Code: { "mcpServers": { ... } } or projects with mcpServers
-fn extract_mcp_servers(json: &serde_json::Value) -> Vec<String> {
+pub fn extract_mcp_servers(json: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
 
     // Direct mcpServers key

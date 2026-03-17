@@ -309,6 +309,20 @@ pub fn render(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    // Warnings
+    if !report.warnings.is_empty() {
+        section_header(&mut out, &format!("Warnings ({})", report.warnings.len()));
+        for w in &report.warnings {
+            out.push_str(&format!(
+                "  {} [{}] {}\n",
+                "⚠".yellow(),
+                w.scanner.dimmed(),
+                w.message.yellow(),
+            ));
+        }
+        out.push('\n');
+    }
+
     out.push_str(&format!(
         "{}\n",
         "Scan complete.".bold().green()

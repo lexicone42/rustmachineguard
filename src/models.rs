@@ -20,7 +20,17 @@ pub struct ScanReport {
     pub cloud_credentials: Vec<CloudCredential>,
     pub container_tools: Vec<ContainerTool>,
     pub notebook_servers: Vec<NotebookServer>,
+    /// Warnings encountered during scanning (permission errors, timeouts, etc.)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
+}
+
+/// A non-fatal issue encountered during scanning.
+#[derive(Debug, Serialize, Clone)]
+pub struct ScanWarning {
+    pub scanner: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]

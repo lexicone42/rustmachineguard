@@ -61,9 +61,8 @@ impl Scanner for CloudCredentialsScanner {
                         .is_some_and(|ext| ext == "json")
                 })
                 .filter(|e| {
-                    // Check if it looks like a service account key
-                    std::fs::read_to_string(e.path())
-                        .ok()
+                    // Check if it looks like a service account key (bounded read)
+                    crate::scanners::read_bounded(&e.path())
                         .is_some_and(|c| c.contains("\"type\": \"service_account\"") || c.contains("\"type\":\"service_account\""))
                 })
                 .collect();
@@ -144,20 +143,22 @@ impl Scanner for CloudCredentialsScanner {
 
 /// Extract section names from INI-style files (e.g., [default], [profile foo]).
 fn extract_ini_sections(path: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|content| {
-            content
-                .lines()
-                .filter_map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                        Some(trimmed[1..trimmed.len() - 1].to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
+    crate::scanners::read_bounded(path)
+        .map(|content| parse_ini_sections(&content))
         .unwrap_or_default()
+}
+
+/// Parse section headers from INI content (pure function, testable).
+pub fn parse_ini_sections(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
+                Some(trimmed[1..trimmed.len() - 1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }

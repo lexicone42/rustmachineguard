@@ -40,15 +40,16 @@ impl Scanner for SshKeysScanner {
                 continue;
             }
 
-            // Read first line to detect key type
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            // Read only the header (first 1KB) to detect key type — avoids
+            // loading full private key material into process memory.
+            let header = match crate::scanners::read_head(&path, 1024) {
+                Some(h) => h,
+                None => continue,
             };
 
-            let first_line = content.lines().next().unwrap_or("");
+            let first_line = header.lines().next().unwrap_or("");
 
-            let (is_key, key_type, has_passphrase) = classify_key(first_line, &content, &path);
+            let (is_key, key_type, has_passphrase) = classify_key(first_line, &header, &path);
             if !is_key {
                 continue;
             }
@@ -86,7 +87,7 @@ impl Scanner for SshKeysScanner {
 use std::path::PathBuf;
 
 /// Classify a potential SSH key file by its header.
-fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> (bool, String, bool) {
+pub fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> (bool, String, bool) {
     let pem_encrypted = content.contains("ENCRYPTED");
 
     if first_line.contains("RSA PRIVATE KEY") {

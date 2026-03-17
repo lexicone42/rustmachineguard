@@ -76,7 +76,7 @@ fn scan_vscode_style_extensions(
 }
 
 /// Parse "publisher.name-1.2.3" into ("publisher.name", "1.2.3").
-fn parse_extension_dir_name(name: &str) -> Option<(String, String)> {
+pub fn parse_extension_dir_name(name: &str) -> Option<(String, String)> {
     // Find the last hyphen followed by a digit (start of version)
     let mut split_pos = None;
     for (i, _) in name.match_indices('-') {

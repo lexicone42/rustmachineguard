@@ -1,12 +1,8 @@
-mod models;
-mod output;
-mod platform;
-mod scanners;
-
 use clap::{Parser, ValueEnum};
-use models::ScanReport;
-use output::OutputFormat;
-use scanners::Scanner;
+use rustmachineguard::models::{self, ScanReport};
+use rustmachineguard::output::{self, OutputFormat};
+use rustmachineguard::platform;
+use rustmachineguard::scanners::{self, Scanner};
 
 /// Scan your dev machine for AI agents, MCP servers, IDE extensions, and more.
 ///
@@ -89,6 +85,7 @@ fn main() {
         cloud_credentials: Vec::new(),
         container_tools: Vec::new(),
         notebook_servers: Vec::new(),
+        warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
