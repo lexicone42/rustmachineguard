@@ -1,8 +1,9 @@
 use clap::{Parser, ValueEnum};
 use rustmachineguard::models::{self, ScanReport};
 use rustmachineguard::output::{self, OutputFormat};
-use rustmachineguard::platform;
+use rustmachineguard::platform::{self, PlatformInfo};
 use rustmachineguard::scanners::{self, Scanner};
+use std::path::PathBuf;
 
 /// Scan your dev machine for AI agents, MCP servers, IDE extensions, and more.
 ///
@@ -23,6 +24,12 @@ struct Cli {
     /// Skip specific scanner categories (comma-separated)
     #[arg(long, value_delimiter = ',')]
     skip: Vec<String>,
+
+    /// Search additional directories as alternate home roots (comma-separated).
+    /// When set, home-rooted scanners (mcp, ssh, cloud, extensions, shell)
+    /// run once per directory and merge results.
+    #[arg(long, value_delimiter = ',')]
+    search_dirs: Vec<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -36,6 +43,60 @@ const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks",
 ];
+
+/// Scanners that operate from a home directory (re-run per --search-dirs entry).
+fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut ScanReport) {
+    if !skip.contains(&"extensions") {
+        report
+            .ide_extensions
+            .extend(scanners::extensions::ExtensionsScanner.scan(plat));
+    }
+    if !skip.contains(&"mcp") {
+        report
+            .mcp_configs
+            .extend(scanners::mcp::McpScanner.scan(plat));
+    }
+    if !skip.contains(&"shell") {
+        report
+            .shell_configs
+            .extend(scanners::shell_configs::ShellConfigsScanner.scan(plat));
+    }
+    if !skip.contains(&"ssh") {
+        report
+            .ssh_keys
+            .extend(scanners::ssh_keys::SshKeysScanner.scan(plat));
+    }
+    if !skip.contains(&"cloud") {
+        report
+            .cloud_credentials
+            .extend(scanners::cloud_credentials::CloudCredentialsScanner.scan(plat));
+    }
+}
+
+/// Scanners that don't depend on home dir (run once).
+fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut ScanReport) {
+    if !skip.contains(&"ai") {
+        report.ai_agents_and_tools = scanners::ai_tools::AiToolsScanner.scan(plat);
+    }
+    if !skip.contains(&"frameworks") {
+        report.ai_frameworks = scanners::ai_frameworks::AiFrameworksScanner.scan(plat);
+    }
+    if !skip.contains(&"ide") {
+        report.ide_installations = scanners::ide::IdeScanner.scan(plat);
+    }
+    if !skip.contains(&"node") {
+        report.node_package_managers =
+            scanners::node_packages::NodePackagesScanner.scan(plat);
+    }
+    if !skip.contains(&"containers") {
+        report.container_tools =
+            scanners::container_tools::ContainerToolsScanner.scan(plat);
+    }
+    if !skip.contains(&"notebooks") {
+        report.notebook_servers =
+            scanners::notebook_servers::NotebookServersScanner.scan(plat);
+    }
+}
 
 fn main() {
     let cli = Cli::parse();
@@ -64,8 +125,22 @@ fn main() {
         })
         .collect();
 
-    let plat = platform::current_platform();
-    let device = plat.device_info();
+    // Validate --search-dirs entries
+    let search_dirs: Vec<PathBuf> = cli
+        .search_dirs
+        .into_iter()
+        .filter(|d| {
+            if !d.is_dir() {
+                eprintln!("warning: --search-dirs entry '{}' is not a directory, skipping", d.display());
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    let primary_plat = platform::current_platform();
+    let device = primary_plat.device_info();
 
     let now = chrono::Utc::now();
 
@@ -101,44 +176,18 @@ fn main() {
         },
     };
 
-    // Run scanners (skip if requested)
-    if !skip.contains(&"ai") {
-        report.ai_agents_and_tools = scanners::ai_tools::AiToolsScanner.scan(plat.as_ref());
+    // Global scanners (PATH-based, platform-level): run once
+    run_global_scanners(primary_plat.as_ref(), &skip, &mut report);
+
+    // Home-rooted scanners: run for primary home + each --search-dirs entry
+    run_home_rooted_scanners(primary_plat.as_ref(), &skip, &mut report);
+    for extra_home in &search_dirs {
+        let alt_plat = platform::platform_for_home(extra_home.clone());
+        run_home_rooted_scanners(alt_plat.as_ref(), &skip, &mut report);
     }
-    if !skip.contains(&"frameworks") {
-        report.ai_frameworks = scanners::ai_frameworks::AiFrameworksScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"ide") {
-        report.ide_installations = scanners::ide::IdeScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"extensions") {
-        report.ide_extensions = scanners::extensions::ExtensionsScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"mcp") {
-        report.mcp_configs = scanners::mcp::McpScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"node") {
-        report.node_package_managers =
-            scanners::node_packages::NodePackagesScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"shell") {
-        report.shell_configs = scanners::shell_configs::ShellConfigsScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"ssh") {
-        report.ssh_keys = scanners::ssh_keys::SshKeysScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"cloud") {
-        report.cloud_credentials =
-            scanners::cloud_credentials::CloudCredentialsScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"containers") {
-        report.container_tools =
-            scanners::container_tools::ContainerToolsScanner.scan(plat.as_ref());
-    }
-    if !skip.contains(&"notebooks") {
-        report.notebook_servers =
-            scanners::notebook_servers::NotebookServersScanner.scan(plat.as_ref());
-    }
+
+    // Deduplicate results that might appear from overlapping roots
+    dedupe_report(&mut report);
 
     report.compute_summary();
 
@@ -155,4 +204,33 @@ fn main() {
     } else {
         print!("{rendered}");
     }
+}
+
+/// Remove duplicate entries that may arise from overlapping search dirs.
+fn dedupe_report(report: &mut ScanReport) {
+    // Dedupe by primary identifying field(s) for each category.
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    report
+        .ide_extensions
+        .retain(|x| seen.insert((x.id.clone(), x.version.clone(), x.ide_type.clone())));
+
+    let mut seen = HashSet::new();
+    report
+        .mcp_configs
+        .retain(|x| seen.insert(x.config_path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .shell_configs
+        .retain(|x| seen.insert(x.config_path.clone()));
+
+    let mut seen = HashSet::new();
+    report.ssh_keys.retain(|x| seen.insert(x.path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .cloud_credentials
+        .retain(|x| seen.insert(x.config_path.clone()));
 }

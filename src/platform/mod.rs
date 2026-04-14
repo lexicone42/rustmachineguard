@@ -66,6 +66,16 @@ pub trait PlatformInfo {
     fn claude_config_dir(&self) -> PathBuf;
     fn gemini_config_dir(&self) -> PathBuf;
     fn aws_q_config_dir(&self) -> PathBuf;
+    fn codex_config_dir(&self) -> PathBuf;
+    fn kiro_config_dir(&self) -> PathBuf;
+    fn aish_config_dir(&self) -> PathBuf;
+    fn opencode_config_dir(&self) -> PathBuf;
+    fn github_copilot_config_dir(&self) -> PathBuf;
+    fn aider_config_dir(&self) -> PathBuf;
+    fn open_interpreter_config_dir(&self) -> PathBuf;
+
+    /// Claude Desktop application path (for Cowork feature detection)
+    fn claude_desktop_app(&self) -> Option<PathBuf>;
 
     // Shell config files
     fn shell_config_paths(&self) -> Vec<(String, PathBuf)>;
@@ -91,6 +101,23 @@ pub fn current_platform() -> Box<dyn PlatformInfo> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
+        compile_error!("Only macOS and Linux are supported");
+    }
+}
+
+/// Get the platform implementation rooted at a specific home directory (for --search-dirs).
+pub fn platform_for_home(home: PathBuf) -> Box<dyn PlatformInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(macos::MacOsPlatform::with_home(home))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::LinuxPlatform::with_home(home))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = home;
         compile_error!("Only macOS and Linux are supported");
     }
 }

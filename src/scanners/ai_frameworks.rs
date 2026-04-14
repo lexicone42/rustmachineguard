@@ -49,6 +49,12 @@ const FRAMEWORKS: &[FrameworkDef] = &[
         binary_names: &["text-generation-launcher"],
         process_name: "text-generation",
     },
+    FrameworkDef {
+        name: "text-generation-webui",
+        vendor: "oobabooga",
+        binary_names: &["textgen"],
+        process_name: "textgen",
+    },
 ];
 
 impl Scanner for AiFrameworksScanner {

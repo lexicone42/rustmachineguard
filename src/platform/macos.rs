@@ -13,6 +13,11 @@ impl MacOsPlatform {
             home: dirs::home_dir().expect("cannot determine home directory — set $HOME"),
         }
     }
+
+    /// Create a macOS platform rooted at a specific home directory (for --search-dirs).
+    pub fn with_home(home: PathBuf) -> Self {
+        Self { home }
+    }
 }
 
 impl PlatformInfo for MacOsPlatform {
@@ -102,6 +107,11 @@ impl PlatformInfo for MacOsPlatform {
                 "Anthropic".to_string(),
             ),
             (
+                "Claude Code (home)".to_string(),
+                self.home.join(".claude.json"),
+                "Anthropic".to_string(),
+            ),
+            (
                 "Cursor".to_string(),
                 self.home.join(".cursor/mcp.json"),
                 "Anysphere".to_string(),
@@ -112,6 +122,11 @@ impl PlatformInfo for MacOsPlatform {
                 "Codeium".to_string(),
             ),
             (
+                "Antigravity".to_string(),
+                self.home.join(".gemini/antigravity/mcp_config.json"),
+                "Google".to_string(),
+            ),
+            (
                 "Zed".to_string(),
                 self.home.join(".config/zed/settings.json"),
                 "Zed Industries".to_string(),
@@ -120,6 +135,16 @@ impl PlatformInfo for MacOsPlatform {
                 "VS Code".to_string(),
                 self.home.join("Library/Application Support/Code/User/settings.json"),
                 "Microsoft".to_string(),
+            ),
+            (
+                "Open Interpreter".to_string(),
+                self.home.join(".config/open-interpreter/config.yaml"),
+                "Open Interpreter".to_string(),
+            ),
+            (
+                "Codex".to_string(),
+                self.home.join(".codex/config.toml"),
+                "OpenAI".to_string(),
             ),
         ]
     }
@@ -149,6 +174,39 @@ impl PlatformInfo for MacOsPlatform {
 
     fn aws_q_config_dir(&self) -> PathBuf {
         self.home.join(".aws/q")
+    }
+
+    fn codex_config_dir(&self) -> PathBuf {
+        self.home.join(".codex")
+    }
+
+    fn kiro_config_dir(&self) -> PathBuf {
+        self.home.join(".kiro")
+    }
+
+    fn aish_config_dir(&self) -> PathBuf {
+        self.home.join(".aish")
+    }
+
+    fn opencode_config_dir(&self) -> PathBuf {
+        self.home.join(".config/opencode")
+    }
+
+    fn github_copilot_config_dir(&self) -> PathBuf {
+        self.home.join(".config/github-copilot")
+    }
+
+    fn aider_config_dir(&self) -> PathBuf {
+        self.home.join(".aider")
+    }
+
+    fn open_interpreter_config_dir(&self) -> PathBuf {
+        self.home.join(".config/open-interpreter")
+    }
+
+    fn claude_desktop_app(&self) -> Option<PathBuf> {
+        let p = PathBuf::from("/Applications/Claude.app");
+        if p.exists() { Some(p) } else { None }
     }
 
     fn shell_config_paths(&self) -> Vec<(String, PathBuf)> {

@@ -14,6 +14,11 @@ impl LinuxPlatform {
         }
     }
 
+    /// Create a Linux platform rooted at a specific home directory (for --search-dirs).
+    pub fn with_home(home: PathBuf) -> Self {
+        Self { home }
+    }
+
     fn read_os_release_field(field: &str) -> Option<String> {
         let content = std::fs::read_to_string("/etc/os-release").ok()?;
         for line in content.lines() {
@@ -97,6 +102,11 @@ impl PlatformInfo for LinuxPlatform {
                 "Anthropic".to_string(),
             ),
             (
+                "Claude Code (home)".to_string(),
+                self.home.join(".claude.json"),
+                "Anthropic".to_string(),
+            ),
+            (
                 "Cursor".to_string(),
                 self.home.join(".cursor/mcp.json"),
                 "Anysphere".to_string(),
@@ -107,6 +117,11 @@ impl PlatformInfo for LinuxPlatform {
                 "Codeium".to_string(),
             ),
             (
+                "Antigravity".to_string(),
+                self.home.join(".gemini/antigravity/mcp_config.json"),
+                "Google".to_string(),
+            ),
+            (
                 "Zed".to_string(),
                 self.home.join(".config/zed/settings.json"),
                 "Zed Industries".to_string(),
@@ -115,6 +130,16 @@ impl PlatformInfo for LinuxPlatform {
                 "VS Code".to_string(),
                 self.home.join(".config/Code/User/settings.json"),
                 "Microsoft".to_string(),
+            ),
+            (
+                "Open Interpreter".to_string(),
+                self.home.join(".config/open-interpreter/config.yaml"),
+                "Open Interpreter".to_string(),
+            ),
+            (
+                "Codex".to_string(),
+                self.home.join(".codex/config.toml"),
+                "OpenAI".to_string(),
             ),
         ]
     }
@@ -145,6 +170,39 @@ impl PlatformInfo for LinuxPlatform {
 
     fn aws_q_config_dir(&self) -> PathBuf {
         self.home.join(".aws/q")
+    }
+
+    fn codex_config_dir(&self) -> PathBuf {
+        self.home.join(".codex")
+    }
+
+    fn kiro_config_dir(&self) -> PathBuf {
+        self.home.join(".kiro")
+    }
+
+    fn aish_config_dir(&self) -> PathBuf {
+        self.home.join(".aish")
+    }
+
+    fn opencode_config_dir(&self) -> PathBuf {
+        self.home.join(".config/opencode")
+    }
+
+    fn github_copilot_config_dir(&self) -> PathBuf {
+        self.home.join(".config/github-copilot")
+    }
+
+    fn aider_config_dir(&self) -> PathBuf {
+        self.home.join(".aider")
+    }
+
+    fn open_interpreter_config_dir(&self) -> PathBuf {
+        self.home.join(".config/open-interpreter")
+    }
+
+    fn claude_desktop_app(&self) -> Option<PathBuf> {
+        let p = PathBuf::from("/usr/bin/claude-desktop");
+        if p.exists() { Some(p) } else { None }
     }
 
     fn shell_config_paths(&self) -> Vec<(String, PathBuf)> {

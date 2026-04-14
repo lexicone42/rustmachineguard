@@ -25,17 +25,20 @@ cargo build --release
 
 # Skip specific categories
 ./target/release/dev-machine-guard --skip ssh,cloud
+
+# Scan additional home roots (e.g. another user's profile on the same machine)
+./target/release/dev-machine-guard --search-dirs /home/alice,/home/bob
 ```
 
 ## What It Scans
 
 | Category | What's Detected | Examples |
 |---|---|---|
-| **AI Agents & Tools** | CLI tools and desktop apps | Claude Code, GitHub Copilot, Codex, Gemini, Aider, Goose, Open Interpreter |
-| **AI Frameworks** | Local inference servers | Ollama, LocalAI, LM Studio, llama.cpp, vLLM, TGI |
+| **AI Agents & Tools** | CLI tools and desktop apps | Claude Code, Claude Cowork, GitHub Copilot (`copilot`, `gh-copilot`), Codex, Gemini, Amazon Q, Kiro, Microsoft AI Shell (`aish`), OpenCode, Aider, Goose, Open Interpreter, Tabby, and agents (ClawdBot, MoltBot, MoldBot, OpenClaw, GPT-Engineer) |
+| **AI Frameworks** | Local inference servers | Ollama, LocalAI, LM Studio, llama.cpp, vLLM, HuggingFace TGI, oobabooga text-generation-webui |
 | **IDE Installations** | Developer editors | VS Code, Cursor, Windsurf, Zed, Antigravity |
 | **IDE Extensions** | Installed extensions | VS Code-style and Zed format parsing with version info |
-| **MCP Configurations** | Model Context Protocol servers | Claude Desktop, Claude Code, Cursor, Windsurf, Zed, VS Code |
+| **MCP Configurations** | Model Context Protocol servers | Claude Desktop, Claude Code (`settings.json` + `~/.claude.json` project scope), Cursor, Windsurf, Antigravity, Zed, VS Code, Open Interpreter (YAML), Codex (TOML) |
 | **Package Managers** | Node.js ecosystem | npm, yarn, pnpm, bun, Node.js |
 | **Shell Configs**\* | AI-related env vars | API keys (redacted), tool aliases |
 | **SSH Keys**\* | Key inventory with passphrase audit | RSA, ECDSA, Ed25519/OpenSSH with passphrase detection |
@@ -87,13 +90,18 @@ This tool is itself a security-sensitive program. Design decisions:
 Usage: dev-machine-guard [OPTIONS]
 
 Options:
-  -f, --format <FORMAT>   Output format [default: terminal] [possible values: terminal, json, html]
-  -o, --output <OUTPUT>   Write output to a file instead of stdout
-      --skip <SKIP>       Skip scanner categories (comma-separated):
-                          ai, frameworks, ide, extensions, mcp, node,
-                          shell, ssh, cloud, containers, notebooks
-  -h, --help              Print help
-  -V, --version           Print version
+  -f, --format <FORMAT>              Output format [default: terminal]
+                                     [possible values: terminal, json, html]
+  -o, --output <OUTPUT>              Write output to a file instead of stdout
+      --skip <SKIP>                  Skip scanner categories (comma-separated):
+                                     ai, frameworks, ide, extensions, mcp, node,
+                                     shell, ssh, cloud, containers, notebooks
+      --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
+                                     Home-rooted scanners (mcp, ssh, cloud,
+                                     extensions, shell) run once per directory
+                                     and merge results.
+  -h, --help                         Print help
+  -V, --version                      Print version
 ```
 
 ## Building

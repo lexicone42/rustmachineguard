@@ -1,9 +1,12 @@
 use proptest::prelude::*;
 use rustmachineguard::output::html::html_escape;
+use rustmachineguard::scanners::ai_tools::version_gte;
 use rustmachineguard::scanners::cloud_credentials::parse_ini_sections;
 use rustmachineguard::scanners::extensions::parse_extension_dir_name;
 use rustmachineguard::scanners::extract_version;
-use rustmachineguard::scanners::mcp::extract_mcp_servers;
+use rustmachineguard::scanners::mcp::{
+    extract_mcp_servers, extract_mcp_servers_toml, extract_mcp_servers_yaml,
+};
 
 // ─── extract_version ───────────────────────────────────────
 
@@ -428,4 +431,156 @@ fn html_output_no_script_injection() {
     // The XSS payload should be HTML-escaped in the visible text
     assert!(html.contains("&lt;script&gt;"), "XSS payload should be escaped");
     assert!(!html.contains("<script>alert"), "raw script+alert found");
+}
+
+// ─── YAML MCP parsing (Open Interpreter) ────────────────────
+
+#[test]
+fn yaml_mcp_parses_mcpservers_key() {
+    let content = r#"
+mcpServers:
+  filesystem:
+    command: mcp-server-filesystem
+  github:
+    command: mcp-server-github
+"#;
+    let servers = extract_mcp_servers_yaml(content);
+    assert_eq!(servers, vec!["filesystem", "github"]);
+}
+
+#[test]
+fn yaml_mcp_parses_nested_mcp_servers() {
+    let content = r#"
+mcp:
+  servers:
+    alpha:
+      command: a
+    beta:
+      command: b
+"#;
+    let servers = extract_mcp_servers_yaml(content);
+    assert_eq!(servers, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn yaml_mcp_invalid_returns_empty() {
+    let servers = extract_mcp_servers_yaml("not: valid: yaml: [[[");
+    assert!(servers.is_empty());
+}
+
+#[test]
+fn yaml_mcp_empty_returns_empty() {
+    assert!(extract_mcp_servers_yaml("").is_empty());
+    assert!(extract_mcp_servers_yaml("other_key: value").is_empty());
+}
+
+// ─── TOML MCP parsing (Codex) ───────────────────────────────
+
+#[test]
+fn toml_mcp_parses_snake_case_table() {
+    let content = r#"
+[mcp_servers.filesystem]
+command = "mcp-server-filesystem"
+
+[mcp_servers.github]
+command = "mcp-server-github"
+"#;
+    let servers = extract_mcp_servers_toml(content);
+    assert_eq!(servers, vec!["filesystem", "github"]);
+}
+
+#[test]
+fn toml_mcp_parses_camel_case_table() {
+    let content = r#"
+[mcpServers.alpha]
+command = "a"
+
+[mcpServers.beta]
+command = "b"
+"#;
+    let servers = extract_mcp_servers_toml(content);
+    assert_eq!(servers, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn toml_mcp_invalid_returns_empty() {
+    let servers = extract_mcp_servers_toml("not valid = = = toml");
+    assert!(servers.is_empty());
+}
+
+#[test]
+fn toml_mcp_no_mcp_keys_returns_empty() {
+    assert!(extract_mcp_servers_toml("[other]\nkey = \"value\"").is_empty());
+}
+
+// ─── Project-scoped Claude Code .claude.json ────────────────
+
+#[test]
+fn json_mcp_extracts_projects_scoped_servers() {
+    let json: serde_json::Value = serde_json::from_str(
+        r#"
+{
+  "projects": {
+    "/home/user/proj1": {
+      "mcpServers": {
+        "tool_a": {}, "tool_b": {}
+      }
+    },
+    "/home/user/proj2": {
+      "mcpServers": {
+        "tool_c": {}
+      }
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    let servers = extract_mcp_servers(&json);
+    assert_eq!(servers, vec!["tool_a", "tool_b", "tool_c"]);
+}
+
+// ─── version_gte ────────────────────────────────────────────
+
+#[test]
+fn version_gte_basic() {
+    assert!(version_gte("0.7", (0, 7)));
+    assert!(version_gte("0.7.1", (0, 7)));
+    assert!(version_gte("1.0.0", (0, 7)));
+    assert!(!version_gte("0.6.99", (0, 7)));
+    assert!(!version_gte("0.6", (0, 7)));
+}
+
+#[test]
+fn version_gte_handles_v_prefix() {
+    assert!(version_gte("v0.7.0", (0, 7)));
+    assert!(version_gte("v1.2", (0, 7)));
+}
+
+#[test]
+fn version_gte_handles_suffixes() {
+    assert!(version_gte("0.7.1-beta", (0, 7)));
+    assert!(version_gte("1.0.0+build5", (0, 7)));
+}
+
+#[test]
+fn version_gte_empty_or_invalid_returns_false() {
+    assert!(!version_gte("", (0, 1)));
+    assert!(!version_gte("abc", (0, 1)));
+}
+
+proptest! {
+    /// Version comparison is monotonic: if v1 >= v2 then version_gte(v1, v2) is true.
+    #[test]
+    fn version_gte_monotonic(
+        major_v in 0u32..100,
+        minor_v in 0u32..100,
+        major_t in 0u32..100,
+        minor_t in 0u32..100,
+    ) {
+        let v = format!("{major_v}.{minor_v}.0");
+        let actual = version_gte(&v, (major_t, minor_t));
+        let expected = (major_v, minor_v) >= (major_t, minor_t);
+        prop_assert_eq!(actual, expected);
+    }
 }
