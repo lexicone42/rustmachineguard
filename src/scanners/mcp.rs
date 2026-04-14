@@ -102,7 +102,7 @@ pub fn extract_mcp_servers(json: &serde_json::Value) -> Vec<String> {
 /// Open Interpreter format: `mcpServers: { name: {...} }` or `mcp: { servers: {...} }`.
 pub fn extract_mcp_servers_yaml(content: &str) -> Vec<String> {
     // Parse YAML into serde_json::Value for unified handling
-    let yaml_value: Result<serde_yaml::Value, _> = serde_yaml::from_str(content);
+    let yaml_value: Result<serde_yaml_ng::Value, _> = serde_yaml_ng::from_str(content);
     let Ok(yaml_value) = yaml_value else {
         return Vec::new();
     };

@@ -44,8 +44,8 @@ impl PlatformInfo for LinuxPlatform {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
-        let user_identity =
-            std::env::var("USER").unwrap_or_else(|_| whoami::username());
+        let user_identity = std::env::var("USER")
+            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "unknown".to_string()));
 
         DeviceInfo {
             hostname,

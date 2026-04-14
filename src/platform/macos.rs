@@ -46,7 +46,9 @@ impl PlatformInfo for MacOsPlatform {
             .unwrap_or_default();
 
         let user_identity =
-            std::env::var("USER").unwrap_or_else(|_| whoami::username());
+            std::env::var("USER").unwrap_or_else(|_| {
+                whoami::username().unwrap_or_else(|_| "unknown".to_string())
+            });
 
         DeviceInfo {
             hostname,
