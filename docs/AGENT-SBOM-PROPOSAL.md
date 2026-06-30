@@ -185,7 +185,7 @@ pkg:claude-plugin/marketplace/plugin-name@1.0.0
 
 ## Implementation in rustmachineguard
 
-### Current State (v0.2.0)
+### Current State
 
 We have implemented the foundation:
 
@@ -195,27 +195,59 @@ We have implemented the foundation:
 4. **URL sanitization** — strips credentials and paths from remote MCP endpoints
 5. **Exposure catalog matching** (`--threat-catalog`) — checks discovered components against a JSON catalog of known-bad packages
 
-### Completed (v0.2.0)
+### Completed
+
+**Inventory & integrity**
 
 | Feature | Status |
 |---|---|
 | Skill scanning (Claude Code commands, hooks, Codex) | Done |
-| Rules file inventory (.cursorrules, CLAUDE.md, AGENTS.md, etc.) | Done |
-| Rules file integrity hashing (SHA-256) | Done |
-| Dangerous pattern detection (20 patterns, 3 severity levels) | Done |
+| Rules/memory file inventory (.cursorrules, CLAUDE.md, AGENTS.md, MEMORY.md, SOUL.md, …) | Done |
+| Rules file integrity hashing (SHA-256, native `sha2`) | Done |
+| Dangerous pattern detection (3 severity levels) | Done |
 | Capability inference (8-resource taxonomy) | Done |
+| Agent settings scanner (hooks = shell exec on tool-use, MCP auto-approval, permission mode) | Done |
+| AI credential scanner (at-rest tokens + permissions, values never read) | Done |
+| `.env` scanner in agent project roots (git-tracked/world-readable, key names only) | Done |
+
+**Threat intelligence**
+
+| Feature | Status |
+|---|---|
+| Built-in threat catalog (62 entries, fully attributed — see THREAT-CATALOG.md) | Done |
+| Exact + **semver version-range** matching (`version_range`, e.g. `<1.4.3`) | Done |
+| MCP live probing (`--probe-mcp`) — tools/resources enumeration over JSON-RPC | Done |
+| Tool & parameter description poisoning + invisible-Unicode smuggling detection | Done |
+
+**Composition & temporal analysis** (signals no single MCP client sees)
+
+| Feature | Status |
+|---|---|
+| Scan diffing (`--diff baseline.json`) — drift across runs | Done |
+| Rug-pull detection — a trusted tool mutating its description/parameter schema between scans | Done |
+| Cross-server tool shadowing — same tool name from two servers (confused-deputy) | Done |
+| Toxic-flow / lethal-trifecta surface — sensitive source + exfil sink across the agent surface | Done |
+
+**Standards output**
+
+| Feature | Status |
+|---|---|
+| CycloneDX 1.6 SBOM output (`--format sbom`) | Done |
 | CycloneDX 2.0 Blueprint output (`--format blueprint`) | Done |
+| **Blueprint schema-validation gate** — output validated against the vendored 2.0 draft schema in CI | Done |
+| Referential-integrity invariant — no dangling behavior/flow references | Done |
 
 ### Planned Additions
 
 | Feature | Priority | Effort |
 |---|---|---|
 | Plugin scanning (Claude Code plugins, DXT) | Medium | Medium |
-| YAML/TOML MCP server detail extraction | Medium | Low |
+| JetBrains plugin scanner (catalog has entries; no scanner yet) | Medium | Medium |
 | VEX overlay generation for exposure findings | Low | Medium |
 | SPDX output format | Low | High |
 | Sigstore-compatible signing of SBOM output | Low | High |
-| Blueprint schema tracking (update when 2.0 finalizes) | Medium | Low |
+| Native `threats`/`risks` modeling once CycloneDX 2.0 finalizes (2026-08-31) | Medium | Medium |
+| Runtime behavior monitoring (declared → observed) | Low | High |
 
 ### Blueprint Example Output
 
@@ -416,12 +448,13 @@ CycloneDX 2.0 (milestone due 2026-08-31, 27/89 issues closed) introduces **Bluep
 - SkillFortify is Elastic License 2.0 (not open source); Blueprints are Apache 2.0
 
 **Our implementation** (`--format blueprint`):
-- Generates a CycloneDX 2.0-draft document with the `blueprints[]` top-level field
-- Maps AI tools to agent assets, MCP servers/skills to tool assets, rules files to data assets
-- Capability inference results become behavior instances
-- Agent-to-MCP connections become flows
+- Generates a CycloneDX 2.0 draft document (`specVersion "2.0"`, `blueprints[]` top-level field), **validated against the vendored draft schema in CI**
+- Maps AI tools to agent assets, MCP servers/skills to tool assets, rules/memory files to data assets
+- Capability inference results become behavior instances (mapped to the closed behavior taxonomy)
+- Agent-to-MCP, agent-to-skill, and rules-to-agent connections become typed flows
 - Local vs remote MCP servers are placed in trust zones
-- Still includes `components[]` with PURLs for inventory compatibility
+- Probed tool/resource poisoning, cross-server shadowing, exposure matches, blast-radius (SSH/cloud), and the toxic-flow surface all surface as assets + behaviors
+- Still includes `components[]` (PURLs carried as `rmg:purl` properties) for inventory compatibility
 
 ### CycloneDX Agent BOM History
 

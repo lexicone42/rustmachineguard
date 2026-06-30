@@ -23,6 +23,16 @@ cargo build --release
 # HTML report
 ./target/release/dev-machine-guard --format html --output report.html
 
+# CycloneDX 2.0 Blueprint (agent posture as assets/behaviors/flows)
+./target/release/dev-machine-guard --format blueprint
+
+# Detect drift since a baseline (incl. MCP rug-pulls)
+./target/release/dev-machine-guard --format json --output baseline.json
+./target/release/dev-machine-guard --diff baseline.json
+
+# Live-probe local MCP servers (opt-in; spawns the server processes)
+./target/release/dev-machine-guard --probe-mcp
+
 # Skip specific categories
 ./target/release/dev-machine-guard --skip ssh,cloud
 
@@ -87,12 +97,14 @@ Capabilities that no MCP client performs at install time:
 
 This tool is itself a security-sensitive program. Design decisions:
 
-- **No secret leakage**: Shell config scanning reports only variable *names* (e.g., `OPENAI_API_KEY=<redacted>`), never values
-- **SSH passphrase detection**: Uses `ssh-keygen` probing for OpenSSH-format keys (the PEM `ENCRYPTED` marker is unreliable for modern key formats)
-- **HTML XSS prevention**: Report data is base64-encoded in script tags to prevent injection; all user content is HTML-escaped including single quotes
-- **Input validation**: `--format` and `--skip` flags are validated at parse time with clear error messages
-- **No `/tmp` fallback**: Fails fast if `$HOME` cannot be determined rather than scanning a shared directory
-- **Bounded reads**: Shell config files over 1MB are skipped
+- **No secret leakage**: Scanners report variable/key *names* and file existence only, never values. Shell configs redact values (`OPENAI_API_KEY=<redacted>`); the AI-credential and `.env` scanners report permissions and key names but never read the secret material.
+- **SSH passphrase detection**: Uses `ssh-keygen` probing for OpenSSH-format keys (the PEM `ENCRYPTED` marker is unreliable for modern key formats); reports a tri-state (encrypted / no-passphrase / unknown) so a missing `ssh-keygen` is never reported as "unprotected".
+- **MCP probing is opt-in**: `--probe-mcp` spawns local MCP servers and is gated behind an explicit flag with a runtime warning; an interruptible watchdog kills any server that exceeds the probe timeout.
+- **HTML XSS prevention**: Report data is base64-encoded in script tags to prevent injection; all user content is HTML-escaped including single quotes.
+- **Input validation**: `--format` and `--skip` flags are validated at parse time with clear error messages.
+- **No `/tmp` fallback**: Fails fast if `$HOME` cannot be determined rather than scanning a shared directory.
+- **Bounded reads**: Files over 1MB are skipped (with a warning), and SHA-256 hashing uses the native `sha2` crate (no subprocess).
+- **Fuzzed & schema-validated**: Untrusted-input parsers (MCP config, threat catalog, `.env`, settings hooks, diff) have `cargo-fuzz` targets; Blueprint output is validated against the vendored CycloneDX 2.0 schema in CI.
 
 ## Differences from Upstream
 
@@ -100,9 +112,12 @@ This tool is itself a security-sensitive program. Design decisions:
 |---|---|---|
 | Platform | macOS only | macOS + Linux |
 | Language | Shell script | Compiled Rust binary |
-| New scanners | — | Shell configs, SSH keys, cloud credentials, containers, notebooks |
+| New scanners | — | Shell configs, SSH keys, cloud credentials, containers, notebooks, rules/memory files, agent skills, agent settings/hooks, AI credentials, `.env` files |
+| Threat intelligence | — | Built-in 62-entry catalog (exact + semver-range matching), live MCP probing |
+| Temporal analysis | — | Scan diffing, MCP rug-pull detection, cross-server tool shadowing, toxic-flow surface |
+| Standards output | — | CycloneDX 1.6 SBOM + 2.0 Blueprint (schema-validated in CI) |
 | SSH detection | — | `ssh-keygen` probe for accurate passphrase detection |
-| Secret handling | — | Variable names only, never values |
+| Secret handling | — | Names/existence/permissions only, never values |
 | Output validation | Silent fallback | Strict format/skip validation |
 | Dependencies | bash, curl, base64 | Zero runtime dependencies (static binary) |
 
@@ -113,15 +128,24 @@ Usage: dev-machine-guard [OPTIONS]
 
 Options:
   -f, --format <FORMAT>              Output format [default: terminal]
-                                     [possible values: terminal, json, html]
+                                     [values: terminal, json, html, sbom, blueprint]
   -o, --output <OUTPUT>              Write output to a file instead of stdout
       --skip <SKIP>                  Skip scanner categories (comma-separated):
                                      ai, frameworks, ide, extensions, mcp, node,
-                                     shell, ssh, cloud, containers, notebooks
+                                     shell, ssh, cloud, containers, notebooks,
+                                     browser, packages, rules, skills, settings,
+                                     aicreds, envfiles
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
-                                     Home-rooted scanners (mcp, ssh, cloud,
-                                     extensions, shell) run once per directory
+                                     Home-rooted scanners run once per directory
                                      and merge results.
+      --threat-catalog <FILE>        Additional JSON threat catalog, merged with
+                                     the built-in catalog.
+      --no-builtin-catalog           Disable the built-in threat catalog.
+      --diff <BASELINE.json>         Compare against a previous --format json scan
+                                     and report drift (incl. MCP rug-pulls).
+      --probe-mcp                    Live-probe local stdio MCP servers to
+                                     enumerate tools/resources (opt-in; spawns the
+                                     server processes).
   -h, --help                         Print help
   -V, --version                      Print version
 ```
