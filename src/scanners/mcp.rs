@@ -204,6 +204,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         name: name.to_string(),
         transport,
         command,
+        args,
         package_ecosystem: ecosystem,
         package_name: pkg_name,
         package_version: pkg_version,

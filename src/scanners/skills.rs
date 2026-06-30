@@ -128,29 +128,7 @@ fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
 }
 
 fn sha256_hex(content: &str) -> String {
-    use std::io::Write;
-    let output = std::process::Command::new("sha256sum")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .and_then(|mut child| {
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(content.as_bytes());
-            }
-            child.wait_with_output()
-        });
-
-    match output {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.split_whitespace()
-                .next()
-                .unwrap_or("unknown")
-                .to_string()
-        }
-        Err(_) => "unknown".to_string(),
-    }
+    super::sha256_hex(content)
 }
 
 /// Infer capability categories from skill content.

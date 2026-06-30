@@ -252,10 +252,10 @@ pub fn render(report: &ScanReport) -> String {
     if !report.ssh_keys.is_empty() {
         section_header(&mut out, "SSH Keys");
         for key in &report.ssh_keys {
-            let passphrase = if key.has_passphrase {
-                "encrypted".green().to_string()
-            } else {
-                "NO PASSPHRASE".red().bold().to_string()
+            let passphrase = match key.has_passphrase {
+                crate::models::PassphraseStatus::Encrypted => "encrypted".green().to_string(),
+                crate::models::PassphraseStatus::NoPassphrase => "NO PASSPHRASE".red().bold().to_string(),
+                crate::models::PassphraseStatus::Unknown => "unknown".yellow().to_string(),
             };
             let comment = key
                 .comment

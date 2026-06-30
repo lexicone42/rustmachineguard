@@ -125,13 +125,29 @@ pub trait Scanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output;
 }
 
+/// Compute SHA-256 hash of content, returning hex string.
+pub fn sha256_hex(content: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let result = hasher.finalize();
+    result.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 /// Maximum config file size we'll read (1 MB).
 pub const MAX_CONFIG_SIZE: u64 = 1_048_576;
 
-/// Check file size before reading. Returns None if file is too large.
+/// Check file size before reading. Returns None if file is too large or unreadable.
+/// Logs to stderr if a file exceeds the size limit.
 pub fn read_bounded(path: &std::path::Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     if meta.len() > MAX_CONFIG_SIZE {
+        eprintln!(
+            "warning: skipping {} ({} bytes exceeds {} byte limit)",
+            path.display(),
+            meta.len(),
+            MAX_CONFIG_SIZE
+        );
         return None;
     }
     std::fs::read_to_string(path).ok()

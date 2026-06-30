@@ -112,8 +112,8 @@ fn render_sections(report: &ScanReport) -> String {
         for t in &report.ai_agents_and_tools {
             let status = if t.is_running { r#"<span class="running">● running</span>"# } else { r#"<span class="not-running">○</span>"# };
             html.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{:?}</td><td class=\"dim\">{}</td><td>{}</td></tr>",
-                html_escape(&t.name), html_escape(&t.vendor), t.tool_type,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td><td>{}</td></tr>",
+                html_escape(&t.name), html_escape(&t.vendor), html_escape(&format!("{:?}", t.tool_type)),
                 html_escape(t.version.as_deref().unwrap_or("-")), status
             ));
         }
@@ -164,10 +164,10 @@ fn render_sections(report: &ScanReport) -> String {
     if !report.ssh_keys.is_empty() {
         html.push_str(r#"<div class="card"><h2>SSH Keys</h2><table><tr><th>Path</th><th>Type</th><th>Passphrase</th><th>Comment</th></tr>"#);
         for key in &report.ssh_keys {
-            let pp = if key.has_passphrase {
-                r#"<span class="running">encrypted</span>"#
-            } else {
-                r#"<span class="warn">NO PASSPHRASE</span>"#
+            let pp = match key.has_passphrase {
+                crate::models::PassphraseStatus::Encrypted => r#"<span class="running">encrypted</span>"#,
+                crate::models::PassphraseStatus::NoPassphrase => r#"<span class="warn">NO PASSPHRASE</span>"#,
+                crate::models::PassphraseStatus::Unknown => r#"<span class="warn">unknown (ssh-keygen unavailable)</span>"#,
             };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",

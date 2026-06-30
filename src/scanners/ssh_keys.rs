@@ -1,4 +1,4 @@
-use crate::models::SshKey;
+use crate::models::{PassphraseStatus, SshKey};
 use crate::platform::PlatformInfo;
 use crate::scanners::Scanner;
 
@@ -87,33 +87,33 @@ impl Scanner for SshKeysScanner {
 use std::path::PathBuf;
 
 /// Classify a potential SSH key file by its header.
-pub fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> (bool, String, bool) {
-    let pem_encrypted = content.contains("ENCRYPTED");
+pub fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> (bool, String, PassphraseStatus) {
+    let pem_status = if content.contains("ENCRYPTED") {
+        PassphraseStatus::Encrypted
+    } else {
+        PassphraseStatus::NoPassphrase
+    };
 
     if first_line.contains("RSA PRIVATE KEY") {
-        (true, "rsa".to_string(), pem_encrypted)
+        (true, "rsa".to_string(), pem_status)
     } else if first_line.contains("EC PRIVATE KEY") || first_line.contains("ECDSA") {
-        (true, "ecdsa".to_string(), pem_encrypted)
+        (true, "ecdsa".to_string(), pem_status)
     } else if first_line.contains("OPENSSH PRIVATE KEY") {
         // OpenSSH format: "ENCRYPTED" marker does NOT appear in the PEM text
         // for bcrypt-protected keys. Probe with ssh-keygen instead.
-        let has_passphrase = probe_passphrase(path);
-        (true, "openssh".to_string(), has_passphrase)
+        let status = probe_passphrase(path);
+        (true, "openssh".to_string(), status)
     } else if first_line.contains("DSA PRIVATE KEY") {
-        (true, "dsa".to_string(), pem_encrypted)
+        (true, "dsa".to_string(), pem_status)
     } else if first_line.contains("PRIVATE KEY") {
-        (true, "unknown".to_string(), pem_encrypted)
+        (true, "unknown".to_string(), pem_status)
     } else {
-        (false, String::new(), false)
+        (false, String::new(), PassphraseStatus::Unknown)
     }
 }
 
 /// Use ssh-keygen to probe whether a key file is passphrase-protected.
-/// Returns true if the key has a passphrase, false if it doesn't,
-/// and defaults to false (unknown) if ssh-keygen fails.
-fn probe_passphrase(path: &std::path::Path) -> bool {
-    // `ssh-keygen -y -P "" -f <path>` tries to extract the public key
-    // with an empty passphrase. Exit 0 = no passphrase, non-zero = has one.
+fn probe_passphrase(path: &std::path::Path) -> PassphraseStatus {
     let result = std::process::Command::new("ssh-keygen")
         .args(["-y", "-P", "", "-f"])
         .arg(path)
@@ -122,7 +122,8 @@ fn probe_passphrase(path: &std::path::Path) -> bool {
         .status();
 
     match result {
-        Ok(status) => !status.success(), // non-zero = has passphrase
-        Err(_) => false,                 // ssh-keygen unavailable
+        Ok(status) if status.success() => PassphraseStatus::NoPassphrase,
+        Ok(_) => PassphraseStatus::Encrypted,
+        Err(_) => PassphraseStatus::Unknown,
     }
 }

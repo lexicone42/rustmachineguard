@@ -28,6 +28,7 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
                 &server.name,
                 &config.config_source,
                 cmd,
+                &server.args,
             );
             results.push(result);
         }
@@ -36,14 +37,20 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
     results
 }
 
-fn probe_stdio_server(name: &str, config_source: &str, command: &str) -> McpProbeResult {
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    if parts.is_empty() {
+fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[String]) -> McpProbeResult {
+    if command.is_empty() {
         return error_result(name, config_source, "empty command");
     }
 
-    let mut child = match Command::new(parts[0])
-        .args(&parts[1..])
+    eprintln!(
+        "warning: probing MCP server '{}' — this executes: {} {}",
+        name,
+        command,
+        args.join(" ")
+    );
+
+    let mut child = match Command::new(command)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -52,6 +59,16 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str) -> McpProb
         Ok(c) => c,
         Err(e) => return error_result(name, config_source, &format!("spawn failed: {}", e)),
     };
+
+    // Watchdog thread: kill child if it outlives the probe timeout
+    let child_id = child.id();
+    let watchdog = std::thread::spawn(move || {
+        std::thread::sleep(PROBE_TIMEOUT);
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(child_id as i32, libc::SIGKILL);
+        }
+    });
 
     let mut stdin = match child.stdin.take() {
         Some(s) => s,
@@ -135,10 +152,10 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str) -> McpProb
     };
 
     // Shut down cleanly
-    let _ = stdin.write_all(b"");
     drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
+    drop(watchdog);
 
     let observed_capabilities = infer_capabilities_from_tools(&tools, &resources);
 

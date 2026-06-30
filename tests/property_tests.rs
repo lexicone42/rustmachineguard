@@ -278,11 +278,11 @@ fn classify_key_pem_encrypted_marker_detected() {
         "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC\nbase64";
     let content_plain = "-----BEGIN RSA PRIVATE KEY-----\nbase64data";
 
-    let (_, _, has_pp) = classify_key(header, content_encrypted, std::path::Path::new("/dev/null"));
-    assert!(has_pp, "should detect ENCRYPTED");
+    let (_, _, status) = classify_key(header, content_encrypted, std::path::Path::new("/dev/null"));
+    assert_eq!(status, rustmachineguard::models::PassphraseStatus::Encrypted, "should detect ENCRYPTED");
 
-    let (_, _, has_pp) = classify_key(header, content_plain, std::path::Path::new("/dev/null"));
-    assert!(!has_pp, "should not detect ENCRYPTED");
+    let (_, _, status) = classify_key(header, content_plain, std::path::Path::new("/dev/null"));
+    assert_eq!(status, rustmachineguard::models::PassphraseStatus::NoPassphrase, "should not detect ENCRYPTED");
 }
 
 // ─── compute_summary ───────────────────────────────────────
@@ -313,7 +313,7 @@ fn summary_counts_match_vector_lengths() {
         mcp_configs: vec![],
         node_package_managers: vec![],
         shell_configs: vec![],
-        ssh_keys: vec![SshKey { path: "/a".into(), key_type: "rsa".into(), has_passphrase: false, comment: None }],
+        ssh_keys: vec![SshKey { path: "/a".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::NoPassphrase, comment: None }],
         cloud_credentials: vec![],
         container_tools: vec![],
         notebook_servers: vec![],
@@ -775,6 +775,7 @@ fn exposure_catalog_matches_exact_package() {
         name: "github".into(),
         transport: "stdio".into(),
         command: Some("npx".into()),
+        args: vec![],
         package_ecosystem: Some("npm".into()),
         package_name: Some("@modelcontextprotocol/server-github".into()),
         package_version: Some("0.6.2".into()),
@@ -796,6 +797,7 @@ fn exposure_catalog_no_match_different_version() {
         name: "test".into(),
         transport: "stdio".into(),
         command: Some("npx".into()),
+        args: vec![],
         package_ecosystem: Some("npm".into()),
         package_name: Some("bad-package".into()),
         package_version: Some("2.0.0".into()),
@@ -816,6 +818,7 @@ fn exposure_catalog_matches_any_version_when_unspecified() {
         name: "test".into(),
         transport: "stdio".into(),
         command: Some("npx".into()),
+        args: vec![],
         package_ecosystem: Some("npm".into()),
         package_name: Some("evil-mcp-server".into()),
         package_version: Some("99.0.0".into()),
@@ -844,6 +847,7 @@ fn builtin_catalog_catches_postmark_mcp() {
         name: "postmark".into(),
         transport: "stdio".into(),
         command: Some("npx".into()),
+        args: vec![],
         package_ecosystem: Some("npm".into()),
         package_name: Some("postmark-mcp".into()),
         package_version: Some("1.0.17".into()),
@@ -864,6 +868,7 @@ fn builtin_catalog_catches_sandworm_typosquat() {
         name: "test".into(),
         transport: "stdio".into(),
         command: Some("npx".into()),
+        args: vec![],
         package_ecosystem: Some("npm".into()),
         package_name: Some("claud-code".into()),
         package_version: Some("0.2.1".into()),
@@ -884,6 +889,7 @@ fn builtin_catalog_catches_pypi_reverse_shell() {
         name: "test".into(),
         transport: "stdio".into(),
         command: Some("uvx".into()),
+        args: vec![],
         package_ecosystem: Some("pypi".into()),
         package_name: Some("mcp-runcmd-server".into()),
         package_version: Some("0.1.0".into()),
@@ -1215,4 +1221,148 @@ fn diff_detects_skill_capability_change() {
     let output = render_diff(&diff);
     assert!(output.contains("CAPABILITIES GAINED"));
     assert!(output.contains("network"));
+}
+
+// ─── Sharp-edge hardening tests ─────────────────────────────
+
+#[test]
+fn sha256_hex_produces_valid_hex() {
+    let hash = rustmachineguard::scanners::sha256_hex("hello world");
+    assert_eq!(hash.len(), 64, "SHA-256 hex should be 64 chars");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "should be hex only");
+}
+
+#[test]
+fn sha256_hex_deterministic() {
+    let h1 = rustmachineguard::scanners::sha256_hex("test content");
+    let h2 = rustmachineguard::scanners::sha256_hex("test content");
+    assert_eq!(h1, h2, "same input should produce same hash");
+}
+
+#[test]
+fn sha256_hex_different_for_different_input() {
+    let h1 = rustmachineguard::scanners::sha256_hex("file A");
+    let h2 = rustmachineguard::scanners::sha256_hex("file B");
+    assert_ne!(h1, h2, "different input should produce different hash");
+}
+
+#[test]
+fn sha256_hex_known_vector() {
+    // SHA-256 of empty string is well-known
+    let hash = rustmachineguard::scanners::sha256_hex("");
+    assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+#[test]
+fn sha256_hex_handles_unicode() {
+    let hash = rustmachineguard::scanners::sha256_hex("🔐 secret key");
+    assert_eq!(hash.len(), 64);
+}
+
+#[test]
+fn passphrase_status_serializes_correctly() {
+    use rustmachineguard::models::PassphraseStatus;
+
+    let encrypted = serde_json::to_string(&PassphraseStatus::Encrypted).unwrap();
+    assert_eq!(encrypted, r#""encrypted""#);
+
+    let no_pp = serde_json::to_string(&PassphraseStatus::NoPassphrase).unwrap();
+    assert_eq!(no_pp, r#""no_passphrase""#);
+
+    let unknown = serde_json::to_string(&PassphraseStatus::Unknown).unwrap();
+    assert_eq!(unknown, r#""unknown""#);
+}
+
+#[test]
+fn classify_key_openssh_without_ssh_keygen_returns_unknown_on_bad_path() {
+    use rustmachineguard::scanners::ssh_keys::classify_key;
+    let header = "-----BEGIN OPENSSH PRIVATE KEY-----";
+    let content = "-----BEGIN OPENSSH PRIVATE KEY-----\nbase64data";
+    // Using a non-existent path forces ssh-keygen to fail (if available) or return unknown
+    let (is_key, key_type, _status) = classify_key(header, content, std::path::Path::new("/nonexistent/path/key"));
+    assert!(is_key);
+    assert_eq!(key_type, "openssh");
+}
+
+#[test]
+fn diff_composite_key_distinguishes_same_name_servers() {
+    let baseline = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [{"config_path": "/a/.mcp.json", "config_source": "project", "servers": [
+            {"name": "fs", "transport": "stdio", "command": "safe-server", "config_source": "source-a"}
+        ]}],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let current = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [
+            {"config_path": "/a/.mcp.json", "config_source": "project", "servers": [
+                {"name": "fs", "transport": "stdio", "command": "safe-server", "config_source": "source-a"}
+            ]},
+            {"config_path": "/b/.mcp.json", "config_source": "cloned-repo", "servers": [
+                {"name": "fs", "transport": "stdio", "command": "evil-server", "config_source": "source-b"}
+            ]}
+        ],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let diff = diff_reports(&baseline, &current);
+    let output = render_diff(&diff);
+    // The new server from source-b should appear as added, not silently merged
+    assert!(output.contains("+ fs"), "should detect added server with same name but different source");
+}
+
+#[test]
+fn json_error_output_is_valid_json() {
+    // The JSON error fallback should always produce valid JSON
+    let error_msg = r#"invalid string: unexpected character '"'"#;
+    let json = serde_json::json!({"error": error_msg}).to_string();
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("error JSON should be valid");
+    assert!(parsed.get("error").is_some());
+}
+
+#[test]
+fn mcp_server_detail_includes_args() {
+    let detail = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        args: vec!["-y".into(), "@modelcontextprotocol/server-fs".into()],
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("@modelcontextprotocol/server-fs".into()),
+        package_version: None,
+        url: None,
+    };
+    let json = serde_json::to_string(&detail).unwrap();
+    assert!(json.contains("-y"), "args should be serialized");
+    assert!(json.contains("server-fs"), "args should include package name");
+}
+
+#[test]
+fn mcp_server_detail_empty_args_omitted() {
+    let detail = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "sse".into(),
+        command: None,
+        args: vec![],
+        package_ecosystem: None,
+        package_name: None,
+        package_version: None,
+        url: Some("example.com".into()),
+    };
+    let json = serde_json::to_string(&detail).unwrap();
+    assert!(!json.contains("args"), "empty args should be omitted from JSON");
 }

@@ -1,0 +1,58 @@
+[package]
+name = "rustmachineguard-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.rustmachineguard]
+path = ".."
+
+[[bin]]
+name = "fuzz_mcp_json"
+path = "fuzz_targets/fuzz_mcp_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_exposure_catalog"
+path = "fuzz_targets/fuzz_exposure_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dangerous_patterns"
+path = "fuzz_targets/fuzz_dangerous_patterns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ssh_classify"
+path = "fuzz_targets/fuzz_ssh_classify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_version"
+path = "fuzz_targets/fuzz_extract_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_diff_engine"
+path = "fuzz_targets/fuzz_diff_engine.rs"
+test = false
+doc = false
+bench = false

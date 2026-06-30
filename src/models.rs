@@ -153,6 +153,8 @@ pub struct McpServerDetail {
     pub transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_ecosystem: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -184,8 +186,16 @@ pub struct ShellConfig {
 pub struct SshKey {
     pub path: String,
     pub key_type: String,
-    pub has_passphrase: bool,
+    pub has_passphrase: PassphraseStatus,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassphraseStatus {
+    Encrypted,
+    NoPassphrase,
+    Unknown,
 }
 
 #[derive(Debug, Serialize)]

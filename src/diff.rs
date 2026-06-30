@@ -189,20 +189,28 @@ fn diff_array_section(
     key_field: &str,
     compare_fields: &[&str],
 ) -> SectionDiff {
+    // Use composite key (key_field + config_source/config_path if present) to
+    // avoid collisions when multiple items share the same primary key.
+    let composite_key = |v: &Value| -> Option<String> {
+        let primary = v.get(key_field)?.as_str()?.to_string();
+        let secondary = v
+            .get("config_source")
+            .or_else(|| v.get("config_path"))
+            .and_then(|s| s.as_str());
+        match secondary {
+            Some(s) => Some(format!("{}|{}", primary, s)),
+            None => Some(primary),
+        }
+    };
+
     let baseline_map: HashMap<String, &Value> = baseline
         .iter()
-        .filter_map(|v| {
-            let k = v.get(key_field)?.as_str()?.to_string();
-            Some((k, v))
-        })
+        .filter_map(|v| Some((composite_key(v)?, v)))
         .collect();
 
     let current_map: HashMap<String, &Value> = current
         .iter()
-        .filter_map(|v| {
-            let k = v.get(key_field)?.as_str()?.to_string();
-            Some((k, v))
-        })
+        .filter_map(|v| Some((composite_key(v)?, v)))
         .collect();
 
     let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
