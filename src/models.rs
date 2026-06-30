@@ -68,6 +68,11 @@ pub struct McpToolInfo {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The tool's JSON-Schema parameter definition (MCP `inputSchema`), captured so
+    /// rug-pull diffing can detect parameter mutations and injection hidden in
+    /// parameter descriptions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Clone)]

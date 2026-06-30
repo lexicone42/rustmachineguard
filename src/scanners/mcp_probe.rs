@@ -311,6 +311,9 @@ fn extract_tools(response: &serde_json::Value) -> Vec<McpToolInfo> {
                         .get("description")
                         .and_then(|d| d.as_str())
                         .map(String::from),
+                    // Capture the parameter schema so rug-pull diffing can detect
+                    // mutated parameters and injection hidden in param descriptions.
+                    input_schema: t.get("inputSchema").cloned(),
                 })
             })
             .collect(),

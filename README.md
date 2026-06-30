@@ -62,6 +62,16 @@ packages, MCP servers, and IDE/browser extensions during the scan. See
 - **`terminal`** (default) — Colored, human-readable report with status indicators (● running, ○ stopped)
 - **`json`** — Structured data for programmatic consumption, CI pipelines, or SIEM ingestion
 - **`html`** — Dark-themed report for sharing or archiving
+- **`sbom`** — CycloneDX 1.6 SBOM
+- **`blueprint`** — CycloneDX 2.0 Blueprint (draft) — agent posture as assets/behaviors/flows, schema-validated in CI
+
+## Temporal & cross-server analysis
+
+Capabilities that no MCP client performs at install time:
+
+- **Rug-pull detection** (`--diff baseline.json`) — flags an MCP server that mutates an already-trusted tool's description or parameter schema between scans (the canonical rug-pull); also surfaces tool add/remove and capability drift per server.
+- **Cross-server tool shadowing** — when two probed MCP servers offer the same tool name (a confused-deputy risk), the Blueprint emits a shadowing finding naming the colliding servers.
+- **Live MCP probing** (`--probe-mcp`) — enumerates each stdio server's tools/resources and scans tool **and parameter** descriptions for prompt-injection / line-jumping and invisible-Unicode smuggling.
 
 ## Platform Support
 

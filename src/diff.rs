@@ -96,6 +96,11 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
         &["ecosystem", "version", "advisory"],
     ));
 
+    sections.push(diff_mcp_probes(
+        get_array(baseline, "mcp_probes"),
+        get_array(current, "mcp_probes"),
+    ));
+
     let summary_changes = diff_summary(baseline, current);
 
     ScanDiff {
@@ -432,6 +437,118 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         removed,
         changed,
     }
+}
+
+/// Diff MCP live-probe results across scans. The headline signal is a RUG-PULL: an
+/// MCP server that served a benign tool at first connect and later mutates that same
+/// tool's description or parameter schema to inject hidden instructions — most clients
+/// never re-confirm. Keyed by server_name, then by tool name.
+fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
+    let key_field = "server_name";
+    let baseline_map: HashMap<String, &Value> = baseline
+        .iter()
+        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
+        .collect();
+    let current_map: HashMap<String, &Value> = current
+        .iter()
+        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
+        .collect();
+
+    let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
+    let current_keys: HashSet<&String> = current_map.keys().collect();
+
+    let added: Vec<String> = current_keys
+        .difference(&baseline_keys)
+        .map(|k| k.to_string())
+        .collect();
+    let removed: Vec<String> = baseline_keys
+        .difference(&current_keys)
+        .map(|k| k.to_string())
+        .collect();
+
+    let mut changed = Vec::new();
+    for key in baseline_keys.intersection(&current_keys) {
+        let b = baseline_map[*key];
+        let c = current_map[*key];
+        let mut changes = Vec::new();
+
+        // Index tools by name -> fingerprint (description + canonical inputSchema).
+        let b_tools = tool_fingerprints(b);
+        let c_tools = tool_fingerprints(c);
+
+        let b_names: HashSet<&String> = b_tools.keys().collect();
+        let c_names: HashSet<&String> = c_tools.keys().collect();
+
+        for added_tool in c_names.difference(&b_names) {
+            changes.push(format!("tool added: {}", added_tool));
+        }
+        for removed_tool in b_names.difference(&c_names) {
+            changes.push(format!("tool removed: {}", removed_tool));
+        }
+        // The rug-pull: a tool present in both whose fingerprint changed.
+        for tool in b_names.intersection(&c_names) {
+            let (b_desc, b_schema) = &b_tools[*tool];
+            let (c_desc, c_schema) = &c_tools[*tool];
+            if b_desc != c_desc {
+                changes.push(format!("RUG-PULL: tool '{}' description changed", tool));
+            }
+            if b_schema != c_schema {
+                changes.push(format!("RUG-PULL: tool '{}' parameter schema changed", tool));
+            }
+        }
+
+        // Observed capability drift.
+        let b_caps: HashSet<String> =
+            get_string_array(b, "observed_capabilities").into_iter().collect();
+        let c_caps: HashSet<String> =
+            get_string_array(c, "observed_capabilities").into_iter().collect();
+        let gained: Vec<&String> = c_caps.difference(&b_caps).collect();
+        if !gained.is_empty() {
+            changes.push(format!(
+                "CAPABILITIES GAINED: {}",
+                gained.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+
+        if !changes.is_empty() {
+            changed.push(ChangedItem {
+                name: (*key).clone(),
+                changes,
+            });
+        }
+    }
+
+    SectionDiff {
+        name: "MCP Probes".to_string(),
+        added,
+        removed,
+        changed,
+    }
+}
+
+/// Map each probed tool's name to (description, canonical-inputSchema-string).
+fn tool_fingerprints(probe: &Value) -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+    if let Some(tools) = probe.get("tools").and_then(|t| t.as_array()) {
+        for t in tools {
+            let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let desc = t
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            // serde_json::to_string of a Value is stable for our purposes (object key
+            // order is preserved from parsing); good enough to detect mutation.
+            let schema = t
+                .get("input_schema")
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            map.insert(name.to_string(), (desc, schema));
+        }
+    }
+    map
 }
 
 fn diff_summary(baseline: &Value, current: &Value) -> Vec<String> {

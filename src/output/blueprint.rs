@@ -260,6 +260,31 @@ const POISONING_PATTERNS: &[&str] = &[
     "```system",
 ];
 
+/// Recursively append every `"description"` string found in a JSON-Schema value to
+/// `out` (separated by spaces), so parameter descriptions are scanned for injection.
+fn collect_schema_descriptions(schema: &serde_json::Value, out: &mut String) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if k == "description" {
+                    if let Some(s) = v.as_str() {
+                        out.push(' ');
+                        out.push_str(s);
+                    }
+                } else {
+                    collect_schema_descriptions(v, out);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_schema_descriptions(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Scan text for known prompt-injection / line-jumping phrases.
 /// Lowercases once; returns the matched patterns in catalog order.
 fn scan_injection_text(text: &str) -> Vec<&'static str> {
@@ -317,6 +342,8 @@ fn map_behavior_to_taxonomy(label: &str) -> &'static str {
         // Settings hooks run shell commands on agent events
         "hook-exec" => "application:codeExecution:executesNativeCommand",
         "mcp-auto-approve" => "security",
+        // Two servers offering the same tool name (confused-deputy / shadowing)
+        "tool-shadowing" => "security",
         // Rules-file dangerous patterns → code execution risk (detail on the asset)
         "dangerous-pattern" => "application:codeExecution",
         // Threat-catalog match and blast-radius are security findings; detail lives
@@ -773,9 +800,12 @@ impl BlueprintDocument {
                     });
                 }
 
-                // Scan both the tool name and description (an attacker can hide
-                // payloads in either).
-                let scan_target = format!("{} {}", tool.name, desc);
+                // Scan the tool name, description, AND every nested description in
+                // the parameter schema — injection hides in param descriptions too.
+                let mut scan_target = format!("{} {}", tool.name, desc);
+                if let Some(ref schema) = tool.input_schema {
+                    collect_schema_descriptions(schema, &mut scan_target);
+                }
                 let poisoning_signals = scan_injection_text(&scan_target);
                 if !poisoning_signals.is_empty() {
                     tool_props.push(Property {
@@ -884,6 +914,70 @@ impl BlueprintDocument {
                         destination: format!("asset:{}", res_ref),
                         description: Some("MCP server accesses resource".into()),
                     });
+                }
+            }
+        }
+
+        // Cross-server tool shadowing: a tool name offered by more than one probed
+        // server is a confused-deputy risk — the agent may invoke the wrong (possibly
+        // malicious) server's implementation. Correlate tool names across all probes.
+        {
+            use std::collections::BTreeMap;
+            let mut tool_servers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for probe in &report.mcp_probes {
+                if !probe.success {
+                    continue;
+                }
+                let server_exists = report
+                    .mcp_configs
+                    .iter()
+                    .flat_map(|c| &c.servers)
+                    .any(|s| s.name == probe.server_name);
+                if !server_exists {
+                    continue;
+                }
+                for tool in &probe.tools {
+                    tool_servers
+                        .entry(tool.name.clone())
+                        .or_default()
+                        .push(probe.server_name.clone());
+                }
+            }
+            for (tool_name, servers) in tool_servers {
+                // Dedupe servers (a server listing the same tool twice isn't shadowing).
+                let mut uniq = servers.clone();
+                uniq.sort();
+                uniq.dedup();
+                if uniq.len() > 1 {
+                    // A dedicated asset carries the tool name + colliding servers (the
+                    // behavior is mapped to a taxonomy value that cannot).
+                    let shadow_ref = format!("tool-shadow:{}", sanitize_ref(&tool_name));
+                    assets.push(Asset {
+                        bom_ref: format!("asset:{}", shadow_ref),
+                        asset_type: "data".into(),
+                        name: Some(tool_name.clone()),
+                        description: Some(format!(
+                            "Tool '{}' offered by {} servers (shadowing / confused-deputy risk)",
+                            tool_name,
+                            uniq.len()
+                        )),
+                        zone: Some("zone:remote".into()),
+                        component_ref: None,
+                        responsibilities: Vec::new(),
+                        interfaces: Vec::new(),
+                        properties: vec![Property {
+                            name: "rmg:shadowed-by".into(),
+                            value: uniq.join(", "),
+                        }],
+                    });
+                    let actors: Vec<String> =
+                        uniq.iter().map(|s| format!("asset:mcp:{}", s)).collect();
+                    behaviors.push(
+                        format!("tool-shadowing:{}", tool_name),
+                        vec!["observed".into()],
+                        actors,
+                        vec![format!("asset:{}", shadow_ref)],
+                    );
                 }
             }
         }
