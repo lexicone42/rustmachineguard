@@ -1,6 +1,7 @@
 pub mod terminal;
 pub mod json;
 pub mod html;
+pub mod sbom;
 
 use crate::models::ScanReport;
 
@@ -9,6 +10,7 @@ pub enum OutputFormat {
     Terminal,
     Json,
     Html,
+    Sbom,
 }
 
 pub fn render(report: &ScanReport, format: OutputFormat) -> String {
@@ -16,5 +18,6 @@ pub fn render(report: &ScanReport, format: OutputFormat) -> String {
         OutputFormat::Terminal => terminal::render(report),
         OutputFormat::Json => json::render(report),
         OutputFormat::Html => html::render(report),
+        OutputFormat::Sbom => sbom::render(report),
     }
 }

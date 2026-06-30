@@ -14,13 +14,15 @@ pub struct ScanReport {
     pub ide_extensions: Vec<IdeExtension>,
     pub mcp_configs: Vec<McpConfig>,
     pub node_package_managers: Vec<NodePackageManager>,
-    // New detection categories beyond upstream
     pub shell_configs: Vec<ShellConfig>,
     pub ssh_keys: Vec<SshKey>,
     pub cloud_credentials: Vec<CloudCredential>,
     pub container_tools: Vec<ContainerTool>,
     pub notebook_servers: Vec<NotebookServer>,
-    /// Warnings encountered during scanning (permission errors, timeouts, etc.)
+    pub browser_extensions: Vec<BrowserExtension>,
+    pub package_config_audits: Vec<PackageConfigAudit>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exposure_findings: Vec<ExposureFinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
@@ -97,10 +99,26 @@ pub struct McpConfig {
     pub config_source: String,
     pub config_path: String,
     pub vendor: String,
-    /// Server names found in the config (keys of "mcpServers")
     pub server_names: Vec<String>,
-    /// Number of servers configured
     pub server_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<McpServerDetail>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct McpServerDetail {
+    pub name: String,
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_ecosystem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,18 +171,67 @@ pub struct NotebookServer {
 }
 
 #[derive(Debug, Serialize)]
+pub struct BrowserExtension {
+    pub browser: String,
+    pub name: String,
+    pub id: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub profile: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PackageConfigAudit {
+    pub manager: String,
+    pub config_path: String,
+    pub findings: Vec<PackageConfigFinding>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PackageConfigFinding {
+    pub severity: String,
+    pub description: String,
+}
+
+/// Exposure catalog entry for known-bad packages.
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
+pub struct ExposureEntry {
+    pub ecosystem: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<String>,
+}
+
+/// A matched exposure finding.
+#[derive(Debug, Serialize)]
+pub struct ExposureFinding {
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+    pub advisory: String,
+    pub found_in: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Summary {
     pub ai_agents_and_tools_count: usize,
     pub ai_frameworks_count: usize,
     pub ide_installations_count: usize,
     pub ide_extensions_count: usize,
     pub mcp_configs_count: usize,
+    pub mcp_servers_count: usize,
     pub node_package_managers_count: usize,
     pub shell_configs_count: usize,
     pub ssh_keys_count: usize,
     pub cloud_credentials_count: usize,
     pub container_tools_count: usize,
     pub notebook_servers_count: usize,
+    pub browser_extensions_count: usize,
+    pub package_config_audits_count: usize,
+    pub exposure_findings_count: usize,
 }
 
 impl ScanReport {
@@ -175,12 +242,16 @@ impl ScanReport {
             ide_installations_count: self.ide_installations.len(),
             ide_extensions_count: self.ide_extensions.len(),
             mcp_configs_count: self.mcp_configs.len(),
+            mcp_servers_count: self.mcp_configs.iter().map(|c| c.server_count).sum(),
             node_package_managers_count: self.node_package_managers.len(),
             shell_configs_count: self.shell_configs.len(),
             ssh_keys_count: self.ssh_keys.len(),
             cloud_credentials_count: self.cloud_credentials.len(),
             container_tools_count: self.container_tools.len(),
             notebook_servers_count: self.notebook_servers.len(),
+            browser_extensions_count: self.browser_extensions.len(),
+            package_config_audits_count: self.package_config_audits.len(),
+            exposure_findings_count: self.exposure_findings.len(),
         };
     }
 }

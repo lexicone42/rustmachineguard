@@ -317,14 +317,19 @@ fn summary_counts_match_vector_lengths() {
         cloud_credentials: vec![],
         container_tools: vec![],
         notebook_servers: vec![],
+        browser_extensions: vec![],
+        package_config_audits: vec![],
+        exposure_findings: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
-            mcp_configs_count: 0, node_package_managers_count: 0,
+            mcp_configs_count: 0, mcp_servers_count: 0,
+            node_package_managers_count: 0,
             shell_configs_count: 0, ssh_keys_count: 0,
             cloud_credentials_count: 0, container_tools_count: 0,
-            notebook_servers_count: 0,
+            notebook_servers_count: 0, browser_extensions_count: 0,
+            package_config_audits_count: 0, exposure_findings_count: 0,
         },
     };
 
@@ -363,14 +368,19 @@ fn json_output_is_valid_json() {
         cloud_credentials: vec![],
         container_tools: vec![],
         notebook_servers: vec![],
+        browser_extensions: vec![],
+        package_config_audits: vec![],
+        exposure_findings: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
-            mcp_configs_count: 0, node_package_managers_count: 0,
+            mcp_configs_count: 0, mcp_servers_count: 0,
+            node_package_managers_count: 0,
             shell_configs_count: 0, ssh_keys_count: 0,
             cloud_credentials_count: 0, container_tools_count: 0,
-            notebook_servers_count: 0,
+            notebook_servers_count: 0, browser_extensions_count: 0,
+            package_config_audits_count: 0, exposure_findings_count: 0,
         },
     };
     report.compute_summary();
@@ -406,14 +416,19 @@ fn html_output_no_script_injection() {
         cloud_credentials: vec![],
         container_tools: vec![],
         notebook_servers: vec![],
+        browser_extensions: vec![],
+        package_config_audits: vec![],
+        exposure_findings: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
-            mcp_configs_count: 0, node_package_managers_count: 0,
+            mcp_configs_count: 0, mcp_servers_count: 0,
+            node_package_managers_count: 0,
             shell_configs_count: 0, ssh_keys_count: 0,
             cloud_credentials_count: 0, container_tools_count: 0,
-            notebook_servers_count: 0,
+            notebook_servers_count: 0, browser_extensions_count: 0,
+            package_config_audits_count: 0, exposure_findings_count: 0,
         },
     };
     report.compute_summary();
@@ -583,4 +598,270 @@ proptest! {
         let expected = (major_v, minor_v) >= (major_t, minor_t);
         prop_assert_eq!(actual, expected);
     }
+}
+
+// ─── MCP package identity parsing ─────────────────────────────
+
+use rustmachineguard::scanners::mcp::{infer_package_from_command, split_npm_package_version};
+
+#[test]
+fn infer_npx_simple_package() {
+    let (eco, name, ver) = infer_package_from_command(
+        "npx",
+        &["-y".into(), "@modelcontextprotocol/server-filesystem".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("npm"));
+    assert_eq!(name.as_deref(), Some("@modelcontextprotocol/server-filesystem"));
+    assert_eq!(ver, None);
+}
+
+#[test]
+fn infer_npx_versioned_package() {
+    let (eco, name, ver) = infer_package_from_command(
+        "npx",
+        &["-y".into(), "@modelcontextprotocol/server-github@1.2.3".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("npm"));
+    assert_eq!(name.as_deref(), Some("@modelcontextprotocol/server-github"));
+    assert_eq!(ver.as_deref(), Some("1.2.3"));
+}
+
+#[test]
+fn infer_npx_with_package_flag() {
+    let (eco, name, ver) = infer_package_from_command(
+        "npx",
+        &["--package".into(), "mcp-server-fetch@0.5.0".into(), "mcp-server-fetch".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("npm"));
+    assert_eq!(name.as_deref(), Some("mcp-server-fetch"));
+    assert_eq!(ver.as_deref(), Some("0.5.0"));
+}
+
+#[test]
+fn infer_uvx_python_package() {
+    let (eco, name, ver) = infer_package_from_command(
+        "uvx",
+        &["mcp-server-sqlite==0.3.1".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("pypi"));
+    assert_eq!(name.as_deref(), Some("mcp-server-sqlite"));
+    assert_eq!(ver.as_deref(), Some("0.3.1"));
+}
+
+#[test]
+fn infer_docker_run_image() {
+    let (eco, name, ver) = infer_package_from_command(
+        "docker",
+        &["run".into(), "--rm".into(), "-i".into(), "mcp/postgres:latest".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("docker"));
+    assert_eq!(name.as_deref(), Some("mcp/postgres"));
+    assert_eq!(ver.as_deref(), Some("latest"));
+}
+
+#[test]
+fn infer_python_module() {
+    let (eco, name, _) = infer_package_from_command(
+        "python3",
+        &["-m".into(), "mcp_server_custom".into()],
+    );
+    assert_eq!(eco.as_deref(), Some("pypi"));
+    assert_eq!(name.as_deref(), Some("mcp_server_custom"));
+}
+
+#[test]
+fn infer_unknown_command_returns_none() {
+    let (eco, name, ver) = infer_package_from_command(
+        "/usr/local/bin/custom-mcp",
+        &["--config".into(), "foo.json".into()],
+    );
+    assert!(eco.is_none());
+    assert!(name.is_none());
+    assert!(ver.is_none());
+}
+
+// ─── npm package version splitting ────────────────────────────
+
+#[test]
+fn split_unscoped_package() {
+    let (name, ver) = split_npm_package_version("mcp-server@1.0.0");
+    assert_eq!(name, "mcp-server");
+    assert_eq!(ver.as_deref(), Some("1.0.0"));
+}
+
+#[test]
+fn split_scoped_package_with_version() {
+    let (name, ver) = split_npm_package_version("@modelcontextprotocol/server-github@0.6.2");
+    assert_eq!(name, "@modelcontextprotocol/server-github");
+    assert_eq!(ver.as_deref(), Some("0.6.2"));
+}
+
+#[test]
+fn split_scoped_package_no_version() {
+    let (name, ver) = split_npm_package_version("@modelcontextprotocol/server-filesystem");
+    assert_eq!(name, "@modelcontextprotocol/server-filesystem");
+    assert!(ver.is_none());
+}
+
+#[test]
+fn split_unscoped_no_version() {
+    let (name, ver) = split_npm_package_version("typescript");
+    assert_eq!(name, "typescript");
+    assert!(ver.is_none());
+}
+
+// ─── MCP server detail extraction from JSON ─────────────────
+
+use rustmachineguard::scanners::mcp::extract_mcp_server_details;
+
+#[test]
+fn server_details_from_claude_config() {
+    let json: serde_json::Value = serde_json::from_str(r#"
+    {
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/tmp"]
+            },
+            "remote-server": {
+                "url": "https://user:pass@mcp.example.com/v1/sse"
+            }
+        }
+    }
+    "#).unwrap();
+
+    let details = extract_mcp_server_details(&json);
+    assert_eq!(details.len(), 2);
+
+    let fs = details.iter().find(|d| d.name == "filesystem").unwrap();
+    assert_eq!(fs.transport, "stdio");
+    assert_eq!(fs.package_ecosystem.as_deref(), Some("npm"));
+    assert_eq!(fs.package_name.as_deref(), Some("@modelcontextprotocol/server-filesystem"));
+    assert_eq!(fs.package_version.as_deref(), Some("1.0.0"));
+
+    let remote = details.iter().find(|d| d.name == "remote-server").unwrap();
+    assert_eq!(remote.transport, "sse");
+    // URL should be sanitized (no credentials, no path)
+    assert!(!remote.url.as_deref().unwrap_or("").contains("pass"));
+    assert!(!remote.url.as_deref().unwrap_or("").contains("user"));
+}
+
+// ─── Exposure catalog matching ──────────────────────────────
+
+use rustmachineguard::scanners::exposure::ExposureCatalog;
+
+#[test]
+fn exposure_catalog_matches_exact_package() {
+    let catalog = ExposureCatalog::load_from_str(r#"[
+        {"ecosystem": "npm", "name": "@modelcontextprotocol/server-github", "version": "0.6.2", "advisory": "CVE-2026-XXXX"}
+    ]"#).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "github".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("@modelcontextprotocol/server-github".into()),
+        package_version: Some("0.6.2".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test/config.json");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].advisory, "CVE-2026-XXXX");
+}
+
+#[test]
+fn exposure_catalog_no_match_different_version() {
+    let catalog = ExposureCatalog::load_from_str(r#"[
+        {"ecosystem": "npm", "name": "bad-package", "version": "1.0.0", "advisory": "bad"}
+    ]"#).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("bad-package".into()),
+        package_version: Some("2.0.0".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test");
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn exposure_catalog_matches_any_version_when_unspecified() {
+    let catalog = ExposureCatalog::load_from_str(r#"[
+        {"ecosystem": "npm", "name": "evil-mcp-server", "advisory": "known malicious"}
+    ]"#).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("evil-mcp-server".into()),
+        package_version: Some("99.0.0".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test");
+    assert_eq!(findings.len(), 1);
+}
+
+// ─── Package config auditing ──────────────────────────────────
+
+use rustmachineguard::scanners::package_configs::{audit_npmrc, audit_pip_config, audit_bunfig};
+
+#[test]
+fn npmrc_detects_custom_registry() {
+    let findings = audit_npmrc("registry=https://evil-registry.example.com/");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "high");
+}
+
+#[test]
+fn npmrc_allows_official_registry() {
+    let findings = audit_npmrc("registry=https://registry.npmjs.org/");
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn npmrc_detects_ssl_disabled() {
+    let findings = audit_npmrc("strict-ssl=false");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "critical");
+}
+
+#[test]
+fn npmrc_detects_auth_token() {
+    let findings = audit_npmrc("//registry.example.com/:_authToken=npm_xxxx");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].description.contains("auth token"));
+}
+
+#[test]
+fn pip_config_detects_custom_index() {
+    let findings = audit_pip_config("index-url = https://evil.pypi.example.com/simple");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "high");
+}
+
+#[test]
+fn pip_config_detects_trusted_host() {
+    let findings = audit_pip_config("trusted-host = evil.example.com");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "high");
+}
+
+#[test]
+fn bunfig_detects_custom_registry() {
+    let findings = audit_bunfig(r#"
+[install]
+registry = "https://evil-registry.example.com/"
+"#);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "high");
 }

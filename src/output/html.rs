@@ -78,12 +78,16 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("IDE Installations", s.ide_installations_count),
         ("IDE Extensions", s.ide_extensions_count),
         ("MCP Configs", s.mcp_configs_count),
+        ("MCP Servers", s.mcp_servers_count),
         ("Package Managers", s.node_package_managers_count),
         ("Shell Configs", s.shell_configs_count),
         ("SSH Keys", s.ssh_keys_count),
         ("Cloud Credentials", s.cloud_credentials_count),
         ("Container Tools", s.container_tools_count),
         ("Notebooks", s.notebook_servers_count),
+        ("Browser Extensions", s.browser_extensions_count),
+        ("Pkg Config Audits", s.package_config_audits_count),
+        ("Exposures", s.exposure_findings_count),
     ];
 
     items
