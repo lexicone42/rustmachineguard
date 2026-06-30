@@ -1,9 +1,9 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 28 entries
-covering malicious npm/PyPI packages, CVEs in MCP infrastructure, and compromised VS Code
-extensions.
+that is automatically checked during every scan. The catalog currently contains 37 entries
+covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
+extensions, and malicious browser extensions.
 
 Use `--no-builtin-catalog` to disable it, or `--threat-catalog <file>` to add your own
 entries (merged with the built-in catalog by default).
@@ -43,6 +43,9 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **Cyata** | Discovered CVE-2025-68143/68144/68145 triple chain in mcp-server-git | Public advisories |
 | **Check Point** | Discovered CVE-2025-54136 (MCPoison) in Cursor IDE | Public advisory |
 | **Aikido** | Detailed Nx Console supply chain compromise analysis | Public blog post |
+| **ExtensionTotal** | MaliciousCorgi campaign analysis, VS Code extension security research | Public blog posts |
+| **Cyberhaven** | Disclosure of compromised Cyberhaven Chrome extension incident (2024-12) | Public disclosure |
+| **Guardio Labs** | Discovered trojanized ChatGPT browser extensions stealing session cookies | Public blog posts |
 
 ### Individual Researchers
 

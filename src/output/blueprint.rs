@@ -1,4 +1,4 @@
-use crate::models::ScanReport;
+use crate::models::{PassphraseStatus, ScanReport};
 use serde::Serialize;
 
 /// Generate a CycloneDX 2.0 Blueprint document from scan results.
@@ -29,6 +29,8 @@ struct DocMetadata {
     timestamp: String,
     tools: Vec<DocTool>,
     component: DocComponent,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<DocWarning>,
 }
 
 #[derive(Serialize)]
@@ -46,6 +48,12 @@ struct DocComponent {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DocWarning {
+    scanner: String,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -137,6 +145,8 @@ struct Interface {
 #[serde(rename_all = "camelCase")]
 struct BehaviorInstance {
     behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acknowledgment: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     actors: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -180,6 +190,24 @@ struct Boundary {
     boundary_type: String,
     zones: Vec<String>,
 }
+
+// Patterns that suggest tool description poisoning (hidden instructions for AI)
+const POISONING_PATTERNS: &[&str] = &[
+    "important:",
+    "you must",
+    "always ",
+    "never ",
+    "ignore previous",
+    "disregard",
+    "override",
+    "system prompt",
+    "do not tell",
+    "secretly",
+    "hidden instruction",
+    "<system>",
+    "{{",
+    "```system",
+];
 
 impl BlueprintDocument {
     fn from_report(report: &ScanReport) -> Self {
@@ -261,6 +289,30 @@ impl BlueprintDocument {
                     server.package_version.as_deref(),
                 );
 
+                // #3: Add command/args to Blueprint properties
+                let mut props = vec![
+                    Property {
+                        name: "rmg:transport".into(),
+                        value: server.transport.clone(),
+                    },
+                    Property {
+                        name: "rmg:config-source".into(),
+                        value: mcp.config_source.clone(),
+                    },
+                ];
+                if let Some(ref cmd) = server.command {
+                    props.push(Property {
+                        name: "rmg:command".into(),
+                        value: cmd.clone(),
+                    });
+                }
+                if !server.args.is_empty() {
+                    props.push(Property {
+                        name: "rmg:args".into(),
+                        value: server.args.join(" "),
+                    });
+                }
+
                 components.push(Component {
                     component_type: "application".into(),
                     bom_ref: comp_ref.clone(),
@@ -274,16 +326,7 @@ impl BlueprintDocument {
                         .as_ref()
                         .map(|e| format!("mcp-server/{}", e)),
                     purl,
-                    properties: vec![
-                        Property {
-                            name: "rmg:transport".into(),
-                            value: server.transport.clone(),
-                        },
-                        Property {
-                            name: "rmg:config-source".into(),
-                            value: mcp.config_source.clone(),
-                        },
-                    ],
+                    properties: props,
                 });
 
                 let zone = match server.transport.as_str() {
@@ -384,10 +427,11 @@ impl BlueprintDocument {
                 properties: Vec::new(),
             });
 
-            // Each capability becomes a behavior
+            // #5: Each capability becomes a behavior with native acknowledgment field
             for cap in &skill.capabilities {
                 behaviors.push(BehaviorInstance {
                     behavior: cap.clone(),
+                    acknowledgment: Some("declared".into()),
                     actors: vec![format!("asset:{}", comp_ref)],
                     targets: Vec::new(),
                     properties: vec![Property {
@@ -395,6 +439,49 @@ impl BlueprintDocument {
                         value: "static-inference".into(),
                     }],
                 });
+            }
+
+            // #9: Flow from agent to skill (execution)
+            for tool in &report.ai_agents_and_tools {
+                let agent_ref = format!(
+                    "asset:ai-tool:{}",
+                    tool.name.replace(' ', "-").to_lowercase()
+                );
+                flows.push(Flow {
+                    bom_ref: format!(
+                        "flow:{}->{}",
+                        tool.name.replace(' ', "-").to_lowercase(),
+                        sanitize_ref(&skill.name)
+                    ),
+                    name: format!("{} → {}", tool.name, skill.name),
+                    source: agent_ref,
+                    target: format!("asset:{}", comp_ref),
+                    description: Some(format!(
+                        "Agent executes {} skill",
+                        skill.scope
+                    )),
+                    properties: Vec::new(),
+                });
+            }
+
+            // #9: If skill has skill_invoke capability, flow to MCP servers
+            if skill.capabilities.iter().any(|c| c == "skill_invoke") {
+                for mcp in &report.mcp_configs {
+                    for server in &mcp.servers {
+                        flows.push(Flow {
+                            bom_ref: format!(
+                                "flow:{}->mcp:{}",
+                                sanitize_ref(&skill.name),
+                                server.name
+                            ),
+                            name: format!("{} → {}", skill.name, server.name),
+                            source: format!("asset:{}", comp_ref),
+                            target: format!("asset:mcp:{}", server.name),
+                            description: Some("Skill invokes MCP tool".into()),
+                            properties: Vec::new(),
+                        });
+                    }
+                }
             }
 
             host_deps.push(comp_ref);
@@ -446,6 +533,7 @@ impl BlueprintDocument {
             for finding in &rf.findings {
                 behaviors.push(BehaviorInstance {
                     behavior: format!("dangerous-pattern:{}", finding.pattern),
+                    acknowledgment: Some("declared".into()),
                     actors: vec![format!("asset:{}", comp_ref)],
                     targets: Vec::new(),
                     properties: vec![Property {
@@ -455,19 +543,59 @@ impl BlueprintDocument {
                 });
             }
 
+            // #9: Flow from rules file to each agent (configuration control)
+            for tool in &report.ai_agents_and_tools {
+                let agent_ref = format!(
+                    "asset:ai-tool:{}",
+                    tool.name.replace(' ', "-").to_lowercase()
+                );
+                flows.push(Flow {
+                    bom_ref: format!(
+                        "flow:{}->{}",
+                        sanitize_ref(&rf.file_name),
+                        tool.name.replace(' ', "-").to_lowercase()
+                    ),
+                    name: format!("{} → {}", rf.file_name, tool.name),
+                    source: format!("asset:{}", comp_ref),
+                    target: agent_ref,
+                    description: Some("Rules file configures agent behavior".into()),
+                    properties: Vec::new(),
+                });
+            }
+
             host_deps.push(comp_ref);
         }
 
-        // MCP probe results → observed behaviors
+        // MCP probe results → observed behaviors + resources + version enrichment
         for probe in &report.mcp_probes {
             if !probe.success {
                 continue;
             }
             let server_ref = format!("asset:mcp:{}", probe.server_name);
 
+            // #4: Enrich component version from probe server_info
+            if let Some(ref info) = probe.server_info {
+                if let Some(ref ver) = info.version {
+                    let comp_bom_ref = format!("mcp:{}", probe.server_name);
+                    if let Some(comp) = components.iter_mut().find(|c| c.bom_ref == comp_bom_ref) {
+                        if comp.version.is_none() {
+                            comp.version = Some(ver.clone());
+                        }
+                        if info.name != probe.server_name {
+                            comp.properties.push(Property {
+                                name: "rmg:probe-reported-name".into(),
+                                value: info.name.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // #5: Observed capabilities with native acknowledgment field
             for cap in &probe.observed_capabilities {
                 behaviors.push(BehaviorInstance {
                     behavior: cap.clone(),
+                    acknowledgment: Some("observed".into()),
                     actors: vec![server_ref.clone()],
                     targets: Vec::new(),
                     properties: vec![Property {
@@ -477,20 +605,240 @@ impl BlueprintDocument {
                 });
             }
 
+            // #10: Check for tool description poisoning
             for tool in &probe.tools {
+                let desc = tool.description.as_deref().unwrap_or("");
+                let mut tool_props = vec![Property {
+                    name: "rmg:tool-description".into(),
+                    value: desc.to_string(),
+                }];
+
+                let poisoning_signals: Vec<&&str> = POISONING_PATTERNS
+                    .iter()
+                    .filter(|p| desc.to_lowercase().contains(**p))
+                    .collect();
+
+                if !poisoning_signals.is_empty() {
+                    tool_props.push(Property {
+                        name: "rmg:poisoning-risk".into(),
+                        value: format!(
+                            "suspicious patterns: {}",
+                            poisoning_signals.iter().map(|p| **p).collect::<Vec<_>>().join(", ")
+                        ),
+                    });
+                }
+
                 behaviors.push(BehaviorInstance {
                     behavior: format!("mcp-tool:{}", tool.name),
+                    acknowledgment: Some("observed".into()),
                     actors: vec![server_ref.clone()],
                     targets: Vec::new(),
+                    properties: tool_props,
+                });
+            }
+
+            // #2: Map MCP probe resources to data assets + flows
+            for resource in &probe.resources {
+                let res_ref = format!(
+                    "mcp-resource:{}:{}",
+                    probe.server_name,
+                    sanitize_ref(&resource.uri)
+                );
+
+                let zone = if resource.uri.starts_with("file://") {
+                    "zone:local"
+                } else {
+                    "zone:remote"
+                };
+
+                assets.push(Asset {
+                    bom_ref: format!("asset:{}", res_ref),
+                    asset_type: "data".into(),
+                    name: resource
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| resource.uri.clone()),
+                    description: resource.description.clone(),
+                    zone: Some(zone.into()),
+                    component_ref: None,
+                    responsibilities: Vec::new(),
+                    interfaces: Vec::new(),
                     properties: vec![Property {
-                        name: "rmg:tool-description".into(),
-                        value: tool
-                            .description
-                            .clone()
-                            .unwrap_or_default(),
+                        name: "rmg:resource-uri".into(),
+                        value: resource.uri.clone(),
+                    }],
+                });
+
+                flows.push(Flow {
+                    bom_ref: format!("flow:{}->res:{}", probe.server_name, sanitize_ref(&resource.uri)),
+                    name: format!(
+                        "{} → {}",
+                        probe.server_name,
+                        resource.name.as_deref().unwrap_or(&resource.uri)
+                    ),
+                    source: server_ref.clone(),
+                    target: format!("asset:{}", res_ref),
+                    description: Some("MCP server accesses resource".into()),
+                    properties: Vec::new(),
+                });
+            }
+        }
+
+        // #1: Map exposure findings to Blueprint behaviors
+        for finding in &report.exposure_findings {
+            let actor_ref = format!("asset:mcp:{}", finding.found_in
+                .rsplit('/')
+                .next()
+                .unwrap_or(&finding.found_in)
+                .replace(".json", ""));
+
+            // Try to match to a known MCP server asset
+            let matched_actor = report.mcp_configs.iter()
+                .flat_map(|c| &c.servers)
+                .find(|s| {
+                    s.package_name.as_deref() == Some(&finding.name)
+                        || s.name == finding.name
+                })
+                .map(|s| format!("asset:mcp:{}", s.name))
+                .unwrap_or(actor_ref);
+
+            behaviors.push(BehaviorInstance {
+                behavior: format!("exposure-catalog-match:{}", finding.name),
+                acknowledgment: Some("declared".into()),
+                actors: vec![matched_actor],
+                targets: Vec::new(),
+                properties: vec![
+                    Property {
+                        name: "rmg:advisory".into(),
+                        value: finding.advisory.clone(),
+                    },
+                    Property {
+                        name: "rmg:severity".into(),
+                        value: "critical".into(),
+                    },
+                    Property {
+                        name: "rmg:ecosystem".into(),
+                        value: finding.ecosystem.clone(),
+                    },
+                    Property {
+                        name: "rmg:matched-version".into(),
+                        value: finding.version.clone(),
+                    },
+                ],
+            });
+        }
+
+        // #7: SSH keys as blast-radius data assets
+        for key in &report.ssh_keys {
+            let key_ref = format!("ssh-key:{}", sanitize_ref(&key.path));
+
+            let mut key_props = vec![
+                Property {
+                    name: "rmg:key-type".into(),
+                    value: key.key_type.clone(),
+                },
+                Property {
+                    name: "rmg:passphrase-status".into(),
+                    value: match key.has_passphrase {
+                        PassphraseStatus::Encrypted => "encrypted".into(),
+                        PassphraseStatus::NoPassphrase => "no_passphrase".into(),
+                        PassphraseStatus::Unknown => "unknown".into(),
+                    },
+                },
+            ];
+            if let Some(ref comment) = key.comment {
+                key_props.push(Property {
+                    name: "rmg:key-comment".into(),
+                    value: comment.clone(),
+                });
+            }
+
+            assets.push(Asset {
+                bom_ref: format!("asset:{}", key_ref),
+                asset_type: "data".into(),
+                name: key.path.rsplit('/').next().unwrap_or(&key.path).to_string(),
+                description: Some(format!(
+                    "SSH {} key ({})",
+                    key.key_type,
+                    match key.has_passphrase {
+                        PassphraseStatus::Encrypted => "passphrase-protected",
+                        PassphraseStatus::NoPassphrase => "NO PASSPHRASE",
+                        PassphraseStatus::Unknown => "passphrase status unknown",
+                    }
+                )),
+                zone: Some("zone:local".into()),
+                component_ref: None,
+                responsibilities: vec!["Remote authentication".into()],
+                interfaces: Vec::new(),
+                properties: key_props,
+            });
+
+            // Unprotected keys are accessible blast radius for any shell-capable agent
+            if key.has_passphrase == PassphraseStatus::NoPassphrase {
+                behaviors.push(BehaviorInstance {
+                    behavior: "blast-radius:unprotected-ssh-key".into(),
+                    acknowledgment: Some("observed".into()),
+                    actors: vec![format!("asset:{}", key_ref)],
+                    targets: Vec::new(),
+                    properties: vec![Property {
+                        name: "rmg:severity".into(),
+                        value: "high".into(),
                     }],
                 });
             }
+        }
+
+        // #7: Cloud credentials as blast-radius data assets
+        for cred in &report.cloud_credentials {
+            let cred_ref = format!("cloud-cred:{}:{}",
+                sanitize_ref(&cred.provider),
+                sanitize_ref(&cred.credential_type)
+            );
+
+            let mut cred_props = vec![
+                Property {
+                    name: "rmg:provider".into(),
+                    value: cred.provider.clone(),
+                },
+                Property {
+                    name: "rmg:credential-type".into(),
+                    value: cred.credential_type.clone(),
+                },
+            ];
+            if !cred.profiles.is_empty() {
+                cred_props.push(Property {
+                    name: "rmg:profiles".into(),
+                    value: cred.profiles.join(", "),
+                });
+            }
+
+            assets.push(Asset {
+                bom_ref: format!("asset:{}", cred_ref),
+                asset_type: "data".into(),
+                name: format!("{} {}", cred.provider, cred.credential_type),
+                description: Some(format!(
+                    "{} {} ({} profiles)",
+                    cred.provider,
+                    cred.credential_type,
+                    cred.profiles.len()
+                )),
+                zone: Some("zone:local".into()),
+                component_ref: None,
+                responsibilities: vec!["Cloud service authentication".into()],
+                interfaces: Vec::new(),
+                properties: cred_props,
+            });
+
+            behaviors.push(BehaviorInstance {
+                behavior: format!("blast-radius:cloud-credential:{}", cred.provider.to_lowercase()),
+                acknowledgment: Some("observed".into()),
+                actors: vec![format!("asset:{}", cred_ref)],
+                targets: Vec::new(),
+                properties: vec![Property {
+                    name: "rmg:profile-count".into(),
+                    value: cred.profiles.len().to_string(),
+                }],
+            });
         }
 
         // Build dependency graph
@@ -517,6 +865,16 @@ impl BlueprintDocument {
             boundaries,
         };
 
+        // #6: Surface scan warnings in Blueprint metadata
+        let warnings: Vec<DocWarning> = report
+            .warnings
+            .iter()
+            .map(|w| DocWarning {
+                scanner: w.scanner.clone(),
+                message: w.message.clone(),
+            })
+            .collect();
+
         BlueprintDocument {
             bom_format: "CycloneDX",
             spec_version: "2.0-draft",
@@ -536,6 +894,7 @@ impl BlueprintDocument {
                         report.device.os_name, report.device.os_version
                     )),
                 },
+                warnings,
             },
             components,
             dependencies,

@@ -138,5 +138,50 @@
     "ecosystem": "npm",
     "name": "devtools-assistant",
     "advisory": "Malicious PoC: harvests env vars, SSH keys, cloud credentials, exfiltrates Base64-encoded as GitHub API traffic. Source: Kaspersky GERT (Securelist)"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "niceprogramming.oscpcopilot",
+    "advisory": "MaliciousCorgi campaign: fake OSCP study tool executing obfuscated payloads. Source: ExtensionTotal"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "niceprogramming.firecrackerx",
+    "advisory": "MaliciousCorgi campaign: executes obfuscated npm payloads. Source: ExtensionTotal"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "niceprogramming.gptcoding",
+    "advisory": "MaliciousCorgi campaign: fake GPT coding assistant with malicious payloads. Source: ExtensionTotal"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "mark-manaseryan.color-theme-nairi",
+    "advisory": "API key stealer: exfiltrates API keys and credentials. Part of 70K+ install malware set. Source: Cyberhaven, ReversingLabs"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "sabirh.solidity-language",
+    "advisory": "Crypto theft campaign: stole $500K+. Fetches RAT payload from angelic.su. Source: BleepingComputer, Kaspersky"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "emeraldphx.devchat",
+    "advisory": "Steals source code and exfiltrates to external servers. Source: ReversingLabs"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "cyberhaven-extension",
+    "advisory": "Cyberhaven extension compromised (2024-12): injected code to steal Facebook tokens and session cookies. 400K+ corporate users affected. Source: Cyberhaven disclosure, BleepingComputer"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "ai-assistant-chatgpt",
+    "advisory": "Fake ChatGPT extension stealing Facebook session cookies. 9K+ installs. Source: Guardio Labs"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "chatgpt-for-google-fake",
+    "advisory": "Trojanized clone of legitimate ChatGPT for Google: steals session tokens. Source: Guardio Labs (2023-03)"
   }
 ]
