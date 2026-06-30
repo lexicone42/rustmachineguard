@@ -823,6 +823,97 @@ fn exposure_catalog_matches_any_version_when_unspecified() {
     assert_eq!(findings.len(), 1);
 }
 
+// ─── Built-in threat catalog ──────────────────────────────────
+
+#[test]
+fn builtin_catalog_loads_successfully() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    assert!(catalog.len() >= 25, "catalog should have at least 25 entries");
+}
+
+#[test]
+fn builtin_catalog_catches_postmark_mcp() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "postmark".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("postmark-mcp".into()),
+        package_version: Some("1.0.17".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].advisory.contains("Malicious"));
+}
+
+#[test]
+fn builtin_catalog_catches_sandworm_typosquat() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "stdio".into(),
+        command: Some("npx".into()),
+        package_ecosystem: Some("npm".into()),
+        package_name: Some("claud-code".into()),
+        package_version: Some("0.2.1".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].advisory.contains("SANDWORM"));
+}
+
+#[test]
+fn builtin_catalog_catches_pypi_reverse_shell() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+
+    let server = rustmachineguard::models::McpServerDetail {
+        name: "test".into(),
+        transport: "stdio".into(),
+        command: Some("uvx".into()),
+        package_ecosystem: Some("pypi".into()),
+        package_name: Some("mcp-runcmd-server".into()),
+        package_version: Some("0.1.0".into()),
+        url: None,
+    };
+
+    let findings = catalog.check_mcp_server(&server, "/test");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].advisory.contains("reverse shell"));
+}
+
+#[test]
+fn builtin_catalog_catches_malicious_vscode_extension() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+
+    let findings =
+        catalog.check_extension("vscode", "whensunset.chatgpt-china", "1.0.0", "vscode");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].advisory.contains("MaliciousCorgi"));
+}
+
+#[test]
+fn builtin_catalog_catches_compromised_checkmarx() {
+    let catalog =
+        ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+
+    let findings =
+        catalog.check_extension("vscode", "checkmarx.cx-dev-assist", "1.17.0", "vscode");
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].advisory.contains("TeamPCP"));
+}
+
 // ─── Package config auditing ──────────────────────────────────
 
 use rustmachineguard::scanners::package_configs::{audit_npmrc, audit_pip_config, audit_bunfig};

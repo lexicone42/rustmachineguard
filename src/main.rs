@@ -31,10 +31,14 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     search_dirs: Vec<PathBuf>,
 
-    /// Path to a JSON threat catalog for exposure matching.
+    /// Path to additional JSON threat catalog for exposure matching (merged with built-in catalog).
     /// Format: array of {"ecosystem":"npm","name":"pkg","version":"1.0","advisory":"..."}
     #[arg(long)]
     threat_catalog: Option<PathBuf>,
+
+    /// Disable the built-in threat catalog (only use --threat-catalog if provided)
+    #[arg(long)]
+    no_builtin_catalog: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -231,32 +235,65 @@ fn main() {
     // Deduplicate results that might appear from overlapping roots
     dedupe_report(&mut report);
 
-    // Exposure catalog matching
+    // Exposure catalog matching — built-in catalog + optional user catalog
+    let mut catalog = if cli.no_builtin_catalog {
+        None
+    } else {
+        match scanners::exposure::ExposureCatalog::load_from_str(
+            rustmachineguard::catalogs::BUILTIN_CATALOG,
+        ) {
+            Ok(c) => {
+                eprintln!(
+                    "info: loaded built-in threat catalog ({} entries)",
+                    c.len()
+                );
+                Some(c)
+            }
+            Err(e) => {
+                eprintln!("warning: failed to load built-in catalog: {}", e);
+                None
+            }
+        }
+    };
+
     if let Some(ref catalog_path) = cli.threat_catalog {
         match scanners::exposure::ExposureCatalog::load_from_file(catalog_path) {
-            Ok(catalog) => {
-                for mcp in &report.mcp_configs {
-                    for server in &mcp.servers {
-                        report
-                            .exposure_findings
-                            .extend(catalog.check_mcp_server(server, &mcp.config_path));
-                    }
-                }
-                for ext in &report.ide_extensions {
-                    let id = format!("{}.{}", ext.publisher, ext.name);
-                    report.exposure_findings.extend(
-                        catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type),
-                    );
-                }
-                for ext in &report.browser_extensions {
-                    report.exposure_findings.extend(
-                        catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
-                    );
+            Ok(user_catalog) => {
+                eprintln!(
+                    "info: loaded user threat catalog ({} entries from {})",
+                    user_catalog.len(),
+                    catalog_path.display()
+                );
+                if let Some(ref mut c) = catalog {
+                    c.merge(user_catalog);
+                } else {
+                    catalog = Some(user_catalog);
                 }
             }
             Err(e) => {
                 eprintln!("warning: {}", e);
             }
+        }
+    }
+
+    if let Some(ref catalog) = catalog {
+        for mcp in &report.mcp_configs {
+            for server in &mcp.servers {
+                report
+                    .exposure_findings
+                    .extend(catalog.check_mcp_server(server, &mcp.config_path));
+            }
+        }
+        for ext in &report.ide_extensions {
+            let id = format!("{}.{}", ext.publisher, ext.name);
+            report.exposure_findings.extend(
+                catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type),
+            );
+        }
+        for ext in &report.browser_extensions {
+            report.exposure_findings.extend(
+                catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
+            );
         }
     }
 

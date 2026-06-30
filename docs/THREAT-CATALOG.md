@@ -1,0 +1,102 @@
+# Built-in Threat Catalog
+
+rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
+that is automatically checked during every scan. The catalog currently contains 28 entries
+covering malicious npm/PyPI packages, CVEs in MCP infrastructure, and compromised VS Code
+extensions.
+
+Use `--no-builtin-catalog` to disable it, or `--threat-catalog <file>` to add your own
+entries (merged with the built-in catalog by default).
+
+## How It Works
+
+The catalog is compiled into the binary at build time from
+`src/catalogs/builtin_catalog.json`. Each entry specifies an ecosystem, package name,
+optional version constraint, and an advisory string citing the source.
+
+During scanning, every discovered MCP server, IDE extension, and browser extension is
+checked against the catalog. Matches appear as exposure findings in all output formats.
+
+## Sources and Attribution
+
+This catalog is compiled from public security advisories, CVE databases, and researcher
+disclosures. We credit the organizations and individuals whose work makes this possible:
+
+### Security Research Organizations
+
+| Organization | Contribution | License/Terms |
+|---|---|---|
+| **JFrog Security Research** | Discovered mcp-runcmd-server reverse shell campaign (XRAY-734538/39/40), CVE-2025-6514 in mcp-remote | Public advisories |
+| **Socket.dev** | Discovered SANDWORM_MODE npm typosquatting campaign (19 packages targeting AI toolchains) | Public blog post |
+| **Snyk** | First public disclosure of postmark-mcp malicious package | Public advisory |
+| **ReversingLabs** | Extended postmark-mcp analysis and timeline | Public blog post |
+| **Oligo Security** | Discovered CVE-2025-49596 in MCP Inspector | Public advisory, GHSA-7f8r-222p-6f5g |
+| **Cymulate** | Discovered CVE-2025-53109 + CVE-2025-53110 (EscapeRoute) in MCP filesystem server | Public advisory |
+| **Koi Security** | Discovered ClawHavoc campaign (341+ malicious skills) and MaliciousCorgi VS Code extensions | Public blog posts |
+| **Datadog Security Labs** | Discovered Clawsights malicious Claude Code skill | Public blog post |
+| **Kaspersky GERT** | Published devtools-assistant PoC demonstrating MCP credential harvesting | Public advisory (Securelist) |
+| **Invariant Labs** | Coined "Tool Poisoning Attacks", disclosed github-mcp-server prompt injection | Public blog posts |
+| **Trail of Bits** | Identified Line Jumping, Conversation History Theft, ANSI Terminal Deception attacks | Public blog post |
+| **Endor Labs** | Analyzed 2,614 MCP servers: 82% prone to path traversal, 67% code injection | Public blog post |
+| **Cloud Security Alliance** | "MCP Security Crisis" report (May 2026) with aggregate statistics | Public research note |
+| **Wiz** | Discovered 550+ leaked secrets across 500+ VS Code extensions | Public blog post |
+| **Cyata** | Discovered CVE-2025-68143/68144/68145 triple chain in mcp-server-git | Public advisories |
+| **Check Point** | Discovered CVE-2025-54136 (MCPoison) in Cursor IDE | Public advisory |
+| **Aikido** | Detailed Nx Console supply chain compromise analysis | Public blog post |
+
+### Individual Researchers
+
+| Researcher | Contribution |
+|---|---|
+| **Or Peles** (JFrog) | CVE-2025-6514 (mcp-remote command injection) |
+| **Oren Yomtov** (Koi Security) | ClawHavoc campaign discovery |
+| **RyotaK** | Claude Code GitHub Action bot trust bypass |
+| **Inga Cherny** (Cato CTRL) | GIF Creator skill weaponization PoC |
+
+### Databases and Trackers
+
+| Resource | URL | Use |
+|---|---|---|
+| **vulnerablemcp.info** | https://vulnerablemcp.info/ | Comprehensive MCP vulnerability database (50+ CVEs) |
+| **OWASP MCP Top 10** | https://owasp.org/www-project-mcp-top-10/ | Risk taxonomy |
+| **NVD** | https://nvd.nist.gov/ | CVE details and CVSS scores |
+| **GitHub Advisory Database** | https://github.com/advisories | GHSA identifiers |
+
+### Academic Papers
+
+| Paper | ID | Relevance |
+|---|---|---|
+| SkillFortify | arXiv:2603.00195 | 8-resource capability taxonomy, trust score algebra |
+| MCPTox | arXiv:2508.14925 | 72.8% attack success rate across 45 MCP servers |
+| MCP-ITP | arXiv:2601.07395 | Implicit tool poisoning, 84.2% ASR |
+| ETDI | arXiv:2506.01333 | Tool squatting and rug pull attack models |
+| MCP-38 | arXiv:2603.18063 | 38 threat categories mapped to STRIDE/OWASP |
+
+## Updating the Catalog
+
+To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
+
+```json
+{
+  "ecosystem": "npm",
+  "name": "package-name",
+  "version": "1.0.0",
+  "advisory": "Short description with source attribution"
+}
+```
+
+- Omit `version` to match all versions (use for fully malicious packages)
+- Include `version` for exact version matching (use for specific vulnerable releases)
+- Always include the source in the advisory string
+
+To contribute additional entries, please open a PR with:
+1. The JSON entry in `builtin_catalog.json`
+2. A link to the public advisory or CVE in the PR description
+3. A test in `tests/property_tests.rs` verifying the match
+
+## License
+
+The catalog data (advisory descriptions, CVE identifiers, package names) is compiled from
+publicly available security advisories. CVE identifiers are public domain. Advisory
+descriptions are original text summarizing public disclosures. The catalog itself is
+distributed under Apache 2.0 as part of rustmachineguard.

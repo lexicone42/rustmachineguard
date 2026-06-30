@@ -19,6 +19,14 @@ impl ExposureCatalog {
         Ok(Self { entries })
     }
 
+    pub fn merge(&mut self, other: Self) {
+        self.entries.extend(other.entries);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

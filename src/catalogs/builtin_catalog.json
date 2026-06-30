@@ -1,0 +1,142 @@
+[
+  {
+    "ecosystem": "npm",
+    "name": "postmark-mcp",
+    "advisory": "Malicious MCP server: BCC'd all outgoing emails to attacker (phan@giftshop.club). Removed from npm 2025-09-25. Source: Snyk, ReversingLabs, CSA"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-runcmd-server",
+    "advisory": "Malicious: spawns reverse shell to 45.115.38.27:4433 before MCP server starts. Source: JFrog Security Research (XRAY-734538)"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-runcommand-server",
+    "advisory": "Malicious: spawns reverse shell to 45.115.38.27:4433 before MCP server starts. Source: JFrog Security Research (XRAY-734540)"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-runcommand-server2",
+    "advisory": "Malicious: spawns reverse shell to 45.115.38.27:4433 before MCP server starts. Source: JFrog Security Research (XRAY-734539)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@lanyer640/mcp-runcommand-server",
+    "advisory": "Malicious: related to PyPI mcp-runcmd-server reverse shell campaign. Source: JFrog Security Research"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "claud-code",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): injects rogue MCP server, exfiltrates SSH keys, AWS creds, npm tokens. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "cloude-code",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): injects rogue MCP server, exfiltrates credentials. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "cloude",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): injects rogue MCP server, exfiltrates credentials. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencraw",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates OpenClaw, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "suport-color",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates supports-color, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "rimarf",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates rimraf, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "veim",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates vim, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "yarsg",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates yarn, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "naniod",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates nanoid, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "hardhta",
+    "advisory": "Malicious typosquat (SANDWORM_MODE campaign): impersonates Hardhat, injects rogue MCP server. Source: Socket.dev (2026-02-20)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "mcp-remote",
+    "advisory": "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth authorization_endpoint URL. Affected: 0.0.5-0.1.15. Fixed: 0.1.16. Source: JFrog, GHSA-6xpm-ggf7-wc3p"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector",
+    "advisory": "CVE-2025-49596 (CVSS 9.4): RCE via unauthenticated proxy commands, chainable with CSRF. Fixed: 0.14.1. Source: Oligo Security, GHSA-7f8r-222p-6f5g"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-filesystem",
+    "advisory": "CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3): symlink bypass + directory containment bypass enabling arbitrary file read/write. Fixed: 2025.7.1. Source: Cymulate (EscapeRoute)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/sdk",
+    "advisory": "CVE-2025-66414: DNS rebinding vulnerability. CVE-2026-25536 (CVSS 7.1): cross-client data leak. Source: vulnerablemcp.info"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-server-git",
+    "advisory": "CVE-2025-68143 + CVE-2025-68144 + CVE-2025-68145: path traversal, Git CLI argument injection, path validation bypass. Chainable for full RCE. Source: Cyata, Endor Labs"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp",
+    "advisory": "CVE-2025-66416: DNS rebinding vulnerability in MCP Python SDK. Source: vulnerablemcp.info"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "whensunset.chatgpt-china",
+    "advisory": "MaliciousCorgi: exfiltrates file contents on every file open via Base64 to aihao123.cn (1.35M installs). Source: Koi Security (2026-01-22)"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "zhukunpeng.chat-moss",
+    "advisory": "MaliciousCorgi: exfiltrates file contents on every file open via Base64 to aihao123.cn (150K installs). Source: Koi Security (2026-01-22)"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "checkmarx.cx-dev-assist",
+    "advisory": "TeamPCP supply chain attack: compromised publisher pushed mcpAddon.js exfiltrating GitHub tokens, cloud creds, SSH keys. Affected: v1.17.0, v1.19.0. Source: The Hacker News (2026-04-22)"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "checkmarx.ast-results",
+    "advisory": "TeamPCP supply chain attack: compromised publisher pushed mcpAddon.js exfiltrating credentials. Affected: v2.63.0, v2.66.0. Source: The Hacker News (2026-04-22)"
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "nrwl.angular-console",
+    "advisory": "CVE-2026-48027 (CVSS 9.8): Nx Console compromised via TanStack supply chain attack. Payload harvested 1Password vaults, Claude Code configs, npm tokens. CISA KEV 2026-05-27. Source: Aikido, The Hacker News"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "solsafe",
+    "advisory": "Malicious: associated with Solidity Language extension crypto theft ($500K stolen). Fetches RAT payload from angelic.su. Source: BleepingComputer, Kaspersky"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "devtools-assistant",
+    "advisory": "Malicious PoC: harvests env vars, SSH keys, cloud credentials, exfiltrates Base64-encoded as GitHub API traffic. Source: Kaspersky GERT (Securelist)"
+  }
+]
