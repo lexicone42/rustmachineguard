@@ -1,3 +1,4 @@
+pub mod agent_settings;
 pub mod ai_frameworks;
 pub mod ai_tools;
 pub mod browser_extensions;
@@ -123,6 +124,20 @@ pub fn extract_version(text: &str) -> Option<String> {
 pub trait Scanner {
     type Output;
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output;
+}
+
+/// Check whether a file is tracked by git (shells out to `git ls-files`).
+pub fn is_git_tracked(path: &std::path::Path) -> bool {
+    let parent = path.parent().unwrap_or(path);
+    std::process::Command::new("git")
+        .args(["ls-files", "--error-unmatch"])
+        .arg(path)
+        .current_dir(parent)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Compute SHA-256 hash of content, returning hex string.

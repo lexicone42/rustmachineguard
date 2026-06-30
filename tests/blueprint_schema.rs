@@ -144,6 +144,23 @@ fn rich_blueprint_conforms() {
             config_path: "/h/.aws/credentials".into(),
             profiles: vec!["default".into()],
         }];
+        r.agent_settings = vec![AgentSettings {
+            path: "/p/.claude/settings.json".into(),
+            source: "project".into(),
+            framework: "claude-code".into(),
+            git_tracked: true,
+            hooks: vec![AgentHook {
+                event: "PreToolUse".into(),
+                matcher: Some("Bash".into()),
+                command: "echo hi".into(),
+                dangerous: false,
+            }],
+            permission_mode: Some("acceptEdits".into()),
+            allow_rules: 2,
+            deny_rules: 1,
+            auto_approve_mcp: true,
+            enabled_mcp_servers: vec!["fs".into()],
+        }];
         r.exposure_findings = vec![ExposureFinding {
             ecosystem: "npm".into(),
             name: "@modelcontextprotocol/server-filesystem".into(),
@@ -281,6 +298,7 @@ fn make_report(
         package_config_audits: vec![],
         rules_files: vec![],
         agent_skills: vec![],
+        agent_settings: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![ScanWarning {
@@ -302,7 +320,7 @@ fn make_report(
             browser_extensions_count: 0,
             package_config_audits_count: 0,
             rules_files_count: 0,
-            agent_skills_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0,
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,

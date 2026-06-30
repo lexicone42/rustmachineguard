@@ -45,8 +45,17 @@ cargo build --release
 | **Cloud Credentials**\* | Cloud provider credentials | AWS (profiles, SSO), GCP (ADC, service accounts), Azure (tokens, subscriptions) |
 | **Container Tools**\* | Container runtimes | Docker, Podman, nerdctl, Lima, Colima, Finch |
 | **Notebook Servers**\* | Computational notebooks | Jupyter, JupyterLab, Marimo |
+| **Browser Extensions**\* | AI-related browser add-ons | Chrome/Firefox extension inventory with known-malicious matching |
+| **Package Config Audits**\* | Registry/install hijacks | `.npmrc`, pip, bun config — custom registries, disabled SSL, auth tokens |
+| **Rules Files**\* | Agent instruction files | `CLAUDE.md` and similar, with dangerous-pattern + tamper (hash) detection |
+| **Agent Skills**\* | Custom commands / hooks / plugins | Capability inference across the SkillFortify 8-resource taxonomy |
+| **Agent Settings**\* | `settings.json` hooks + MCP auto-approval | Hooks that run shell commands on tool-use events (silent code exec), `enableAllProjectMcpServers` workspace-trust bypass, permission modes |
 
 \* New detection categories not in the original bash tool.
+
+A built-in **threat catalog** (62 entries) flags known-malicious or known-vulnerable
+packages, MCP servers, and IDE/browser extensions during the scan. See
+[docs/THREAT-CATALOG.md](docs/THREAT-CATALOG.md) for sources and attribution.
 
 ## Output Formats
 

@@ -53,6 +53,8 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "Package Config Audits", s.package_config_audits_count);
     summary_line(&mut out, "Rules Files", s.rules_files_count);
     summary_line(&mut out, "Agent Skills", s.agent_skills_count);
+    summary_line(&mut out, "Agent Settings Files", s.agent_settings_count);
+    summary_line(&mut out, "Agent Hooks", s.agent_hooks_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
     if s.rules_file_findings_count > 0 {
         out.push_str(&format!(
@@ -457,6 +459,63 @@ pub fn render(report: &ScanReport) -> String {
                     skill.scope.dimmed(),
                     skill.file_type.dimmed(),
                     caps,
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Agent Settings (hooks + auto-approval)
+    if !report.agent_settings.is_empty() {
+        section_header(
+            &mut out,
+            &format!("Agent Settings ({})", report.agent_settings.len()),
+        );
+        for s in &report.agent_settings {
+            let tracked = if s.git_tracked {
+                " [git-tracked]".red().to_string()
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  {} {} ({}){}\n",
+                "→".bold(),
+                s.path,
+                s.source.dimmed(),
+                tracked
+            ));
+            if let Some(ref mode) = s.permission_mode {
+                let m = if mode == "bypassPermissions" {
+                    mode.red().bold().to_string()
+                } else {
+                    mode.yellow().to_string()
+                };
+                out.push_str(&format!("    permission mode: {}\n", m));
+            }
+            if s.auto_approve_mcp {
+                out.push_str(&format!(
+                    "    {} enableAllProjectMcpServers (auto-approves project MCP servers)\n",
+                    "!".red().bold()
+                ));
+            }
+            for h in &s.hooks {
+                let marker = if h.dangerous {
+                    "!".red().bold().to_string()
+                } else {
+                    "·".dimmed().to_string()
+                };
+                let matcher = h.matcher.as_deref().unwrap_or("*");
+                let cmd_preview: String = h.command.chars().take(70).collect();
+                out.push_str(&format!(
+                    "    {} hook {}[{}]: {}\n",
+                    marker,
+                    h.event.dimmed(),
+                    matcher,
+                    if h.dangerous {
+                        cmd_preview.red().to_string()
+                    } else {
+                        cmd_preview
+                    }
                 ));
             }
         }

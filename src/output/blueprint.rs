@@ -314,6 +314,9 @@ fn map_behavior_to_taxonomy(label: &str) -> &'static str {
         "skill_invoke" => "ai:agent:invokesTool",
         // Probe-derived tool invocations
         "mcp-tool" => "ai:agent:invokesTool",
+        // Settings hooks run shell commands on agent events
+        "hook-exec" => "application:codeExecution:executesNativeCommand",
+        "mcp-auto-approve" => "security",
         // Rules-file dangerous patterns → code execution risk (detail on the asset)
         "dangerous-pattern" => "application:codeExecution",
         // Threat-catalog match and blast-radius are security findings; detail lives
@@ -1057,6 +1060,86 @@ impl BlueprintDocument {
                 vec![format!("asset:{}", cred_ref)],
                 Vec::new(),
             );
+        }
+
+        // Agent settings files → data assets; hooks + auto-approval → behaviors.
+        for (idx, settings) in report.agent_settings.iter().enumerate() {
+            let set_ref = format!("agent-settings:{}:{}", idx, sanitize_ref(&settings.path));
+
+            let mut props = vec![
+                Property {
+                    name: "rmg:source".into(),
+                    value: settings.source.clone(),
+                },
+                Property {
+                    name: "rmg:git-tracked".into(),
+                    value: settings.git_tracked.to_string(),
+                },
+            ];
+            if let Some(ref mode) = settings.permission_mode {
+                props.push(Property {
+                    name: "rmg:permission-mode".into(),
+                    value: mode.clone(),
+                });
+            }
+            if settings.auto_approve_mcp {
+                props.push(Property {
+                    name: "rmg:auto-approve-mcp".into(),
+                    value: "true".into(),
+                });
+            }
+            for (hi, h) in settings.hooks.iter().enumerate() {
+                props.push(Property {
+                    name: format!("rmg:hook-{}", hi),
+                    value: format!(
+                        "{}[{}]{}: {}",
+                        h.event,
+                        h.matcher.as_deref().unwrap_or("*"),
+                        if h.dangerous { " DANGEROUS" } else { "" },
+                        h.command
+                    ),
+                });
+            }
+
+            assets.push(Asset {
+                bom_ref: format!("asset:{}", set_ref),
+                asset_type: "data".into(),
+                name: Some(
+                    std::path::Path::new(&settings.path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&settings.path)
+                        .to_string(),
+                ),
+                description: Some(format!(
+                    "{} agent settings ({} hooks)",
+                    settings.source,
+                    settings.hooks.len()
+                )),
+                zone: Some("zone:local".into()),
+                component_ref: None,
+                responsibilities: vec!["Agent configuration".into()],
+                interfaces: Vec::new(),
+                properties: props,
+            });
+
+            // Each hook command is silent code execution on the agent host.
+            for _ in &settings.hooks {
+                behaviors.push(
+                    "hook-exec".into(),
+                    vec!["declared".into()],
+                    vec![format!("asset:{}", set_ref)],
+                    Vec::new(),
+                );
+            }
+            if settings.auto_approve_mcp {
+                behaviors.push(
+                    "mcp-auto-approve".into(),
+                    vec!["declared".into()],
+                    vec![format!("asset:{}", set_ref)],
+                    Vec::new(),
+                );
+            }
         }
 
         // Build dependency graph

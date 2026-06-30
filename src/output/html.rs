@@ -89,6 +89,7 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("Pkg Config Audits", s.package_config_audits_count),
         ("Rules Files", s.rules_files_count),
         ("Agent Skills", s.agent_skills_count),
+        ("Agent Hooks", s.agent_hooks_count),
         ("Exposures", s.exposure_findings_count),
     ];
 

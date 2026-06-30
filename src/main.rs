@@ -64,6 +64,7 @@ enum Format {
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
+    "settings",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -112,6 +113,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .agent_skills
             .extend(scanners::skills::SkillsScanner.scan(plat));
+    }
+    if !skip.contains(&"settings") {
+        report
+            .agent_settings
+            .extend(scanners::agent_settings::AgentSettingsScanner.scan(plat));
     }
 }
 
@@ -208,6 +214,7 @@ fn main() {
         package_config_audits: Vec::new(),
         rules_files: Vec::new(),
         agent_skills: Vec::new(),
+        agent_settings: Vec::new(),
         exposure_findings: Vec::new(),
         mcp_probes: Vec::new(),
         warnings: Vec::new(),
@@ -227,6 +234,8 @@ fn main() {
             package_config_audits_count: 0,
             rules_files_count: 0,
             agent_skills_count: 0,
+            agent_settings_count: 0,
+            agent_hooks_count: 0,
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,

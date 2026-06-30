@@ -56,3 +56,10 @@ path = "fuzz_targets/fuzz_diff_engine.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_agent_settings"
+path = "fuzz_targets/fuzz_agent_settings.rs"
+test = false
+doc = false
+bench = false

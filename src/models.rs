@@ -24,6 +24,8 @@ pub struct ScanReport {
     pub rules_files: Vec<RulesFile>,
     pub agent_skills: Vec<AgentSkill>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agent_settings: Vec<AgentSettings>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exposure_findings: Vec<ExposureFinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcp_probes: Vec<McpProbeResult>,
@@ -279,6 +281,44 @@ pub struct AgentSkill {
     pub capabilities: Vec<String>,
 }
 
+/// An agent settings file (Claude Code / Codex), which can register hooks that run
+/// shell commands on agent events and auto-approve MCP servers.
+#[derive(Debug, Serialize)]
+pub struct AgentSettings {
+    pub path: String,
+    /// "user-global" | "local" | "project"
+    pub source: String,
+    pub framework: String,
+    /// Project-scoped settings from a cloned repo are higher risk; git_tracked tells
+    /// whether this file travels with a repository.
+    pub git_tracked: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<AgentHook>,
+    /// `permissions.defaultMode` (e.g. "acceptEdits", "bypassPermissions").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    pub allow_rules: usize,
+    pub deny_rules: usize,
+    /// `enableAllProjectMcpServers` — auto-approves all project MCP servers (a
+    /// workspace-trust bypass).
+    pub auto_approve_mcp: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub enabled_mcp_servers: Vec<String>,
+}
+
+/// A hook that runs a command on an agent lifecycle event.
+#[derive(Debug, Serialize, Clone)]
+pub struct AgentHook {
+    /// Event name, e.g. "PreToolUse", "PostToolUse", "Stop".
+    pub event: String,
+    /// Tool matcher, e.g. "Bash", "*". None or "*" means it runs for every tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher: Option<String>,
+    pub command: String,
+    /// True if the command matches a dangerous pattern (curl|bash, base64 decode, …).
+    pub dangerous: bool,
+}
+
 /// Exposure catalog entry for known-bad packages.
 #[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct ExposureEntry {
@@ -318,6 +358,8 @@ pub struct Summary {
     pub package_config_audits_count: usize,
     pub rules_files_count: usize,
     pub agent_skills_count: usize,
+    pub agent_settings_count: usize,
+    pub agent_hooks_count: usize,
     pub rules_file_findings_count: usize,
     pub exposure_findings_count: usize,
 }
@@ -341,6 +383,8 @@ impl ScanReport {
             package_config_audits_count: self.package_config_audits.len(),
             rules_files_count: self.rules_files.len(),
             agent_skills_count: self.agent_skills.len(),
+            agent_settings_count: self.agent_settings.len(),
+            agent_hooks_count: self.agent_settings.iter().map(|s| s.hooks.len()).sum(),
             rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
             exposure_findings_count: self.exposure_findings.len(),
         };

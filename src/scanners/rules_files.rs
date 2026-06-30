@@ -118,16 +118,7 @@ fn sha256_hex(content: &str) -> String {
 }
 
 fn is_git_tracked(path: &std::path::Path) -> bool {
-    let parent = path.parent().unwrap_or(path);
-    std::process::Command::new("git")
-        .args(["ls-files", "--error-unmatch"])
-        .arg(path)
-        .current_dir(parent)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    super::is_git_tracked(path)
 }
 
 pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFinding> {
