@@ -1381,8 +1381,9 @@ fn blueprint_includes_ssh_keys_as_assets() {
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(output.contains("ssh-key:"), "should contain SSH key assets");
     assert!(output.contains("no_passphrase"), "should include passphrase status");
-    assert!(output.contains("blast-radius:unprotected-ssh-key"), "should flag unprotected key");
-    assert!(!output.contains("blast-radius:unprotected-ssh-key\" } ]"), "encrypted key should NOT be flagged");
+    assert!(output.contains("blast-radius:high:unprotected-ssh-key"), "should flag unprotected key");
+    // Exactly one blast-radius behavior — only the unprotected key, not the encrypted one
+    assert_eq!(output.matches("blast-radius:high:unprotected-ssh-key").count(), 1, "only the unprotected key should be flagged");
 }
 
 #[test]
@@ -1419,7 +1420,13 @@ fn blueprint_behaviors_have_acknowledgment_field() {
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
-    assert!(output.contains(r#""acknowledgment": "declared""#), "declared behaviors should have acknowledgment");
+    // CycloneDX 2.0: acknowledgment is an array of enum values
+    let doc: serde_json::Value = serde_json::from_str(&output).expect("blueprint is valid JSON");
+    let behaviors = &doc["blueprints"][0]["behaviors"]["instances"];
+    assert!(behaviors.is_array(), "behaviors.instances should be an array");
+    let ack = &behaviors[0]["acknowledgment"];
+    assert!(ack.is_array(), "acknowledgment should be an array");
+    assert_eq!(ack[0], "declared");
 }
 
 #[test]
@@ -1511,7 +1518,37 @@ fn blueprint_tool_poisoning_detection() {
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(output.contains("rmg:poisoning-risk"), "should detect poisoning patterns in tool descriptions");
-    assert!(output.contains("important:"), "should list matched patterns");
+    assert!(output.contains("ignore previous"), "should list matched patterns");
+}
+
+#[test]
+fn blueprint_tool_poisoning_no_false_positives() {
+    use rustmachineguard::models::*;
+    // Benign descriptions that contain words like "always"/"never"/"override" but
+    // are NOT injection attempts — must not trigger poisoning detection.
+    let benign = [
+        "Always returns JSON",
+        "Never deletes data without confirmation",
+        "Override the default config path",
+        "Render the template {{name}} with the given context",
+        "Important utility for formatting code",
+    ];
+    for desc in benign {
+        let report = make_test_report(|r| {
+            r.mcp_probes = vec![McpProbeResult {
+                server_name: "s".into(),
+                config_source: "test".into(),
+                success: true,
+                server_info: None,
+                tools: vec![McpToolInfo { name: "t".into(), description: Some(desc.to_string()) }],
+                resources: vec![],
+                error: None,
+                observed_capabilities: vec![],
+            }];
+        });
+        let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+        assert!(!output.contains("rmg:poisoning-risk"), "benign description should NOT trigger poisoning: {:?}", desc);
+    }
 }
 
 #[test]
@@ -1528,6 +1565,232 @@ fn builtin_catalog_includes_chrome_extensions() {
     let findings = catalog.check_extension("chrome", "ai-assistant-chatgpt", "1.0.0", "chrome");
     assert_eq!(findings.len(), 1);
     assert!(findings[0].advisory.contains("Facebook session"));
+}
+
+// ─── Blueprint structural invariants (CycloneDX 2.0 conformance) ───
+
+/// Collect every asset bom-ref in a rendered blueprint.
+fn blueprint_asset_refs(doc: &serde_json::Value) -> std::collections::HashSet<String> {
+    let mut refs = std::collections::HashSet::new();
+    if let Some(assets) = doc["blueprints"][0]["assets"].as_array() {
+        for a in assets {
+            if let Some(r) = a["bom-ref"].as_str() {
+                refs.insert(r.to_string());
+            }
+        }
+    }
+    refs
+}
+
+/// THE key invariant: every behavior actor/target and flow source/destination
+/// must reference an asset bom-ref that actually exists. No dangling refs.
+fn assert_no_dangling_refs(output: &str) {
+    let doc: serde_json::Value = serde_json::from_str(output).expect("blueprint is valid JSON");
+    let asset_refs = blueprint_asset_refs(&doc);
+    let bp = &doc["blueprints"][0];
+
+    if let Some(behaviors) = bp["behaviors"]["instances"].as_array() {
+        for b in behaviors {
+            for field in ["actors", "targets"] {
+                if let Some(arr) = b[field].as_array() {
+                    for r in arr {
+                        let r = r.as_str().unwrap();
+                        assert!(asset_refs.contains(r), "dangling behavior {} ref: {} (behavior: {})", field, r, b["behavior"]);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(flows) = bp["flows"].as_array() {
+        for f in flows {
+            for field in ["source", "destination"] {
+                let r = f[field].as_str().unwrap();
+                assert!(asset_refs.contains(r), "dangling flow {} ref: {} (flow: {})", field, r, f["name"]);
+            }
+        }
+    }
+}
+
+#[test]
+fn blueprint_no_dangling_refs_with_unmatched_extension_exposure() {
+    use rustmachineguard::models::*;
+    // An exposure finding from a browser/IDE extension: found_in is "Firefox",
+    // NOT a path. The old code fabricated asset:mcp:Firefox which never existed.
+    let report = make_test_report(|r| {
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "chrome".into(),
+            name: "ai-assistant-chatgpt".into(),
+            version: "1.0.0".into(),
+            advisory: "Steals Facebook session cookies".into(),
+            found_in: "Firefox".into(),
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output);
+    assert!(output.contains("exposure-catalog-match:ai-assistant-chatgpt"));
+    assert!(!output.contains("asset:mcp:Firefox"), "must not fabricate a dangling MCP ref");
+}
+
+#[test]
+fn blueprint_no_dangling_refs_full_report() {
+    use rustmachineguard::models::*;
+    // A rich report exercising every asset/behavior/flow producer at once.
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude Code".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: Some("2.0".into()), binary_path: None, config_dir: None, install_path: None, is_running: true,
+        }];
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(), config_path: "/p/.mcp.json".into(), vendor: "claude".into(),
+            server_names: vec!["fs".into()], server_count: 1,
+            servers: vec![McpServerDetail {
+                name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
+                args: vec!["-y".into(), "@mcp/fs".into()], package_ecosystem: Some("npm".into()),
+                package_name: Some("@mcp/fs".into()), package_version: None, url: None,
+            }],
+        }];
+        r.agent_skills = vec![AgentSkill {
+            name: "deploy".into(), path: "/s/deploy.md".into(), framework: "claude-code".into(),
+            scope: "project".into(), file_type: "md".into(), size_bytes: 50, sha256: "x".into(),
+            capabilities: vec!["shell".into(), "skill_invoke".into()],
+        }];
+        r.rules_files = vec![RulesFile {
+            path: "/p/CLAUDE.md".into(), file_name: "CLAUDE.md".into(), sha256: "y".into(),
+            git_tracked: true, size_bytes: 100,
+            findings: vec![RulesFileFinding { severity: "critical".into(), pattern: "curl|wget piped to shell".into() }],
+        }];
+        r.ssh_keys = vec![SshKey { path: "/h/.ssh/id_rsa".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::NoPassphrase, comment: None }];
+        r.cloud_credentials = vec![CloudCredential { provider: "AWS".into(), credential_type: "creds".into(), config_path: "/h/.aws/credentials".into(), profiles: vec!["default".into()] }];
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "npm".into(), name: "@mcp/fs".into(), version: "1.0".into(),
+            advisory: "test".into(), found_in: "/p/.mcp.json".into(),
+        }];
+        r.mcp_probes = vec![McpProbeResult {
+            server_name: "fs".into(), config_source: "project".into(), success: true,
+            server_info: Some(McpServerInfo { name: "fs".into(), version: Some("3.1".into()) }),
+            tools: vec![McpToolInfo { name: "read_file".into(), description: Some("Reads a file".into()) }],
+            resources: vec![McpResourceInfo { uri: "file:///etc/hosts".into(), name: Some("hosts".into()), description: None }],
+            error: None, observed_capabilities: vec!["filesystem".into()],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output);
+}
+
+#[test]
+fn blueprint_empty_report_is_valid_json() {
+    let report = make_test_report(|_| {});
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: serde_json::Value = serde_json::from_str(&output).expect("empty blueprint is valid JSON");
+    assert_eq!(doc["bomFormat"], "CycloneDX");
+    assert_no_dangling_refs(&output);
+}
+
+#[test]
+fn blueprint_flows_have_type_and_destination() {
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: None, binary_path: None, config_dir: None, install_path: None, is_running: false,
+        }];
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(), config_path: "/p/.mcp.json".into(), vendor: "c".into(),
+            server_names: vec!["fs".into()], server_count: 1,
+            servers: vec![McpServerDetail {
+                name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
+                args: vec![], package_ecosystem: None, package_name: None, package_version: None, url: None,
+            }],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let flows = doc["blueprints"][0]["flows"].as_array().unwrap();
+    assert!(!flows.is_empty());
+    for f in flows {
+        assert!(f["type"].is_string(), "flow must have type");
+        assert!(f["destination"].is_string(), "flow must have destination");
+        assert!(f["target"].is_null(), "flow must NOT have illegal target key");
+    }
+}
+
+#[test]
+fn blueprint_component_backed_assets_omit_name() {
+    use rustmachineguard::models::*;
+    // Component-backed assets (agent/tool/skill/rules) must omit `name` to satisfy
+    // the asset oneOf; inline assets (ssh-key, cloud-cred) must keep it.
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: None, binary_path: None, config_dir: None, install_path: None, is_running: false,
+        }];
+        r.ssh_keys = vec![SshKey { path: "/h/.ssh/id_rsa".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::Encrypted, comment: None }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    for a in doc["blueprints"][0]["assets"].as_array().unwrap() {
+        let has_component_ref = a["componentRef"].is_string();
+        let has_name = a["name"].is_string();
+        if has_component_ref {
+            assert!(!has_name, "component-backed asset must omit name: {}", a["bom-ref"]);
+        } else {
+            assert!(has_name, "inline asset must have name: {}", a["bom-ref"]);
+        }
+    }
+}
+
+#[test]
+fn blueprint_exposure_matched_to_existing_server() {
+    use rustmachineguard::models::*;
+    // Happy path: exposure finding whose package_name matches a real MCP server →
+    // actor points at the server asset (which exists).
+    let report = make_test_report(|r| {
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(), config_path: "/p/.mcp.json".into(), vendor: "c".into(),
+            server_names: vec!["evil".into()], server_count: 1,
+            servers: vec![McpServerDetail {
+                name: "evil".into(), transport: "stdio".into(), command: Some("npx".into()),
+                args: vec![], package_ecosystem: Some("npm".into()),
+                package_name: Some("evil-pkg".into()), package_version: Some("1.0".into()), url: None,
+            }],
+        }];
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "npm".into(), name: "evil-pkg".into(), version: "1.0".into(),
+            advisory: "bad".into(), found_in: "/p/.mcp.json".into(),
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output);
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
+    let exp = beh.iter().find(|b| b["behavior"] == "exposure-catalog-match:evil-pkg").unwrap();
+    assert_eq!(exp["actors"][0], "asset:mcp:evil", "should point at the matched server asset");
+}
+
+#[test]
+fn blueprint_version_enrichment_never_overwrites() {
+    use rustmachineguard::models::*;
+    // Probe reports version 9.9 but config pins 1.0 → must keep 1.0 (never overwrite).
+    let report = make_test_report(|r| {
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(), config_path: "/p/.mcp.json".into(), vendor: "c".into(),
+            server_names: vec!["fs".into()], server_count: 1,
+            servers: vec![McpServerDetail {
+                name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
+                args: vec![], package_ecosystem: Some("npm".into()),
+                package_name: Some("@mcp/fs".into()), package_version: Some("1.0".into()), url: None,
+            }],
+        }];
+        r.mcp_probes = vec![McpProbeResult {
+            server_name: "fs".into(), config_source: "project".into(), success: true,
+            server_info: Some(McpServerInfo { name: "fs".into(), version: Some("9.9".into()) }),
+            tools: vec![], resources: vec![], error: None, observed_capabilities: vec![],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let comp = doc["components"].as_array().unwrap().iter().find(|c| c["bom-ref"] == "mcp:fs").unwrap();
+    assert_eq!(comp["version"], "1.0", "pinned version must not be overwritten by probe");
 }
 
 /// Helper: create a minimal ScanReport with a customization closure.

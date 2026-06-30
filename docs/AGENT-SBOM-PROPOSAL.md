@@ -261,15 +261,15 @@ We have implemented the foundation:
         {
           "bom-ref": "asset:ai-tool:claude-code",
           "type": "agent",
-          "name": "Claude Code",
           "zone": "zone:local",
+          "componentRef": "ai-tool:claude-code",
           "responsibilities": ["Code generation", "Tool orchestration"]
         },
         {
           "bom-ref": "asset:mcp:filesystem",
           "type": "tool",
-          "name": "filesystem",
           "zone": "zone:local",
+          "componentRef": "mcp:filesystem",
           "interfaces": [{
             "name": "filesystem-interface",
             "type": "cli",
@@ -280,40 +280,33 @@ We have implemented the foundation:
         {
           "bom-ref": "asset:skill:claude-code:deploy",
           "type": "tool",
-          "name": "deploy",
-          "zone": "zone:local"
-        },
-        {
-          "bom-ref": "asset:rules:claude.md",
-          "type": "data",
-          "name": "CLAUDE.md",
           "zone": "zone:local",
-          "responsibilities": ["Agent behavior configuration"]
+          "componentRef": "skill:claude-code:deploy"
         }
       ],
-      "behaviors": [
-        {
-          "behavior": "shell",
-          "actors": ["asset:skill:claude-code:deploy"],
-          "properties": [{"name": "rmg:capability-source", "value": "static-inference"}]
-        },
-        {
-          "behavior": "network",
-          "actors": ["asset:skill:claude-code:deploy"],
-          "properties": [{"name": "rmg:capability-source", "value": "static-inference"}]
-        },
-        {
-          "behavior": "dangerous-pattern:curl|wget piped to shell",
-          "actors": ["asset:rules:claude.md"],
-          "properties": [{"name": "rmg:severity", "value": "critical"}]
-        }
-      ],
+      "behaviors": {
+        "instances": [
+          {
+            "bom-ref": "behavior:0",
+            "behavior": "shell",
+            "acknowledgment": ["declared"],
+            "actors": ["asset:skill:claude-code:deploy"]
+          },
+          {
+            "bom-ref": "behavior:1",
+            "behavior": "dangerous-pattern:critical:curl|wget piped to shell",
+            "acknowledgment": ["declared"],
+            "actors": ["asset:rules:claude.md"]
+          }
+        ]
+      },
       "flows": [
         {
           "bom-ref": "flow:claude-code->filesystem",
           "name": "Claude Code → filesystem",
+          "type": "control",
           "source": "asset:ai-tool:claude-code",
-          "target": "asset:mcp:filesystem",
+          "destination": "asset:mcp:filesystem",
           "description": "MCP tool invocation via stdio transport"
         }
       ],
@@ -328,6 +321,17 @@ We have implemented the foundation:
   ]
 }
 ```
+
+**Structural conformance to the PR #951 draft schema** (validated against branch
+`2.0-dev-threatmodeling`): `behaviors` is an object with an `instances` array (not a
+bare array); each `behaviorInstance` carries a required `bom-ref` and no extra
+`properties` (per-behavior security metadata is encoded in the behavior name or moved
+to a related asset, since `behaviorInstance` is `additionalProperties: false`);
+`acknowledgment` is an array of enum values (`declared` | `observed`); `flow` carries a
+required `type` (control/data/...) and `destination` (not `target`); component-backed
+assets omit `name` to satisfy the asset `oneOf` (Component-Reference vs Inline-Asset
+branches). A `tests/property_tests.rs` invariant asserts every behavior actor/target and
+flow source/destination resolves to an emitted asset `bom-ref` — no dangling references.
 
 ## Security Considerations
 

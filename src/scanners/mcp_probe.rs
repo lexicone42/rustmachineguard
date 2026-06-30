@@ -1,11 +1,69 @@
 use crate::models::{McpConfig, McpProbeResult, McpResourceInfo, McpServerInfo, McpToolInfo};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Interruptible watchdog that SIGKILLs a child process if the probe outlives
+/// PROBE_TIMEOUT. Cancellation is signalled via a Condvar so the watchdog thread
+/// wakes immediately on the success path instead of sleeping the full timeout.
+/// RAII: Drop cancels and joins, so every early-return path cleans up.
+struct Watchdog {
+    // (cancelled, child-already-reaped) guarded together; Condvar wakes the thread.
+    state: Arc<(Mutex<bool>, Condvar)>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Watchdog {
+    fn spawn(child: &Child) -> Self {
+        let state = Arc::new((Mutex::new(false), Condvar::new()));
+        let child_id = child.id();
+        let thread_state = state.clone();
+        let handle = std::thread::spawn(move || {
+            let (lock, cvar) = &*thread_state;
+            let guard = lock.lock().unwrap();
+            // Wait until cancelled or the timeout elapses.
+            let (guard, timed_out) = cvar
+                .wait_timeout_while(guard, PROBE_TIMEOUT, |cancelled| !*cancelled)
+                .unwrap();
+            // Only kill if we genuinely timed out (still not cancelled). The lock is
+            // held across the kill so the reaper cannot mark-reaped concurrently —
+            // this serializes the check-and-kill against the cancel path.
+            if timed_out.timed_out() && !*guard {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(child_id as i32, libc::SIGKILL);
+                }
+            }
+        });
+        Watchdog {
+            state,
+            handle: Some(handle),
+        }
+    }
+
+    /// Cancel the watchdog (after the child has been reaped) and join its thread.
+    fn cancel(&mut self) {
+        let (lock, cvar) = &*self.state;
+        {
+            let mut cancelled = lock.lock().unwrap();
+            *cancelled = true;
+        }
+        cvar.notify_all();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
 
 /// Probe all stdio MCP servers in the given configs.
 pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
@@ -39,6 +97,13 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
     results
 }
 
+/// Successful probe payload (server info + enumerated tools/resources).
+struct ProbeData {
+    server_info: Option<McpServerInfo>,
+    tools: Vec<McpToolInfo>,
+    resources: Vec<McpResourceInfo>,
+}
+
 fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[String]) -> McpProbeResult {
     if command.is_empty() {
         return error_result(name, config_source, "empty command");
@@ -62,37 +127,43 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         Err(e) => return error_result(name, config_source, &format!("spawn failed: {}", e)),
     };
 
-    // Watchdog: kill child if it outlives the probe timeout.
-    // Uses AtomicBool to cancel after reap, avoiding PID-reuse races.
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let child_id = child.id();
-    let cancel_flag = cancelled.clone();
-    let watchdog = std::thread::spawn(move || {
-        std::thread::sleep(PROBE_TIMEOUT);
-        if !cancel_flag.load(Ordering::Acquire) {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(child_id as i32, libc::SIGKILL);
+    // Watchdog kills the child if the protocol exchange exceeds PROBE_TIMEOUT.
+    let mut watchdog = Watchdog::spawn(&child);
+
+    // Run the protocol exchange; cleanup happens exactly once below regardless of outcome.
+    let outcome = run_probe_protocol(&mut child);
+
+    // Cancel the watchdog (sets flag + joins) BEFORE reaping the child, so the
+    // watchdog can never signal a PID that has been reaped and possibly reused.
+    watchdog.cancel();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match outcome {
+        Ok(data) => {
+            let observed_capabilities =
+                infer_capabilities_from_tools(&data.tools, &data.resources);
+            McpProbeResult {
+                server_name: name.to_string(),
+                config_source: config_source.to_string(),
+                success: true,
+                server_info: data.server_info,
+                tools: data.tools,
+                resources: data.resources,
+                error: None,
+                observed_capabilities,
             }
         }
-    });
+        Err(e) => error_result(name, config_source, &e),
+    }
+}
 
-    let mut stdin = match child.stdin.take() {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            return error_result(name, config_source, "no stdin");
-        }
-    };
-
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            return error_result(name, config_source, "no stdout");
-        }
-    };
-
+/// Perform the MCP JSON-RPC handshake and enumerate tools/resources.
+/// Returns an error string if the handshake fails; tools/resources are
+/// best-effort (an empty list on per-request failure, not a hard error).
+fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Send initialize
@@ -110,19 +181,10 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         }
     });
 
-    if let Err(e) = send_message(&mut stdin, &init_req) {
-        let _ = child.kill();
-        return error_result(name, config_source, &format!("send init failed: {}", e));
-    }
+    send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
 
-    let init_response = match read_response(&mut reader) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = child.kill();
-            return error_result(name, config_source, &format!("init response: {}", e));
-        }
-    };
-
+    let init_response =
+        read_response(&mut reader).map_err(|e| format!("init response: {}", e))?;
     let server_info = extract_server_info(&init_response);
 
     // Send initialized notification
@@ -158,25 +220,13 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         Err(_) => Vec::new(),
     };
 
-    // Shut down: kill, reap, then cancel watchdog to prevent PID-reuse signal
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
-    cancelled.store(true, Ordering::Release);
-    let _ = watchdog.join();
 
-    let observed_capabilities = infer_capabilities_from_tools(&tools, &resources);
-
-    McpProbeResult {
-        server_name: name.to_string(),
-        config_source: config_source.to_string(),
-        success: true,
+    Ok(ProbeData {
         server_info,
         tools,
         resources,
-        error: None,
-        observed_capabilities,
-    }
+    })
 }
 
 fn send_message(stdin: &mut impl Write, msg: &serde_json::Value) -> std::io::Result<()> {

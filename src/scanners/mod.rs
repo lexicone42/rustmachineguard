@@ -128,10 +128,15 @@ pub trait Scanner {
 /// Compute SHA-256 hash of content, returning hex string.
 pub fn sha256_hex(content: &str) -> String {
     use sha2::{Sha256, Digest};
+    use std::fmt::Write;
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     let result = hasher.finalize();
-    result.iter().map(|b| format!("{:02x}", b)).collect()
+    let mut hex = String::with_capacity(64);
+    for b in result {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
 }
 
 /// Maximum config file size we'll read (1 MB).
