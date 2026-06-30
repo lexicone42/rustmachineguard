@@ -10,7 +10,9 @@ pub mod mcp;
 pub mod node_packages;
 pub mod notebook_servers;
 pub mod package_configs;
+pub mod rules_files;
 pub mod shell_configs;
+pub mod skills;
 pub mod ssh_keys;
 
 use crate::platform::PlatformInfo;

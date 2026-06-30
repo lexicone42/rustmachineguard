@@ -252,3 +252,12 @@ We follow the PURL specification for npm, PyPI, and Docker ecosystems. We propos
 4. **Signing**: Both SBOMs and the components they describe need cryptographic provenance — Sigstore/Cosign for SBOMs, registry-level signing for MCP servers and skills
 
 The agent supply chain is the least-governed software surface in modern development. An ADBOM doesn't solve the governance problem, but it makes the problem visible — and visibility is the prerequisite for every other defense.
+
+## Acknowledgments
+
+Our capability taxonomy, dangerous pattern detection, and trust-level classification are informed by the SkillFortify project and its companion paper:
+
+- **SkillFortify** (Varun Pratap Bhardwaj / Qualixar, 2026) — the first formal analysis framework for agent skill supply chains. SkillFortify introduced the Agent Skill Bill of Materials (ASBOM) concept, the DY-Skill attacker model, and a capability-based sandboxing system with formal proofs. Licensed under Elastic License 2.0. https://github.com/qualixar/skillfortify
+- **"Formal Analysis and Supply Chain Security for Agentic AI Skills"** (Bhardwaj, 2026) — arXiv:2603.00195. Defines the 8-resource capability taxonomy ({filesystem, network, environment, shell, skill_invoke, clipboard, browser, database} × {NONE, READ, WRITE, ADMIN}), the five-phase skill lifecycle, and the trust score algebra we adapt here.
+
+Our implementation is an independent Rust reimplementation. We do not use or redistribute SkillFortify code. The concepts we adopt from the paper — capability categories, trust levels, and dangerous pattern classes — are academic contributions in the public domain. We credit this work because good ideas deserve attribution.

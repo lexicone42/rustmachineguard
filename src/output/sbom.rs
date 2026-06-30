@@ -240,6 +240,90 @@ impl CycloneDxBom {
             host_deps.push(bom_ref);
         }
 
+        // Rules files as data components
+        for rf in &report.rules_files {
+            let bom_ref = format!("rules:{}", rf.file_name);
+            let mut properties = vec![
+                BomProperty {
+                    name: "rmg:rules-hash".to_string(),
+                    value: format!("sha256:{}", rf.sha256),
+                },
+                BomProperty {
+                    name: "rmg:git-tracked".to_string(),
+                    value: rf.git_tracked.to_string(),
+                },
+            ];
+            for finding in &rf.findings {
+                properties.push(BomProperty {
+                    name: format!("rmg:finding:{}", finding.severity),
+                    value: finding.pattern.clone(),
+                });
+            }
+
+            components.push(BomComponent {
+                component_type: "data".to_string(),
+                bom_ref: bom_ref.clone(),
+                name: rf.file_name.clone(),
+                version: None,
+                group: Some("agent-rules".to_string()),
+                publisher: None,
+                description: Some(format!(
+                    "Agent rules file ({} bytes)",
+                    rf.size_bytes
+                )),
+                purl: None,
+                properties,
+                external_references: Vec::new(),
+            });
+            host_deps.push(bom_ref);
+        }
+
+        // Agent skills as application components
+        for skill in &report.agent_skills {
+            let bom_ref = format!("skill:{}:{}", skill.framework, skill.name);
+            let mut properties = vec![
+                BomProperty {
+                    name: "rmg:skill-type".to_string(),
+                    value: skill.scope.clone(),
+                },
+                BomProperty {
+                    name: "rmg:framework".to_string(),
+                    value: skill.framework.clone(),
+                },
+                BomProperty {
+                    name: "rmg:file-type".to_string(),
+                    value: skill.file_type.clone(),
+                },
+                BomProperty {
+                    name: "rmg:skill-hash".to_string(),
+                    value: format!("sha256:{}", skill.sha256),
+                },
+            ];
+            if !skill.capabilities.is_empty() {
+                properties.push(BomProperty {
+                    name: "rmg:capabilities".to_string(),
+                    value: skill.capabilities.join(","),
+                });
+            }
+
+            components.push(BomComponent {
+                component_type: "application".to_string(),
+                bom_ref: bom_ref.clone(),
+                name: skill.name.clone(),
+                version: None,
+                group: Some(format!("agent-skill/{}", skill.framework)),
+                publisher: None,
+                description: Some(format!(
+                    "{} skill ({})",
+                    skill.framework, skill.scope
+                )),
+                purl: None,
+                properties,
+                external_references: Vec::new(),
+            });
+            host_deps.push(bom_ref);
+        }
+
         // AI tools as components
         for tool in &report.ai_agents_and_tools {
             let bom_ref = format!(
