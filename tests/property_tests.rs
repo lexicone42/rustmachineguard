@@ -1059,3 +1059,157 @@ fn capability_empty_for_innocuous() {
     let caps = infer_capabilities("Format this code according to the style guide. Use 4 spaces for indentation.");
     assert!(caps.is_empty());
 }
+
+// ─── Scan diffing ─────────────────────────────────────────────
+
+use rustmachineguard::diff::{diff_reports, render_diff};
+
+#[test]
+fn diff_identical_reports_shows_no_changes() {
+    let report = serde_json::json!({
+        "ai_agents_and_tools": [{"name": "Claude Code", "version": "2.0"}],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {"ai_agents_and_tools_count": 1, "mcp_servers_count": 0}
+    });
+    let diff = diff_reports(&report, &report);
+    assert!(diff.is_empty());
+    let output = render_diff(&diff);
+    assert!(output.contains("No changes"));
+}
+
+#[test]
+fn diff_detects_added_mcp_server() {
+    let baseline = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {"mcp_servers_count": 0}
+    });
+    let current = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [{"config_source": "Claude Code", "servers": [
+            {"name": "filesystem", "transport": "stdio", "package_name": "fs-server"}
+        ]}],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {"mcp_servers_count": 1}
+    });
+    let diff = diff_reports(&baseline, &current);
+    assert!(!diff.is_empty());
+    let output = render_diff(&diff);
+    assert!(output.contains("+ filesystem"));
+}
+
+#[test]
+fn diff_detects_removed_tool() {
+    let baseline = serde_json::json!({
+        "ai_agents_and_tools": [{"name": "Cursor", "version": "1.0"}],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {"ai_agents_and_tools_count": 1}
+    });
+    let current = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {"ai_agents_and_tools_count": 0}
+    });
+    let diff = diff_reports(&baseline, &current);
+    let output = render_diff(&diff);
+    assert!(output.contains("- Cursor"));
+}
+
+#[test]
+fn diff_detects_rules_file_hash_change() {
+    let baseline = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [{"path": "/proj/CLAUDE.md", "file_name": "CLAUDE.md", "sha256": "aaa", "git_tracked": true, "findings": []}],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let current = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [{"path": "/proj/CLAUDE.md", "file_name": "CLAUDE.md", "sha256": "bbb", "git_tracked": true, "findings": []}],
+        "agent_skills": [],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let diff = diff_reports(&baseline, &current);
+    let output = render_diff(&diff);
+    assert!(output.contains("CONTENT CHANGED"));
+    assert!(output.contains("aaa"));
+    assert!(output.contains("bbb"));
+}
+
+#[test]
+fn diff_detects_skill_capability_change() {
+    let baseline = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [{"path": "/skill.md", "name": "deploy", "framework": "claude-code", "sha256": "aaa", "capabilities": ["shell"]}],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let current = serde_json::json!({
+        "ai_agents_and_tools": [],
+        "mcp_configs": [],
+        "ide_extensions": [],
+        "browser_extensions": [],
+        "rules_files": [],
+        "agent_skills": [{"path": "/skill.md", "name": "deploy", "framework": "claude-code", "sha256": "bbb", "capabilities": ["shell", "network"]}],
+        "ssh_keys": [],
+        "cloud_credentials": [],
+        "exposure_findings": [],
+        "summary": {}
+    });
+    let diff = diff_reports(&baseline, &current);
+    let output = render_diff(&diff);
+    assert!(output.contains("CAPABILITIES GAINED"));
+    assert!(output.contains("network"));
+}

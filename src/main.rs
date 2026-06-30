@@ -39,6 +39,11 @@ struct Cli {
     /// Disable the built-in threat catalog (only use --threat-catalog if provided)
     #[arg(long)]
     no_builtin_catalog: bool,
+
+    /// Compare against a baseline scan (JSON format from a previous --format json run).
+    /// Shows added, removed, and changed items across all categories.
+    #[arg(long)]
+    diff: Option<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -298,6 +303,32 @@ fn main() {
     }
 
     report.compute_summary();
+
+    // Diff mode: compare against a baseline scan
+    if let Some(ref baseline_path) = cli.diff {
+        let baseline_str = std::fs::read_to_string(baseline_path).unwrap_or_else(|e| {
+            eprintln!("Error reading baseline {}: {}", baseline_path.display(), e);
+            std::process::exit(1);
+        });
+        let baseline: serde_json::Value = serde_json::from_str(&baseline_str).unwrap_or_else(|e| {
+            eprintln!("Error parsing baseline JSON: {}", e);
+            std::process::exit(1);
+        });
+
+        let current_json = serde_json::to_value(&report).unwrap_or_default();
+        let diff = rustmachineguard::diff::diff_reports(&baseline, &current_json);
+        let diff_output = rustmachineguard::diff::render_diff(&diff);
+
+        if let Some(ref path) = cli.output {
+            std::fs::write(path, &diff_output).unwrap_or_else(|e| {
+                eprintln!("Error writing to {path}: {e}");
+                std::process::exit(1);
+            });
+        } else {
+            print!("{diff_output}");
+        }
+        return;
+    }
 
     let rendered = output::render(&report, format);
 
