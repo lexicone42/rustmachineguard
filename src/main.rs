@@ -30,6 +30,11 @@ struct Cli {
     /// run once per directory and merge results.
     #[arg(long, value_delimiter = ',')]
     search_dirs: Vec<PathBuf>,
+
+    /// Path to a JSON threat catalog for exposure matching.
+    /// Format: array of {"ecosystem":"npm","name":"pkg","version":"1.0","advisory":"..."}
+    #[arg(long)]
+    threat_catalog: Option<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -37,11 +42,12 @@ enum Format {
     Terminal,
     Json,
     Html,
+    Sbom,
 }
 
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
-    "cloud", "containers", "notebooks",
+    "cloud", "containers", "notebooks", "browser", "packages",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -70,6 +76,16 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .cloud_credentials
             .extend(scanners::cloud_credentials::CloudCredentialsScanner.scan(plat));
+    }
+    if !skip.contains(&"browser") {
+        report
+            .browser_extensions
+            .extend(scanners::browser_extensions::BrowserExtensionsScanner.scan(plat));
+    }
+    if !skip.contains(&"packages") {
+        report
+            .package_config_audits
+            .extend(scanners::package_configs::PackageConfigsScanner.scan(plat));
     }
 }
 
@@ -105,6 +121,7 @@ fn main() {
         Format::Terminal => OutputFormat::Terminal,
         Format::Json => OutputFormat::Json,
         Format::Html => OutputFormat::Html,
+        Format::Sbom => OutputFormat::Sbom,
     };
 
     let skip: Vec<&str> = cli
@@ -160,6 +177,9 @@ fn main() {
         cloud_credentials: Vec::new(),
         container_tools: Vec::new(),
         notebook_servers: Vec::new(),
+        browser_extensions: Vec::new(),
+        package_config_audits: Vec::new(),
+        exposure_findings: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -173,6 +193,10 @@ fn main() {
             cloud_credentials_count: 0,
             container_tools_count: 0,
             notebook_servers_count: 0,
+            browser_extensions_count: 0,
+            package_config_audits_count: 0,
+            mcp_servers_count: 0,
+            exposure_findings_count: 0,
         },
     };
 
@@ -188,6 +212,35 @@ fn main() {
 
     // Deduplicate results that might appear from overlapping roots
     dedupe_report(&mut report);
+
+    // Exposure catalog matching
+    if let Some(ref catalog_path) = cli.threat_catalog {
+        match scanners::exposure::ExposureCatalog::load_from_file(catalog_path) {
+            Ok(catalog) => {
+                for mcp in &report.mcp_configs {
+                    for server in &mcp.servers {
+                        report
+                            .exposure_findings
+                            .extend(catalog.check_mcp_server(server, &mcp.config_path));
+                    }
+                }
+                for ext in &report.ide_extensions {
+                    let id = format!("{}.{}", ext.publisher, ext.name);
+                    report.exposure_findings.extend(
+                        catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type),
+                    );
+                }
+                for ext in &report.browser_extensions {
+                    report.exposure_findings.extend(
+                        catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: {}", e);
+            }
+        }
+    }
 
     report.compute_summary();
 
@@ -232,5 +285,15 @@ fn dedupe_report(report: &mut ScanReport) {
     let mut seen = HashSet::new();
     report
         .cloud_credentials
+        .retain(|x| seen.insert(x.config_path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .browser_extensions
+        .retain(|x| seen.insert((x.browser.clone(), x.id.clone(), x.profile.clone())));
+
+    let mut seen = HashSet::new();
+    report
+        .package_config_audits
         .retain(|x| seen.insert(x.config_path.clone()));
 }

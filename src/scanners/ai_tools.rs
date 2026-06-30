@@ -10,8 +10,8 @@ struct ToolDef {
     tool_type: AiToolType,
     binary_names: &'static [&'static str],
     process_name: Option<&'static str>,
-    /// Check for config dir existence as a signal (even if binary not found)
     config_dir_check: Option<fn(&dyn PlatformInfo) -> std::path::PathBuf>,
+    verify_binary: bool,
 }
 
 const TOOLS: &[ToolDef] = &[
@@ -22,15 +22,16 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["claude"],
         process_name: Some("claude"),
         config_dir_check: Some(|p| p.claude_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "GitHub Copilot CLI",
         vendor: "Microsoft",
         tool_type: AiToolType::CliTool,
-        // Upstream naming: `copilot` (new) and `gh-copilot` (gh extension)
         binary_names: &["copilot", "gh-copilot", "github-copilot-cli", "ghcs"],
         process_name: None,
         config_dir_check: Some(|p| p.github_copilot_config_dir()),
+        verify_binary: true,
     },
     ToolDef {
         name: "OpenAI Codex CLI",
@@ -39,6 +40,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["codex"],
         process_name: None,
         config_dir_check: Some(|p| p.codex_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Gemini CLI",
@@ -47,6 +49,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["gemini"],
         process_name: None,
         config_dir_check: Some(|p| p.gemini_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Amazon Q CLI",
@@ -55,6 +58,16 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["amazon-q"],
         process_name: None,
         config_dir_check: Some(|p| p.aws_q_config_dir()),
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Cursor Agent",
+        vendor: "Anysphere",
+        tool_type: AiToolType::Agent,
+        binary_names: &["cursor-agent"],
+        process_name: None,
+        config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "Kiro",
@@ -63,6 +76,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["kiro-cli", "kiro"],
         process_name: None,
         config_dir_check: Some(|p| p.kiro_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Microsoft AI Shell",
@@ -71,6 +85,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["aish"],
         process_name: None,
         config_dir_check: Some(|p| p.aish_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "OpenCode",
@@ -79,6 +94,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["opencode"],
         process_name: None,
         config_dir_check: Some(|p| p.opencode_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Aider",
@@ -87,6 +103,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["aider"],
         process_name: None,
         config_dir_check: Some(|p| p.aider_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Continue",
@@ -95,6 +112,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["continue"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "Cody CLI",
@@ -103,8 +121,8 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["cody"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
-    // AI agents
     ToolDef {
         name: "OpenClaw",
         vendor: "OpenClaw",
@@ -112,6 +130,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["openclaw"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "ClawdBot",
@@ -120,6 +139,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["clawdbot"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "MoltBot",
@@ -128,6 +148,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["moltbot"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "MoldBot",
@@ -136,6 +157,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["moldbot"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "GPT Engineer",
@@ -144,8 +166,8 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["gpt-engineer", "gpte"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
-    // Detections beyond upstream
     ToolDef {
         name: "Open Interpreter",
         vendor: "Open Interpreter",
@@ -153,6 +175,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["interpreter"],
         process_name: None,
         config_dir_check: Some(|p| p.open_interpreter_config_dir()),
+        verify_binary: false,
     },
     ToolDef {
         name: "Goose",
@@ -161,6 +184,7 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["goose"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
     },
     ToolDef {
         name: "Tabby",
@@ -169,8 +193,29 @@ const TOOLS: &[ToolDef] = &[
         binary_names: &["tabby"],
         process_name: Some("tabby"),
         config_dir_check: None,
+        verify_binary: false,
     },
 ];
+
+/// Verify a binary is real (not a shim that says "not installed").
+fn verify_binary_works(path: &std::path::Path) -> bool {
+    let output = std::process::Command::new(path)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match output {
+        Ok(o) => {
+            if !o.status.success() {
+                return false;
+            }
+            let text = String::from_utf8_lossy(&o.stdout).to_lowercase()
+                + &String::from_utf8_lossy(&o.stderr).to_lowercase();
+            !text.contains("not installed") && !text.contains("command not found")
+        }
+        Err(_) => false,
+    }
+}
 
 impl Scanner for AiToolsScanner {
     type Output = Vec<AiTool>;
@@ -178,8 +223,6 @@ impl Scanner for AiToolsScanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Vec<AiTool> {
         let mut results = Vec::new();
 
-        // Known fallback binary paths (absolute paths to check if `which` fails).
-        // Format: (tool_name, [candidate paths relative to home])
         let home = platform.home_dir();
         let fallback_paths: &[(&str, &[std::path::PathBuf])] = &[
             (
@@ -195,7 +238,6 @@ impl Scanner for AiToolsScanner {
             ),
         ];
 
-        // Check CLI tools via PATH, with fallback to known install locations.
         for def in TOOLS {
             let mut found_binary: Option<std::path::PathBuf> = None;
 
@@ -206,7 +248,6 @@ impl Scanner for AiToolsScanner {
                 }
             }
 
-            // Fallback: check known absolute paths
             if found_binary.is_none() {
                 for (name, paths) in fallback_paths {
                     if *name == def.name {
@@ -216,6 +257,15 @@ impl Scanner for AiToolsScanner {
                                 break;
                             }
                         }
+                    }
+                }
+            }
+
+            // Reject shims that aren't actually installed
+            if def.verify_binary {
+                if let Some(ref path) = found_binary {
+                    if !verify_binary_works(path) {
+                        found_binary = None;
                     }
                 }
             }
@@ -258,8 +308,6 @@ impl Scanner for AiToolsScanner {
             }
         }
 
-        // Claude Cowork: a feature inside Claude Desktop v0.7+.
-        // Detected by presence of Claude.app/claude-desktop binary AND version >= 0.7.
         if let Some(app_path) = platform.claude_desktop_app() {
             if let Some(version) = read_claude_desktop_version(&app_path) {
                 if version_gte(&version, (0, 7)) {
@@ -277,7 +325,6 @@ impl Scanner for AiToolsScanner {
             }
         }
 
-        // Check desktop apps from platform-specific paths
         for (name, vendor, path) in platform.ai_desktop_app_paths() {
             if path.exists() {
                 let is_running = is_process_running(
@@ -302,9 +349,7 @@ impl Scanner for AiToolsScanner {
     }
 }
 
-/// Try to read the Claude Desktop version from the app bundle (macOS) or binary (Linux).
 fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
-    // macOS: read Info.plist
     #[cfg(target_os = "macos")]
     {
         let plist = app_path.join("Contents/Info.plist");
@@ -320,7 +365,6 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
             }
         }
     }
-    // Linux: run binary with --version
     #[cfg(target_os = "linux")]
     {
         if app_path.is_file() {
@@ -331,7 +375,6 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     None
 }
 
-/// Compare a version string against a (major, minor) tuple. Returns true if version >= target.
 pub fn version_gte(version: &str, target: (u32, u32)) -> bool {
     let parts: Vec<u32> = version
         .trim_start_matches('v')

@@ -1,12 +1,15 @@
 pub mod ai_frameworks;
 pub mod ai_tools;
+pub mod browser_extensions;
 pub mod cloud_credentials;
+pub mod exposure;
 pub mod container_tools;
 pub mod extensions;
 pub mod ide;
 pub mod mcp;
 pub mod node_packages;
 pub mod notebook_servers;
+pub mod package_configs;
 pub mod shell_configs;
 pub mod ssh_keys;
 

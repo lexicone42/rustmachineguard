@@ -49,6 +49,16 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "Cloud Credentials", s.cloud_credentials_count);
     summary_line(&mut out, "Container Tools", s.container_tools_count);
     summary_line(&mut out, "Notebook Servers", s.notebook_servers_count);
+    summary_line(&mut out, "Browser Extensions", s.browser_extensions_count);
+    summary_line(&mut out, "Package Config Audits", s.package_config_audits_count);
+    summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
+    if s.exposure_findings_count > 0 {
+        out.push_str(&format!(
+            "  {:>35}  {}\n",
+            "Exposure Findings",
+            s.exposure_findings_count.to_string().red().bold()
+        ));
+    }
     out.push('\n');
 
     // AI Agents & Tools
@@ -166,8 +176,27 @@ pub fn render(report: &ScanReport) -> String {
                 mcp.vendor.dimmed(),
             ));
             out.push_str(&format!("    {}\n", mcp.config_path.dimmed()));
-            for name in &mcp.server_names {
-                out.push_str(&format!("    {} {}\n", "·".dimmed(), name));
+            if !mcp.servers.is_empty() {
+                for server in &mcp.servers {
+                    let pkg_info = match (&server.package_ecosystem, &server.package_name) {
+                        (Some(eco), Some(name)) => {
+                            let ver = server.package_version.as_deref().unwrap_or("*");
+                            format!(" → {}:{} @ {}", eco, name, ver)
+                        }
+                        _ => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "    {} {} [{}]{}\n",
+                        "·".dimmed(),
+                        server.name,
+                        server.transport.dimmed(),
+                        pkg_info.yellow(),
+                    ));
+                }
+            } else {
+                for name in &mcp.server_names {
+                    out.push_str(&format!("    {} {}\n", "·".dimmed(), name));
+                }
             }
         }
         out.push('\n');
@@ -305,6 +334,77 @@ pub fn render(report: &ScanReport) -> String {
                 version,
                 status,
             ));
+        }
+        out.push('\n');
+    }
+
+    // Browser Extensions
+    if !report.browser_extensions.is_empty() {
+        section_header(&mut out, &format!("Browser Extensions ({})", report.browser_extensions.len()));
+        let mut by_browser: std::collections::BTreeMap<&str, Vec<&crate::models::BrowserExtension>> =
+            std::collections::BTreeMap::new();
+        for ext in &report.browser_extensions {
+            by_browser.entry(&ext.browser).or_default().push(ext);
+        }
+        for (browser, exts) in &by_browser {
+            out.push_str(&format!("  {} ({}):\n", browser.bold(), exts.len()));
+            for ext in exts {
+                out.push_str(&format!(
+                    "    {} {} {} [{}]\n",
+                    "·".dimmed(),
+                    ext.name,
+                    ext.version.dimmed(),
+                    ext.profile.dimmed(),
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Package Config Audits
+    if !report.package_config_audits.is_empty() {
+        section_header(&mut out, "Package Config Audits");
+        for audit in &report.package_config_audits {
+            out.push_str(&format!(
+                "  {} {} ({})\n",
+                "→".cyan(),
+                audit.manager.bold(),
+                audit.config_path.dimmed(),
+            ));
+            for finding in &audit.findings {
+                let severity_colored = match finding.severity.as_str() {
+                    "critical" => finding.severity.red().bold().to_string(),
+                    "high" => finding.severity.red().to_string(),
+                    "medium" => finding.severity.yellow().to_string(),
+                    _ => finding.severity.dimmed().to_string(),
+                };
+                out.push_str(&format!(
+                    "    {} [{}] {}\n",
+                    "!".red(),
+                    severity_colored,
+                    finding.description,
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Exposure Findings
+    if !report.exposure_findings.is_empty() {
+        section_header(&mut out, &format!(
+            "⚠ EXPOSURE FINDINGS ({}) ⚠",
+            report.exposure_findings.len()
+        ));
+        for finding in &report.exposure_findings {
+            out.push_str(&format!(
+                "  {} {}:{} @ {} — {}\n",
+                "✗".red().bold(),
+                finding.ecosystem.red(),
+                finding.name.red().bold(),
+                finding.version.red(),
+                finding.advisory.yellow(),
+            ));
+            out.push_str(&format!("    found in: {}\n", finding.found_in.dimmed()));
         }
         out.push('\n');
     }
