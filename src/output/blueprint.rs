@@ -1331,7 +1331,7 @@ impl BlueprintDocument {
                 tools: DocTools {
                     components: vec![DocToolComponent {
                         component_type: "application",
-                        name: "dev-machine-guard".into(),
+                        name: "rmguard".into(),
                         group: Some("rustmachineguard".into()),
                         version: report.agent_version.clone(),
                     }],

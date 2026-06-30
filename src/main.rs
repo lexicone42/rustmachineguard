@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// Extended with Linux support, cloud credential detection, container tools,
 /// SSH key auditing, shell config scanning, and notebook server detection.
 #[derive(Parser)]
-#[command(name = "dev-machine-guard", version, about)]
+#[command(name = "rmguard", version, about)]
 struct Cli {
     /// Output format
     #[arg(short, long, default_value = "terminal")]

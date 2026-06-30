@@ -128,7 +128,7 @@ pkg:claude-plugin/marketplace/plugin-name@1.0.0
     "timestamp": "2026-06-30T12:00:00Z",
     "tools": [{
       "vendor": "rustmachineguard",
-      "name": "dev-machine-guard",
+      "name": "rmguard",
       "version": "0.2.0"
     }],
     "component": {
@@ -259,7 +259,7 @@ We have implemented the foundation:
   "metadata": {
     "timestamp": "2026-06-30T18:14:27Z",
     "tools": { "components": [
-      { "type": "application", "group": "rustmachineguard", "name": "dev-machine-guard", "version": "0.1.0" }
+      { "type": "application", "group": "rustmachineguard", "name": "rmguard", "version": "0.1.0" }
     ]},
     "component": { "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" }
   },

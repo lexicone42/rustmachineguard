@@ -7,7 +7,7 @@ license = "Apache-2.0"
 # Rust rewrite of https://github.com/step-security/dev-machine-guard (Apache-2.0)
 
 [[bin]]
-name = "dev-machine-guard"
+name = "rmguard"
 path = "src/main.rs"
 
 [dependencies]

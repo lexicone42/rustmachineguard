@@ -372,7 +372,7 @@ impl CycloneDxBom {
                 timestamp: report.scan_timestamp_iso.clone(),
                 tools: vec![BomTool {
                     vendor: "rustmachineguard".to_string(),
-                    name: "dev-machine-guard".to_string(),
+                    name: "rmguard".to_string(),
                     version: report.agent_version.clone(),
                 }],
                 component: BomMetadataComponent {

@@ -15,29 +15,29 @@ Traditional endpoint protection (EDR, MDM) has no visibility into developer-spec
 cargo build --release
 
 # Run a scan
-./target/release/dev-machine-guard
+./target/release/rmguard
 
 # JSON output
-./target/release/dev-machine-guard --format json
+./target/release/rmguard --format json
 
 # HTML report
-./target/release/dev-machine-guard --format html --output report.html
+./target/release/rmguard --format html --output report.html
 
 # CycloneDX 2.0 Blueprint (agent posture as assets/behaviors/flows)
-./target/release/dev-machine-guard --format blueprint
+./target/release/rmguard --format blueprint
 
 # Detect drift since a baseline (incl. MCP rug-pulls)
-./target/release/dev-machine-guard --format json --output baseline.json
-./target/release/dev-machine-guard --diff baseline.json
+./target/release/rmguard --format json --output baseline.json
+./target/release/rmguard --diff baseline.json
 
 # Live-probe local MCP servers (opt-in; spawns the server processes)
-./target/release/dev-machine-guard --probe-mcp
+./target/release/rmguard --probe-mcp
 
 # Skip specific categories
-./target/release/dev-machine-guard --skip ssh,cloud
+./target/release/rmguard --skip ssh,cloud
 
 # Scan additional home roots (e.g. another user's profile on the same machine)
-./target/release/dev-machine-guard --search-dirs /home/alice,/home/bob
+./target/release/rmguard --search-dirs /home/alice,/home/bob
 ```
 
 ## What It Scans
@@ -124,7 +124,7 @@ This tool is itself a security-sensitive program. Design decisions:
 ## CLI Reference
 
 ```
-Usage: dev-machine-guard [OPTIONS]
+Usage: rmguard [OPTIONS]
 
 Options:
   -f, --format <FORMAT>              Output format [default: terminal]
@@ -158,7 +158,7 @@ Requires Rust 2024 edition (1.85+):
 cargo build --release
 ```
 
-The resulting binary at `target/release/dev-machine-guard` is self-contained with no runtime dependencies.
+The resulting binary at `target/release/rmguard` is self-contained with no runtime dependencies.
 
 ## License
 
