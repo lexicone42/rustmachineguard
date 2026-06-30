@@ -1,9 +1,23 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 37 entries
+that is automatically checked during every scan. The catalog currently contains 62 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, and malicious browser extensions.
+
+### A note on legitimate-but-compromised packages
+
+Some entries pin a **specific version** (e.g. `litellm@1.82.7`, `durabletask@1.4.1-1.4.3`,
+`telnyx@4.87.1`). These are otherwise-legitimate, widely-used packages that were briefly
+compromised via a stolen publisher token or supply-chain attack. We match the exact
+affected versions so we do **not** false-positive on the clean releases.
+
+A current limitation: the matcher supports exact-version or all-versions, but not
+**version ranges**. This matters for "vulnerable below version X" cases — e.g. the Amazon Q
+VS Code extension (CVE-2026-12957, fixed in Language Server 1.69.0) or Claude Code's own
+CVE-2025-59536 — where the product is legitimate and ubiquitous. We deliberately do **not**
+add denylist entries for these (it would flag every user); a `version_range` entry type is
+planned to handle them. See the open work in `docs/AGENT-SBOM-PROPOSAL.md`.
 
 Use `--no-builtin-catalog` to disable it, or `--threat-catalog <file>` to add your own
 entries (merged with the built-in catalog by default).
@@ -46,6 +60,12 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **ExtensionTotal** | MaliciousCorgi campaign analysis, VS Code extension security research | Public blog posts |
 | **Cyberhaven** | Disclosure of compromised Cyberhaven Chrome extension incident (2024-12) | Public disclosure |
 | **Guardio Labs** | Discovered trojanized ChatGPT browser extensions stealing session cookies | Public blog posts |
+| **SafeDep** | Discovered the `durabletask` PyPI hijack (Microsoft SDK, multi-cloud cred stealer) | Public blog post |
+| **StepSecurity** | Discovered the `easy-day-js` typosquat across 140+ @mastra AI-framework packages | Public blog post |
+| **Datadog Security Labs** | Discovered the TeamPCP `litellm`/`telnyx` PyPI compromises | Public blog post |
+| **Tenable** | Mini Shai-Hulud worm (CVE-2026-45321) analysis and FAQ | Public blog post |
+| **OX Security** | SANDWORM_MODE 19-package re-analysis; AI-chat Chrome extension stealers | Public blog posts |
+| **GitHub Advisory Database** | GHSA records for `@mcpjam/inspector` (CVE-2026-23744), `@cyanheads/git-mcp-server` (CVE-2025-53107) | GHSA (CC-BY-4.0) |
 
 ### Individual Researchers
 

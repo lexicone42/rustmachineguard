@@ -183,5 +183,139 @@
     "ecosystem": "chrome",
     "name": "chatgpt-for-google-fake",
     "advisory": "Trojanized clone of legitimate ChatGPT for Google: steals session tokens. Source: Guardio Labs (2023-03)"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "crypto-locale",
+    "advisory": "SANDWORM_MODE typosquat (1 of 19): injects rogue MCP servers into Claude Code/Cursor/VS Code, steals LLM API keys + SSH keys, exfil to pkg-metrics.official334.workers.dev. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "crypto-reader-info",
+    "advisory": "SANDWORM_MODE typosquat (2 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "detect-cache",
+    "advisory": "SANDWORM_MODE typosquat (3 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "format-defaults",
+    "advisory": "SANDWORM_MODE typosquat (4 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "locale-loader-pro",
+    "advisory": "SANDWORM_MODE typosquat (5 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "node-native-bridge",
+    "advisory": "SANDWORM_MODE typosquat (6 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "parse-compat",
+    "advisory": "SANDWORM_MODE typosquat (7 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "scan-store",
+    "advisory": "SANDWORM_MODE typosquat (8 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "secp256",
+    "advisory": "SANDWORM_MODE typosquat (9 of 19): injects rogue MCP servers, steals LLM API keys + SSH keys. Source: Socket.dev (2026-02-20), OX Security"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "easy-day-js",
+    "advisory": "Malicious dayjs typosquat injected across 140+ @mastra AI-framework packages (2026-06-17). Obfuscated setup.cjs postinstall disables TLS verification, harvests LLM API keys + cloud creds. Source: StepSecurity"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@squawk/mcp",
+    "version": "0.9.5",
+    "advisory": "Mini Shai-Hulud worm node (CVE-2026-45321, CVSS 9.6): router_init.js steals cloud/crypto/AI/CI creds, plants persistence in Claude Code + VS Code, injects malicious GitHub Actions. Source: The Hacker News, Tenable"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@mcpjam/inspector",
+    "advisory": "CVE-2026-23744 (GHSA-232v-j27c-5pp6): binds 0.0.0.0 with no auth; crafted HTTP request installs+runs a malicious MCP server (unauth RCE). Affects <=1.4.2, fixed 1.4.3. Distinct from @modelcontextprotocol/inspector. Source: GitHub Advisory DB"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@cyanheads/git-mcp-server",
+    "advisory": "CVE-2025-53107 (GHSA-3q26-f695-pp76): command injection in several tools of this third-party git MCP server. Source: GitHub Advisory DB"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "durabletask",
+    "version": "1.4.1",
+    "advisory": "Microsoft Durable Task SDK hijacked via stolen PyPI token (2026-05-19). Drops rope.pyz: multi-cloud credential stealer that reads MCP configs + SSH keys, worms via AWS SSM/K8s, drops wiper on IL/IR systems. C2 check.git-service.com. Source: SafeDep"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "durabletask",
+    "version": "1.4.2",
+    "advisory": "Microsoft Durable Task SDK hijacked via stolen PyPI token (2026-05-19). Multi-cloud credential stealer reading MCP configs + SSH keys. C2 check.git-service.com. Source: SafeDep"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "durabletask",
+    "version": "1.4.3",
+    "advisory": "Microsoft Durable Task SDK hijacked via stolen PyPI token (2026-05-19). Multi-cloud credential stealer reading MCP configs + SSH keys. C2 check.git-service.com. Source: SafeDep"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "litellm",
+    "version": "1.82.7",
+    "advisory": "TeamPCP supply-chain compromise (2026-03-24): AES/RSA-encrypted credential exfil to models.litellm.cloud, systemd persistence, privileged K8s pods. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "litellm",
+    "version": "1.82.8",
+    "advisory": "TeamPCP supply-chain compromise (2026-03-24): encrypted credential exfil to models.litellm.cloud. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "telnyx",
+    "version": "4.87.1",
+    "advisory": "TeamPCP supply-chain compromise (2026-03-27): WAV-hidden stage-2 payload, exfil to 83.142.209.203:8080. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "telnyx",
+    "version": "4.87.2",
+    "advisory": "TeamPCP supply-chain compromise (2026-03-27): WAV-hidden stage-2 payload, exfil to 83.142.209.203:8080. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "guardrails-ai",
+    "version": "0.10.1",
+    "advisory": "Mini Shai-Hulud worm node (CVE-2026-45321): credential-stealing payload. Only this version is compromised; the package itself is legitimate. Source: The Hacker News, Tenable"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "fnmihdojmnkclgjpcoonokmkhjpjechg",
+    "advisory": "\"Chat GPT for Chrome with GPT-5, Claude Sonnet & DeepSeek AI\" (600K users): exfiltrates full AI conversations + all tab URLs to C2 every 30 min. Source: OX Security (2026-01-06)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "inhcgfpbfdjbjogdfjbclgolkmhnooop",
+    "advisory": "\"AI Sidebar with Deepseek, ChatGPT, Claude, and more.\" (300K users): exfiltrates AI conversations + tab URLs to C2. Source: OX Security (2026-01-06)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "iojpcjjdfhlcbgjnpngcmaojmlokmeii",
+    "advisory": "Operation PromptSnatcher \"Smart Adblocker\" (90K users): sleeper adblocker that captures ChatGPT/Claude/Gemini/Copilot conversations. Source: The Hacker News (2026-06)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "jcbjcocinigpbgfpnhlpagidbmlngnnn",
+    "advisory": "Operation PromptSnatcher \"Adblock for Browser\" (10K users): sleeper adblocker capturing AI assistant conversations. Source: The Hacker News (2026-06)"
   }
 ]

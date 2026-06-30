@@ -180,14 +180,25 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
-    // Determine transport type
+    // Determine transport type. Prefer an explicit "type"/"transport" field;
+    // fall back to structural inference. The MCP spec replaced standalone SSE
+    // with "Streamable HTTP" as the default remote transport in the 2025
+    // revision, so a url with no explicit type is classified as "http".
     let url = cfg.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let transport = if url.is_some() {
-        "sse".to_string()
-    } else if command.is_some() {
-        "stdio".to_string()
-    } else {
-        "unknown".to_string()
+    let explicit = cfg
+        .get("type")
+        .or_else(|| cfg.get("transport"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_lowercase());
+    let transport = match explicit.as_deref() {
+        Some("stdio") => "stdio".to_string(),
+        Some("sse") => "sse".to_string(),
+        Some("http" | "streamable-http" | "streamablehttp" | "streamable_http" | "http-stream") => {
+            "http".to_string()
+        }
+        _ if url.is_some() => "http".to_string(),
+        _ if command.is_some() => "stdio".to_string(),
+        _ => "unknown".to_string(),
     };
 
     // Sanitize URL (strip credentials, paths, query strings)

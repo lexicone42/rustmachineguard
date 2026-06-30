@@ -3,17 +3,26 @@ use serde::Serialize;
 
 /// Generate a CycloneDX 2.0 Blueprint document from scan results.
 ///
-/// This is an early implementation targeting the draft Blueprint schema
-/// from CycloneDX 2.0 (PR #951, branch 2.0-dev-threatmodeling, milestone due
-/// 2026-08-31). Schema source: github.com/CycloneDX/specification (Apache-2.0).
+/// Targets the draft CycloneDX 2.0 threat-modeling schema (branch
+/// `2.0-dev-threatmodeling`, head 03a8eaa7 as of 2026-06-30; milestone 2.0 ~30%,
+/// due 2026-08-31). Schema source: github.com/CycloneDX/specification (Apache-2.0).
 ///
-/// Structural conformance notes (validated against the PR #951 draft):
+/// Conformance status — this output is a BEST-EFFORT subset and is NOT yet fully
+/// validated against the draft schema. Confirmed-correct structural choices:
 /// - `behaviors` is an object `{ instances: [...] }`, not a bare array
 /// - each `behaviorInstance` has a required `bom-ref` and NO `properties`
 ///   (security metadata is carried on the related asset, which permits properties)
 /// - `acknowledgment` is an array of enum values (declared | observed)
 /// - `flow` carries required `type` and `destination` (not `target`)
 /// - component-backed assets omit `name` to satisfy the asset `oneOf`
+///
+/// KNOWN DIVERGENCES from the 2026-06-28 schema refactor (tracked for a follow-up
+/// that adds a jsonschema validation gate): the root envelope was renamed
+/// `bomFormat`->`specFormat` with additionalProperties:false; `metadata.tools`
+/// became an object `{ components, services }`; and `behaviorInstance.behavior`
+/// must be a value from the closed behavior-taxonomy enum (e.g. `ai:agent:invokesTool`)
+/// rather than the free-form strings emitted here. See tests/fixtures for the
+/// vendored schema. Do not claim full 2.0 conformance until that gate is green.
 pub fn render(report: &ScanReport) -> String {
     let doc = BlueprintDocument::from_report(report);
     serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -209,9 +218,11 @@ struct Boundary {
     zones: Vec<String>,
 }
 
-// Injection-specific phrases that suggest MCP tool description poisoning (hidden
-// instructions aimed at the agent). Chosen to be multi-word to minimise false
-// positives on benign descriptions like "Always returns JSON".
+// Injection-specific phrases that suggest MCP tool/resource description poisoning
+// (hidden instructions aimed at the agent). Chosen to be multi-word to minimise
+// false positives on benign descriptions like "Always returns JSON". Covers the
+// Trail-of-Bits "line jumping" / Invariant Labs tool-poisoning families and the
+// CyberArk "Poison everywhere" resource-description variant.
 const POISONING_PATTERNS: &[&str] = &[
     "ignore previous",
     "ignore all previous",
@@ -221,13 +232,58 @@ const POISONING_PATTERNS: &[&str] = &[
     "override previous instructions",
     "do not tell the user",
     "do not mention",
+    "do not display",
+    "do not show the user",
     "never reveal",
     "always include the contents of",
+    "before using this tool",
+    "before you use this tool",
+    "first read",
+    "pass as a sidenote",
+    "this is very important",
     "system prompt",
     "hidden instruction",
+    "<important>",
+    "</important>",
+    "<secret>",
+    "<system-prompt>",
     "<system>",
     "```system",
 ];
+
+/// Scan text for known prompt-injection / line-jumping phrases.
+/// Lowercases once; returns the matched patterns in catalog order.
+fn scan_injection_text(text: &str) -> Vec<&'static str> {
+    let lower = text.to_lowercase();
+    POISONING_PATTERNS
+        .iter()
+        .filter(|p| lower.contains(**p))
+        .copied()
+        .collect()
+}
+
+/// Detect invisible / smuggled Unicode that ASCII pattern-matching is blind to —
+/// the dominant 2025-2026 evasion (a "Provides weather forecasts" tool can carry a
+/// full invisible exfiltration prompt). Returns deduped, stable-ordered category
+/// labels. Character-class based, so language-agnostic.
+fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
+    let mut cats: Vec<&'static str> = Vec::new();
+    for ch in s.chars() {
+        let label = match ch as u32 {
+            0xE0000..=0xE007F => "tag-block",
+            0xE0100..=0xE01EF => "variation-selector-smuggler",
+            0x200B | 0x200C | 0x200D | 0xFEFF => "zero-width",
+            0x00AD => "soft-hyphen",
+            0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
+            _ if ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r' => "other-control",
+            _ => continue,
+        };
+        if !cats.contains(&label) {
+            cats.push(label);
+        }
+    }
+    cats
+}
 
 /// Accumulates behaviors and assigns each a unique bom-ref.
 struct BehaviorBuilder {
@@ -660,16 +716,21 @@ impl BlueprintDocument {
                     });
                 }
 
-                let lower_desc = desc.to_lowercase();
-                let poisoning_signals: Vec<&str> = POISONING_PATTERNS
-                    .iter()
-                    .filter(|p| lower_desc.contains(**p))
-                    .copied()
-                    .collect();
+                // Scan both the tool name and description (an attacker can hide
+                // payloads in either).
+                let scan_target = format!("{} {}", tool.name, desc);
+                let poisoning_signals = scan_injection_text(&scan_target);
                 if !poisoning_signals.is_empty() {
                     tool_props.push(Property {
                         name: "rmg:poisoning-risk".into(),
                         value: format!("suspicious patterns: {}", poisoning_signals.join(", ")),
+                    });
+                }
+                let unicode_signals = scan_suspicious_unicode(&scan_target);
+                if !unicode_signals.is_empty() {
+                    tool_props.push(Property {
+                        name: "rmg:hidden-unicode-risk".into(),
+                        value: unicode_signals.join(", "),
                     });
                 }
 
@@ -710,6 +771,32 @@ impl BlueprintDocument {
                     "zone:remote"
                 };
 
+                // Injection can hide in resource name/description too (CyberArk
+                // "Poison everywhere"), so scan them as well as tools.
+                let res_scan = format!(
+                    "{} {}",
+                    resource.name.as_deref().unwrap_or(""),
+                    resource.description.as_deref().unwrap_or("")
+                );
+                let mut res_props = vec![Property {
+                    name: "rmg:resource-uri".into(),
+                    value: resource.uri.clone(),
+                }];
+                let res_poison = scan_injection_text(&res_scan);
+                if !res_poison.is_empty() {
+                    res_props.push(Property {
+                        name: "rmg:poisoning-risk".into(),
+                        value: format!("suspicious patterns: {}", res_poison.join(", ")),
+                    });
+                }
+                let res_unicode = scan_suspicious_unicode(&res_scan);
+                if !res_unicode.is_empty() {
+                    res_props.push(Property {
+                        name: "rmg:hidden-unicode-risk".into(),
+                        value: res_unicode.join(", "),
+                    });
+                }
+
                 assets.push(Asset {
                     bom_ref: format!("asset:{}", res_ref),
                     asset_type: "data".into(),
@@ -719,10 +806,7 @@ impl BlueprintDocument {
                     component_ref: None,
                     responsibilities: Vec::new(),
                     interfaces: Vec::new(),
-                    properties: vec![Property {
-                        name: "rmg:resource-uri".into(),
-                        value: resource.uri.clone(),
-                    }],
+                    properties: res_props,
                 });
 
                 // Only emit the flow if the source MCP server asset exists.
