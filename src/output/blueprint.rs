@@ -344,6 +344,8 @@ fn map_behavior_to_taxonomy(label: &str) -> &'static str {
         "mcp-auto-approve" => "security",
         // Two servers offering the same tool name (confused-deputy / shadowing)
         "tool-shadowing" => "security",
+        // Lethal-trifecta surface: sensitive source + exfil sink across the surface
+        "toxic-flow-surface" => "security",
         // Rules-file dangerous patterns → code execution risk (detail on the asset)
         "dangerous-pattern" => "application:codeExecution",
         // Threat-catalog match and blast-radius are security findings; detail lives
@@ -980,6 +982,54 @@ impl BlueprintDocument {
                     );
                 }
             }
+        }
+
+        // Toxic-flow / lethal-trifecta surface: sensitive source + exfil sink across
+        // the aggregate agent capability surface. A dedicated asset holds the source
+        // and sink lists; the behavior's actors are the agent(s) wielding the surface.
+        if let Some(tf) = crate::analysis::analyze_toxic_flow(report) {
+            let surface_ref = "agent-surface";
+            assets.push(Asset {
+                bom_ref: format!("asset:{}", surface_ref),
+                asset_type: "data".into(),
+                name: Some("Aggregate agent capability surface".into()),
+                description: Some(
+                    "Connected agent surface combines a sensitive-data source with an \
+                     exfiltration sink (lethal-trifecta / toxic-flow risk)"
+                        .into(),
+                ),
+                zone: Some("zone:local".into()),
+                component_ref: None,
+                responsibilities: Vec::new(),
+                interfaces: Vec::new(),
+                properties: vec![
+                    Property {
+                        name: "rmg:sources".into(),
+                        value: tf.sources.join(", "),
+                    },
+                    Property {
+                        name: "rmg:sinks".into(),
+                        value: tf.sinks.join(", "),
+                    },
+                ],
+            });
+            // Actors = agent assets if any, else the surface asset (never dangling).
+            let agent_actors: Vec<String> = report
+                .ai_agents_and_tools
+                .iter()
+                .map(|t| format!("asset:ai-tool:{}", t.name.replace(' ', "-").to_lowercase()))
+                .collect();
+            let actors = if agent_actors.is_empty() {
+                vec![format!("asset:{}", surface_ref)]
+            } else {
+                agent_actors
+            };
+            behaviors.push(
+                "toxic-flow-surface".into(),
+                vec!["observed".into()],
+                actors,
+                vec![format!("asset:{}", surface_ref)],
+            );
         }
 
         // Exposure findings → dedicated exposure data assets + behaviors.

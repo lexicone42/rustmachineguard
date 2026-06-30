@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod catalogs;
 pub mod diff;
 pub mod models;

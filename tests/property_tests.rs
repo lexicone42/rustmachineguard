@@ -1363,6 +1363,85 @@ fn blueprint_scans_param_descriptions_for_injection() {
     assert!(output.contains("before using this tool"));
 }
 
+// ─── Toxic-flow / lethal-trifecta surface ─────────────────────
+
+#[test]
+fn toxic_flow_detected_when_source_and_sink_present() {
+    use rustmachineguard::analysis::analyze_toxic_flow;
+    use rustmachineguard::models::*;
+    // filesystem (source) from a probe + network (sink) from a skill = toxic flow.
+    let report = make_test_report(|r| {
+        r.mcp_probes = vec![McpProbeResult {
+            server_name: "fs".into(), config_source: "p".into(), success: true, server_info: None,
+            tools: vec![], resources: vec![], error: None,
+            observed_capabilities: vec!["filesystem".into()],
+        }];
+        r.agent_skills = vec![AgentSkill {
+            name: "poster".into(), path: "/s".into(), framework: "claude-code".into(),
+            scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
+            capabilities: vec!["network".into()],
+        }];
+    });
+    let tf = analyze_toxic_flow(&report).expect("toxic flow should be detected");
+    assert!(tf.sources.contains(&"filesystem".to_string()));
+    assert!(tf.sinks.contains(&"network".to_string()));
+}
+
+#[test]
+fn toxic_flow_not_detected_with_source_only() {
+    use rustmachineguard::analysis::analyze_toxic_flow;
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.agent_skills = vec![AgentSkill {
+            name: "reader".into(), path: "/s".into(), framework: "claude-code".into(),
+            scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
+            capabilities: vec!["filesystem".into(), "database".into()],
+        }];
+    });
+    assert!(analyze_toxic_flow(&report).is_none(), "source without a sink is not a toxic flow");
+}
+
+#[test]
+fn toxic_flow_ignores_failed_probes() {
+    use rustmachineguard::analysis::analyze_toxic_flow;
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.mcp_probes = vec![McpProbeResult {
+            server_name: "x".into(), config_source: "p".into(), success: false, server_info: None,
+            tools: vec![], resources: vec![], error: Some("dead".into()),
+            observed_capabilities: vec!["filesystem".into(), "network".into()],
+        }];
+    });
+    assert!(analyze_toxic_flow(&report).is_none(), "failed probe capabilities must be ignored");
+}
+
+#[test]
+fn blueprint_emits_toxic_flow_behavior() {
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude Code".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: None, binary_path: None, config_dir: None, install_path: None, is_running: true,
+        }];
+        r.agent_skills = vec![AgentSkill {
+            name: "s".into(), path: "/s".into(), framework: "claude-code".into(),
+            scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
+            capabilities: vec!["environment".into(), "network".into()],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output);
+    assert!(output.contains("agent-surface"), "should create the surface asset");
+    assert!(output.contains("rmg:sources"), "asset records sources");
+    assert!(output.contains("rmg:sinks"), "asset records sinks");
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
+    // toxic-flow behavior: actor = the agent, target = the surface asset
+    assert!(beh.iter().any(|b| b["behavior"] == "security"
+        && b["actors"][0] == "asset:ai-tool:claude-code"
+        && b["targets"][0] == "asset:agent-surface"));
+}
+
 // ─── Sharp-edge hardening tests ─────────────────────────────
 
 #[test]

@@ -72,6 +72,30 @@ pub fn render(report: &ScanReport) -> String {
     }
     out.push('\n');
 
+    // Risk Analysis — composition-level signals
+    if let Some(tf) = crate::analysis::analyze_toxic_flow(report) {
+        section_header(&mut out, "Risk Analysis");
+        out.push_str(&format!(
+            "  {} {}\n",
+            "!".red().bold(),
+            "Toxic-flow surface (lethal trifecta)".red().bold()
+        ));
+        out.push_str(&format!(
+            "    The agent surface combines a sensitive-data {} with an exfiltration {}.\n",
+            "source".yellow(),
+            "sink".yellow()
+        ));
+        out.push_str(&format!(
+            "    sources: {}\n",
+            tf.sources.join(", ").yellow()
+        ));
+        out.push_str(&format!("    sinks:   {}\n", tf.sinks.join(", ").yellow()));
+        out.push_str(
+            "    Any prompt injection reaching the agent could read private data and exfiltrate it.\n",
+        );
+        out.push('\n');
+    }
+
     // AI Agents & Tools
     if !report.ai_agents_and_tools.is_empty() {
         section_header(&mut out, "AI Agents & Tools");
