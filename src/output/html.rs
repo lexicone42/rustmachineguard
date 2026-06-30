@@ -87,6 +87,8 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("Notebooks", s.notebook_servers_count),
         ("Browser Extensions", s.browser_extensions_count),
         ("Pkg Config Audits", s.package_config_audits_count),
+        ("Rules Files", s.rules_files_count),
+        ("Agent Skills", s.agent_skills_count),
         ("Exposures", s.exposure_findings_count),
     ];
 

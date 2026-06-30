@@ -51,7 +51,16 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "Notebook Servers", s.notebook_servers_count);
     summary_line(&mut out, "Browser Extensions", s.browser_extensions_count);
     summary_line(&mut out, "Package Config Audits", s.package_config_audits_count);
+    summary_line(&mut out, "Rules Files", s.rules_files_count);
+    summary_line(&mut out, "Agent Skills", s.agent_skills_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
+    if s.rules_file_findings_count > 0 {
+        out.push_str(&format!(
+            "  {:>35}  {}\n",
+            "Rules File Findings",
+            s.rules_file_findings_count.to_string().red().bold()
+        ));
+    }
     if s.exposure_findings_count > 0 {
         out.push_str(&format!(
             "  {:>35}  {}\n",
@@ -383,6 +392,71 @@ pub fn render(report: &ScanReport) -> String {
                     "!".red(),
                     severity_colored,
                     finding.description,
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Rules Files
+    if !report.rules_files.is_empty() {
+        section_header(&mut out, &format!("Rules Files ({})", report.rules_files.len()));
+        for rf in &report.rules_files {
+            let git = if rf.git_tracked {
+                "git-tracked".green().to_string()
+            } else {
+                "untracked".yellow().to_string()
+            };
+            out.push_str(&format!(
+                "  {} {} ({} bytes) [{}]\n",
+                "→".cyan(),
+                rf.file_name.bold(),
+                rf.size_bytes,
+                git,
+            ));
+            out.push_str(&format!("    {}\n", rf.path.dimmed()));
+            out.push_str(&format!("    sha256: {}\n", rf.sha256.dimmed()));
+            for finding in &rf.findings {
+                let severity_colored = match finding.severity.as_str() {
+                    "critical" => finding.severity.red().bold().to_string(),
+                    "high" => finding.severity.red().to_string(),
+                    "medium" => finding.severity.yellow().to_string(),
+                    _ => finding.severity.dimmed().to_string(),
+                };
+                out.push_str(&format!(
+                    "    {} [{}] {}\n",
+                    "!".red(),
+                    severity_colored,
+                    finding.pattern,
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Agent Skills
+    if !report.agent_skills.is_empty() {
+        section_header(&mut out, &format!("Agent Skills ({})", report.agent_skills.len()));
+        let mut by_framework: std::collections::BTreeMap<&str, Vec<&crate::models::AgentSkill>> =
+            std::collections::BTreeMap::new();
+        for skill in &report.agent_skills {
+            by_framework.entry(&skill.framework).or_default().push(skill);
+        }
+        for (framework, skills) in &by_framework {
+            out.push_str(&format!("  {} ({}):\n", framework.bold(), skills.len()));
+            for skill in skills {
+                let caps = if skill.capabilities.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", skill.capabilities.join(", ").yellow())
+                };
+                out.push_str(&format!(
+                    "    {} {} ({}, {}){}  \n",
+                    "·".dimmed(),
+                    skill.name,
+                    skill.scope.dimmed(),
+                    skill.file_type.dimmed(),
+                    caps,
                 ));
             }
         }

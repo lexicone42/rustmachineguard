@@ -47,7 +47,7 @@ enum Format {
 
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
-    "cloud", "containers", "notebooks", "browser", "packages",
+    "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -86,6 +86,16 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .package_config_audits
             .extend(scanners::package_configs::PackageConfigsScanner.scan(plat));
+    }
+    if !skip.contains(&"rules") {
+        report
+            .rules_files
+            .extend(scanners::rules_files::RulesFilesScanner.scan(plat));
+    }
+    if !skip.contains(&"skills") {
+        report
+            .agent_skills
+            .extend(scanners::skills::SkillsScanner.scan(plat));
     }
 }
 
@@ -179,6 +189,8 @@ fn main() {
         notebook_servers: Vec::new(),
         browser_extensions: Vec::new(),
         package_config_audits: Vec::new(),
+        rules_files: Vec::new(),
+        agent_skills: Vec::new(),
         exposure_findings: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
@@ -195,6 +207,9 @@ fn main() {
             notebook_servers_count: 0,
             browser_extensions_count: 0,
             package_config_audits_count: 0,
+            rules_files_count: 0,
+            agent_skills_count: 0,
+            rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,
         },
@@ -296,4 +311,14 @@ fn dedupe_report(report: &mut ScanReport) {
     report
         .package_config_audits
         .retain(|x| seen.insert(x.config_path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .rules_files
+        .retain(|x| seen.insert(x.path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .agent_skills
+        .retain(|x| seen.insert(x.path.clone()));
 }

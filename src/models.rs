@@ -21,6 +21,8 @@ pub struct ScanReport {
     pub notebook_servers: Vec<NotebookServer>,
     pub browser_extensions: Vec<BrowserExtension>,
     pub package_config_audits: Vec<PackageConfigAudit>,
+    pub rules_files: Vec<RulesFile>,
+    pub agent_skills: Vec<AgentSkill>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exposure_findings: Vec<ExposureFinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -194,6 +196,39 @@ pub struct PackageConfigFinding {
     pub description: String,
 }
 
+/// A rules/instruction file that controls agent behavior.
+#[derive(Debug, Serialize)]
+pub struct RulesFile {
+    pub path: String,
+    pub file_name: String,
+    pub sha256: String,
+    pub git_tracked: bool,
+    pub size_bytes: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<RulesFileFinding>,
+}
+
+/// A dangerous pattern found in a rules file.
+#[derive(Debug, Serialize, Clone)]
+pub struct RulesFileFinding {
+    pub severity: String,
+    pub pattern: String,
+}
+
+/// An agent skill (custom command, hook, or plugin).
+#[derive(Debug, Serialize)]
+pub struct AgentSkill {
+    pub name: String,
+    pub path: String,
+    pub framework: String,
+    pub scope: String,
+    pub file_type: String,
+    pub size_bytes: usize,
+    pub sha256: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
 /// Exposure catalog entry for known-bad packages.
 #[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct ExposureEntry {
@@ -231,6 +266,9 @@ pub struct Summary {
     pub notebook_servers_count: usize,
     pub browser_extensions_count: usize,
     pub package_config_audits_count: usize,
+    pub rules_files_count: usize,
+    pub agent_skills_count: usize,
+    pub rules_file_findings_count: usize,
     pub exposure_findings_count: usize,
 }
 
@@ -251,6 +289,9 @@ impl ScanReport {
             notebook_servers_count: self.notebook_servers.len(),
             browser_extensions_count: self.browser_extensions.len(),
             package_config_audits_count: self.package_config_audits.len(),
+            rules_files_count: self.rules_files.len(),
+            agent_skills_count: self.agent_skills.len(),
+            rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
             exposure_findings_count: self.exposure_findings.len(),
         };
     }
