@@ -1,6 +1,8 @@
 use crate::models::{McpConfig, McpProbeResult, McpResourceInfo, McpServerInfo, McpToolInfo};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -60,13 +62,18 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         Err(e) => return error_result(name, config_source, &format!("spawn failed: {}", e)),
     };
 
-    // Watchdog thread: kill child if it outlives the probe timeout
+    // Watchdog: kill child if it outlives the probe timeout.
+    // Uses AtomicBool to cancel after reap, avoiding PID-reuse races.
+    let cancelled = Arc::new(AtomicBool::new(false));
     let child_id = child.id();
+    let cancel_flag = cancelled.clone();
     let watchdog = std::thread::spawn(move || {
         std::thread::sleep(PROBE_TIMEOUT);
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(child_id as i32, libc::SIGKILL);
+        if !cancel_flag.load(Ordering::Acquire) {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(child_id as i32, libc::SIGKILL);
+            }
         }
     });
 
@@ -151,11 +158,12 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         Err(_) => Vec::new(),
     };
 
-    // Shut down cleanly
+    // Shut down: kill, reap, then cancel watchdog to prevent PID-reuse signal
     drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
-    drop(watchdog);
+    cancelled.store(true, Ordering::Release);
+    let _ = watchdog.join();
 
     let observed_capabilities = infer_capabilities_from_tools(&tools, &resources);
 
