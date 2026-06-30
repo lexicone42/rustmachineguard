@@ -3,26 +3,25 @@ use serde::Serialize;
 
 /// Generate a CycloneDX 2.0 Blueprint document from scan results.
 ///
-/// Targets the draft CycloneDX 2.0 threat-modeling schema (branch
+/// Conforms to the draft CycloneDX 2.0 threat-modeling schema (branch
 /// `2.0-dev-threatmodeling`, head 03a8eaa7 as of 2026-06-30; milestone 2.0 ~30%,
 /// due 2026-08-31). Schema source: github.com/CycloneDX/specification (Apache-2.0).
 ///
-/// Conformance status — this output is a BEST-EFFORT subset and is NOT yet fully
-/// validated against the draft schema. Confirmed-correct structural choices:
+/// Output is validated against the vendored schema by `tests/blueprint_schema.rs`,
+/// which is the conformance gate — drift in either the generator or a re-vendored
+/// schema fails the build. Notable structural requirements of this draft:
+/// - root envelope is `specFormat` (renamed from `bomFormat`), `specVersion` "2.0"
+/// - `metadata.tools` is an object `{ components, services }`, not an array
+/// - components have no top-level `purl` (we carry it as an `rmg:purl` property)
 /// - `behaviors` is an object `{ instances: [...] }`, not a bare array
-/// - each `behaviorInstance` has a required `bom-ref` and NO `properties`
-///   (security metadata is carried on the related asset, which permits properties)
+/// - each `behaviorInstance` requires a `bom-ref`, forbids `properties`, and its
+///   `behavior` must be a value from the closed behavior taxonomy (e.g.
+///   `ai:agent:invokesTool`) — so human-readable specifics live on the related asset
 /// - `acknowledgment` is an array of enum values (declared | observed)
 /// - `flow` carries required `type` and `destination` (not `target`)
-/// - component-backed assets omit `name` to satisfy the asset `oneOf`
 ///
-/// KNOWN DIVERGENCES from the 2026-06-28 schema refactor (tracked for a follow-up
-/// that adds a jsonschema validation gate): the root envelope was renamed
-/// `bomFormat`->`specFormat` with additionalProperties:false; `metadata.tools`
-/// became an object `{ components, services }`; and `behaviorInstance.behavior`
-/// must be a value from the closed behavior-taxonomy enum (e.g. `ai:agent:invokesTool`)
-/// rather than the free-form strings emitted here. See tests/fixtures for the
-/// vendored schema. Do not claim full 2.0 conformance until that gate is green.
+/// The draft is still moving; re-vendor `tests/fixtures/` and re-run the gate when
+/// bumping the pin.
 pub fn render(report: &ScanReport) -> String {
     let doc = BlueprintDocument::from_report(report);
     serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -31,7 +30,8 @@ pub fn render(report: &ScanReport) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BlueprintDocument {
-    bom_format: &'static str,
+    // CycloneDX 2.0 renamed the root envelope: `specFormat` (was `bomFormat`).
+    spec_format: &'static str,
     spec_version: &'static str,
     version: u32,
     metadata: DocMetadata,
@@ -44,16 +44,26 @@ struct BlueprintDocument {
 #[derive(Serialize)]
 struct DocMetadata {
     timestamp: String,
-    tools: Vec<DocTool>,
+    // CycloneDX 2.0: `tools` is an object { components, services }, not an array.
+    tools: DocTools,
     component: DocComponent,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     properties: Vec<Property>,
 }
 
 #[derive(Serialize)]
-struct DocTool {
-    vendor: String,
+struct DocTools {
+    components: Vec<DocToolComponent>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct DocToolComponent {
+    #[serde(rename = "type")]
+    component_type: &'static str,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
     version: String,
 }
 
@@ -79,8 +89,7 @@ struct Component {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    purl: Option<String>,
+    // CycloneDX 2.0 components have no top-level `purl`; we carry it as a property.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     properties: Vec<Property>,
 }
@@ -285,6 +294,37 @@ fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
     cats
 }
 
+/// Map an internal behavior label to a value from the CycloneDX 2.0 behavior
+/// taxonomy (a closed enum). The schema requires `behaviorInstance.behavior` to be
+/// a taxonomy value, so the human-readable specifics live on the related asset
+/// instead. `prefix:rest` labels are matched on their prefix.
+fn map_behavior_to_taxonomy(label: &str) -> &'static str {
+    let head = label.split(':').next().unwrap_or(label);
+    match head {
+        // Capability labels (skills + observed probe capabilities)
+        "shell" => "application:codeExecution:executesNativeCommand",
+        "network" => "network",
+        "filesystem" => "file",
+        "environment" => "system:configuration:readsEnvironmentVariable",
+        "database" => "data:query",
+        "browser" => "application",
+        "source_control" => "data",
+        "communication" => "network:transmission:sendsData",
+        "clipboard" => "system",
+        "skill_invoke" => "ai:agent:invokesTool",
+        // Probe-derived tool invocations
+        "mcp-tool" => "ai:agent:invokesTool",
+        // Rules-file dangerous patterns → code execution risk (detail on the asset)
+        "dangerous-pattern" => "application:codeExecution",
+        // Threat-catalog match and blast-radius are security findings; detail lives
+        // on the exposure / ssh-key / cloud-credential asset.
+        "exposure-catalog-match" => "security",
+        "blast-radius" => "security:authentication",
+        // Anything else falls back to the agent-action domain.
+        _ => "ai:agent:executesAction",
+    }
+}
+
 /// Accumulates behaviors and assigns each a unique bom-ref.
 struct BehaviorBuilder {
     instances: Vec<BehaviorInstance>,
@@ -299,9 +339,11 @@ impl BehaviorBuilder {
         }
     }
 
+    /// `label` is an internal, human-readable behavior label; it is mapped to a
+    /// CycloneDX behavior-taxonomy value for the emitted `behavior` field.
     fn push(
         &mut self,
-        behavior: String,
+        label: String,
         acknowledgment: Vec<String>,
         actors: Vec<String>,
         targets: Vec<String>,
@@ -310,7 +352,7 @@ impl BehaviorBuilder {
         self.next += 1;
         self.instances.push(BehaviorInstance {
             bom_ref,
-            behavior,
+            behavior: map_behavior_to_taxonomy(&label).to_string(),
             acknowledgment,
             actors,
             targets,
@@ -363,7 +405,6 @@ impl BlueprintDocument {
                 name: tool.name.clone(),
                 version: tool.version.clone(),
                 group: None,
-                purl: None,
                 properties: vec![Property {
                     name: "rmg:tool-type".into(),
                     value: format!("{:?}", tool.tool_type),
@@ -389,11 +430,6 @@ impl BlueprintDocument {
         for mcp in &report.mcp_configs {
             for server in &mcp.servers {
                 let comp_ref = format!("mcp:{}", server.name);
-                let purl = build_purl(
-                    server.package_ecosystem.as_deref(),
-                    server.package_name.as_deref(),
-                    server.package_version.as_deref(),
-                );
 
                 let mut props = vec![
                     Property {
@@ -405,6 +441,17 @@ impl BlueprintDocument {
                         value: mcp.config_source.clone(),
                     },
                 ];
+                // CycloneDX 2.0 components have no top-level purl; carry it as a property.
+                if let Some(purl) = build_purl(
+                    server.package_ecosystem.as_deref(),
+                    server.package_name.as_deref(),
+                    server.package_version.as_deref(),
+                ) {
+                    props.push(Property {
+                        name: "rmg:purl".into(),
+                        value: purl,
+                    });
+                }
                 if let Some(ref cmd) = server.command {
                     props.push(Property {
                         name: "rmg:command".into(),
@@ -430,7 +477,6 @@ impl BlueprintDocument {
                         .package_ecosystem
                         .as_ref()
                         .map(|e| format!("mcp-server/{}", e)),
-                    purl,
                     properties: props,
                 });
 
@@ -502,7 +548,6 @@ impl BlueprintDocument {
                 name: skill.name.clone(),
                 version: None,
                 group: Some(format!("agent-skill/{}", skill.framework)),
-                purl: None,
                 properties: vec![
                     Property {
                         name: "rmg:skill-hash".into(),
@@ -593,7 +638,6 @@ impl BlueprintDocument {
                 name: rf.file_name.clone(),
                 version: None,
                 group: Some("agent-rules".into()),
-                purl: None,
                 properties: vec![
                     Property {
                         name: "rmg:rules-hash".into(),
@@ -605,6 +649,18 @@ impl BlueprintDocument {
                     },
                 ],
             });
+
+            // Per-finding detail lives on the asset (the behavior is mapped to a
+            // taxonomy value that cannot carry it).
+            let finding_props: Vec<Property> = rf
+                .findings
+                .iter()
+                .enumerate()
+                .map(|(i, f)| Property {
+                    name: format!("rmg:finding-{}", i),
+                    value: format!("{}: {}", f.severity, f.pattern),
+                })
+                .collect();
 
             assets.push(Asset {
                 bom_ref: format!("asset:{}", comp_ref),
@@ -623,11 +679,9 @@ impl BlueprintDocument {
                 component_ref: Some(comp_ref.clone()),
                 responsibilities: vec!["Agent behavior configuration".into()],
                 interfaces: Vec::new(),
-                properties: Vec::new(),
+                properties: finding_props,
             });
 
-            // Severity is encoded in the behavior name (schema forbids extra properties
-            // on a behaviorInstance).
             for finding in &rf.findings {
                 behaviors.push(
                     format!("dangerous-pattern:{}:{}", finding.severity, finding.pattern),
@@ -1042,16 +1096,19 @@ impl BlueprintDocument {
             .collect();
 
         BlueprintDocument {
-            bom_format: "CycloneDX",
-            spec_version: "2.0-draft",
+            spec_format: "CycloneDX",
+            spec_version: "2.0",
             version: 1,
             metadata: DocMetadata {
                 timestamp: report.scan_timestamp_iso.clone(),
-                tools: vec![DocTool {
-                    vendor: "rustmachineguard".into(),
-                    name: "dev-machine-guard".into(),
-                    version: report.agent_version.clone(),
-                }],
+                tools: DocTools {
+                    components: vec![DocToolComponent {
+                        component_type: "application",
+                        name: "dev-machine-guard".into(),
+                        group: Some("rustmachineguard".into()),
+                        version: report.agent_version.clone(),
+                    }],
+                },
                 component: DocComponent {
                     component_type: "device",
                     name: report.device.hostname.clone(),

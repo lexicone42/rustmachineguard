@@ -221,10 +221,16 @@ We have implemented the foundation:
 
 ```json
 {
-  "bomFormat": "CycloneDX",
-  "specVersion": "2.0-draft",
+  "specFormat": "CycloneDX",
+  "specVersion": "2.0",
   "version": 1,
-  "metadata": { "..." },
+  "metadata": {
+    "timestamp": "2026-06-30T18:14:27Z",
+    "tools": { "components": [
+      { "type": "application", "group": "rustmachineguard", "name": "dev-machine-guard", "version": "0.1.0" }
+    ]},
+    "component": { "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" }
+  },
   "components": [
     {
       "type": "application",
@@ -237,7 +243,7 @@ We have implemented the foundation:
       "bom-ref": "mcp:filesystem",
       "name": "@modelcontextprotocol/server-filesystem",
       "version": "1.0.0",
-      "purl": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0"
+      "properties": [{ "name": "rmg:purl", "value": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0" }]
     },
     {
       "type": "application",
@@ -288,13 +294,13 @@ We have implemented the foundation:
         "instances": [
           {
             "bom-ref": "behavior:0",
-            "behavior": "shell",
+            "behavior": "application:codeExecution:executesNativeCommand",
             "acknowledgment": ["declared"],
             "actors": ["asset:skill:claude-code:deploy"]
           },
           {
             "bom-ref": "behavior:1",
-            "behavior": "dangerous-pattern:critical:curl|wget piped to shell",
+            "behavior": "application:codeExecution",
             "acknowledgment": ["declared"],
             "actors": ["asset:rules:claude.md"]
           }
@@ -322,16 +328,29 @@ We have implemented the foundation:
 }
 ```
 
-**Structural conformance to the PR #951 draft schema** (validated against branch
-`2.0-dev-threatmodeling`): `behaviors` is an object with an `instances` array (not a
-bare array); each `behaviorInstance` carries a required `bom-ref` and no extra
-`properties` (per-behavior security metadata is encoded in the behavior name or moved
-to a related asset, since `behaviorInstance` is `additionalProperties: false`);
-`acknowledgment` is an array of enum values (`declared` | `observed`); `flow` carries a
-required `type` (control/data/...) and `destination` (not `target`); component-backed
-assets omit `name` to satisfy the asset `oneOf` (Component-Reference vs Inline-Asset
-branches). A `tests/property_tests.rs` invariant asserts every behavior actor/target and
+**Schema conformance (enforced).** The Blueprint output is validated against the
+vendored CycloneDX 2.0 draft schema (branch `2.0-dev-threatmodeling`, head `03a8eaa7`)
+by `tests/blueprint_schema.rs`, using the `jsonschema` crate. This is a real gate:
+drift in either the generator or a re-vendored schema fails the build. Highlights of
+the draft we conform to:
+
+- root envelope is `specFormat` (renamed from `bomFormat`), `specVersion` `"2.0"`,
+  `additionalProperties: false`
+- `metadata.tools` is an object `{ components, services }`, not an array
+- components carry no top-level `purl` (we emit it as an `rmg:purl` property)
+- `behaviors` is an object with an `instances` array (not a bare array)
+- each `behaviorInstance` requires a `bom-ref`, forbids `properties`, and its
+  `behavior` must be a value from the **closed 740-value behavior taxonomy** (e.g.
+  `ai:agent:invokesTool`, `application:codeExecution:executesNativeCommand`,
+  `security:authentication`). Human-readable specifics (advisories, severities,
+  capability names) therefore live on the related asset, which permits properties.
+- `acknowledgment` is an array of enum values (`declared` | `observed`)
+- `flow` carries a required `type` (control/data/…) and `destination` (not `target`)
+
+A separate `tests/property_tests.rs` invariant asserts every behavior actor/target and
 flow source/destination resolves to an emitted asset `bom-ref` — no dangling references.
+The draft is still moving (milestone due 2026-08-31); re-vendor the fixtures and re-run
+the gate when bumping the pin.
 
 ## Security Considerations
 

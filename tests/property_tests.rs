@@ -1384,9 +1384,12 @@ fn blueprint_includes_ssh_keys_as_assets() {
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(output.contains("ssh-key:"), "should contain SSH key assets");
     assert!(output.contains("no_passphrase"), "should include passphrase status");
-    assert!(output.contains("blast-radius:high:unprotected-ssh-key"), "should flag unprotected key");
-    // Exactly one blast-radius behavior — only the unprotected key, not the encrypted one
-    assert_eq!(output.matches("blast-radius:high:unprotected-ssh-key").count(), 1, "only the unprotected key should be flagged");
+    // The behavior is now a taxonomy value; the unprotected-key signal is the
+    // security:authentication behavior. Only the unprotected key generates one.
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
+    let blast = beh.iter().filter(|b| b["behavior"] == "security:authentication").count();
+    assert_eq!(blast, 1, "only the unprotected key should generate a blast-radius behavior");
 }
 
 #[test]
@@ -1402,8 +1405,16 @@ fn blueprint_includes_cloud_credentials_as_assets() {
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(output.contains("cloud-cred:"), "should contain cloud credential asset");
-    assert!(output.contains("blast-radius:cloud-credential:aws"), "should flag cloud credential blast radius");
-    assert!(output.contains("default, prod"), "should list profiles");
+    assert!(output.contains("default, prod"), "should list profiles on the asset");
+    // The blast-radius signal is now a security:authentication behavior whose actor
+    // is the cloud-credential asset.
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
+    assert!(
+        beh.iter().any(|b| b["behavior"] == "security:authentication"
+            && b["actors"][0].as_str().unwrap_or("").contains("cloud-cred")),
+        "cloud credential should generate a blast-radius behavior"
+    );
 }
 
 #[test]
@@ -1445,8 +1456,13 @@ fn blueprint_exposure_findings_become_behaviors() {
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
-    assert!(output.contains("exposure-catalog-match:evil-mcp"), "should map exposure findings to behaviors");
-    assert!(output.contains("Known malicious package"), "should include advisory text");
+    // The exposure detail now lives on a dedicated exposure asset (the behavior is a
+    // taxonomy "security" value).
+    assert!(output.contains("threat-match: evil-mcp"), "should create an exposure asset");
+    assert!(output.contains("Known malicious package"), "should include advisory text on the asset");
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
+    assert!(beh.iter().any(|b| b["behavior"] == "security"), "exposure finding emits a security behavior");
 }
 
 #[test]
@@ -1771,7 +1787,7 @@ fn blueprint_no_dangling_refs_with_unmatched_extension_exposure() {
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert_no_dangling_refs(&output);
-    assert!(output.contains("exposure-catalog-match:ai-assistant-chatgpt"));
+    assert!(output.contains("threat-match: ai-assistant-chatgpt"), "exposure asset created");
     assert!(!output.contains("asset:mcp:Firefox"), "must not fabricate a dangling MCP ref");
 }
 
@@ -1826,7 +1842,7 @@ fn blueprint_empty_report_is_valid_json() {
     let report = make_test_report(|_| {});
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     let doc: serde_json::Value = serde_json::from_str(&output).expect("empty blueprint is valid JSON");
-    assert_eq!(doc["bomFormat"], "CycloneDX");
+    assert_eq!(doc["specFormat"], "CycloneDX", "CycloneDX 2.0 root envelope is specFormat");
     assert_no_dangling_refs(&output);
 }
 
@@ -1907,8 +1923,12 @@ fn blueprint_exposure_matched_to_existing_server() {
     assert_no_dangling_refs(&output);
     let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
     let beh = doc["blueprints"][0]["behaviors"]["instances"].as_array().unwrap();
-    let exp = beh.iter().find(|b| b["behavior"] == "exposure-catalog-match:evil-pkg").unwrap();
-    assert_eq!(exp["actors"][0], "asset:mcp:evil", "should point at the matched server asset");
+    // The exposure behavior is a taxonomy "security" value whose actor is the matched
+    // server asset (not a fabricated ref).
+    let exp = beh.iter()
+        .find(|b| b["behavior"] == "security" && b["actors"][0] == "asset:mcp:evil")
+        .expect("exposure behavior should point at the matched server asset");
+    assert_eq!(exp["actors"][0], "asset:mcp:evil");
 }
 
 #[test]
