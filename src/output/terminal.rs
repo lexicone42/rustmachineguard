@@ -463,6 +463,70 @@ pub fn render(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    // MCP Probe Results
+    if !report.mcp_probes.is_empty() {
+        section_header(&mut out, &format!("MCP Server Probes ({})", report.mcp_probes.len()));
+        for probe in &report.mcp_probes {
+            if probe.success {
+                let info = probe
+                    .server_info
+                    .as_ref()
+                    .map(|i| {
+                        format!(
+                            "{} {}",
+                            i.name,
+                            i.version.as_deref().unwrap_or("?")
+                        )
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                out.push_str(&format!(
+                    "  {} {} ({})\n",
+                    "✓".green().bold(),
+                    probe.server_name.bold(),
+                    info.dimmed()
+                ));
+                if !probe.tools.is_empty() {
+                    out.push_str(&format!(
+                        "    {} tools: {}\n",
+                        probe.tools.len().to_string().yellow(),
+                        probe
+                            .tools
+                            .iter()
+                            .map(|t| t.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !probe.resources.is_empty() {
+                    out.push_str(&format!(
+                        "    {} resources: {}\n",
+                        probe.resources.len().to_string().yellow(),
+                        probe
+                            .resources
+                            .iter()
+                            .map(|r| r.uri.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !probe.observed_capabilities.is_empty() {
+                    out.push_str(&format!(
+                        "    observed capabilities: {}\n",
+                        probe.observed_capabilities.join(", ").cyan()
+                    ));
+                }
+            } else {
+                out.push_str(&format!(
+                    "  {} {} — {}\n",
+                    "✗".red().bold(),
+                    probe.server_name.bold(),
+                    probe.error.as_deref().unwrap_or("unknown error").red()
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
     // Exposure Findings
     if !report.exposure_findings.is_empty() {
         section_header(&mut out, &format!(

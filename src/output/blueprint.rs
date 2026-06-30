@@ -458,6 +458,41 @@ impl BlueprintDocument {
             host_deps.push(comp_ref);
         }
 
+        // MCP probe results → observed behaviors
+        for probe in &report.mcp_probes {
+            if !probe.success {
+                continue;
+            }
+            let server_ref = format!("asset:mcp:{}", probe.server_name);
+
+            for cap in &probe.observed_capabilities {
+                behaviors.push(BehaviorInstance {
+                    behavior: cap.clone(),
+                    actors: vec![server_ref.clone()],
+                    targets: Vec::new(),
+                    properties: vec![Property {
+                        name: "rmg:capability-source".into(),
+                        value: "observed-probe".into(),
+                    }],
+                });
+            }
+
+            for tool in &probe.tools {
+                behaviors.push(BehaviorInstance {
+                    behavior: format!("mcp-tool:{}", tool.name),
+                    actors: vec![server_ref.clone()],
+                    targets: Vec::new(),
+                    properties: vec![Property {
+                        name: "rmg:tool-description".into(),
+                        value: tool
+                            .description
+                            .clone()
+                            .unwrap_or_default(),
+                    }],
+                });
+            }
+        }
+
         // Build dependency graph
         let mut dependencies = Vec::new();
         if !host_deps.is_empty() {

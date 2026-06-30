@@ -7,6 +7,7 @@ pub mod container_tools;
 pub mod extensions;
 pub mod ide;
 pub mod mcp;
+pub mod mcp_probe;
 pub mod node_packages;
 pub mod notebook_servers;
 pub mod package_configs;

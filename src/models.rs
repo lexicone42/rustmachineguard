@@ -26,6 +26,8 @@ pub struct ScanReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exposure_findings: Vec<ExposureFinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_probes: Vec<McpProbeResult>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
@@ -35,6 +37,44 @@ pub struct ScanReport {
 pub struct ScanWarning {
     pub scanner: String,
     pub message: String,
+}
+
+/// Results from live-probing an MCP server via JSON-RPC.
+#[derive(Debug, Serialize, Clone)]
+pub struct McpProbeResult {
+    pub server_name: String,
+    pub config_source: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_info: Option<McpServerInfo>,
+    pub tools: Vec<McpToolInfo>,
+    pub resources: Vec<McpResourceInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub observed_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct McpServerInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct McpToolInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct McpResourceInfo {
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

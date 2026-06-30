@@ -44,6 +44,11 @@ struct Cli {
     /// Shows added, removed, and changed items across all categories.
     #[arg(long)]
     diff: Option<PathBuf>,
+
+    /// Live-probe local (stdio) MCP servers to enumerate their tools and resources.
+    /// WARNING: This spawns each MCP server process. Only use on trusted configurations.
+    #[arg(long)]
+    probe_mcp: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -204,6 +209,7 @@ fn main() {
         rules_files: Vec::new(),
         agent_skills: Vec::new(),
         exposure_findings: Vec::new(),
+        mcp_probes: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -300,6 +306,11 @@ fn main() {
                 catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
             );
         }
+    }
+
+    // MCP live probing (opt-in)
+    if cli.probe_mcp {
+        report.mcp_probes = scanners::mcp_probe::probe_mcp_servers(&report.mcp_configs);
     }
 
     report.compute_summary();

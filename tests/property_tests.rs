@@ -322,6 +322,7 @@ fn summary_counts_match_vector_lengths() {
         rules_files: vec![],
         agent_skills: vec![],
         exposure_findings: vec![],
+        mcp_probes: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -377,6 +378,7 @@ fn json_output_is_valid_json() {
         rules_files: vec![],
         agent_skills: vec![],
         exposure_findings: vec![],
+        mcp_probes: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -429,6 +431,7 @@ fn html_output_no_script_injection() {
         rules_files: vec![],
         agent_skills: vec![],
         exposure_findings: vec![],
+        mcp_probes: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
