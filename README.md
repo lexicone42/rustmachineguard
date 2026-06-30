@@ -50,6 +50,8 @@ cargo build --release
 | **Rules Files**\* | Agent instruction files | `CLAUDE.md` and similar, with dangerous-pattern + tamper (hash) detection |
 | **Agent Skills**\* | Custom commands / hooks / plugins | Capability inference across the SkillFortify 8-resource taxonomy |
 | **Agent Settings**\* | `settings.json` hooks + MCP auto-approval | Hooks that run shell commands on tool-use events (silent code exec), `enableAllProjectMcpServers` workspace-trust bypass, permission modes |
+| **AI Credentials**\* | At-rest agent tokens + permissions | `~/.claude/.credentials.json`, Codex/Gemini/Copilot/OpenCode token files — existence and loose permissions only (values never read) |
+| **`.env` Files**\* | Secrets in agent project roots | `.env`/`.env.local`/… in project roots agents operate on — git-tracked (committed-secret) and world-readable flags, secret-bearing key **names** (never values) |
 
 \* New detection categories not in the original bash tool.
 

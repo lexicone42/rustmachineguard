@@ -11,10 +11,19 @@ const RULES_FILE_NAMES: &[&str] = &[
     "copilot-instructions.md",
     ".github/copilot-instructions.md",
     "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".claude/CLAUDE.md",
     "AGENTS.md",
     ".windsurfrules",
     ".clinerules",
     ".aiderignore",
+    // Agent long-term memory / persona files: malicious postinstall scripts append
+    // operating instructions here (e.g. Cisco CVE-2026-21852), which the agent then
+    // loads into its system prompt every session. Tamper detection (hash + git_tracked)
+    // makes cross-session mutation visible via --diff.
+    "MEMORY.md",
+    "SOUL.md",
+    ".serena/memories",
 ];
 
 /// Dangerous patterns in rules files.

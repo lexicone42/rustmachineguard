@@ -26,6 +26,10 @@ pub struct ScanReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agent_settings: Vec<AgentSettings>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ai_credentials: Vec<AiCredential>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<EnvFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exposure_findings: Vec<ExposureFinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcp_probes: Vec<McpProbeResult>,
@@ -324,6 +328,33 @@ pub struct AgentHook {
     pub dangerous: bool,
 }
 
+/// At-rest AI-service credential file (existence + permissions only; values never read).
+#[derive(Debug, Serialize)]
+pub struct AiCredential {
+    pub provider: String,
+    pub credential_type: String,
+    pub path: String,
+    /// Octal permission bits, e.g. "0600". None on non-Unix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    pub world_readable: bool,
+    pub group_readable: bool,
+}
+
+/// A `.env` file in an agent project root (agents read the working directory).
+#[derive(Debug, Serialize)]
+pub struct EnvFile {
+    pub path: String,
+    /// A git-tracked .env is a committed secret.
+    pub git_tracked: bool,
+    pub world_readable: bool,
+    /// Count of `KEY=value` lines (names parsed, values never stored).
+    pub key_count: usize,
+    /// NAMES (never values) of keys that look secret-bearing (TOKEN/SECRET/KEY/...).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secret_keys: Vec<String>,
+}
+
 /// Exposure catalog entry for known-bad packages.
 #[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct ExposureEntry {
@@ -331,6 +362,10 @@ pub struct ExposureEntry {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Semver range of affected versions, e.g. "< 2.0.0" or ">=1.0,<1.5". When set,
+    /// matches any version satisfying the range (for "vulnerable below X" cases).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_range: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advisory: Option<String>,
 }
@@ -365,6 +400,8 @@ pub struct Summary {
     pub agent_skills_count: usize,
     pub agent_settings_count: usize,
     pub agent_hooks_count: usize,
+    pub ai_credentials_count: usize,
+    pub env_files_count: usize,
     pub rules_file_findings_count: usize,
     pub exposure_findings_count: usize,
 }
@@ -390,6 +427,8 @@ impl ScanReport {
             agent_skills_count: self.agent_skills.len(),
             agent_settings_count: self.agent_settings.len(),
             agent_hooks_count: self.agent_settings.iter().map(|s| s.hooks.len()).sum(),
+            ai_credentials_count: self.ai_credentials.len(),
+            env_files_count: self.env_files.len(),
             rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
             exposure_findings_count: self.exposure_findings.len(),
         };

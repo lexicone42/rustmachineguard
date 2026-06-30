@@ -322,6 +322,8 @@ fn summary_counts_match_vector_lengths() {
         rules_files: vec![],
         agent_skills: vec![],
         agent_settings: vec![],
+        ai_credentials: vec![],
+        env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![],
@@ -334,7 +336,7 @@ fn summary_counts_match_vector_lengths() {
             cloud_credentials_count: 0, container_tools_count: 0,
             notebook_servers_count: 0, browser_extensions_count: 0,
             package_config_audits_count: 0, rules_files_count: 0,
-            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, rules_file_findings_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
         },
     };
@@ -379,6 +381,8 @@ fn json_output_is_valid_json() {
         rules_files: vec![],
         agent_skills: vec![],
         agent_settings: vec![],
+        ai_credentials: vec![],
+        env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
@@ -391,7 +395,7 @@ fn json_output_is_valid_json() {
             cloud_credentials_count: 0, container_tools_count: 0,
             notebook_servers_count: 0, browser_extensions_count: 0,
             package_config_audits_count: 0, rules_files_count: 0,
-            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, rules_file_findings_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
         },
     };
@@ -433,6 +437,8 @@ fn html_output_no_script_injection() {
         rules_files: vec![],
         agent_skills: vec![],
         agent_settings: vec![],
+        ai_credentials: vec![],
+        env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![],
@@ -445,7 +451,7 @@ fn html_output_no_script_injection() {
             cloud_credentials_count: 0, container_tools_count: 0,
             notebook_servers_count: 0, browser_extensions_count: 0,
             package_config_audits_count: 0, rules_files_count: 0,
-            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, rules_file_findings_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
         },
     };
@@ -927,6 +933,84 @@ fn builtin_catalog_catches_compromised_checkmarx() {
         catalog.check_extension("vscode", "checkmarx.cx-dev-assist", "1.17.0", "vscode");
     assert_eq!(findings.len(), 1);
     assert!(findings[0].advisory.contains("TeamPCP"));
+}
+
+// ─── Version-range catalog matching ────────────────────────────
+
+#[test]
+fn version_range_matches_vulnerable_and_skips_patched() {
+    use rustmachineguard::scanners::exposure::version_matches;
+    use rustmachineguard::models::ExposureEntry;
+    let entry = ExposureEntry {
+        ecosystem: "npm".into(),
+        name: "pkg".into(),
+        version: None,
+        version_range: Some("<1.4.3".into()),
+        advisory: Some("a".into()),
+    };
+    assert!(version_matches(&entry, Some("1.4.2")), "vulnerable version matches");
+    assert!(version_matches(&entry, Some("1.0.0")), "older vulnerable version matches");
+    assert!(!version_matches(&entry, Some("1.4.3")), "patched version must NOT match");
+    assert!(!version_matches(&entry, Some("2.0.0")), "newer version must NOT match");
+    assert!(!version_matches(&entry, None), "missing version is a conservative non-match");
+}
+
+#[test]
+fn version_range_pads_partial_versions() {
+    use rustmachineguard::scanners::exposure::version_matches;
+    use rustmachineguard::models::ExposureEntry;
+    let entry = ExposureEntry {
+        ecosystem: "npm".into(), name: "p".into(), version: None,
+        version_range: Some(">=1.0, <2.0".into()), advisory: None,
+    };
+    assert!(version_matches(&entry, Some("1.5")), "'1.5' pads to 1.5.0 and matches");
+    assert!(version_matches(&entry, Some("v1.0")), "leading v is stripped");
+    assert!(!version_matches(&entry, Some("2.0")), "2.0 is outside the range");
+}
+
+#[test]
+fn exact_version_still_takes_precedence() {
+    use rustmachineguard::scanners::exposure::version_matches;
+    use rustmachineguard::models::ExposureEntry;
+    let entry = ExposureEntry {
+        ecosystem: "pypi".into(), name: "litellm".into(),
+        version: Some("1.82.7".into()), version_range: None, advisory: None,
+    };
+    assert!(version_matches(&entry, Some("1.82.7")));
+    assert!(!version_matches(&entry, Some("1.83.0")), "clean version must not match exact entry");
+}
+
+#[test]
+fn builtin_catalog_mcpjam_inspector_version_range() {
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let vuln = mcp_server_with_pkg("npm", "@mcpjam/inspector", "1.4.2");
+    assert_eq!(catalog.check_mcp_server(&vuln, "/t").len(), 1, "1.4.2 is vulnerable");
+    let patched = mcp_server_with_pkg("npm", "@mcpjam/inspector", "1.4.3");
+    assert!(catalog.check_mcp_server(&patched, "/t").is_empty(), "1.4.3 is patched");
+}
+
+// ─── AI credentials + .env scanners ────────────────────────────
+
+#[test]
+fn env_file_parses_keys_and_flags_secrets() {
+    use rustmachineguard::scanners::env_files::parse_env_keys;
+    let content = "# comment\nDATABASE_URL=postgres://x\nexport API_TOKEN=abc123\nAWS_SECRET_ACCESS_KEY=zzz\nPORT=3000\n\nnot a kv line\n";
+    let (count, secrets) = parse_env_keys(content);
+    assert_eq!(count, 4, "four KEY=value lines");
+    assert!(secrets.contains(&"API_TOKEN".to_string()));
+    assert!(secrets.contains(&"AWS_SECRET_ACCESS_KEY".to_string()));
+    assert!(!secrets.contains(&"PORT".to_string()), "PORT is not secret-bearing");
+    assert!(!secrets.contains(&"DATABASE_URL".to_string()), "URL alone is not flagged");
+    // Crucially, no values are present in the parsed output.
+    assert!(!secrets.iter().any(|k| k.contains("abc123") || k.contains("postgres")));
+}
+
+#[test]
+fn env_file_ignores_comments_and_blanks() {
+    use rustmachineguard::scanners::env_files::parse_env_keys;
+    let (count, secrets) = parse_env_keys("\n# just comments\n   # indented\n\n");
+    assert_eq!(count, 0);
+    assert!(secrets.is_empty());
 }
 
 // ─── Package config auditing ──────────────────────────────────
@@ -2268,6 +2352,8 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         rules_files: vec![],
         agent_skills: vec![],
         agent_settings: vec![],
+        ai_credentials: vec![],
+        env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![],
@@ -2279,7 +2365,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             cloud_credentials_count: 0, container_tools_count: 0,
             notebook_servers_count: 0, browser_extensions_count: 0,
             package_config_audits_count: 0, rules_files_count: 0,
-            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, rules_file_findings_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             mcp_servers_count: 0, exposure_findings_count: 0,
         },
     };

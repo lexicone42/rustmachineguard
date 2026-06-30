@@ -51,16 +51,8 @@ impl ExposureCatalog {
             if !eq_case_insensitive(&entry.name, pkg_name) {
                 continue;
             }
-            // If catalog entry specifies a version, match exactly
-            if let Some(ref entry_version) = entry.version {
-                if let Some(ref server_version) = server.package_version {
-                    if entry_version != server_version {
-                        continue;
-                    }
-                } else {
-                    // Server has no version info but catalog requires specific version — skip
-                    continue;
-                }
+            if !version_matches(entry, server.package_version.as_deref()) {
+                continue;
             }
             findings.push(ExposureFinding {
                 ecosystem: ecosystem.clone(),
@@ -93,10 +85,8 @@ impl ExposureCatalog {
             if !eq_case_insensitive(&entry.name, name) {
                 continue;
             }
-            if let Some(ref entry_version) = entry.version {
-                if entry_version != version {
-                    continue;
-                }
+            if !version_matches(entry, Some(version)) {
+                continue;
             }
             findings.push(ExposureFinding {
                 ecosystem: ecosystem.to_string(),
@@ -113,4 +103,51 @@ impl ExposureCatalog {
 
 fn eq_case_insensitive(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
+}
+
+/// Decide whether a catalog entry's version constraint matches a candidate version.
+/// Precedence: exact `version` (string equality) > `version_range` (semver) > neither
+/// (matches all versions). A range against a missing or unparseable version is a
+/// non-match (conservative — better to miss than to false-positive).
+pub fn version_matches(entry: &crate::models::ExposureEntry, candidate: Option<&str>) -> bool {
+    if let Some(ref exact) = entry.version {
+        return candidate == Some(exact.as_str());
+    }
+    if let Some(ref range) = entry.version_range {
+        let Some(cand) = candidate else {
+            return false;
+        };
+        let (Ok(req), Some(ver)) = (
+            semver::VersionReq::parse(range.trim()),
+            lenient_version(cand),
+        ) else {
+            return false;
+        };
+        return req.matches(&ver);
+    }
+    // No version constraint → applies to all versions.
+    true
+}
+
+/// Parse a version leniently into semver: accepts "1.2.3", pads "1.2" -> "1.2.0" and
+/// "1" -> "1.0.0", and strips a leading "v". Returns None if the numeric core is
+/// unparseable.
+fn lenient_version(v: &str) -> Option<semver::Version> {
+    let v = v.trim().strip_prefix('v').unwrap_or(v.trim());
+    if let Ok(parsed) = semver::Version::parse(v) {
+        return Some(parsed);
+    }
+    // Split off any pre-release/build suffix, pad the numeric core to 3 components.
+    let core_end = v
+        .find(|c: char| c != '.' && !c.is_ascii_digit())
+        .unwrap_or(v.len());
+    let (core, _suffix) = v.split_at(core_end);
+    let mut parts: Vec<&str> = core.split('.').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    while parts.len() < 3 {
+        parts.push("0");
+    }
+    semver::Version::parse(&parts[..3].join(".")).ok()
 }

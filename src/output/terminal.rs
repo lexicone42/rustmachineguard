@@ -55,6 +55,8 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "Agent Skills", s.agent_skills_count);
     summary_line(&mut out, "Agent Settings Files", s.agent_settings_count);
     summary_line(&mut out, "Agent Hooks", s.agent_hooks_count);
+    summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
+    summary_line(&mut out, ".env Files", s.env_files_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
     if s.rules_file_findings_count > 0 {
         out.push_str(&format!(
@@ -540,6 +542,67 @@ pub fn render(report: &ScanReport) -> String {
                     } else {
                         cmd_preview
                     }
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    // AI Credentials (at-rest tokens)
+    if !report.ai_credentials.is_empty() {
+        section_header(
+            &mut out,
+            &format!("AI Credentials ({})", report.ai_credentials.len()),
+        );
+        for c in &report.ai_credentials {
+            let perm = c.permissions.as_deref().unwrap_or("?");
+            let warn = if c.world_readable {
+                " WORLD-READABLE".red().bold().to_string()
+            } else if c.group_readable {
+                " group-readable".yellow().to_string()
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  {} {} — {} [{}]{}\n    {}\n",
+                "→".bold(),
+                c.provider,
+                c.credential_type.dimmed(),
+                perm,
+                warn,
+                c.path.dimmed()
+            ));
+        }
+        out.push('\n');
+    }
+
+    // .env Files in agent project roots
+    if !report.env_files.is_empty() {
+        section_header(&mut out, &format!(".env Files ({})", report.env_files.len()));
+        for e in &report.env_files {
+            let mut flags = Vec::new();
+            if e.git_tracked {
+                flags.push("GIT-TRACKED".red().bold().to_string());
+            }
+            if e.world_readable {
+                flags.push("world-readable".red().to_string());
+            }
+            let flag_str = if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", flags.join(", "))
+            };
+            out.push_str(&format!(
+                "  {} {} ({} keys){}\n",
+                "→".bold(),
+                e.path,
+                e.key_count,
+                flag_str
+            ));
+            if !e.secret_keys.is_empty() {
+                out.push_str(&format!(
+                    "    secret-bearing keys: {}\n",
+                    e.secret_keys.join(", ").yellow()
                 ));
             }
         }

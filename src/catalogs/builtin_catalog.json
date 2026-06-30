@@ -243,6 +243,7 @@
   {
     "ecosystem": "npm",
     "name": "@mcpjam/inspector",
+    "version_range": "<1.4.3",
     "advisory": "CVE-2026-23744 (GHSA-232v-j27c-5pp6): binds 0.0.0.0 with no auth; crafted HTTP request installs+runs a malicious MCP server (unauth RCE). Affects <=1.4.2, fixed 1.4.3. Distinct from @modelcontextprotocol/inspector. Source: GitHub Advisory DB"
   },
   {

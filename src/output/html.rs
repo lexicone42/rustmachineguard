@@ -90,6 +90,8 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("Rules Files", s.rules_files_count),
         ("Agent Skills", s.agent_skills_count),
         ("Agent Hooks", s.agent_hooks_count),
+        ("AI Credentials", s.ai_credentials_count),
+        (".env Files", s.env_files_count),
         ("Exposures", s.exposure_findings_count),
     ];
 

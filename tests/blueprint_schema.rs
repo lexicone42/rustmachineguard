@@ -342,6 +342,8 @@ fn make_report(
         rules_files: vec![],
         agent_skills: vec![],
         agent_settings: vec![],
+        ai_credentials: vec![],
+        env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
         warnings: vec![ScanWarning {
@@ -363,7 +365,7 @@ fn make_report(
             browser_extensions_count: 0,
             package_config_audits_count: 0,
             rules_files_count: 0,
-            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0,
+            agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0,
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,

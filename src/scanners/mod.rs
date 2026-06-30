@@ -1,7 +1,9 @@
 pub mod agent_settings;
+pub mod ai_credentials;
 pub mod ai_frameworks;
 pub mod ai_tools;
 pub mod browser_extensions;
+pub mod env_files;
 pub mod cloud_credentials;
 pub mod exposure;
 pub mod container_tools;
@@ -124,6 +126,27 @@ pub fn extract_version(text: &str) -> Option<String> {
 pub trait Scanner {
     type Output;
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output;
+}
+
+/// Unix permission bits of a file as (octal_string, world_readable, group_readable).
+/// Returns None on non-Unix or if the file can't be stat'd. Never reads file content.
+pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(path).ok()?;
+        let mode = meta.permissions().mode() & 0o777;
+        Some((
+            format!("{:04o}", mode),
+            mode & 0o004 != 0,
+            mode & 0o040 != 0,
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// Check whether a file is tracked by git (shells out to `git ls-files`).
