@@ -43,6 +43,8 @@ enum Format {
     Json,
     Html,
     Sbom,
+    /// CycloneDX 2.0 Blueprint (draft) — agent posture with assets, behaviors, flows
+    Blueprint,
 }
 
 const VALID_SKIP: &[&str] = &[
@@ -132,6 +134,7 @@ fn main() {
         Format::Json => OutputFormat::Json,
         Format::Html => OutputFormat::Html,
         Format::Sbom => OutputFormat::Sbom,
+        Format::Blueprint => OutputFormat::Blueprint,
     };
 
     let skip: Vec<&str> = cli
