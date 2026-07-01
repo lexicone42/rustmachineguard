@@ -366,7 +366,7 @@ pub struct ToxicFlowSurface {
 
 /// True if `arg` is a filesystem root broad enough to expose the whole machine or the
 /// user's entire home directory.
-fn is_broad_root(arg: &str, home: &str) -> bool {
+pub fn is_broad_root(arg: &str, home: &str) -> bool {
     let a = arg.trim().trim_end_matches('/');
     if a.is_empty() {
         return true; // "/" trimmed to ""

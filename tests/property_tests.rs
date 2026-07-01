@@ -2791,3 +2791,171 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
     customize(&mut report);
     report
 }
+
+// ─── new-detection classifiers (this session) ──────────────
+//
+// Property coverage for the pure classifiers behind the transcript / marketplace /
+// MCP-secret detections. The headline invariant is the no-secret-leakage guarantee:
+// the inline-secret detector emits KEY NAMES only, never a value.
+
+proptest! {
+    /// extract_inline_secret_env_keys never panics on an arbitrary env object.
+    #[test]
+    fn inline_secret_never_panics(
+        keys in prop::collection::vec("[A-Za-z_]{1,12}", 0..8),
+        vals in prop::collection::vec("\\PC*", 0..8),
+    ) {
+        let mut map = serde_json::Map::new();
+        for (i, k) in keys.iter().enumerate() {
+            let v = vals.get(i).cloned().unwrap_or_default();
+            map.insert(k.clone(), serde_json::Value::String(v));
+        }
+        let val = serde_json::Value::Object(map);
+        let _ = rustmachineguard::scanners::mcp::extract_inline_secret_env_keys(Some(&val));
+    }
+
+    /// No-secret-leakage: every returned item is a KEY NAME present in the input and
+    /// is secret-looking — and is NEVER a value. Values here are drawn from a digit/
+    /// symbol charset that can never equal an [A-Za-z_] key name, so a returned string
+    /// matching any value would be a genuine leak.
+    #[test]
+    fn inline_secret_emits_key_names_never_values(
+        entries in prop::collection::vec(("[A-Za-z_]{1,12}", "[0-9=/+._-]{3,24}"), 0..8),
+    ) {
+        let mut map = serde_json::Map::new();
+        for (k, v) in &entries {
+            map.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
+        let val = serde_json::Value::Object(map.clone());
+        let out = rustmachineguard::scanners::mcp::extract_inline_secret_env_keys(Some(&val));
+        for name in &out {
+            prop_assert!(map.contains_key(name), "fabricated key: {name}");
+            prop_assert!(
+                rustmachineguard::scanners::env_files::is_secret_key_name(name),
+                "non-secret name flagged: {name}"
+            );
+            for v in map.values() {
+                if let Some(vs) = v.as_str() {
+                    prop_assert_ne!(name.as_str(), vs, "a value leaked as a returned name");
+                }
+            }
+        }
+    }
+
+    /// A secret-looking key whose value is an env reference / empty is never flagged.
+    #[test]
+    fn inline_secret_ignores_env_references(
+        name in "[A-Z]{0,4}(TOKEN|SECRET|KEY|PASSWORD)[A-Z]{0,4}",
+    ) {
+        for refval in ["${VAR}", "$VAR", "%VAR%", ""] {
+            let val = serde_json::json!({ name.clone(): refval });
+            let out = rustmachineguard::scanners::mcp::extract_inline_secret_env_keys(Some(&val));
+            prop_assert!(out.is_empty(), "env-ref {:?} flagged for {}", refval, name);
+        }
+    }
+}
+
+proptest! {
+    /// parse_marketplaces is total and returns one record per unique top-level key.
+    #[test]
+    fn parse_marketplaces_one_per_key(
+        names in prop::collection::vec("[a-z][a-z0-9-]{0,10}", 0..6),
+    ) {
+        let mut map = serde_json::Map::new();
+        for n in &names {
+            map.insert(
+                n.clone(),
+                serde_json::json!({"source": {"source": "github", "repo": "x/y"}}),
+            );
+        }
+        let json = serde_json::Value::Object(map);
+        let out = rustmachineguard::scanners::marketplaces::parse_marketplaces(
+            &json,
+            &std::collections::HashMap::new(),
+        );
+        let unique: std::collections::BTreeSet<_> = names.iter().cloned().collect();
+        prop_assert_eq!(out.len(), unique.len());
+        for m in &out {
+            prop_assert!(unique.contains(&m.name), "unknown name {}", m.name);
+        }
+    }
+
+    /// Non-object JSON yields no marketplaces and never panics.
+    #[test]
+    fn parse_marketplaces_non_object_empty(val in prop_oneof![
+        Just(serde_json::Value::Null),
+        Just(serde_json::Value::Bool(true)),
+        Just(serde_json::Value::String("x".into())),
+        Just(serde_json::Value::Array(vec![])),
+    ]) {
+        prop_assert!(
+            rustmachineguard::scanners::marketplaces::parse_marketplaces(
+                &val, &std::collections::HashMap::new()
+            ).is_empty()
+        );
+    }
+
+    /// plugin_counts: the counts sum to the number of distinct "plugin@marketplace" keys.
+    #[test]
+    fn plugin_counts_sum_matches_keys(
+        plugins in prop::collection::vec("[a-z]{1,6}", 0..8),
+        markets in prop::collection::vec("[a-z]{1,6}", 1..4),
+    ) {
+        let mut pmap = serde_json::Map::new();
+        for (i, p) in plugins.iter().enumerate() {
+            let m = &markets[i % markets.len()];
+            pmap.insert(format!("{p}@{m}"), serde_json::json!([{}]));
+        }
+        let expected = pmap.len();
+        let json = serde_json::json!({"plugins": serde_json::Value::Object(pmap)});
+        let counts = rustmachineguard::scanners::marketplaces::plugin_counts(&json);
+        let total: usize = counts.values().sum();
+        prop_assert_eq!(total, expected);
+    }
+}
+
+proptest! {
+    /// human_bytes never panics and always ends in a known unit.
+    #[test]
+    fn human_bytes_has_known_unit(b in any::<u64>()) {
+        let s = rustmachineguard::output::terminal::human_bytes(b);
+        prop_assert!(
+            ["B", "KB", "MB", "GB", "TB"].iter().any(|u| s.ends_with(u)),
+            "no known unit: {s}"
+        );
+    }
+
+    /// Sub-kilobyte sizes render exactly as "{n} B".
+    #[test]
+    fn human_bytes_small_is_exact(b in 0u64..1000) {
+        prop_assert_eq!(
+            rustmachineguard::output::terminal::human_bytes(b),
+            format!("{b} B")
+        );
+    }
+}
+
+proptest! {
+    /// is_broad_root never panics on arbitrary input.
+    #[test]
+    fn is_broad_root_total(arg in "\\PC*", home in "/[a-z/]{0,20}") {
+        let _ = rustmachineguard::analysis::is_broad_root(&arg, &home);
+    }
+
+    /// "/" and the home dir itself are always broad; a specific subdir of home is not.
+    #[test]
+    fn is_broad_root_root_and_home_broad_subdir_not(
+        home in "/(home|Users)/[a-z]{1,10}",
+        sub in "[a-z]{1,10}",
+    ) {
+        let home_slash = format!("{home}/");
+        prop_assert!(rustmachineguard::analysis::is_broad_root("/", &home));
+        prop_assert!(rustmachineguard::analysis::is_broad_root(&home, &home));
+        prop_assert!(rustmachineguard::analysis::is_broad_root(&home_slash, &home));
+        let deep = format!("{home}/{sub}");
+        prop_assert!(
+            !rustmachineguard::analysis::is_broad_root(&deep, &home),
+            "subdir wrongly flagged broad: {deep}"
+        );
+    }
+}
