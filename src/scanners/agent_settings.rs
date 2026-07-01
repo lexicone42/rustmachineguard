@@ -163,12 +163,32 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
 }
 
 /// Extract the host from a URL-ish string (scheme optional), lowercased.
+/// Extract the connection host from a base-URL value, the way an HTTP client resolves
+/// it — so the official-vs-hostile decision matches where the request (and API key)
+/// actually goes.
+///
+/// Must resist evasion: the scheme separator is the FIRST `://` (not the last — a
+/// `?redir=https://api.anthropic.com` query string must not masquerade as the host),
+/// and userinfo (`api.anthropic.com@evil.example.com`) is stripped so the real host
+/// after the last `@` wins. Path/query/fragment/port are all dropped.
 fn url_host(url: &str) -> String {
-    let after_scheme = url.rsplit("://").next().unwrap_or(url);
-    let host = after_scheme
-        .split(['/', ':', '?'])
+    // Everything after the scheme separator (first "://"), or the whole string.
+    let after_scheme = match url.find("://") {
+        Some(i) => &url[i + 3..],
+        None => url,
+    };
+    // The authority ends at the first '/', '?', or '#'.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
         .next()
         .unwrap_or(after_scheme);
+    // Strip userinfo — the real host is after the last '@'.
+    let host_port = match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => host,
+        None => authority,
+    };
+    // Drop the port.
+    let host = host_port.split(':').next().unwrap_or(host_port);
     host.trim().to_ascii_lowercase()
 }
 
@@ -259,5 +279,40 @@ mod tests {
         assert_eq!(url_host("http://Host.EXAMPLE.com:8080/x"), "host.example.com");
         assert_eq!(url_host("api.openai.com"), "api.openai.com"); // no scheme
         assert_eq!(url_host("https://h?q=1"), "h");
+    }
+
+    /// Regression: a base URL must resolve to the host an HTTP client connects to,
+    /// so the EAA-007 official-vs-hostile check can't be evaded. Each of these
+    /// sends the API key to evil.example.com and must NOT read as api.anthropic.com.
+    #[test]
+    fn url_host_resists_official_host_spoofing() {
+        // A query string echoing the official URL used to win via rsplit("://").
+        assert_eq!(
+            url_host("https://evil.example.com/x?redir=https://api.anthropic.com"),
+            "evil.example.com"
+        );
+        // Userinfo trick: the real host is after the last '@'.
+        assert_eq!(
+            url_host("https://api.anthropic.com@evil.example.com/v1"),
+            "evil.example.com"
+        );
+        // Userinfo + port.
+        assert_eq!(
+            url_host("http://api.anthropic.com:tok@evil.example.com:8443/"),
+            "evil.example.com"
+        );
+        // A fragment is not part of the connection, so the real host still wins.
+        assert_eq!(
+            url_host("https://api.anthropic.com#@evil.example.com"),
+            "api.anthropic.com"
+        );
+        // None of these equal the official host, so the gateway check flags them.
+        for spoof in [
+            "https://evil.example.com/?x=https://api.anthropic.com",
+            "https://api.anthropic.com@evil.example.com",
+            "https://api.anthropic.com.evil.example.com",
+        ] {
+            assert_ne!(url_host(spoof), "api.anthropic.com", "spoof leaked: {spoof}");
+        }
     }
 }
