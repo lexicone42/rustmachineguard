@@ -159,7 +159,7 @@ fn rich_blueprint_conforms() {
             allow_rules: 2,
             deny_rules: 1,
             auto_approve_mcp: true,
-            enabled_mcp_servers: vec!["fs".into()],
+            enabled_mcp_servers: vec!["fs".into()], gateway_overrides: vec![],
         }];
         r.exposure_findings = vec![ExposureFinding {
             ecosystem: "npm".into(),

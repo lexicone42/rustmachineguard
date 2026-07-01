@@ -13,6 +13,7 @@
 //! - OWASP Agentic Skills Top 10 (AST01–AST10)
 //! - OWASP MCP Top 10 (MCP01–MCP10)
 //! - EU AI Act — AI-system inventory / transparency obligations (enforceable 2026-08-02)
+//! - Endpoint AI Agent Abuse (EAA) catalog — github.com/0x4D31/endpoint-ai-agent-abuse (CC0)
 
 use crate::analysis::collect_findings;
 use crate::models::ScanReport;
@@ -210,6 +211,72 @@ pub const CONTROLS: &[Control] = &[
         how: "Inventories which AI tools/agents are present and running; does not assess model-level transparency obligations.",
         finding_categories: &[],
     },
+    // ── Endpoint AI Agent Abuse (EAA) — the closest-fit framework: endpoint agent
+    // abuse specifically. Catalog by 0x4D31 (CC0). ──
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-002",
+        title: "Permissive or unattended agent execution",
+        coverage: Coverage::Partial,
+        how: "Flags bypassPermissions mode in settings; runtime invocation flags are out of scope.",
+        finding_categories: &["Permissions"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-003",
+        title: "Lifecycle hook persistence",
+        coverage: Coverage::Covered,
+        how: "Parses settings hooks (shell commands run on agent events) and flags dangerous patterns.",
+        finding_categories: &["Hook"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-004",
+        title: "Persistent instruction or memory poisoning",
+        coverage: Coverage::Covered,
+        how: "Inventories + hashes rules/memory files; flags dangerous patterns; --diff catches cross-session tampering.",
+        finding_categories: &["Rules file"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-006",
+        title: "MCP or tool configuration abuse",
+        coverage: Coverage::Covered,
+        how: "Inventories MCP configs, matches the threat catalog, verifies the registry, and (opt-in) probes servers.",
+        finding_categories: &["Exposure", "Registry"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-007",
+        title: "Hostile model/API gateway routing",
+        coverage: Coverage::Covered,
+        how: "Flags AI base-URL overrides (ANTHROPIC_BASE_URL, ...) in settings env blocks that point at non-official hosts (CVE-2026-21852 vector).",
+        finding_categories: &["Gateway routing"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-010",
+        title: "MCP dynamic tool mutation / pushed context",
+        coverage: Coverage::Covered,
+        how: "--diff detects rug-pulls (a trusted tool's description/schema mutating between scans); cross-server shadowing is flagged in the Blueprint.",
+        finding_categories: &[],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-011",
+        title: "Environment-expanded MCP activation",
+        coverage: Coverage::Covered,
+        how: "Flags enableAllProjectMcpServers (blanket project-MCP auto-approval).",
+        finding_categories: &["MCP auto-approval"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-015",
+        title: "Inherited authority abuse",
+        coverage: Coverage::Partial,
+        how: "Surfaces at-rest credentials and static-key vs OAuth/SPIFFE identity posture; runtime token use is out of scope.",
+        finding_categories: &["Credential", "Agent identity"],
+    },
 ];
 
 /// A control assessed against a specific scan.
@@ -312,7 +379,7 @@ mod tests {
     const KNOWN_CATEGORIES: &[&str] = &[
         "Exposure", "Hook", "MCP auto-approval", "Permissions", "Credential",
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
-        "Registry", "Agent identity",
+        "Registry", "Agent identity", "Gateway routing",
     ];
 
     fn empty_report() -> ScanReport {

@@ -524,6 +524,24 @@ pub fn render(report: &ScanReport) -> String {
                     "!".red().bold()
                 ));
             }
+            for g in &s.gateway_overrides {
+                if g.official {
+                    out.push_str(&format!(
+                        "    {} {} → {} (official)\n",
+                        "·".dimmed(),
+                        g.var.dimmed(),
+                        g.host
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    {} {} → {} {}\n",
+                        "!".red().bold(),
+                        g.var,
+                        g.host.red(),
+                        "(non-official gateway — EAA-007)".red()
+                    ));
+                }
+            }
             for h in &s.hooks {
                 let marker = if h.dangerous {
                     "!".red().bold().to_string()

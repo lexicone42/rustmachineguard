@@ -317,6 +317,21 @@ pub struct AgentSettings {
     pub auto_approve_mcp: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_mcp_servers: Vec<String>,
+    /// AI provider base-URL / gateway overrides set in the settings `env` block.
+    /// A non-official host is the EAA-007 "hostile gateway routing" surface — the
+    /// vector behind Claude Code CVE-2026-21852 (API-key exfil via a malicious proxy).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gateway_overrides: Vec<GatewayOverride>,
+}
+
+/// An AI provider base-URL override (e.g. ANTHROPIC_BASE_URL) found in a settings
+/// `env` block. `official` is true only when the host matches the provider's known
+/// endpoint; a non-official host warrants review (a proxy may be legitimate or hostile).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GatewayOverride {
+    pub var: String,
+    pub host: String,
+    pub official: bool,
 }
 
 /// A hook that runs a command on an agent lifecycle event.

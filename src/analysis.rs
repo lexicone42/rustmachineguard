@@ -92,6 +92,22 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 location: s.path.clone(),
             });
         }
+        // EAA-007: an AI base URL pointed at a non-official host routes requests (and
+        // the API key) through that host — the CVE-2026-21852 exfil vector. A proxy may
+        // be legitimate, so this is advisory-to-review, not automatically critical.
+        for g in &s.gateway_overrides {
+            if !g.official {
+                f.push(Finding {
+                    severity: Severity::Medium,
+                    category: "Gateway routing".into(),
+                    title: format!(
+                        "{} points to non-official host {} — verify this gateway is trusted (EAA-007)",
+                        g.var, g.host
+                    ),
+                    location: s.path.clone(),
+                });
+            }
+        }
     }
 
     // At-rest AI tokens with loose permissions.

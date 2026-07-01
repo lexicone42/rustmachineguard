@@ -88,6 +88,7 @@ coverage (Covered / Partial / Out-of-scope) per control:
 - **OWASP Top 10 for Agentic Applications** (ASI01–ASI10) and **Agentic Skills Top 10** (AST)
 - **OWASP MCP Top 10** (MCP)
 - **EU AI Act** AI-component inventory / transparency obligations (enforceable 2026-08-02)
+- **[Endpoint AI Agent Abuse (EAA)](https://github.com/0x4D31/endpoint-ai-agent-abuse)** — the closest-fit framework (endpoint agent abuse specifically); rmguard covers 6 of its 16 techniques outright and partials several more. CC0, by 0x4D31.
 
 This is posture **evidence** (inventory + detection), **not a compliance attestation** —
 runtime controls (invocation logging, network segmentation) are explicitly marked
