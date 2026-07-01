@@ -100,6 +100,7 @@ fn rich_blueprint_conforms() {
             vendor: "claude".into(),
             server_names: vec!["fs".into()],
             server_count: 1,
+            git_tracked: false,
             servers: vec![McpServerDetail {
                 name: "fs".into(),
                 transport: "stdio".into(),
@@ -161,6 +162,7 @@ fn rich_blueprint_conforms() {
             deny_rules: 1,
             auto_approve_mcp: true,
             enabled_mcp_servers: vec!["fs".into()], gateway_overrides: vec![],
+            inline_secret_env_keys: vec![],
         }];
         r.exposure_findings = vec![ExposureFinding {
             ecosystem: "npm".into(),
@@ -206,6 +208,7 @@ fn shadowing_blueprint_conforms() {
                 vendor: "claude".into(),
                 server_names: vec![name.into()],
                 server_count: 1,
+                git_tracked: false,
                 servers: vec![McpServerDetail {
                     name: name.into(),
                     transport: "stdio".into(),

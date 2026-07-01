@@ -12,7 +12,7 @@ use rustmachineguard::analysis::{collect_findings, Severity};
 use rustmachineguard::models::ScanReport;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Materialize the vulnerable machine under a unique temp dir; returns its root.
@@ -90,7 +90,54 @@ fn build_vulnerable_machine() -> PathBuf {
     .unwrap();
     fs::set_permissions(dir.join(".claude/projects"), fs::Permissions::from_mode(0o755)).unwrap();
 
+    // 6c. A git-tracked project MCP config with an inline credential = committed secret.
+    // We make the machine a git repo and track ONLY this file, so the .env (untracked)
+    // still reads as world-readable-exposure and the .cursor config still reads as a
+    // plain inline-secret — only this one escalates to a committed-secret Critical.
+    let committed_mcp = dir.join("webapp/.mcp.json");
+    fs::write(
+        &committed_mcp,
+        r#"{"mcpServers": {"committed": {"command": "npx", "args": ["-y", "y-mcp"], "env": {"SLACK_TOKEN": "xoxb-committed-literal"}}}}"#,
+    )
+    .unwrap();
+    git_init_and_track(&dir, &committed_mcp);
+
     dir
+}
+
+/// Make `repo` a git repo and stage `file` so it reads as tracked. Best-effort:
+/// isolated from the caller's global git config. Returns whether the file is tracked.
+fn git_init_and_track(repo: &Path, file: &Path) -> bool {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init"]) {
+        return false;
+    }
+    let _ = git(&["config", "user.email", "t@t"]);
+    let _ = git(&["config", "user.name", "t"]);
+    git(&["add", file.to_str().unwrap()])
+}
+
+/// Whether `path` is tracked by git (mirrors the scanner's own check), used to gate
+/// the committed-secret assertion so the test is a no-op where git is unavailable.
+fn git_tracks(path: &Path) -> bool {
+    Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(path)
+        .current_dir(path.parent().unwrap())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[test]
@@ -179,6 +226,22 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
         has(&|f| f.category == "Plugin marketplace" && f.title.contains("randomvendor/agent-skills")),
         "should flag the auto-updating third-party plugin marketplace"
     );
+    // 11. A git-tracked MCP config with an inline credential escalates to a committed
+    //     secret (Critical "Secret leak"). Gated on git actually tracking the file.
+    if git_tracks(&dir.join("webapp/.mcp.json")) {
+        assert!(
+            has(&|f| f.category == "Secret leak"
+                && f.severity == Severity::Critical
+                && f.title.contains("SLACK_TOKEN")
+                && f.title.contains("committed")),
+            "git-tracked MCP config with an inline secret should be a committed-secret Critical"
+        );
+        // And the untracked .cursor inline secret stays a (non-committed) High MCP secret.
+        assert!(
+            has(&|f| f.category == "MCP secret" && f.title.contains("GITHUB_TOKEN")),
+            "untracked inline secret should remain a High MCP-secret finding"
+        );
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

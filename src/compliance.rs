@@ -250,8 +250,11 @@ pub const CONTROLS: &[Control] = &[
         id: "EAA-006",
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
-        how: "Inventories MCP configs, matches the threat catalog, verifies the registry, and (opt-in) probes servers.",
-        finding_categories: &["Exposure", "Registry"],
+        how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks.",
+        finding_categories: &[
+            "Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret",
+            "MCP command",
+        ],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -397,7 +400,7 @@ mod tests {
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
         "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
-        "Plugin marketplace",
+        "Plugin marketplace", "Settings secret",
     ];
 
     fn empty_report() -> ScanReport {

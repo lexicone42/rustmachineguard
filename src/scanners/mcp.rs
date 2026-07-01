@@ -1,6 +1,6 @@
 use crate::models::{McpConfig, McpServerDetail};
 use crate::platform::PlatformInfo;
-use crate::scanners::Scanner;
+use crate::scanners::{is_git_tracked, Scanner};
 
 pub struct McpScanner;
 
@@ -58,6 +58,7 @@ impl Scanner for McpScanner {
                 vendor,
                 server_names,
                 server_count,
+                git_tracked: is_git_tracked(&path),
                 servers,
             });
         }
@@ -94,6 +95,7 @@ impl Scanner for McpScanner {
                                 vendor: "Project".to_string(),
                                 server_names,
                                 server_count,
+                                git_tracked: is_git_tracked(&mcp_json),
                                 servers,
                             });
                         }

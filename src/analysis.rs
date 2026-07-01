@@ -101,18 +101,33 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     }
                 }
             }
-            // Credentials hardcoded inline in the config `env` block (names only).
+            // Credentials hardcoded inline in the config `env` block (names only). A
+            // git-tracked config makes this a committed secret — the same escalation
+            // as a git-tracked `.env`, so it becomes Critical "Secret leak".
             if !s.inline_secret_env_keys.is_empty() {
-                f.push(Finding {
-                    severity: Severity::High,
-                    category: "MCP secret".into(),
-                    title: format!(
-                        "MCP server '{}' has hardcoded credential(s) in its config env block: {} — reference ${{ENV_VAR}} instead",
-                        s.name,
-                        s.inline_secret_env_keys.join(", ")
-                    ),
-                    location: mcp.config_path.clone(),
-                });
+                let keys = s.inline_secret_env_keys.join(", ");
+                let finding = if mcp.git_tracked {
+                    Finding {
+                        severity: Severity::Critical,
+                        category: "Secret leak".into(),
+                        title: format!(
+                            "MCP server '{}' has hardcoded credential(s) in a git-tracked config: {} — committed secret",
+                            s.name, keys
+                        ),
+                        location: mcp.config_path.clone(),
+                    }
+                } else {
+                    Finding {
+                        severity: Severity::High,
+                        category: "MCP secret".into(),
+                        title: format!(
+                            "MCP server '{}' has hardcoded credential(s) in its config env block: {} — reference ${{ENV_VAR}} instead",
+                            s.name, keys
+                        ),
+                        location: mcp.config_path.clone(),
+                    }
+                };
+                f.push(finding);
             }
             // A launch command that downloads-and-executes (curl|bash, etc.): the
             // server's own bootstrap is a remote-code-execution vector.
@@ -165,6 +180,30 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Permissions".into(),
                 title: "permission mode is bypassPermissions".into(),
                 location: s.path.clone(),
+            });
+        }
+        // Credentials hardcoded inline in the settings `env` block (names only).
+        // A git-tracked settings file makes this a committed secret.
+        if !s.inline_secret_env_keys.is_empty() {
+            let keys = s.inline_secret_env_keys.join(", ");
+            f.push(if s.git_tracked {
+                Finding {
+                    severity: Severity::Critical,
+                    category: "Secret leak".into(),
+                    title: format!(
+                        "hardcoded credential(s) in a git-tracked settings env block: {keys} — committed secret"
+                    ),
+                    location: s.path.clone(),
+                }
+            } else {
+                Finding {
+                    severity: Severity::High,
+                    category: "Settings secret".into(),
+                    title: format!(
+                        "hardcoded credential(s) in the settings env block: {keys} — reference ${{ENV_VAR}} instead"
+                    ),
+                    location: s.path.clone(),
+                }
             });
         }
         // EAA-007: an AI base URL pointed at a non-official host routes requests (and

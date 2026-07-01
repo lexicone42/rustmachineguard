@@ -108,6 +108,8 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         .unwrap_or_default();
 
     let gateway_overrides = extract_gateway_overrides(&json);
+    let inline_secret_env_keys =
+        crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
 
     out.push(AgentSettings {
         path: path.to_string_lossy().to_string(),
@@ -121,6 +123,7 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         auto_approve_mcp,
         enabled_mcp_servers,
         gateway_overrides,
+        inline_secret_env_keys,
     });
 }
 
@@ -232,6 +235,22 @@ mod tests {
     #[test]
     fn gateway_override_none_when_no_env_block() {
         assert!(extract_gateway_overrides(&serde_json::json!({"hooks": {}})).is_empty());
+    }
+
+    #[test]
+    fn inline_secret_in_settings_env_detected_by_name_only() {
+        // The settings scanner reuses the MCP inline-secret extractor over its `env`
+        // block: a secret-looking key with a literal value is flagged by NAME; a
+        // ${VAR} reference and a non-secret key are not.
+        let json = serde_json::json!({
+            "env": {
+                "OPENAI_API_KEY": "sk-literalvalue",
+                "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+                "EDITOR": "vim"
+            }
+        });
+        let keys = crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
+        assert_eq!(keys, vec!["OPENAI_API_KEY".to_string()]);
     }
 
     #[test]

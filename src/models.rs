@@ -162,6 +162,10 @@ pub struct McpConfig {
     pub vendor: String,
     pub server_names: Vec<String>,
     pub server_count: usize,
+    /// True if this config file is tracked by git — a git-tracked config carrying an
+    /// inline credential is a committed secret (parallels a git-tracked `.env`).
+    #[serde(default)]
+    pub git_tracked: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<McpServerDetail>,
 }
@@ -331,6 +335,10 @@ pub struct AgentSettings {
     /// vector behind Claude Code CVE-2026-21852 (API-key exfil via a malicious proxy).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gateway_overrides: Vec<GatewayOverride>,
+    /// NAMES (never values) of secret-looking env vars set to a hardcoded literal in
+    /// the settings `env` block — a credential committed inline rather than referenced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_secret_env_keys: Vec<String>,
 }
 
 /// An AI provider base-URL override (e.g. ANTHROPIC_BASE_URL) found in a settings
