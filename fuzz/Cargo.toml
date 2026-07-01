@@ -70,3 +70,10 @@ path = "fuzz_targets/fuzz_env_parser.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_fleet_report"
+path = "fuzz_targets/fuzz_fleet_report.rs"
+test = false
+doc = false
+bench = false
