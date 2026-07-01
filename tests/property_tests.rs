@@ -1668,6 +1668,57 @@ fn fleet_html_escapes_hostnames() {
     assert!(html.contains("&lt;script&gt;x"));
 }
 
+#[test]
+fn fleet_anchors_unique_even_for_duplicate_hostnames() {
+    use rustmachineguard::output::fleet::render_fleet;
+    // Two machines with the SAME hostname must get distinct anchors so the
+    // "jump to machine" link can't land on the wrong detail card.
+    let a = make_test_report(|r| { r.device.hostname = "dup".into(); });
+    let b = make_test_report(|r| { r.device.hostname = "dup".into(); });
+    let html = render_fleet(&[a, b]);
+    assert!(html.contains(r#"id="host-0""#));
+    assert!(html.contains(r#"id="host-1""#));
+    assert_eq!(html.matches(r#"class="card host""#).count(), 2, "both machines rendered");
+}
+
+#[test]
+#[cfg(unix)]
+fn read_bounded_rejects_non_regular_files() {
+    use rustmachineguard::scanners::read_bounded;
+    use std::path::Path;
+    // /dev/null is a character device (len 0) — a naive size gate would pass it.
+    assert!(read_bounded(Path::new("/dev/null")).is_none(), "char device must be rejected");
+    // A directory is not a regular file either.
+    assert!(read_bounded(Path::new("/tmp")).is_none(), "directory must be rejected");
+    // A missing file is None.
+    assert!(read_bounded(Path::new("/nonexistent/rmg-xyz")).is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn fleet_skips_symlink_to_device_without_hanging() {
+    use rustmachineguard::output::fleet::load_reports_from_dir;
+    // A symlink evil.json -> /dev/zero would stream infinitely if read; it must be
+    // skipped, and a real scan alongside it must still load. If this test hangs,
+    // the guard regressed.
+    let dir = std::env::temp_dir().join(format!("rmg-fleet-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // A real (minimal) scan report.
+    let report = make_test_report(|r| { r.device.hostname = "real".into(); });
+    std::fs::write(dir.join("real.json"), serde_json::to_string(&report).unwrap()).unwrap();
+    // The malicious symlink.
+    std::os::unix::fs::symlink("/dev/zero", dir.join("evil.json")).unwrap();
+
+    let (reports, skipped) = load_reports_from_dir(&dir).unwrap();
+    assert_eq!(reports.len(), 1, "the real scan loads");
+    assert_eq!(reports[0].device.hostname, "real");
+    assert!(skipped.iter().any(|s| s.ends_with("evil.json")), "the device symlink is skipped");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ─── Sharp-edge hardening tests ─────────────────────────────
 
 #[test]

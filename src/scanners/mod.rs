@@ -153,7 +153,7 @@ pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {
 pub fn is_git_tracked(path: &std::path::Path) -> bool {
     let parent = path.parent().unwrap_or(path);
     std::process::Command::new("git")
-        .args(["ls-files", "--error-unmatch"])
+        .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .current_dir(parent)
         .stdout(std::process::Stdio::null())
@@ -180,10 +180,18 @@ pub fn sha256_hex(content: &str) -> String {
 /// Maximum config file size we'll read (1 MB).
 pub const MAX_CONFIG_SIZE: u64 = 1_048_576;
 
-/// Check file size before reading. Returns None if file is too large or unreadable.
-/// Logs to stderr if a file exceeds the size limit.
+/// Check file size before reading. Returns None if the path is not a regular file,
+/// is too large, or is unreadable. Follows symlinks (so dotfile-managed configs work)
+/// but rejects non-regular targets — a symlink to `/dev/zero` or a FIFO reports len 0
+/// and would otherwise stream infinitely — and bounds the read as a TOCTOU backstop.
 pub fn read_bounded(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    // metadata() follows symlinks: for a symlink→regular file this is the target's
+    // metadata (good); for a symlink→device/FIFO, is_file() is false → rejected.
     let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
     if meta.len() > MAX_CONFIG_SIZE {
         eprintln!(
             "warning: skipping {} ({} bytes exceeds {} byte limit)",
@@ -193,7 +201,13 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
         );
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    let mut buf = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_CONFIG_SIZE)
+        .read_to_string(&mut buf)
+        .ok()?;
+    Some(buf)
 }
 
 /// Read only the first N bytes of a file (for key header detection).

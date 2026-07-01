@@ -5,7 +5,13 @@
 use crate::analysis::{collect_findings, Finding, Severity};
 use crate::models::ScanReport;
 use crate::output::html::html_escape;
+use std::io::Read;
 use std::path::Path;
+
+/// Upper bound on a single scan file. Scans can legitimately exceed the 1 MB config
+/// cap (many extensions/keys), but this stops a hostile multi-gigabyte `.json` from
+/// OOM-killing the aggregation host.
+const MAX_SCAN_SIZE: u64 = 64 * 1024 * 1024;
 
 /// One machine's contribution to the fleet view.
 struct MachineReport {
@@ -43,16 +49,34 @@ pub fn load_reports_from_dir(dir: &Path) -> Result<(Vec<ScanReport>, Vec<String>
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            skipped.push(path.display().to_string());
-            continue;
-        };
-        match serde_json::from_str::<ScanReport>(&content) {
-            Ok(r) => reports.push(r),
-            Err(_) => skipped.push(path.display().to_string()),
+        match read_scan_file(&path) {
+            Some(content) => match serde_json::from_str::<ScanReport>(&content) {
+                Ok(r) => reports.push(r),
+                Err(_) => skipped.push(path.display().to_string()),
+            },
+            None => skipped.push(path.display().to_string()),
         }
     }
     Ok((reports, skipped))
+}
+
+/// Read a scan file only if it's a regular file within the size cap. This is the
+/// tool's only untrusted-input reader (an attacker may control files in the scans
+/// dir), so it rejects non-regular targets — a symlink to `/dev/zero` or a FIFO
+/// reports len 0 and would stream infinitely — and bounds the read against OOM.
+fn read_scan_file(path: &Path) -> Option<String> {
+    // metadata() follows symlinks; a symlink→device/FIFO has is_file()==false.
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_SCAN_SIZE {
+        return None;
+    }
+    let mut buf = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_SCAN_SIZE)
+        .read_to_string(&mut buf)
+        .ok()?;
+    Some(buf)
 }
 
 /// Render a fleet dashboard HTML from a set of parsed scans.
@@ -131,6 +155,8 @@ th {{ color:var(--dim); font-weight:600; font-size:0.8rem; text-transform:upperc
 </table></div>
 
 {machine_details}
+
+<p class="subtitle" style="margin-top:2rem;font-size:0.8rem;">Note: this dashboard aggregates each machine's <em>self-reported</em> scan. A compromised or misconfigured host could under-report — read "no findings" as "nothing this scan detected", not "verified clean". Ensure scans come from trusted, up-to-date rmguard runs.</p>
 </body></html>"#,
         n_machines = machines.len(),
         clean = clean_machines,
@@ -156,10 +182,9 @@ fn num_cell(n: usize, class: &str) -> String {
 
 fn render_machine_rows(machines: &[MachineReport]) -> String {
     let mut out = String::new();
-    for m in machines {
-        let anchor = anchor_id(&m.hostname);
+    for (i, m) in machines.iter().enumerate() {
         out.push_str(&format!(
-            r##"<tr><td><a href="#{anchor}">{host}</a></td><td class="dim">{os}</td><td class="dim">{ts}</td>{c}{h}{md}</tr>"##,
+            r##"<tr><td><a href="#host-{i}">{host}</a></td><td class="dim">{os}</td><td class="dim">{ts}</td>{c}{h}{md}</tr>"##,
             host = html_escape(&m.hostname),
             os = html_escape(&m.os),
             ts = html_escape(&m.timestamp),
@@ -173,10 +198,10 @@ fn render_machine_rows(machines: &[MachineReport]) -> String {
 
 fn render_machine_details(machines: &[MachineReport]) -> String {
     let mut out = String::new();
-    for m in machines {
-        let anchor = anchor_id(&m.hostname);
+    for (i, m) in machines.iter().enumerate() {
+        // Anchor is the machine's position (unique) — hostnames can collide or be empty.
         out.push_str(&format!(
-            r#"<div class="card host" id="{anchor}"><h2>{host}</h2>"#,
+            r#"<div class="card host" id="host-{i}"><h2>{host}</h2>"#,
             host = html_escape(&m.hostname)
         ));
         if m.findings.is_empty() {
@@ -196,13 +221,4 @@ fn render_machine_details(machines: &[MachineReport]) -> String {
         out.push_str("</div>");
     }
     out
-}
-
-/// Stable, HTML-safe anchor id derived from a hostname.
-fn anchor_id(hostname: &str) -> String {
-    let s: String = hostname
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-        .collect();
-    format!("host-{}", s)
 }
