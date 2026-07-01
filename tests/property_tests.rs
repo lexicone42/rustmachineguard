@@ -329,6 +329,7 @@ fn summary_counts_match_vector_lengths() {
         mcp_registry_checks: vec![],
         agent_identity: None,
         transcripts: vec![],
+        marketplaces: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -342,6 +343,7 @@ fn summary_counts_match_vector_lengths() {
             agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
+            marketplaces_count: 0,
         },
     };
 
@@ -392,6 +394,7 @@ fn json_output_is_valid_json() {
         mcp_registry_checks: vec![],
         agent_identity: None,
         transcripts: vec![],
+        marketplaces: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -405,6 +408,7 @@ fn json_output_is_valid_json() {
             agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
+            marketplaces_count: 0,
         },
     };
     report.compute_summary();
@@ -452,6 +456,7 @@ fn html_output_no_script_injection() {
         mcp_registry_checks: vec![],
         agent_identity: None,
         transcripts: vec![],
+        marketplaces: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -465,6 +470,7 @@ fn html_output_no_script_injection() {
             agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
+            marketplaces_count: 0,
         },
     };
     report.compute_summary();
@@ -2766,6 +2772,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         mcp_registry_checks: vec![],
         agent_identity: None,
         transcripts: vec![],
+        marketplaces: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -2778,6 +2785,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             agent_skills_count: 0, agent_settings_count: 0, agent_hooks_count: 0, ai_credentials_count: 0, env_files_count: 0, rules_file_findings_count: 0,
             mcp_servers_count: 0, exposure_findings_count: 0,
             transcript_stores_count: 0,
+            marketplaces_count: 0,
         },
     };
     customize(&mut report);

@@ -71,6 +71,14 @@ fn build_vulnerable_machine() -> PathBuf {
     fs::write(&env_path, "API_TOKEN=supersecret\nAWS_SECRET_ACCESS_KEY=zzz\nPORT=3000\n").unwrap();
     fs::set_permissions(&env_path, fs::Permissions::from_mode(0o644)).unwrap();
 
+    // 6b. Auto-updating third-party plugin marketplace (EAA-009): hot-loads remote code.
+    fs::create_dir_all(dir.join(".claude/plugins")).unwrap();
+    fs::write(
+        dir.join(".claude/plugins/known_marketplaces.json"),
+        r#"{"sketchy": {"source": {"source": "github", "repo": "randomvendor/agent-skills"}, "autoUpdate": true}}"#,
+    )
+    .unwrap();
+
     // 6. World-readable agent transcript store (EAA-005): the projects/ dir holds full
     // conversation history and is left group/other-readable.
     let projects = dir.join(".claude/projects/webapp");
@@ -165,6 +173,11 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     assert!(
         has(&|f| f.category == "MCP command" && f.title.contains("download-and-execute")),
         "should flag the curl|bash MCP launch command"
+    );
+    // 10. Auto-updating third-party plugin marketplace (EAA-009, medium).
+    assert!(
+        has(&|f| f.category == "Plugin marketplace" && f.title.contains("randomvendor/agent-skills")),
+        "should flag the auto-updating third-party plugin marketplace"
     );
 
     let _ = fs::remove_dir_all(&dir);

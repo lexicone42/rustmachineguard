@@ -9,6 +9,7 @@ pub mod exposure;
 pub mod container_tools;
 pub mod extensions;
 pub mod ide;
+pub mod marketplaces;
 pub mod mcp;
 pub mod mcp_probe;
 pub mod node_packages;

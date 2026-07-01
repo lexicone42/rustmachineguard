@@ -40,6 +40,8 @@ pub struct ScanReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcripts: Vec<AgentTranscriptStore>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marketplaces: Vec<AgentMarketplace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
@@ -367,6 +369,23 @@ pub struct AgentTranscriptStore {
     pub world_readable: bool,
 }
 
+/// A configured plugin marketplace — a remote source whose skills/plugins run as
+/// agent code (EAA-009 remote hot-load surface). Records provenance and whether it
+/// auto-updates; never fetches or executes anything.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentMarketplace {
+    pub name: String,
+    /// "git", "github", "local", etc.
+    pub source_type: String,
+    /// The remote reference: a git URL or an `owner/repo` slug.
+    pub source_ref: String,
+    /// True if the marketplace pulls new remote code automatically (no review gate).
+    pub auto_update: bool,
+    /// True if published by Anthropic (an official marketplace).
+    pub official: bool,
+    pub installed_plugin_count: usize,
+}
+
 /// At-rest AI-service credential file (existence + permissions only; values never read).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AiCredential {
@@ -444,6 +463,7 @@ pub struct Summary {
     pub rules_file_findings_count: usize,
     pub exposure_findings_count: usize,
     pub transcript_stores_count: usize,
+    pub marketplaces_count: usize,
 }
 
 impl ScanReport {
@@ -472,6 +492,7 @@ impl ScanReport {
             rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
             exposure_findings_count: self.exposure_findings.len(),
             transcript_stores_count: self.transcripts.len(),
+            marketplaces_count: self.marketplaces.len(),
         };
     }
 }

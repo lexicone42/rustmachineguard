@@ -58,6 +58,7 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
     summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);
+    summary_line(&mut out, "Plugin Marketplaces", s.marketplaces_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
     if s.rules_file_findings_count > 0 {
         out.push_str(&format!(
@@ -649,6 +650,42 @@ pub fn render(report: &ScanReport) -> String {
                 human_bytes(t.total_size_bytes).dimmed(),
                 warn,
                 t.path.dimmed()
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Plugin marketplaces (remote code sources feeding the agent)
+    if !report.marketplaces.is_empty() {
+        section_header(
+            &mut out,
+            &format!("Plugin Marketplaces ({})", report.marketplaces.len()),
+        );
+        for m in &report.marketplaces {
+            let mut flags = Vec::new();
+            if !m.official {
+                flags.push("third-party".yellow().to_string());
+            }
+            if m.auto_update {
+                let s = "auto-update";
+                flags.push(if m.official {
+                    s.dimmed().to_string()
+                } else {
+                    s.red().to_string()
+                });
+            }
+            let flag_str = if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", flags.join(", "))
+            };
+            out.push_str(&format!(
+                "  {} {} — {} ({} plugins){}\n",
+                "→".bold(),
+                m.name,
+                m.source_ref.dimmed(),
+                m.installed_plugin_count,
+                flag_str
             ));
         }
         out.push('\n');

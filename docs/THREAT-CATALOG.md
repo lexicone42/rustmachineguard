@@ -84,7 +84,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **OWASP MCP Top 10** | https://owasp.org/www-project-mcp-top-10/ | Risk taxonomy |
 | **NVD** | https://nvd.nist.gov/ | CVE details and CVSS scores |
 | **GitHub Advisory Database** | https://github.com/advisories | GHSA identifiers |
-| **Endpoint AI Agent Abuse (EAA)** | https://github.com/0x4D31/endpoint-ai-agent-abuse | Technique taxonomy (EAA-001…016) for local-agent abuse; informs our detection coverage mapping. Licensed CC0-1.0 (0x4D31). Inspired the EAA-007 hostile-gateway-routing and EAA-005 agent-transcript-collection detections. |
+| **Endpoint AI Agent Abuse (EAA)** | https://github.com/0x4D31/endpoint-ai-agent-abuse | Technique taxonomy (EAA-001…016) for local-agent abuse; informs our detection coverage mapping. Licensed CC0-1.0 (0x4D31). Inspired the EAA-007 hostile-gateway-routing, EAA-005 agent-transcript-collection, and EAA-009 remote-plugin-marketplace detections. |
 
 ### Academic Papers
 

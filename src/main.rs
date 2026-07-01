@@ -77,7 +77,7 @@ enum Format {
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
-    "settings", "aicreds", "envfiles", "transcripts",
+    "settings", "aicreds", "envfiles", "transcripts", "marketplaces",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -146,6 +146,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .transcripts
             .extend(scanners::transcripts::TranscriptsScanner.scan(plat));
+    }
+    if !skip.contains(&"marketplaces") {
+        report
+            .marketplaces
+            .extend(scanners::marketplaces::MarketplacesScanner.scan(plat));
     }
 }
 
@@ -257,6 +262,7 @@ fn main() {
         mcp_registry_checks: Vec::new(),
         agent_identity: None,
         transcripts: Vec::new(),
+        marketplaces: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -282,6 +288,7 @@ fn main() {
             mcp_servers_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
+            marketplaces_count: 0,
         },
     };
 

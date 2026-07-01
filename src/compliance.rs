@@ -263,6 +263,14 @@ pub const CONTROLS: &[Control] = &[
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-009",
+        title: "Remote plugin / marketplace hot-load",
+        coverage: Coverage::Covered,
+        how: "Inventories Claude Code plugin marketplaces (source, official-vs-third-party, plugin counts) and flags auto-updating third-party sources that hot-load unreviewed remote code.",
+        finding_categories: &["Plugin marketplace"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
         id: "EAA-010",
         title: "MCP dynamic tool mutation / pushed context",
         coverage: Coverage::Covered,
@@ -389,6 +397,7 @@ mod tests {
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
         "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
+        "Plugin marketplace",
     ];
 
     fn empty_report() -> ScanReport {
@@ -410,7 +419,7 @@ mod tests {
             "package_config_audits_count":0,"rules_files_count":0,"agent_skills_count":0,
             "agent_settings_count":0,"agent_hooks_count":0,"ai_credentials_count":0,
             "env_files_count":0,"rules_file_findings_count":0,"exposure_findings_count":0,
-            "transcript_stores_count":0}}"#,
+            "transcript_stores_count":0,"marketplaces_count":0}}"#,
         )
         .unwrap()
     }

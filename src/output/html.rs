@@ -154,6 +154,7 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("AI Credentials", s.ai_credentials_count),
         (".env Files", s.env_files_count),
         ("Transcript Stores", s.transcript_stores_count),
+        ("Plugin Marketplaces", s.marketplaces_count),
         ("Exposures", s.exposure_findings_count),
     ];
     items

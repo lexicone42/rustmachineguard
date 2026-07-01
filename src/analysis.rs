@@ -233,6 +233,24 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
+    // Auto-updating third-party plugin marketplaces (EAA-009): a non-official source
+    // that pulls new remote code automatically hot-loads unreviewed agent code — the
+    // rug-pull surface. Installing third-party plugins is normal, so this is advisory:
+    // it fires only when auto-update is on AND the source isn't Anthropic-official.
+    for m in &report.marketplaces {
+        if m.auto_update && !m.official {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Plugin marketplace".into(),
+                title: format!(
+                    "third-party plugin marketplace '{}' ({}) auto-updates — remote code hot-loads without review (EAA-009)",
+                    m.name, m.source_ref
+                ),
+                location: "~/.claude/plugins/known_marketplaces.json".into(),
+            });
+        }
+    }
+
     // Unprotected SSH keys.
     for k in &report.ssh_keys {
         if k.has_passphrase == PassphraseStatus::NoPassphrase {
