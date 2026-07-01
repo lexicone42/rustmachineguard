@@ -118,6 +118,17 @@ rmguard --report /shared/scans/ --output fleet.html
 shows fleet-wide critical/high/medium totals, and links to each machine's findings.
 The aggregator only reads the JSON files — it's agnostic about how they got there.
 
+To **gate** on posture instead of just reporting it — a pre-commit hook, an onboarding
+check, or a CI step that must fail a machine with serious findings — use `--fail-on`:
+
+```bash
+# Exits 2 (report still prints) if any Critical finding is present; else 0.
+rmguard --fail-on critical || echo "machine failed its security gate"
+```
+
+Operational errors exit 1, findings-at-threshold exit 2, clean exits 0 — so scripts can
+tell "the scan couldn't run" from "the scan found something."
+
 ## Validating detection
 
 `tests/vulnerable_range.rs` builds a deliberately-vulnerable "machine" (a
@@ -208,6 +219,10 @@ Options:
       --verify-registry              Verify MCP servers against the official MCP
                                      registry (opt-in; NETWORK — sends server
                                      package names to registry.modelcontextprotocol.io).
+      --fail-on <SEVERITY>           Exit 2 if any finding is at or above this
+                                     severity [values: critical, high, medium,
+                                     low]. The report still prints; only the exit
+                                     status changes. For CI / fleet-onboarding gates.
       --report <DIR>                 Aggregate a directory of --format json scans
                                      into one fleet HTML dashboard (does not scan
                                      the local machine).

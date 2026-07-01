@@ -60,6 +60,34 @@ struct Cli {
     /// registry. Flags deprecated servers and possible typosquats; notes provenance.
     #[arg(long)]
     verify_registry: bool,
+
+    /// Exit with code 2 if any finding at or above this severity is present, after
+    /// printing the report as usual. For CI / fleet-onboarding gates (e.g. fail a
+    /// machine's check on any Critical). Operational errors still exit 1.
+    #[arg(long, value_name = "SEVERITY")]
+    fail_on: Option<FailOn>,
+}
+
+/// Severity threshold for `--fail-on`, ordered most- to least-severe.
+#[derive(Clone, Copy, ValueEnum)]
+enum FailOn {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl FailOn {
+    /// The analysis severity this threshold corresponds to.
+    fn as_severity(self) -> rustmachineguard::analysis::Severity {
+        use rustmachineguard::analysis::Severity;
+        match self {
+            FailOn::Critical => Severity::Critical,
+            FailOn::High => Severity::High,
+            FailOn::Medium => Severity::Medium,
+            FailOn::Low => Severity::Low,
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -422,6 +450,27 @@ fn main() {
         }
     } else {
         print!("{rendered}");
+    }
+
+    // CI / fleet-onboarding gate: fail the process when findings breach the threshold.
+    // The report has already been emitted, so this only changes the exit status.
+    if let Some(threshold) = cli.fail_on.map(FailOn::as_severity) {
+        let findings = rustmachineguard::analysis::collect_findings(&report);
+        // Severity is ordered most-severe-first, so "at or above" is `<= threshold`.
+        let breaching = findings.iter().filter(|f| f.severity <= threshold).count();
+        if breaching > 0 {
+            let worst = findings
+                .iter()
+                .map(|f| f.severity)
+                .min()
+                .expect("non-empty since breaching > 0");
+            eprintln!(
+                "fail-on: {breaching} finding(s) at or above {} (most severe: {}) — exiting 2",
+                threshold.label(),
+                worst.label()
+            );
+            std::process::exit(2);
+        }
     }
 }
 
