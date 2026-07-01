@@ -24,6 +24,13 @@ const SECRET_KEY_HINTS: &[&str] = &[
     "TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "PRIVATE",
 ];
 
+/// True if a variable/key NAME looks like it holds a secret (name-only heuristic;
+/// never inspects the value). Shared with the MCP scanner's inline-secret check.
+pub fn is_secret_key_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
+}
+
 impl Scanner for EnvFilesScanner {
     type Output = Vec<EnvFile>;
 
@@ -83,9 +90,7 @@ pub fn parse_env_keys(content: &str) -> (usize, Vec<String>) {
             continue;
         }
         count += 1;
-        let upper = key.to_ascii_uppercase();
-        if SECRET_KEY_HINTS.iter().any(|h| upper.contains(h)) && !secrets.contains(&key.to_string())
-        {
+        if is_secret_key_name(key) && !secrets.contains(&key.to_string()) {
             secrets.push(key.to_string());
         }
     }

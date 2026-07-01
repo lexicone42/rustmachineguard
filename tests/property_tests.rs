@@ -804,6 +804,7 @@ fn exposure_catalog_matches_exact_package() {
         package_name: Some("@modelcontextprotocol/server-github".into()),
         package_version: Some("0.6.2".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test/config.json");
@@ -826,6 +827,7 @@ fn exposure_catalog_no_match_different_version() {
         package_name: Some("bad-package".into()),
         package_version: Some("2.0.0".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test");
@@ -847,6 +849,7 @@ fn exposure_catalog_matches_any_version_when_unspecified() {
         package_name: Some("evil-mcp-server".into()),
         package_version: Some("99.0.0".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test");
@@ -876,6 +879,7 @@ fn builtin_catalog_catches_postmark_mcp() {
         package_name: Some("postmark-mcp".into()),
         package_version: Some("1.0.17".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test");
@@ -897,6 +901,7 @@ fn builtin_catalog_catches_sandworm_typosquat() {
         package_name: Some("claud-code".into()),
         package_version: Some("0.2.1".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test");
@@ -918,6 +923,7 @@ fn builtin_catalog_catches_pypi_reverse_shell() {
         package_name: Some("mcp-runcmd-server".into()),
         package_version: Some("0.1.0".into()),
         url: None,
+        inline_secret_env_keys: vec![],
     };
 
     let findings = catalog.check_mcp_server(&server, "/test");
@@ -2040,6 +2046,7 @@ fn mcp_server_detail_includes_args() {
         package_name: Some("@modelcontextprotocol/server-fs".into()),
         package_version: None,
         url: None,
+        inline_secret_env_keys: vec![],
     };
     let json = serde_json::to_string(&detail).unwrap();
     assert!(json.contains("-y"), "args should be serialized");
@@ -2057,6 +2064,7 @@ fn mcp_server_detail_empty_args_omitted() {
         package_name: None,
         package_version: None,
         url: Some("example.com".into()),
+        inline_secret_env_keys: vec![],
     };
     let json = serde_json::to_string(&detail).unwrap();
     assert!(!json.contains("args"), "empty args should be omitted from JSON");
@@ -2176,6 +2184,7 @@ fn blueprint_mcp_server_includes_command_args() {
                 package_name: Some("@modelcontextprotocol/server-fs".into()),
                 package_version: None,
                 url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
     });
@@ -2328,6 +2337,7 @@ fn mcp_server_with_pkg(eco: &str, name: &str, version: &str) -> rustmachineguard
         package_name: Some(name.into()),
         package_version: Some(version.into()),
         url: None,
+        inline_secret_env_keys: vec![],
     }
 }
 
@@ -2416,6 +2426,7 @@ fn mcp_config_with_server(name: &str) -> rustmachineguard::models::McpConfig {
         servers: vec![rustmachineguard::models::McpServerDetail {
             name: name.into(), transport: "stdio".into(), command: Some("npx".into()),
             args: vec![], package_ecosystem: None, package_name: None, package_version: None, url: None,
+            inline_secret_env_keys: vec![],
         }],
     }
 }
@@ -2500,6 +2511,7 @@ fn blueprint_no_dangling_refs_full_report() {
                 name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
                 args: vec!["-y".into(), "@mcp/fs".into()], package_ecosystem: Some("npm".into()),
                 package_name: Some("@mcp/fs".into()), package_version: None, url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
         r.agent_skills = vec![AgentSkill {
@@ -2553,6 +2565,7 @@ fn blueprint_flows_have_type_and_destination() {
             servers: vec![McpServerDetail {
                 name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
                 args: vec![], package_ecosystem: None, package_name: None, package_version: None, url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
     });
@@ -2605,6 +2618,7 @@ fn blueprint_exposure_matched_to_existing_server() {
                 name: "evil".into(), transport: "stdio".into(), command: Some("npx".into()),
                 args: vec![], package_ecosystem: Some("npm".into()),
                 package_name: Some("evil-pkg".into()), package_version: Some("1.0".into()), url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
         r.exposure_findings = vec![ExposureFinding {
@@ -2636,6 +2650,7 @@ fn blueprint_version_enrichment_never_overwrites() {
                 name: "fs".into(), transport: "stdio".into(), command: Some("npx".into()),
                 args: vec![], package_ecosystem: Some("npm".into()),
                 package_name: Some("@mcp/fs".into()), package_version: Some("1.0".into()), url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
         r.mcp_probes = vec![McpProbeResult {

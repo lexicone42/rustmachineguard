@@ -180,6 +180,11 @@ pub struct McpServerDetail {
     pub package_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// NAMES (never values) of secret-looking env vars set to a hardcoded literal in
+    /// this server's config `env` block — i.e. a credential committed inline rather
+    /// than referenced via `${VAR}`. Empty when the env block is absent or clean.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_secret_env_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -101,6 +101,38 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     }
                 }
             }
+            // Credentials hardcoded inline in the config `env` block (names only).
+            if !s.inline_secret_env_keys.is_empty() {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "MCP secret".into(),
+                    title: format!(
+                        "MCP server '{}' has hardcoded credential(s) in its config env block: {} — reference ${{ENV_VAR}} instead",
+                        s.name,
+                        s.inline_secret_env_keys.join(", ")
+                    ),
+                    location: mcp.config_path.clone(),
+                });
+            }
+            // A launch command that downloads-and-executes (curl|bash, etc.): the
+            // server's own bootstrap is a remote-code-execution vector.
+            let launch = match &s.command {
+                Some(c) => format!("{} {}", c, s.args.join(" ")),
+                None => s.args.join(" "),
+            };
+            if !launch.trim().is_empty()
+                && !crate::scanners::rules_files::check_dangerous_patterns(&launch).is_empty()
+            {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "MCP command".into(),
+                    title: format!(
+                        "MCP server '{}' launches via a download-and-execute command — remote code on startup",
+                        s.name
+                    ),
+                    location: mcp.config_path.clone(),
+                });
+            }
         }
     }
 

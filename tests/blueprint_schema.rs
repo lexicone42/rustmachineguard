@@ -109,6 +109,7 @@ fn rich_blueprint_conforms() {
                 package_name: Some("@modelcontextprotocol/server-filesystem".into()),
                 package_version: Some("1.0.0".into()),
                 url: None,
+                inline_secret_env_keys: vec![],
             }],
         }];
         r.agent_skills = vec![AgentSkill {
@@ -214,6 +215,7 @@ fn shadowing_blueprint_conforms() {
                     package_name: None,
                     package_version: None,
                     url: None,
+                    inline_secret_env_keys: vec![],
                 }],
             });
             r.mcp_probes.push(McpProbeResult {

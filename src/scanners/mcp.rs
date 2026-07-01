@@ -211,6 +211,8 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         (None, None, None)
     };
 
+    let inline_secret_env_keys = extract_inline_secret_env_keys(cfg.get("env"));
+
     McpServerDetail {
         name: name.to_string(),
         transport,
@@ -220,7 +222,55 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         package_name: pkg_name,
         package_version: pkg_version,
         url: sanitized_url,
+        inline_secret_env_keys,
     }
+}
+
+/// From an MCP server's `env` block, return the NAMES (never values) of secret-looking
+/// keys whose value is a hardcoded literal — a credential committed into the config
+/// rather than referenced from the environment via `${VAR}`/`$VAR`.
+///
+/// Preserves the no-secret-leakage guarantee: the value is inspected only to decide
+/// whether it is a reference or a literal, and is never stored or emitted.
+pub fn extract_inline_secret_env_keys(env: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(obj) = env.and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, val) in obj {
+        let Some(value) = val.as_str() else { continue };
+        if crate::scanners::env_files::is_secret_key_name(key) && is_inline_literal(value) {
+            out.push(key.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// True if `value` is a hardcoded literal rather than an env reference or placeholder.
+/// `${VAR}`, `$VAR`, `%VAR%`, empty, and obvious placeholders don't count as committed
+/// secrets. The value is never stored — only classified.
+fn is_inline_literal(value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() {
+        return false;
+    }
+    // Pure environment reference: "${TOKEN}", "$TOKEN", "%TOKEN%".
+    let is_ref = (v.starts_with("${") && v.ends_with('}'))
+        || (v.starts_with('$') && v[1..].chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        || (v.starts_with('%') && v.ends_with('%'));
+    if is_ref {
+        return false;
+    }
+    // Common "fill me in" placeholders aren't real committed secrets.
+    let lower = v.to_ascii_lowercase();
+    const PLACEHOLDERS: &[&str] = &[
+        "your", "changeme", "change-me", "placeholder", "example", "xxx", "todo", "<", "...",
+    ];
+    if PLACEHOLDERS.iter().any(|p| lower.starts_with(p)) {
+        return false;
+    }
+    true
 }
 
 /// Infer package ecosystem, name, and version from a launcher command and its args.
@@ -441,4 +491,51 @@ pub fn extract_mcp_servers_toml(content: &str) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+#[cfg(test)]
+mod inline_secret_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn flags_hardcoded_secret_values_by_name_only() {
+        let env = json!({
+            "GITHUB_TOKEN": "ghp_realsecretvalue123",
+            "API_KEY": "sk-livekey",
+            "LOG_LEVEL": "debug"
+        });
+        let keys = extract_inline_secret_env_keys(Some(&env));
+        // Only secret-looking NAMES with literal values; sorted; value never surfaced.
+        assert_eq!(keys, vec!["API_KEY".to_string(), "GITHUB_TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn ignores_env_references_and_placeholders() {
+        let env = json!({
+            "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+            "API_KEY": "$API_KEY",
+            "WIN_SECRET": "%WIN_SECRET%",
+            "AUTH_TOKEN": "your-token-here",
+            "DB_PASSWORD": ""
+        });
+        assert!(extract_inline_secret_env_keys(Some(&env)).is_empty());
+    }
+
+    #[test]
+    fn no_env_block_is_clean() {
+        assert!(extract_inline_secret_env_keys(None).is_empty());
+        assert!(extract_inline_secret_env_keys(Some(&json!("not-an-object"))).is_empty());
+    }
+
+    #[test]
+    fn parse_server_detail_populates_inline_secrets() {
+        let cfg = json!({
+            "command": "npx",
+            "args": ["-y", "some-mcp"],
+            "env": {"SERVICE_SECRET": "hardcoded", "PORT": "8080"}
+        });
+        let detail = parse_server_detail("s", &cfg);
+        assert_eq!(detail.inline_secret_env_keys, vec!["SERVICE_SECRET".to_string()]);
+    }
 }

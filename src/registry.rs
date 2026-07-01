@@ -254,6 +254,7 @@ mod tests {
             package_name: Some(name.into()),
             package_version: None,
             url: None,
+            inline_secret_env_keys: vec![],
         }
     }
 

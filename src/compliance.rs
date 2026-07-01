@@ -388,7 +388,7 @@ mod tests {
         "Exposure", "Hook", "MCP auto-approval", "Permissions", "Credential",
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
-        "MCP scope", "Transcript exposure",
+        "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
     ];
 
     fn empty_report() -> ScanReport {

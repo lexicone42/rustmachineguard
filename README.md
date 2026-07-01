@@ -66,7 +66,7 @@ cargo build --release
 
 \* New detection categories not in the original bash tool.
 
-MCP server configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted) and **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), and AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
+MCP server configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted), **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), **hardcoded credentials in the `env` block** (a secret-looking key set to a literal instead of `${VAR}` — reported by **name** only, never value), and **download-and-execute launch commands** (a server that boots via `curl … | bash`). AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
 
 A built-in **threat catalog** (62 entries) flags known-malicious or known-vulnerable
 packages, MCP servers, and IDE/browser extensions during the scan. See
@@ -124,7 +124,7 @@ agent transcript store) and asserts the shipped binary catches every planted
 issue end-to-end. It's both a regression guard and a
 reference for "what a compromised machine looks like." To generate a shareable demo
 report from the same fixtures, point `--search-dirs` at a scratch copy and render
-HTML — the planted issues surface as `3 critical / 5 high` at the top of the report
+HTML — the planted issues surface as `3 critical / 7 high` at the top of the report
 (plus anything real on the host, since your own home directory is scanned too).
 
 ## Temporal & cross-server analysis
