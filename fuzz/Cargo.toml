@@ -91,3 +91,10 @@ path = "fuzz_targets/fuzz_registry_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_marketplaces"
+path = "fuzz_targets/fuzz_marketplaces.rs"
+test = false
+doc = false
+bench = false
