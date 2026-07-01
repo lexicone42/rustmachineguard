@@ -94,6 +94,16 @@ rmguard --report /shared/scans/ --output fleet.html
 shows fleet-wide critical/high/medium totals, and links to each machine's findings.
 The aggregator only reads the JSON files — it's agnostic about how they got there.
 
+## Validating detection
+
+`tests/vulnerable_range.rs` builds a deliberately-vulnerable "machine" (a
+threat-catalog MCP server, a `curl | bash` hook, MCP auto-approval, a poisoned
+rules file, a toxic-flow skill, a world-readable `.env`) and asserts the shipped
+binary catches every planted issue end-to-end. It's both a regression guard and a
+reference for "what a compromised machine looks like." To generate a shareable demo
+report from the same fixtures, point `--search-dirs` at a scratch copy and render
+HTML — the risk banner reads `4 critical / 4 high` with each finding surfaced up top.
+
 ## Temporal & cross-server analysis
 
 Capabilities that no MCP client performs at install time:
