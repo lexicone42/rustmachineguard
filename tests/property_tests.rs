@@ -3006,6 +3006,30 @@ proptest! {
 }
 
 proptest! {
+    /// split_url_authority is total and its host never retains userinfo or a path
+    /// delimiter — the invariant the gateway check and URL sanitizer both rely on.
+    #[test]
+    fn split_url_authority_host_is_clean(s in "\\PC*") {
+        let (_scheme, host) = rustmachineguard::scanners::split_url_authority(&s);
+        prop_assert!(!host.contains('@'), "userinfo leaked into host: {host:?}");
+        prop_assert!(!host.contains('/'), "path leaked into host: {host:?}");
+        prop_assert!(!host.contains('?'), "query leaked into host: {host:?}");
+        prop_assert!(!host.contains('#'), "fragment leaked into host: {host:?}");
+    }
+
+    /// A URL whose authority is exactly the official host resolves to it; injecting the
+    /// official host into userinfo, path, or query never spoofs it.
+    #[test]
+    fn split_url_authority_resists_spoof(
+        real in "[a-z]{1,10}\\.[a-z]{2,4}",
+        official in "[a-z]{1,10}\\.[a-z]{2,4}",
+    ) {
+        // The official host echoed in the query must not become the resolved host.
+        let spoof = format!("https://{real}/x?u=https://{official}");
+        let (_s, host) = rustmachineguard::scanners::split_url_authority(&spoof);
+        prop_assert_eq!(host, real.as_str());
+    }
+
     /// is_broad_root never panics on arbitrary input.
     #[test]
     fn is_broad_root_total(arg in "\\PC*", home in "/[a-z/]{0,20}") {

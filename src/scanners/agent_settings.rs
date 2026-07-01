@@ -163,31 +163,11 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
 }
 
 /// Extract the host from a URL-ish string (scheme optional), lowercased.
-/// Extract the connection host from a base-URL value, the way an HTTP client resolves
-/// it — so the official-vs-hostile decision matches where the request (and API key)
-/// actually goes.
-///
-/// Must resist evasion: the scheme separator is the FIRST `://` (not the last — a
-/// `?redir=https://api.anthropic.com` query string must not masquerade as the host),
-/// and userinfo (`api.anthropic.com@evil.example.com`) is stripped so the real host
-/// after the last `@` wins. Path/query/fragment/port are all dropped.
+/// The connection host of a base-URL value (lowercased, no port) — what an HTTP client
+/// actually dials, so the official-vs-hostile decision can't be spoofed. Delegates the
+/// evasion-resistant authority parse to [`crate::scanners::split_url_authority`].
 fn url_host(url: &str) -> String {
-    // Everything after the scheme separator (first "://"), or the whole string.
-    let after_scheme = match url.find("://") {
-        Some(i) => &url[i + 3..],
-        None => url,
-    };
-    // The authority ends at the first '/', '?', or '#'.
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    // Strip userinfo — the real host is after the last '@'.
-    let host_port = match authority.rsplit_once('@') {
-        Some((_userinfo, host)) => host,
-        None => authority,
-    };
-    // Drop the port.
+    let (_scheme, host_port) = crate::scanners::split_url_authority(url);
     let host = host_port.split(':').next().unwrap_or(host_port);
     host.trim().to_ascii_lowercase()
 }

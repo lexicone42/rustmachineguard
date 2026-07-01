@@ -130,6 +130,32 @@ pub trait Scanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output;
 }
 
+/// Split a URL into `(scheme, host_port)`, resolving the authority the way an HTTP
+/// client does — the single source of truth for every place that has to decide "where
+/// does this request actually go?".
+///
+/// Security-critical, because both the EAA-007 gateway check and URL sanitization
+/// depend on it: the scheme is whatever precedes the first `://`; the authority ends
+/// at the first `/`, `?`, or `#` after it (so an `@`/`?`/`#` in the path or query can't
+/// masquerade as the host — e.g. `https://evil/?x=https://api.anthropic.com`); and
+/// userinfo is stripped at the LAST `@` within the authority. `host_port` keeps any
+/// `:port` and the original case; scheme is `""` when the URL has none.
+pub fn split_url_authority(url: &str) -> (&str, &str) {
+    let (scheme, after_scheme) = match url.find("://") {
+        Some(i) => (&url[..i], &url[i + 3..]),
+        None => ("", url),
+    };
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host_port = match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => host,
+        None => authority,
+    };
+    (scheme, host_port)
+}
+
 /// Unix permission bits of a file as (octal_string, world_readable, group_readable).
 /// Returns None on non-Unix or if the file can't be stat'd. Never reads file content.
 pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {

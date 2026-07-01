@@ -438,21 +438,13 @@ pub fn split_npm_package_version(spec: &str) -> (String, Option<String>) {
 /// in the path/query can't be mistaken for the host), and userinfo is stripped at the
 /// LAST `@` within the authority.
 fn sanitize_url(url: &str) -> String {
-    let Some(scheme_end) = url.find("://") else {
+    let (scheme, host_port) = crate::scanners::split_url_authority(url);
+    if scheme.is_empty() {
+        // No scheme to anchor on (e.g. "stdio://local" has one; "local" does not) —
+        // leave it untouched rather than guess at an authority.
         return url.to_string();
-    };
-    let after_scheme = &url[scheme_end + 3..];
-    // The authority ends at the first path/query/fragment delimiter.
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    // Strip userinfo — the host[:port] is after the last '@'.
-    let host_port = match authority.rsplit_once('@') {
-        Some((_userinfo, host)) => host,
-        None => authority,
-    };
-    format!("{}://{}", &url[..scheme_end], host_port)
+    }
+    format!("{scheme}://{host_port}")
 }
 
 /// Convert a YAML config to the canonical JSON value so ONE parser handles every
