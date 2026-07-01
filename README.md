@@ -125,8 +125,9 @@ agent transcript store) and asserts the shipped binary catches every planted
 issue end-to-end. It's both a regression guard and a
 reference for "what a compromised machine looks like." To generate a shareable demo
 report from the same fixtures, point `--search-dirs` at a scratch copy and render
-HTML — the planted issues surface as `3 critical / 7 high` at the top of the report
-(plus anything real on the host, since your own home directory is scanned too).
+HTML — the planted issues surface as `3 critical / 8 high` at the top of the report
+(plus anything real on the host, since your own home directory is scanned too; and if
+the scratch copy is a git repo, the committed inline secret escalates to a 4th critical).
 
 ## Temporal & cross-server analysis
 
