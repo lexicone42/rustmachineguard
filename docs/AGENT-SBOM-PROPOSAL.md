@@ -209,6 +209,9 @@ We have implemented the foundation:
 | Agent settings scanner (hooks = shell exec on tool-use, MCP auto-approval, permission mode) | Done |
 | AI credential scanner (at-rest tokens + permissions, values never read) | Done |
 | `.env` scanner in agent project roots (git-tracked/world-readable, key names only) | Done |
+| Transcript/state store inventory (EAA-005; existence/count/size/perms, content never read) | Done |
+| Plugin marketplace inventory (EAA-009; source, official-vs-third-party, auto-update, plugin counts) | Done |
+| Agent identity posture (static keys vs OAuth vs SPIFFE; OWASP ASI03) | Done |
 
 **Threat intelligence**
 
@@ -218,6 +221,8 @@ We have implemented the foundation:
 | Exact + **semver version-range** matching (`version_range`, e.g. `<1.4.3`) | Done |
 | MCP live probing (`--probe-mcp`) — tools/resources enumeration over JSON-RPC | Done |
 | Tool & parameter description poisoning + invisible-Unicode smuggling detection | Done |
+| MCP config-risk detection — plaintext transport, over-broad fs scope, inline secrets (names only), download-and-execute launch, hostile gateway routing (EAA-007) | Done |
+| Official MCP registry verification (`--verify-registry`) — provenance, deprecation, typosquat | Done |
 
 **Composition & temporal analysis** (signals no single MCP client sees)
 
@@ -241,7 +246,7 @@ We have implemented the foundation:
 
 | Feature | Priority | Effort |
 |---|---|---|
-| Plugin scanning (Claude Code plugins, DXT) | Medium | Medium |
+| Per-plugin / DXT content scanning (marketplace-level inventory already Done) | Medium | Medium |
 | JetBrains plugin scanner (catalog has entries; no scanner yet) | Medium | Medium |
 | VEX overlay generation for exposure findings | Low | Medium |
 | SPDX output format | Low | High |

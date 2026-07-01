@@ -92,7 +92,7 @@ coverage (Covered / Partial / Out-of-scope) per control:
 - **OWASP Top 10 for Agentic Applications** (ASI01–ASI10) and **Agentic Skills Top 10** (AST)
 - **OWASP MCP Top 10** (MCP)
 - **EU AI Act** AI-component inventory / transparency obligations (enforceable 2026-08-02)
-- **[Endpoint AI Agent Abuse (EAA)](https://github.com/0x4D31/endpoint-ai-agent-abuse)** — the closest-fit framework (endpoint agent abuse specifically); rmguard covers 6 of its 16 techniques outright and partials several more. CC0, by 0x4D31.
+- **[Endpoint AI Agent Abuse (EAA)](https://github.com/0x4D31/endpoint-ai-agent-abuse)** — the closest-fit framework (endpoint agent abuse specifically); rmguard covers 8 of its 16 techniques outright and partials several more. CC0, by 0x4D31.
 
 This is posture **evidence** (inventory + detection), **not a compliance attestation** —
 runtime controls (invocation logging, network segmentation) are explicitly marked
@@ -165,7 +165,7 @@ This tool is itself a security-sensitive program. Design decisions:
 |---|---|---|
 | Platform | macOS only | macOS + Linux |
 | Language | Shell script | Compiled Rust binary |
-| New scanners | — | Shell configs, SSH keys, cloud credentials, containers, notebooks, rules/memory files, agent skills, agent settings/hooks, AI credentials, `.env` files |
+| New scanners | — | Shell configs, SSH keys, cloud credentials, containers, notebooks, rules/memory files, agent skills, agent settings/hooks, AI credentials, `.env` files, transcript stores, plugin marketplaces |
 | Threat intelligence | — | Built-in 62-entry catalog (exact + semver-range matching), live MCP probing |
 | Temporal analysis | — | Scan diffing, MCP rug-pull detection, cross-server tool shadowing, toxic-flow surface |
 | Standards output | — | CycloneDX 1.6 SBOM + 2.0 Blueprint (schema-validated in CI) |
@@ -181,7 +181,8 @@ Usage: rmguard [OPTIONS]
 
 Options:
   -f, --format <FORMAT>              Output format [default: terminal]
-                                     [values: terminal, json, html, sbom, blueprint]
+                                     [values: terminal, json, html, sbom,
+                                     blueprint, compliance]
   -o, --output <OUTPUT>              Write output to a file instead of stdout
       --skip <SKIP>                  Skip scanner categories (comma-separated):
                                      ai, frameworks, ide, extensions, mcp, node,
