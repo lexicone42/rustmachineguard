@@ -38,6 +38,8 @@ pub struct ScanReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_identity: Option<crate::identity::AgentIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcripts: Vec<AgentTranscriptStore>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
@@ -347,6 +349,19 @@ pub struct AgentHook {
     pub dangerous: bool,
 }
 
+/// An agent transcript / conversation-state store (EAA-005 collection surface).
+/// Records existence, size, and permissions only — content is never read.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentTranscriptStore {
+    pub framework: String,
+    pub path: String,
+    /// e.g. "conversation transcripts", "command history", "sessions".
+    pub kind: String,
+    pub file_count: usize,
+    pub total_size_bytes: u64,
+    pub world_readable: bool,
+}
+
 /// At-rest AI-service credential file (existence + permissions only; values never read).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AiCredential {
@@ -423,6 +438,7 @@ pub struct Summary {
     pub env_files_count: usize,
     pub rules_file_findings_count: usize,
     pub exposure_findings_count: usize,
+    pub transcript_stores_count: usize,
 }
 
 impl ScanReport {
@@ -450,6 +466,7 @@ impl ScanReport {
             env_files_count: self.env_files.len(),
             rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
             exposure_findings_count: self.exposure_findings.len(),
+            transcript_stores_count: self.transcripts.len(),
         };
     }
 }

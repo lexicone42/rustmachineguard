@@ -62,8 +62,11 @@ cargo build --release
 | **Agent Settings**\* | `settings.json` hooks + MCP auto-approval | Hooks that run shell commands on tool-use events (silent code exec), `enableAllProjectMcpServers` workspace-trust bypass, permission modes |
 | **AI Credentials**\* | At-rest agent tokens + permissions | `~/.claude/.credentials.json`, Codex/Gemini/Copilot/OpenCode token files — existence and loose permissions only (values never read) |
 | **`.env` Files**\* | Secrets in agent project roots | `.env`/`.env.local`/… in project roots agents operate on — git-tracked (committed-secret) and world-readable flags, secret-bearing key **names** (never values) |
+| **Transcript Stores**\* | Agent conversation-state collection (EAA-005) | Claude Code (`projects/`, `history.jsonl`, `todos/`), Codex (`sessions/`, `history.jsonl`), Gemini (`tmp/`) — existence, file count, size, and permissions only (content never read); world-readable stores flagged |
 
 \* New detection categories not in the original bash tool.
+
+MCP server configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted) and **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), and AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
 
 A built-in **threat catalog** (62 entries) flags known-malicious or known-vulnerable
 packages, MCP servers, and IDE/browser extensions during the scan. See
@@ -116,11 +119,13 @@ The aggregator only reads the JSON files — it's agnostic about how they got th
 
 `tests/vulnerable_range.rs` builds a deliberately-vulnerable "machine" (a
 threat-catalog MCP server, a `curl | bash` hook, MCP auto-approval, a poisoned
-rules file, a toxic-flow skill, a world-readable `.env`) and asserts the shipped
-binary catches every planted issue end-to-end. It's both a regression guard and a
+rules file, a toxic-flow skill, a world-readable `.env`, and a world-readable
+agent transcript store) and asserts the shipped binary catches every planted
+issue end-to-end. It's both a regression guard and a
 reference for "what a compromised machine looks like." To generate a shareable demo
 report from the same fixtures, point `--search-dirs` at a scratch copy and render
-HTML — the risk banner reads `4 critical / 4 high` with each finding surfaced up top.
+HTML — the planted issues surface as `3 critical / 5 high` at the top of the report
+(plus anything real on the host, since your own home directory is scanned too).
 
 ## Temporal & cross-server analysis
 
@@ -181,7 +186,7 @@ Options:
                                      ai, frameworks, ide, extensions, mcp, node,
                                      shell, ssh, cloud, containers, notebooks,
                                      browser, packages, rules, skills, settings,
-                                     aicreds, envfiles
+                                     aicreds, envfiles, transcripts
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
                                      Home-rooted scanners run once per directory
                                      and merge results.

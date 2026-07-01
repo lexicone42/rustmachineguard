@@ -57,6 +57,7 @@ pub fn render(report: &ScanReport) -> String {
     summary_line(&mut out, "Agent Hooks", s.agent_hooks_count);
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
+    summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
     if s.rules_file_findings_count > 0 {
         out.push_str(&format!(
@@ -627,6 +628,32 @@ pub fn render(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    // Agent transcript / conversation-state stores (EAA-005 collection surface)
+    if !report.transcripts.is_empty() {
+        section_header(
+            &mut out,
+            &format!("Transcript Stores ({})", report.transcripts.len()),
+        );
+        for t in &report.transcripts {
+            let warn = if t.world_readable {
+                " WORLD-READABLE".red().bold().to_string()
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  {} {} — {} ({} files, {}){}\n    {}\n",
+                "→".bold(),
+                t.framework,
+                t.kind.dimmed(),
+                t.file_count,
+                human_bytes(t.total_size_bytes).dimmed(),
+                warn,
+                t.path.dimmed()
+            ));
+        }
+        out.push('\n');
+    }
+
     // Agent Identity posture
     if let Some(id) = &report.agent_identity {
         use crate::identity::SpiffeStatus;
@@ -834,4 +861,20 @@ fn summary_line(out: &mut String, label: &str, count: usize) {
         "0".dimmed().to_string()
     };
     out.push_str(&format!("  {:>35}  {}\n", label, count_str));
+}
+
+/// Human-readable byte size (e.g. "3.4 MB"). Base-1000 units.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut val = bytes as f64;
+    let mut unit = 0;
+    while val >= 1000.0 && unit < UNITS.len() - 1 {
+        val /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[0])
+    } else {
+        format!("{:.1} {}", val, UNITS[unit])
+    }
 }

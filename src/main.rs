@@ -77,7 +77,7 @@ enum Format {
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
-    "settings", "aicreds", "envfiles",
+    "settings", "aicreds", "envfiles", "transcripts",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -141,6 +141,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .env_files
             .extend(scanners::env_files::EnvFilesScanner.scan(plat));
+    }
+    if !skip.contains(&"transcripts") {
+        report
+            .transcripts
+            .extend(scanners::transcripts::TranscriptsScanner.scan(plat));
     }
 }
 
@@ -251,6 +256,7 @@ fn main() {
         mcp_probes: Vec::new(),
         mcp_registry_checks: Vec::new(),
         agent_identity: None,
+        transcripts: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -275,6 +281,7 @@ fn main() {
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,
+            transcript_stores_count: 0,
         },
     };
 

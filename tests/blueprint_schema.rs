@@ -348,6 +348,7 @@ fn make_report(
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
         agent_identity: None,
+        transcripts: vec![],
         warnings: vec![ScanWarning {
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),
@@ -371,6 +372,7 @@ fn make_report(
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
             exposure_findings_count: 0,
+            transcript_stores_count: 0,
         },
     };
     customize(&mut report);

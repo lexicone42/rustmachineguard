@@ -18,6 +18,7 @@ pub mod rules_files;
 pub mod shell_configs;
 pub mod skills;
 pub mod ssh_keys;
+pub mod transcripts;
 
 use crate::platform::PlatformInfo;
 use std::time::Duration;

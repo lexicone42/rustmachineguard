@@ -239,6 +239,14 @@ pub const CONTROLS: &[Control] = &[
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-005",
+        title: "Agent transcript / conversation-state collection",
+        coverage: Coverage::Covered,
+        how: "Inventories transcript/history/session stores (Claude Code, Codex, Gemini) by existence, file count, size, and permissions — never content — and flags world-readable stores.",
+        finding_categories: &["Transcript exposure"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
         id: "EAA-006",
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
@@ -379,7 +387,8 @@ mod tests {
     const KNOWN_CATEGORIES: &[&str] = &[
         "Exposure", "Hook", "MCP auto-approval", "Permissions", "Credential",
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
-        "Registry", "Agent identity", "Gateway routing",
+        "Registry", "Agent identity", "Gateway routing", "MCP transport",
+        "MCP scope", "Transcript exposure",
     ];
 
     fn empty_report() -> ScanReport {
@@ -400,7 +409,8 @@ mod tests {
             "notebook_servers_count":0,"browser_extensions_count":0,
             "package_config_audits_count":0,"rules_files_count":0,"agent_skills_count":0,
             "agent_settings_count":0,"agent_hooks_count":0,"ai_credentials_count":0,
-            "env_files_count":0,"rules_file_findings_count":0,"exposure_findings_count":0}}"#,
+            "env_files_count":0,"rules_file_findings_count":0,"exposure_findings_count":0,
+            "transcript_stores_count":0}}"#,
         )
         .unwrap()
     }

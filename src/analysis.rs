@@ -61,6 +61,49 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         });
     }
 
+    // MCP server configuration risks (transport encryption, over-broad scope).
+    let home = report.device.home_dir.as_str();
+    for mcp in &report.mcp_configs {
+        for s in &mcp.servers {
+            // Plaintext remote transport: credentials/data sent unencrypted.
+            if let Some(url) = &s.url
+                && url.to_lowercase().starts_with("http://")
+            {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "MCP transport".into(),
+                    title: format!(
+                        "MCP server '{}' uses plaintext HTTP ({}) — traffic and tokens are unencrypted",
+                        s.name, url
+                    ),
+                    location: mcp.config_path.clone(),
+                });
+            }
+            // Over-broad filesystem scope: a filesystem server rooted at / or $HOME
+            // exposes the whole machine/home to the agent.
+            let is_fs = s
+                .package_name
+                .as_deref()
+                .map(|n| n.contains("filesystem"))
+                .unwrap_or(false);
+            if is_fs {
+                for arg in &s.args {
+                    if is_broad_root(arg, home) {
+                        f.push(Finding {
+                            severity: Severity::Medium,
+                            category: "MCP scope".into(),
+                            title: format!(
+                                "MCP filesystem server '{}' is rooted at a broad path ({}) — near-whole-machine access",
+                                s.name, arg
+                            ),
+                            location: mcp.config_path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // Settings hooks run shell commands on agent events (silent code execution).
     for s in &report.agent_settings {
         for h in &s.hooks {
@@ -137,6 +180,23 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Secret exposure".into(),
                 title: format!(".env is world-readable ({} keys)", e.key_count),
                 location: e.path.clone(),
+            });
+        }
+    }
+
+    // World-readable agent transcript/state stores (EAA-005 collection surface):
+    // these hold full conversation history — code, prompts, and any secrets discussed —
+    // so loose permissions let any local user read the lot.
+    for t in &report.transcripts {
+        if t.world_readable {
+            f.push(Finding {
+                severity: Severity::High,
+                category: "Transcript exposure".into(),
+                title: format!(
+                    "{} {} store is world-readable ({} files) — conversation history exposed (EAA-005)",
+                    t.framework, t.kind, t.file_count
+                ),
+                location: t.path.clone(),
             });
         }
     }
@@ -252,6 +312,17 @@ const SINKS: &[&str] = &["network", "communication"];
 pub struct ToxicFlowSurface {
     pub sources: Vec<String>,
     pub sinks: Vec<String>,
+}
+
+/// True if `arg` is a filesystem root broad enough to expose the whole machine or the
+/// user's entire home directory.
+fn is_broad_root(arg: &str, home: &str) -> bool {
+    let a = arg.trim().trim_end_matches('/');
+    if a.is_empty() {
+        return true; // "/" trimmed to ""
+    }
+    matches!(a, "~" | "$HOME" | "${HOME}" | "/home" | "/Users" | "/root")
+        || (!home.is_empty() && a == home.trim_end_matches('/'))
 }
 
 /// Aggregate observed (probed) + declared (skill) capabilities across the whole scan

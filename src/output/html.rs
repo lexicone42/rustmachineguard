@@ -153,6 +153,7 @@ fn render_summary(s: &crate::models::Summary) -> String {
         ("Agent Hooks", s.agent_hooks_count),
         ("AI Credentials", s.ai_credentials_count),
         (".env Files", s.env_files_count),
+        ("Transcript Stores", s.transcript_stores_count),
         ("Exposures", s.exposure_findings_count),
     ];
     items
