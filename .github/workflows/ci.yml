@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege token: CI only reads the repo; no job needs write access.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Note: third-party actions are referenced by major tag. The stricter posture —
+# which this tool itself would recommend — is pinning by full commit SHA; do that
+# once the repo has external contributors.
+jobs:
+  test:
+    name: build + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both supported platforms: the cfg(target_os) branches in src/platform/
+        # mean macOS-only compile breaks are invisible to a Linux-only gate.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The suite includes the CycloneDX 2.0 Blueprint schema-validation gate
+      # (tests/blueprint_schema.rs) and the vulnerable-range end-to-end test,
+      # which builds a compromised machine and runs the real binary against it.
+      - run: cargo test --all-targets
+
+  clippy:
+    name: clippy (deny correctness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The codebase carries accepted style-lint warnings (older idiom, kept for
+      # consistency); correctness lints are denied — those are near-always bugs.
+      - run: cargo clippy --all-targets -- -D clippy::correctness
+
+  fuzz-build:
+    name: fuzz targets still compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # Fuzz targets rot silently when APIs change; a plain `cargo check` on
+      # stable keeps them honest without needing nightly in CI.
+      - run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+
+  audit:
+    name: dependency audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked cargo-audit
+      # A supply-chain scanner should hold its own dependency tree to the same
+      # standard it scans for. Warnings (unmaintained/unsound advisories) are
+      # reported; vulnerabilities fail the job.
+      - run: cargo audit

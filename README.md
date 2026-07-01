@@ -1,5 +1,7 @@
 # Dev Machine Guard (Rust)
 
+[![CI](https://github.com/lexicone42/rustmachineguard/actions/workflows/ci.yml/badge.svg)](https://github.com/lexicone42/rustmachineguard/actions/workflows/ci.yml)
+
 > **This is an independent Rust rewrite of [step-security/dev-machine-guard](https://github.com/step-security/dev-machine-guard), not the original project.**
 > The original is a bash script by [StepSecurity](https://www.stepsecurity.io/) licensed under Apache-2.0.
 > This rewrite extends it with Linux support, additional detection categories, and security hardening.
@@ -159,6 +161,7 @@ This tool is itself a security-sensitive program. Design decisions:
 - **No `/tmp` fallback**: Fails fast if `$HOME` cannot be determined rather than scanning a shared directory.
 - **Bounded reads**: Files over 1MB are skipped (with a warning), and SHA-256 hashing uses the native `sha2` crate (no subprocess).
 - **Fuzzed & schema-validated**: Untrusted-input parsers (MCP config, threat catalog, `.env`, settings hooks, diff) have `cargo-fuzz` targets; Blueprint output is validated against the vendored CycloneDX 2.0 schema in CI.
+- **CI-gated**: every push runs the full suite on Linux **and** macOS, denies clippy correctness lints, keeps the fuzz targets compiling, and audits the dependency tree against RustSec advisories (`cargo audit`) — a supply-chain scanner should hold its own dependencies to the standard it scans for.
 
 ## Differences from Upstream
 
