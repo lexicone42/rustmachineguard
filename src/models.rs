@@ -34,6 +34,8 @@ pub struct ScanReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_probes: Vec<McpProbeResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_registry_checks: Vec<crate::registry::RegistryCheck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }

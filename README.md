@@ -112,6 +112,7 @@ Capabilities that no MCP client performs at install time:
 - **Cross-server tool shadowing** — when two probed MCP servers offer the same tool name (a confused-deputy risk), the Blueprint emits a shadowing finding naming the colliding servers.
 - **Toxic-flow surface (lethal trifecta)** — flags when the aggregate agent surface (probed servers + skills) combines a sensitive-data *source* (filesystem, database, environment, source-control) with an exfiltration *sink* (network, communication). Each capability is individually authorized; the composition across connected servers is the risk. Surfaced in the default terminal report and the Blueprint.
 - **Live MCP probing** (`--probe-mcp`) — enumerates each stdio server's tools/resources and scans tool **and parameter** descriptions for prompt-injection / line-jumping and invisible-Unicode smuggling.
+- **Official registry verification** (`--verify-registry`) — checks each discovered MCP server against the official [MCP registry](https://registry.modelcontextprotocol.io): confirms verified publisher provenance (reverse-DNS namespace), flags packages **deprecated** in the registry, and flags names one edit away from a registered package (**possible typosquat**). Opt-in because it makes a network call. A signature/attestation slot is reserved for when the registry/Sigstore adds one.
 
 ## Platform Support
 
@@ -173,6 +174,9 @@ Options:
       --probe-mcp                    Live-probe local stdio MCP servers to
                                      enumerate tools/resources (opt-in; spawns the
                                      server processes).
+      --verify-registry              Verify MCP servers against the official MCP
+                                     registry (opt-in; NETWORK — sends server
+                                     package names to registry.modelcontextprotocol.io).
       --report <DIR>                 Aggregate a directory of --format json scans
                                      into one fleet HTML dashboard (does not scan
                                      the local machine).

@@ -609,6 +609,42 @@ pub fn render(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    // MCP Registry Verification
+    if !report.mcp_registry_checks.is_empty() {
+        use crate::registry::RegistryVerdict;
+        section_header(
+            &mut out,
+            &format!("MCP Registry Verification ({})", report.mcp_registry_checks.len()),
+        );
+        for c in &report.mcp_registry_checks {
+            let (mark, desc) = match &c.verdict {
+                RegistryVerdict::Registered { publisher, deprecated: false } => (
+                    "✓".green().to_string(),
+                    format!("registered · publisher {}", publisher.dimmed()),
+                ),
+                RegistryVerdict::Registered { publisher, deprecated: true } => (
+                    "!".red().bold().to_string(),
+                    format!("{} · publisher {}", "DEPRECATED".red().bold(), publisher.dimmed()),
+                ),
+                RegistryVerdict::PossibleTyposquat { registered_as } => (
+                    "!".red().bold().to_string(),
+                    format!("{} of {}", "possible typosquat".red(), registered_as.dimmed()),
+                ),
+                RegistryVerdict::Unregistered => {
+                    ("?".yellow().to_string(), "not in registry (unverified)".dimmed().to_string())
+                }
+                RegistryVerdict::NoPackageIdentity => {
+                    ("·".dimmed().to_string(), "no package identity".dimmed().to_string())
+                }
+                RegistryVerdict::LookupFailed => {
+                    ("·".dimmed().to_string(), "lookup failed".dimmed().to_string())
+                }
+            };
+            out.push_str(&format!("  {} {} — {}\n", mark, c.server_name.bold(), desc));
+        }
+        out.push('\n');
+    }
+
     // MCP Probe Results
     if !report.mcp_probes.is_empty() {
         section_header(&mut out, &format!("MCP Server Probes ({})", report.mcp_probes.len()));

@@ -326,6 +326,7 @@ fn summary_counts_match_vector_lengths() {
         env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
+        mcp_registry_checks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -385,6 +386,7 @@ fn json_output_is_valid_json() {
         env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
+        mcp_registry_checks: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -441,6 +443,7 @@ fn html_output_no_script_injection() {
         env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
+        mcp_registry_checks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -2642,6 +2645,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         env_files: vec![],
         exposure_findings: vec![],
         mcp_probes: vec![],
+        mcp_registry_checks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,

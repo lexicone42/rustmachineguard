@@ -54,6 +54,12 @@ struct Cli {
     /// Does not scan the local machine; reads existing scan files instead.
     #[arg(long, value_name = "DIR")]
     report: Option<PathBuf>,
+
+    /// Verify discovered MCP servers against the official MCP registry
+    /// (registry.modelcontextprotocol.io). NETWORK: sends server package names to the
+    /// registry. Flags deprecated servers and possible typosquats; notes provenance.
+    #[arg(long)]
+    verify_registry: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -240,6 +246,7 @@ fn main() {
         env_files: Vec::new(),
         exposure_findings: Vec::new(),
         mcp_probes: Vec::new(),
+        mcp_registry_checks: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -345,6 +352,13 @@ fn main() {
     // MCP live probing (opt-in)
     if cli.probe_mcp {
         report.mcp_probes = scanners::mcp_probe::probe_mcp_servers(&report.mcp_configs);
+    }
+
+    // MCP registry verification (opt-in, network)
+    if cli.verify_registry {
+        eprintln!("info: verifying MCP servers against the official registry (network)");
+        report.mcp_registry_checks =
+            rustmachineguard::registry::verify_servers(&report.mcp_configs);
     }
 
     report.compute_summary();

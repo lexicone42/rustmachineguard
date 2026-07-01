@@ -155,6 +155,32 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
+    // MCP registry verification verdicts.
+    for check in &report.mcp_registry_checks {
+        match &check.verdict {
+            crate::registry::RegistryVerdict::PossibleTyposquat { registered_as } => {
+                f.push(Finding {
+                    severity: Severity::Medium,
+                    category: "Registry".into(),
+                    title: format!(
+                        "'{}' is one edit away from registered {} (possible typosquat)",
+                        check.package, registered_as
+                    ),
+                    location: check.server_name.clone(),
+                });
+            }
+            crate::registry::RegistryVerdict::Registered { deprecated: true, .. } => {
+                f.push(Finding {
+                    severity: Severity::Medium,
+                    category: "Registry".into(),
+                    title: format!("{} is deprecated in the official MCP registry", check.package),
+                    location: check.server_name.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
     // Composition-level toxic-flow surface.
     if let Some(tf) = analyze_toxic_flow(report) {
         f.push(Finding {

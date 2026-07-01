@@ -4,4 +4,5 @@ pub mod diff;
 pub mod models;
 pub mod output;
 pub mod platform;
+pub mod registry;
 pub mod scanners;

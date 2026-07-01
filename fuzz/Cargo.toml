@@ -84,3 +84,10 @@ path = "fuzz_targets/fuzz_mcp_probe_reader.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_registry_parse"
+path = "fuzz_targets/fuzz_registry_parse.rs"
+test = false
+doc = false
+bench = false
