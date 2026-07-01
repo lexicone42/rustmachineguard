@@ -181,6 +181,29 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
+    // Agent identity posture: static long-lived keys are the ASI03 anti-pattern.
+    if let Some(id) = &report.agent_identity {
+        if !id.static_api_keys.is_empty() {
+            let static_only = id.static_only();
+            f.push(Finding {
+                // Advisory by default; elevated when static keys are the ONLY auth in use.
+                severity: if static_only { Severity::Medium } else { Severity::Low },
+                category: "Agent identity".into(),
+                title: format!(
+                    "{} static long-lived AI API key(s) in use ({}unbound bearer tokens, OWASP ASI03){}",
+                    id.static_api_keys.len(),
+                    if static_only { "sole credential; " } else { "" },
+                    if static_only {
+                        " — no OAuth/SPIFFE detected; prefer short-lived scoped credentials"
+                    } else {
+                        ""
+                    }
+                ),
+                location: id.static_api_keys.join(", "),
+            });
+        }
+    }
+
     // Composition-level toxic-flow surface.
     if let Some(tf) = analyze_toxic_flow(report) {
         f.push(Finding {

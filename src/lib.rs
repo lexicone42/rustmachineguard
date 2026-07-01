@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod catalogs;
 pub mod compliance;
 pub mod diff;
+pub mod identity;
 pub mod models;
 pub mod output;
 pub mod platform;

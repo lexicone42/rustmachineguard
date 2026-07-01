@@ -609,6 +609,49 @@ pub fn render(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    // Agent Identity posture
+    if let Some(id) = &report.agent_identity {
+        use crate::identity::SpiffeStatus;
+        // Only show the section if there's something to say.
+        let spiffe_present = matches!(id.spiffe, SpiffeStatus::Present { .. });
+        if !id.static_api_keys.is_empty() || !id.oauth_providers.is_empty() || spiffe_present {
+            section_header(&mut out, "Agent Identity");
+            if !id.static_api_keys.is_empty() {
+                out.push_str(&format!(
+                    "  static API keys:  {}  {}\n",
+                    id.static_api_keys.join(", ").yellow(),
+                    "(long-lived, unbound)".dimmed()
+                ));
+            }
+            if !id.oauth_providers.is_empty() {
+                out.push_str(&format!(
+                    "  OAuth (better):   {}\n",
+                    id.oauth_providers.join(", ").green()
+                ));
+            }
+            match &id.spiffe {
+                SpiffeStatus::Present { source } => out.push_str(&format!(
+                    "  workload identity (SPIFFE): {} ({})\n",
+                    "present".green(),
+                    source.dimmed()
+                )),
+                SpiffeStatus::Absent => {
+                    out.push_str(&format!("  workload identity (SPIFFE): {}\n", "absent".dimmed()))
+                }
+            }
+            if id.static_only() {
+                out.push_str(&format!(
+                    "  {} Agents rely solely on static long-lived keys (OWASP ASI03).\n",
+                    "!".red().bold()
+                ));
+                out.push_str(
+                    "    Prefer short-lived scoped credentials (OAuth token exchange / SPIFFE SVID) where supported.\n",
+                );
+            }
+            out.push('\n');
+        }
+    }
+
     // MCP Registry Verification
     if !report.mcp_registry_checks.is_empty() {
         use crate::registry::RegistryVerdict;

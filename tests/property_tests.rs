@@ -327,6 +327,7 @@ fn summary_counts_match_vector_lengths() {
         exposure_findings: vec![],
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
+        agent_identity: None,
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -387,6 +388,7 @@ fn json_output_is_valid_json() {
         exposure_findings: vec![],
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
+        agent_identity: None,
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -444,6 +446,7 @@ fn html_output_no_script_injection() {
         exposure_findings: vec![],
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
+        agent_identity: None,
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -1594,6 +1597,74 @@ fn findings_dangerous_hook_is_critical() {
     assert!(f.iter().any(|x| x.category == "Permissions"));
 }
 
+// ─── Agent identity posture (OWASP ASI03) ─────────────────────
+
+#[test]
+fn identity_classifies_static_keys_oauth_and_findings() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::identity::{analyze, SpiffeStatus};
+    use rustmachineguard::models::*;
+
+    // Static AI key in a shell config + an OAuth credential; no SPIFFE.
+    let report = make_test_report(|r| {
+        r.shell_configs = vec![ShellConfig {
+            shell: "bash".into(),
+            config_path: "/h/.bashrc".into(),
+            ai_related_entries: vec!["OPENAI_API_KEY=<redacted>".into(), "OLLAMA_HOST=localhost".into()],
+        }];
+        r.ai_credentials = vec![AiCredential {
+            provider: "Claude Code".into(), credential_type: "OAuth token".into(),
+            path: "/h/.claude/.credentials.json".into(), permissions: Some("0600".into()),
+            world_readable: false, group_readable: false,
+        }];
+    });
+    let id = analyze(&report);
+    assert_eq!(id.static_api_keys, vec!["OPENAI_API_KEY".to_string()], "OLLAMA_HOST is not a static key");
+    assert_eq!(id.oauth_providers, vec!["Claude Code".to_string()]);
+    assert!(!id.static_only(), "OAuth present -> not static-only");
+    assert!(matches!(id.spiffe, SpiffeStatus::Absent), "no SPIFFE in the test env");
+
+    // With OAuth present, the static-key finding is advisory (Low), not Medium.
+    let mut r2 = report;
+    r2.agent_identity = Some(id);
+    let low = collect_findings(&r2);
+    let idf = low.iter().find(|f| f.category == "Agent identity").unwrap();
+    assert_eq!(idf.severity, Severity::Low);
+    assert!(idf.location.contains("OPENAI_API_KEY"));
+}
+
+#[test]
+fn identity_static_only_finding_is_medium() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::identity::analyze;
+    use rustmachineguard::models::*;
+
+    let mut report = make_test_report(|r| {
+        r.env_files = vec![EnvFile {
+            path: "/proj/.env".into(), git_tracked: false, world_readable: false,
+            key_count: 2, secret_keys: vec!["ANTHROPIC_API_KEY".into()],
+        }];
+    });
+    let id = analyze(&report);
+    assert_eq!(id.static_api_keys, vec!["ANTHROPIC_API_KEY".to_string()]);
+    // No OAuth, no SPIFFE -> static-only -> the finding should be Medium.
+    assert!(id.static_only());
+    report.agent_identity = Some(id);
+    let f = collect_findings(&report);
+    let idf = f.iter().find(|x| x.category == "Agent identity").unwrap();
+    assert_eq!(idf.severity, Severity::Medium, "sole reliance on static keys is elevated");
+    assert!(idf.title.contains("ASI03"));
+
+    // No static keys anywhere -> no identity finding.
+    let clean = make_test_report(|r| {
+        r.agent_identity = Some(rustmachineguard::identity::AgentIdentity {
+            static_api_keys: vec![], oauth_providers: vec!["Claude Code".into()],
+            spiffe: rustmachineguard::identity::SpiffeStatus::Absent,
+        });
+    });
+    assert!(!collect_findings(&clean).iter().any(|f| f.category == "Agent identity"));
+}
+
 // ─── Mutation-testing-driven assertions (pin exact behavior) ───
 
 #[test]
@@ -2646,6 +2717,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         exposure_findings: vec![],
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
+        agent_identity: None,
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,

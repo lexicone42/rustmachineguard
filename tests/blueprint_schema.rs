@@ -347,6 +347,7 @@ fn make_report(
         exposure_findings: vec![],
         mcp_probes: vec![],
         mcp_registry_checks: vec![],
+        agent_identity: None,
         warnings: vec![ScanWarning {
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),

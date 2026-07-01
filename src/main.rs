@@ -250,6 +250,7 @@ fn main() {
         exposure_findings: Vec::new(),
         mcp_probes: Vec::new(),
         mcp_registry_checks: Vec::new(),
+        agent_identity: None,
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -363,6 +364,9 @@ fn main() {
         report.mcp_registry_checks =
             rustmachineguard::registry::verify_servers(&report.mcp_configs);
     }
+
+    // Agent identity posture (static keys vs OAuth vs SPIFFE) — derived from the scan.
+    report.agent_identity = Some(rustmachineguard::identity::analyze(&report));
 
     report.compute_summary();
 

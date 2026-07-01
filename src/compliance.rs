@@ -116,8 +116,8 @@ pub const CONTROLS: &[Control] = &[
         id: "ASI03",
         title: "Agent Identity & Privilege Abuse",
         coverage: Coverage::Partial,
-        how: "Flags permission bypass, MCP auto-approval, hooks (silent exec), at-rest credentials. Agent identity/delegation not yet modeled.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Hook", "Credential"],
+        how: "Flags permission bypass, MCP auto-approval, hooks (silent exec), at-rest credentials, and static long-lived API keys (anti-pattern) vs OAuth/SPIFFE. Delegation chains not yet modeled.",
+        finding_categories: &["Permissions", "MCP auto-approval", "Hook", "Credential", "Agent identity"],
     },
     Control {
         framework: "OWASP Agentic Applications Top 10 (2026)",
@@ -312,7 +312,7 @@ mod tests {
     const KNOWN_CATEGORIES: &[&str] = &[
         "Exposure", "Hook", "MCP auto-approval", "Permissions", "Credential",
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
-        "Registry",
+        "Registry", "Agent identity",
     ];
 
     fn empty_report() -> ScanReport {
