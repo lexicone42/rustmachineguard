@@ -35,7 +35,18 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
         collect_mcp_servers(baseline),
         collect_mcp_servers(current),
         "name",
-        &["transport", "package_name", "package_version", "package_ecosystem"],
+        // `url` distinguishes a plaintext downgrade (https -> http maps to the same
+        // `transport`) and a redirect to a new host; `inline_secret_env_keys` and
+        // `git_tracked` catch a trusted config gaining a committed credential.
+        &[
+            "transport",
+            "package_name",
+            "package_version",
+            "package_ecosystem",
+            "url",
+            "inline_secret_env_keys",
+            "git_tracked",
+        ],
     ));
 
     sections.push(diff_array_section(
@@ -99,6 +110,34 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
     sections.push(diff_mcp_probes(
         get_array(baseline, "mcp_probes"),
         get_array(current, "mcp_probes"),
+    ));
+
+    // Agent settings are the persistence-tampering surface: a hook, a permission-mode
+    // flip, a gateway override, or an inline secret appearing between scans is exactly
+    // the kind of quiet change --diff exists to surface.
+    sections.push(diff_array_section(
+        "Agent Settings",
+        get_array(baseline, "agent_settings"),
+        get_array(current, "agent_settings"),
+        "path",
+        &[
+            "permission_mode",
+            "auto_approve_mcp",
+            "git_tracked",
+            "hooks",
+            "gateway_overrides",
+            "inline_secret_env_keys",
+        ],
+    ));
+
+    // Plugin marketplaces: a source flipping to auto-update, or a new third-party
+    // source appearing, is remote-code-hot-load drift (EAA-009).
+    sections.push(diff_array_section(
+        "Plugin Marketplaces",
+        get_array(baseline, "marketplaces"),
+        get_array(current, "marketplaces"),
+        "name",
+        &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count"],
     ));
 
     let summary_changes = diff_summary(baseline, current);
