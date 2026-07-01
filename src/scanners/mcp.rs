@@ -26,26 +26,18 @@ impl Scanner for McpScanner {
                 .unwrap_or("")
                 .to_ascii_lowercase();
 
-            let (server_names, servers) = match ext.as_str() {
-                "yaml" | "yml" => {
-                    let names = extract_mcp_servers_yaml(&content);
-                    (names, Vec::new())
-                }
-                "toml" => {
-                    let names = extract_mcp_servers_toml(&content);
-                    (names, Vec::new())
-                }
-                _ => {
-                    match serde_json::from_str::<serde_json::Value>(&content) {
-                        Ok(v) => {
-                            let names = extract_mcp_servers(&v);
-                            let details = extract_mcp_server_details(&v);
-                            (names, details)
-                        }
-                        Err(_) => continue,
-                    }
-                }
+            // Normalize every format to the canonical JSON value so all per-server
+            // detections (package identity, inline secrets, transport, launch command)
+            // apply uniformly — a hardcoded token in a Codex TOML config is just as
+            // committed as one in a Cursor JSON config.
+            let canonical = match ext.as_str() {
+                "yaml" | "yml" => yaml_to_json(&content),
+                "toml" => toml_to_json(&content),
+                _ => serde_json::from_str::<serde_json::Value>(&content).ok(),
             };
+            let Some(v) = canonical else { continue };
+            let server_names = extract_mcp_servers(&v);
+            let servers = extract_mcp_server_details(&v);
 
             if server_names.is_empty() {
                 continue;
@@ -108,12 +100,16 @@ impl Scanner for McpScanner {
     }
 }
 
-/// Extract MCP server names from JSON config.
+/// Extract MCP server names from JSON config (also the canonical form for TOML/YAML
+/// configs, which are converted to JSON before extraction — see `toml_to_json`).
 pub fn extract_mcp_servers(json: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
 
-    if let Some(servers) = json.get("mcpServers").and_then(|v| v.as_object()) {
-        names.extend(servers.keys().cloned());
+    // "mcpServers" is the JSON convention; "mcp_servers" is the TOML (Codex) one.
+    for key in ["mcpServers", "mcp_servers"] {
+        if let Some(servers) = json.get(key).and_then(|v| v.as_object()) {
+            names.extend(servers.keys().cloned());
+        }
     }
 
     if let Some(servers) = json
@@ -147,6 +143,7 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
 
     let server_maps: Vec<&serde_json::Map<String, serde_json::Value>> = [
         json.get("mcpServers").and_then(|v| v.as_object()),
+        json.get("mcp_servers").and_then(|v| v.as_object()),
         json.get("mcp").and_then(|v| v.get("servers")).and_then(|v| v.as_object()),
         json.get("context_servers").and_then(|v| v.as_object()),
     ]
@@ -455,44 +452,29 @@ fn sanitize_url(url: &str) -> String {
     }
 }
 
+/// Convert a YAML config to the canonical JSON value so ONE parser handles every
+/// format — names, package identity, env inline secrets, transport, the lot.
+pub fn yaml_to_json(content: &str) -> Option<serde_json::Value> {
+    let yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(content).ok()?;
+    serde_json::to_value(&yaml_value).ok()
+}
+
+/// Convert a TOML config (Codex `~/.codex/config.toml`) to the canonical JSON value.
+pub fn toml_to_json(content: &str) -> Option<serde_json::Value> {
+    let table: toml::Table = content.parse().ok()?;
+    serde_json::to_value(&table).ok()
+}
+
 pub fn extract_mcp_servers_yaml(content: &str) -> Vec<String> {
-    let yaml_value: Result<serde_yaml_ng::Value, _> = serde_yaml_ng::from_str(content);
-    let Ok(yaml_value) = yaml_value else {
-        return Vec::new();
-    };
-    let json_value: Result<serde_json::Value, _> = serde_json::to_value(&yaml_value);
-    match json_value {
-        Ok(v) => extract_mcp_servers(&v),
-        Err(_) => Vec::new(),
-    }
+    yaml_to_json(content)
+        .map(|v| extract_mcp_servers(&v))
+        .unwrap_or_default()
 }
 
 pub fn extract_mcp_servers_toml(content: &str) -> Vec<String> {
-    let parsed: Result<toml::Table, _> = content.parse();
-    let Ok(table) = parsed else {
-        return Vec::new();
-    };
-
-    let mut names = Vec::new();
-
-    for key in &["mcp_servers", "mcpServers"] {
-        if let Some(sub) = table.get(*key).and_then(|v| v.as_table()) {
-            names.extend(sub.keys().cloned());
-        }
-    }
-
-    if let Some(sub) = table
-        .get("mcp")
-        .and_then(|v| v.as_table())
-        .and_then(|t| t.get("servers"))
-        .and_then(|v| v.as_table())
-    {
-        names.extend(sub.keys().cloned());
-    }
-
-    names.sort();
-    names.dedup();
-    names
+    toml_to_json(content)
+        .map(|v| extract_mcp_servers(&v))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -539,5 +521,45 @@ mod inline_secret_tests {
         });
         let detail = parse_server_detail("s", &cfg);
         assert_eq!(detail.inline_secret_env_keys, vec!["SERVICE_SECRET".to_string()]);
+    }
+
+    /// TOML (Codex) configs go through the same canonical parser, so package
+    /// identity AND inline env secrets are extracted — previously TOML got
+    /// names only and every per-server detection was silently skipped.
+    #[test]
+    fn toml_config_gets_full_server_details() {
+        let toml = r#"
+[mcp_servers.leaky]
+command = "npx"
+args = ["-y", "some-mcp"]
+
+[mcp_servers.leaky.env]
+SLACK_TOKEN = "xoxb-hardcoded"
+PORT = "8080"
+"#;
+        let v = toml_to_json(toml).expect("valid toml converts");
+        let details = extract_mcp_server_details(&v);
+        assert_eq!(details.len(), 1);
+        let d = &details[0];
+        assert_eq!(d.name, "leaky");
+        assert_eq!(d.package_name.as_deref(), Some("some-mcp"));
+        assert_eq!(d.inline_secret_env_keys, vec!["SLACK_TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn yaml_config_gets_full_server_details() {
+        let yaml = r#"
+mcpServers:
+  fetcher:
+    command: uvx
+    args: ["mcp-server-fetch"]
+    env:
+      API_KEY: literal-value
+"#;
+        let v = yaml_to_json(yaml).expect("valid yaml converts");
+        let details = extract_mcp_server_details(&v);
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].inline_secret_env_keys, vec!["API_KEY".to_string()]);
+        assert_eq!(details[0].package_name.as_deref(), Some("mcp-server-fetch"));
     }
 }

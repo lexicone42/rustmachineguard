@@ -90,6 +90,15 @@ fn build_vulnerable_machine() -> PathBuf {
     .unwrap();
     fs::set_permissions(dir.join(".claude/projects"), fs::Permissions::from_mode(0o755)).unwrap();
 
+    // 6d. Codex TOML config with an inline credential — TOML goes through the same
+    // canonical parser as JSON, so the inline-secret detection must fire here too.
+    fs::create_dir_all(dir.join(".codex")).unwrap();
+    fs::write(
+        dir.join(".codex/config.toml"),
+        "[mcp_servers.toml-leaky]\ncommand = \"npx\"\nargs = [\"-y\", \"z-mcp\"]\n\n[mcp_servers.toml-leaky.env]\nOPENAI_API_KEY = \"sk-toml-hardcoded\"\n",
+    )
+    .unwrap();
+
     // 6c. A git-tracked project MCP config with an inline credential = committed secret.
     // We make the machine a git repo and track ONLY this file, so the .env (untracked)
     // still reads as world-readable-exposure and the .cursor config still reads as a
@@ -220,6 +229,17 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     assert!(
         has(&|f| f.category == "MCP command" && f.title.contains("download-and-execute")),
         "should flag the curl|bash MCP launch command"
+    );
+    // 9b. Inline secret in a Codex TOML config (name only; TOML parity with JSON).
+    assert!(
+        has(&|f| f.category == "MCP secret"
+            && f.title.contains("toml-leaky")
+            && f.title.contains("OPENAI_API_KEY")),
+        "should flag the inline secret in the Codex TOML config"
+    );
+    assert!(
+        !findings.iter().any(|f| f.title.contains("sk-toml-hardcoded")),
+        "the TOML secret value must never surface in findings"
     );
     // 10. Auto-updating third-party plugin marketplace (EAA-009, medium).
     assert!(
