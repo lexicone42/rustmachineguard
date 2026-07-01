@@ -1,8 +1,8 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level scan report matching the upstream JSON schema,
 /// extended with new detection categories.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ScanReport {
     pub agent_version: String,
     pub scan_timestamp: i64,
@@ -23,72 +23,72 @@ pub struct ScanReport {
     pub package_config_audits: Vec<PackageConfigAudit>,
     pub rules_files: Vec<RulesFile>,
     pub agent_skills: Vec<AgentSkill>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_settings: Vec<AgentSettings>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ai_credentials: Vec<AiCredential>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_files: Vec<EnvFile>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exposure_findings: Vec<ExposureFinding>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_probes: Vec<McpProbeResult>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
 
 /// A non-fatal issue encountered during scanning.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ScanWarning {
     pub scanner: String,
     pub message: String,
 }
 
 /// Results from live-probing an MCP server via JSON-RPC.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpProbeResult {
     pub server_name: String,
     pub config_source: String,
     pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_info: Option<McpServerInfo>,
     pub tools: Vec<McpToolInfo>,
     pub resources: Vec<McpResourceInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub observed_capabilities: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerInfo {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpToolInfo {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The tool's JSON-Schema parameter definition (MCP `inputSchema`), captured so
     /// rug-pull diffing can detect parameter mutations and injection hidden in
     /// parameter descriptions.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourceInfo {
     pub uri: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub hostname: String,
     pub os_name: String,
@@ -99,7 +99,7 @@ pub struct DeviceInfo {
     pub home_dir: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiTool {
     pub name: String,
     pub vendor: String,
@@ -112,7 +112,7 @@ pub struct AiTool {
     pub is_running: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiToolType {
     CliTool,
@@ -120,7 +120,7 @@ pub enum AiToolType {
     Agent,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiFramework {
     pub name: String,
     pub vendor: String,
@@ -129,7 +129,7 @@ pub struct AiFramework {
     pub is_running: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IdeInstallation {
     pub ide_type: String,
     pub version: Option<String>,
@@ -138,7 +138,7 @@ pub struct IdeInstallation {
     pub is_installed: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IdeExtension {
     pub id: String,
     pub name: String,
@@ -147,36 +147,36 @@ pub struct IdeExtension {
     pub ide_type: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct McpConfig {
     pub config_source: String,
     pub config_path: String,
     pub vendor: String,
     pub server_names: Vec<String>,
     pub server_count: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<McpServerDetail>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerDetail {
     pub name: String,
     pub transport: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_ecosystem: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NodePackageManager {
     pub name: String,
     pub version: Option<String>,
@@ -185,7 +185,7 @@ pub struct NodePackageManager {
 
 // --- New detection categories ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ShellConfig {
     pub shell: String,
     pub config_path: String,
@@ -193,7 +193,7 @@ pub struct ShellConfig {
     pub ai_related_entries: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SshKey {
     pub path: String,
     pub key_type: String,
@@ -201,7 +201,7 @@ pub struct SshKey {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassphraseStatus {
     Encrypted,
@@ -209,7 +209,7 @@ pub enum PassphraseStatus {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CloudCredential {
     pub provider: String,
     pub credential_type: String,
@@ -217,7 +217,7 @@ pub struct CloudCredential {
     pub profiles: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ContainerTool {
     pub name: String,
     pub version: Option<String>,
@@ -225,7 +225,7 @@ pub struct ContainerTool {
     pub is_running: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NotebookServer {
     pub name: String,
     pub version: Option<String>,
@@ -233,51 +233,51 @@ pub struct NotebookServer {
     pub is_running: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BrowserExtension {
     pub browser: String,
     pub name: String,
     pub id: String,
     pub version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub profile: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PackageConfigAudit {
     pub manager: String,
     pub config_path: String,
     pub findings: Vec<PackageConfigFinding>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PackageConfigFinding {
     pub severity: String,
     pub description: String,
 }
 
 /// A rules/instruction file that controls agent behavior.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RulesFile {
     pub path: String,
     pub file_name: String,
     pub sha256: String,
     pub git_tracked: bool,
     pub size_bytes: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<RulesFileFinding>,
 }
 
 /// A dangerous pattern found in a rules file.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RulesFileFinding {
     pub severity: String,
     pub pattern: String,
 }
 
 /// An agent skill (custom command, hook, or plugin).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AgentSkill {
     pub name: String,
     pub path: String,
@@ -286,13 +286,13 @@ pub struct AgentSkill {
     pub file_type: String,
     pub size_bytes: usize,
     pub sha256: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
 }
 
 /// An agent settings file (Claude Code / Codex), which can register hooks that run
 /// shell commands on agent events and auto-approve MCP servers.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AgentSettings {
     pub path: String,
     /// "user-global" | "local" | "project"
@@ -301,27 +301,27 @@ pub struct AgentSettings {
     /// Project-scoped settings from a cloned repo are higher risk; git_tracked tells
     /// whether this file travels with a repository.
     pub git_tracked: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<AgentHook>,
     /// `permissions.defaultMode` (e.g. "acceptEdits", "bypassPermissions").
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     pub allow_rules: usize,
     pub deny_rules: usize,
     /// `enableAllProjectMcpServers` — auto-approves all project MCP servers (a
     /// workspace-trust bypass).
     pub auto_approve_mcp: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_mcp_servers: Vec<String>,
 }
 
 /// A hook that runs a command on an agent lifecycle event.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentHook {
     /// Event name, e.g. "PreToolUse", "PostToolUse", "Stop".
     pub event: String,
     /// Tool matcher, e.g. "Bash", "*". None or "*" means it runs for every tool.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matcher: Option<String>,
     pub command: String,
     /// True if the command matches a dangerous pattern (curl|bash, base64 decode, …).
@@ -329,20 +329,20 @@ pub struct AgentHook {
 }
 
 /// At-rest AI-service credential file (existence + permissions only; values never read).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiCredential {
     pub provider: String,
     pub credential_type: String,
     pub path: String,
     /// Octal permission bits, e.g. "0600". None on non-Unix.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
     pub world_readable: bool,
     pub group_readable: bool,
 }
 
 /// A `.env` file in an agent project root (agents read the working directory).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EnvFile {
     pub path: String,
     /// A git-tracked .env is a committed secret.
@@ -351,7 +351,7 @@ pub struct EnvFile {
     /// Count of `KEY=value` lines (names parsed, values never stored).
     pub key_count: usize,
     /// NAMES (never values) of keys that look secret-bearing (TOKEN/SECRET/KEY/...).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_keys: Vec<String>,
 }
 
@@ -360,18 +360,18 @@ pub struct EnvFile {
 pub struct ExposureEntry {
     pub ecosystem: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// Semver range of affected versions, e.g. "< 2.0.0" or ">=1.0,<1.5". When set,
     /// matches any version satisfying the range (for "vulnerable below X" cases).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_range: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisory: Option<String>,
 }
 
 /// A matched exposure finding.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExposureFinding {
     pub ecosystem: String,
     pub name: String,
@@ -380,7 +380,7 @@ pub struct ExposureFinding {
     pub found_in: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Summary {
     pub ai_agents_and_tools_count: usize,
     pub ai_frameworks_count: usize,

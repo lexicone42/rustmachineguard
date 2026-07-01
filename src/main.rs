@@ -49,6 +49,11 @@ struct Cli {
     /// WARNING: This spawns each MCP server process. Only use on trusted configurations.
     #[arg(long)]
     probe_mcp: bool,
+
+    /// Aggregate a directory of `--format json` scans into one fleet HTML dashboard.
+    /// Does not scan the local machine; reads existing scan files instead.
+    #[arg(long, value_name = "DIR")]
+    report: Option<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -158,6 +163,12 @@ fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut Scan
 
 fn main() {
     let cli = Cli::parse();
+
+    // Fleet report mode: aggregate a directory of JSON scans, don't scan locally.
+    if let Some(ref dir) = cli.report {
+        run_fleet_report(dir, cli.output.as_deref());
+        return;
+    }
 
     let format = match cli.format {
         Format::Terminal => OutputFormat::Terminal,
@@ -376,6 +387,38 @@ fn main() {
         }
     } else {
         print!("{rendered}");
+    }
+}
+
+/// Aggregate a directory of `--format json` scans into one fleet HTML dashboard.
+fn run_fleet_report(dir: &std::path::Path, output_path: Option<&str>) {
+    let (reports, skipped) =
+        output::fleet::load_reports_from_dir(dir).unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
+
+    for s in &skipped {
+        eprintln!("warning: skipping {} (not a valid rmguard JSON scan)", s);
+    }
+    if reports.is_empty() {
+        eprintln!(
+            "Error: no valid JSON scans found in {} (run `rmguard --format json --output <host>.json` on each machine first)",
+            dir.display()
+        );
+        std::process::exit(1);
+    }
+    eprintln!("info: aggregating {} machine scan(s)", reports.len());
+
+    let html = output::fleet::render_fleet(&reports);
+    if let Some(path) = output_path {
+        std::fs::write(path, &html).unwrap_or_else(|e| {
+            eprintln!("Error writing to {path}: {e}");
+            std::process::exit(1);
+        });
+        eprintln!("Fleet report written to {path}");
+    } else {
+        print!("{html}");
     }
 }
 

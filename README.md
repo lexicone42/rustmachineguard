@@ -72,10 +72,27 @@ packages, MCP servers, and IDE/browser extensions during the scan. See
 ## Output Formats
 
 - **`terminal`** (default) — Colored, human-readable report with status indicators (● running, ○ stopped)
-- **`json`** — Structured data for programmatic consumption, CI pipelines, or SIEM ingestion
-- **`html`** — Dark-themed report for sharing or archiving
+- **`json`** — Structured data for programmatic consumption, CI pipelines, or SIEM ingestion (round-trippable — it deserializes back into a scan report)
+- **`html`** — **Risk-first** dark-themed report: severity pills, a ranked Security Findings section, then inventory + detail. Meant to be shared/archived.
 - **`sbom`** — CycloneDX 1.6 SBOM
 - **`blueprint`** — CycloneDX 2.0 Blueprint (draft) — agent posture as assets/behaviors/flows, schema-validated in CI
+
+## Team / fleet reporting
+
+Run per-machine scans, collect the JSON however your team already moves files (MDM,
+a shared drive, CI artifact, S3, a git repo), then aggregate into one dashboard:
+
+```bash
+# On each machine (cron, MDM, or manual):
+rmguard --format json --output /shared/scans/$(hostname).json
+
+# Anywhere the JSONs are collected:
+rmguard --report /shared/scans/ --output fleet.html
+```
+
+`fleet.html` ranks machines by the severity of their findings (most at-risk first),
+shows fleet-wide critical/high/medium totals, and links to each machine's findings.
+The aggregator only reads the JSON files — it's agnostic about how they got there.
 
 ## Temporal & cross-server analysis
 
@@ -146,6 +163,9 @@ Options:
       --probe-mcp                    Live-probe local stdio MCP servers to
                                      enumerate tools/resources (opt-in; spawns the
                                      server processes).
+      --report <DIR>                 Aggregate a directory of --format json scans
+                                     into one fleet HTML dashboard (does not scan
+                                     the local machine).
   -h, --help                         Print help
   -V, --version                      Print version
 ```

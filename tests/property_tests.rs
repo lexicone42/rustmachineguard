@@ -1607,6 +1607,67 @@ fn html_report_leads_with_findings_and_is_escaped() {
     assert!(html.contains("&lt;script&gt;evil"), "escaped form present");
 }
 
+// ─── JSON round-trip + fleet aggregation ──────────────────────
+
+#[test]
+fn scan_report_json_round_trips() {
+    use rustmachineguard::models::*;
+    // A report with some skip-serializing-if-empty fields populated and others empty
+    // must survive serialize -> deserialize (fields default when omitted).
+    let report = make_test_report(|r| {
+        r.ssh_keys = vec![SshKey { path: "/k".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::Encrypted, comment: None }];
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "npm".into(), name: "x".into(), version: "1".into(),
+            advisory: "a".into(), found_in: "/m".into(),
+        }];
+        // env_files/agent_settings left empty → omitted from JSON → must default on read
+    });
+    let json = serde_json::to_string(&report).unwrap();
+    let back: ScanReport = serde_json::from_str(&json).expect("our own JSON must deserialize");
+    assert_eq!(back.ssh_keys.len(), 1);
+    assert_eq!(back.exposure_findings.len(), 1);
+    assert!(back.env_files.is_empty(), "omitted empty field defaults to empty");
+    assert_eq!(back.device.hostname, report.device.hostname);
+}
+
+#[test]
+fn fleet_ranks_machines_by_severity_and_aggregates() {
+    use rustmachineguard::models::*;
+    use rustmachineguard::output::fleet::render_fleet;
+
+    let clean = make_test_report(|r| { r.device.hostname = "clean-box".into(); });
+    let risky = make_test_report(|r| {
+        r.device.hostname = "risky-box".into();
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "npm".into(), name: "evil".into(), version: "1".into(),
+            advisory: "bad".into(), found_in: "/m".into(),
+        }];
+        r.ssh_keys = vec![SshKey { path: "/k".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::NoPassphrase, comment: None }];
+    });
+
+    // Pass clean first; the fleet view must reorder risky-box ahead of it.
+    let html = render_fleet(&[clean, risky]);
+    assert!(html.contains("Fleet Report"));
+    // aggregate pills: 1 critical (exposure) + 1 high (ssh)
+    assert!(html.contains(r#"<span class="pill critical">1 critical"#));
+    assert!(html.contains(r#"<span class="pill high">1 high"#));
+    // risky-box appears before clean-box in the machines table
+    let risky_pos = html.find("risky-box").unwrap();
+    let clean_pos = html.find("clean-box").unwrap();
+    assert!(risky_pos < clean_pos, "most at-risk machine must sort first");
+    // clean machine still shown, with a clean marker
+    assert!(html.contains("No findings"));
+}
+
+#[test]
+fn fleet_html_escapes_hostnames() {
+    use rustmachineguard::output::fleet::render_fleet;
+    let report = make_test_report(|r| { r.device.hostname = "<script>x".into(); });
+    let html = render_fleet(&[report]);
+    assert!(!html.contains("<script>x"), "hostname must be escaped");
+    assert!(html.contains("&lt;script&gt;x"));
+}
+
 // ─── Sharp-edge hardening tests ─────────────────────────────
 
 #[test]

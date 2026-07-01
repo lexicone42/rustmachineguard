@@ -3,6 +3,7 @@ pub mod json;
 pub mod html;
 pub mod sbom;
 pub mod blueprint;
+pub mod fleet;
 
 use crate::models::ScanReport;
 
