@@ -1,11 +1,23 @@
 use crate::models::{McpConfig, McpProbeResult, McpResourceInfo, McpServerInfo, McpToolInfo};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// JSON-RPC request ids for each phase of the handshake.
+const ID_INITIALIZE: u64 = 1;
+const ID_TOOLS: u64 = 2;
+const ID_RESOURCES: u64 = 3;
+
+/// Max size of a single newline-delimited message (a hostile server could otherwise
+/// send an unbounded line and OOM the probe).
+const MAX_MESSAGE_BYTES: usize = 1_048_576;
+/// Max messages to read while waiting for one response — bounds a server that spams
+/// notifications instead of answering.
+const MAX_INTERLEAVED: usize = 64;
 
 /// Interruptible watchdog that SIGKILLs a child process if the probe outlives
 /// PROBE_TIMEOUT. Cancellation is signalled via a Condvar so the watchdog thread
@@ -166,59 +178,54 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut reader = BufReader::new(stdout);
 
-    // Send initialize
+    // The stdio probe is a small state machine over newline-delimited JSON-RPC
+    // (per the MCP spec, stdio messages are newline-delimited, NOT Content-Length
+    // framed). Phases: Initialize -> (initialized notification) -> ListTools ->
+    // ListResources. `await_response` matches replies by JSON-RPC id and skips any
+    // interleaved notifications / log lines a server may emit, so the reader can't
+    // desync if a response doesn't arrive as the very next message.
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+
+    // Phase 1: initialize (required first; failure aborts the probe).
     let init_req = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": ID_INITIALIZE,
         "method": "initialize",
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {
-                "name": "rustmachineguard-probe",
-                "version": "0.1.0"
-            }
+            "clientInfo": { "name": "rustmachineguard-probe", "version": "0.1.0" }
         }
     });
-
     send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
-
-    let init_response =
-        read_response(&mut reader).map_err(|e| format!("init response: {}", e))?;
+    let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
+        .map_err(|e| format!("init response: {}", e))?;
     let server_info = extract_server_info(&init_response);
 
-    // Send initialized notification
+    // The client must acknowledge initialization before issuing requests.
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
     });
     let _ = send_message(&mut stdin, &initialized);
 
-    // Request tools/list
+    // Phase 2: tools/list (best-effort — a missing/failed list yields none).
     let tools_req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": {}
+        "jsonrpc": "2.0", "id": ID_TOOLS, "method": "tools/list", "params": {}
     });
     let _ = send_message(&mut stdin, &tools_req);
-    let tools = match read_response(&mut reader) {
-        Ok(r) => extract_tools(&r),
-        Err(_) => Vec::new(),
-    };
+    let tools = await_response(&mut reader, ID_TOOLS, deadline)
+        .map(|r| extract_tools(&r))
+        .unwrap_or_default();
 
-    // Request resources/list
+    // Phase 3: resources/list (best-effort).
     let resources_req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "resources/list",
-        "params": {}
+        "jsonrpc": "2.0", "id": ID_RESOURCES, "method": "resources/list", "params": {}
     });
     let _ = send_message(&mut stdin, &resources_req);
-    let resources = match read_response(&mut reader) {
-        Ok(r) => extract_resources(&r),
-        Err(_) => Vec::new(),
-    };
+    let resources = await_response(&mut reader, ID_RESOURCES, deadline)
+        .map(|r| extract_resources(&r))
+        .unwrap_or_default();
 
     drop(stdin);
 
@@ -229,61 +236,76 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     })
 }
 
+/// Send one MCP message as newline-delimited JSON (the stdio transport framing).
 fn send_message(stdin: &mut impl Write, msg: &serde_json::Value) -> std::io::Result<()> {
     let body = serde_json::to_string(msg)?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    stdin.write_all(header.as_bytes())?;
     stdin.write_all(body.as_bytes())?;
+    stdin.write_all(b"\n")?;
     stdin.flush()?;
     Ok(())
 }
 
-fn read_response(reader: &mut BufReader<impl std::io::Read>) -> Result<serde_json::Value, String> {
-    let start = Instant::now();
+/// Read messages until the JSON-RPC response with `expected_id` arrives, skipping
+/// interleaved notifications, server->client requests, and unrelated/unparseable
+/// lines. Bounded by `deadline` and `MAX_INTERLEAVED`. Reads adversarial MCP-server
+/// stdout, so it's exposed for fuzzing.
+pub fn await_response(
+    reader: &mut impl Read,
+    expected_id: u64,
+    deadline: Instant,
+) -> Result<serde_json::Value, String> {
+    for _ in 0..MAX_INTERLEAVED {
+        if Instant::now() >= deadline {
+            return Err("timeout".into());
+        }
+        let line = match read_line_bounded(reader, MAX_MESSAGE_BYTES)? {
+            Some(bytes) => bytes,
+            None => return Err("connection closed".into()),
+        };
+        // Skip blank / non-JSON lines (a spec-violating server logging to stdout).
+        let Ok(msg) = serde_json::from_slice::<serde_json::Value>(&line) else {
+            continue;
+        };
+        // A response carries result|error and the id we asked for. Everything else
+        // (notifications, server requests, other ids) is skipped — this is what keeps
+        // the reader from desyncing on interleaved traffic.
+        let is_response = msg.get("result").is_some() || msg.get("error").is_some();
+        if is_response && msg.get("id").and_then(|v| v.as_u64()) == Some(expected_id) {
+            return Ok(msg);
+        }
+    }
+    Err(format!(
+        "no response to request {} within {} messages",
+        expected_id, MAX_INTERLEAVED
+    ))
+}
 
-    // Read headers to find Content-Length
-    let mut content_length: Option<usize> = None;
+/// Read one newline-delimited line (without the trailing newline), bounded to `max`
+/// bytes. Returns `Ok(None)` on EOF with no data. Strips a trailing `\r` so CRLF is
+/// tolerated even though MCP uses `\n`.
+fn read_line_bounded(reader: &mut impl Read, max: usize) -> Result<Option<Vec<u8>>, String> {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
     loop {
-        if start.elapsed() > PROBE_TIMEOUT {
-            return Err("timeout reading headers".into());
-        }
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return Err("EOF".into()),
-            Ok(_) => {}
-            Err(e) => return Err(format!("read error: {}", e)),
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some(rest) = trimmed.strip_prefix("Content-Length:") {
-            if let Ok(len) = rest.trim().parse::<usize>() {
-                content_length = Some(len);
+        match reader.read(&mut byte) {
+            Ok(0) => {
+                return Ok(if buf.is_empty() { None } else { Some(buf) });
             }
-        }
-    }
-
-    let len = content_length.ok_or("no Content-Length header")?;
-    if len > 1_048_576 {
-        return Err("response too large".into());
-    }
-
-    let mut body = vec![0u8; len];
-    let mut read = 0;
-    while read < len {
-        if start.elapsed() > PROBE_TIMEOUT {
-            return Err("timeout reading body".into());
-        }
-        match std::io::Read::read(reader, &mut body[read..]) {
-            Ok(0) => return Err("EOF during body".into()),
-            Ok(n) => read += n,
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                    return Ok(Some(buf));
+                }
+                buf.push(byte[0]);
+                if buf.len() > max {
+                    return Err("message exceeds size limit".into());
+                }
+            }
             Err(e) => return Err(format!("read error: {}", e)),
         }
     }
-
-    serde_json::from_slice(&body).map_err(|e| format!("parse error: {}", e))
 }
 
 fn extract_server_info(response: &serde_json::Value) -> Option<McpServerInfo> {
@@ -451,5 +473,79 @@ fn error_result(name: &str, config_source: &str, error: &str) -> McpProbeResult 
         resources: Vec::new(),
         error: Some(error.to_string()),
         observed_capabilities: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn far_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(30)
+    }
+
+    #[test]
+    fn await_response_matches_by_id() {
+        let stream = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n";
+        let mut r = Cursor::new(stream.as_bytes());
+        let resp = await_response(&mut r, ID_TOOLS, far_deadline()).unwrap();
+        assert!(resp.get("result").is_some());
+    }
+
+    #[test]
+    fn await_response_skips_interleaved_notification() {
+        // A server logs a notification BEFORE answering — the old linear reader would
+        // have mistaken this for the response and returned nothing useful.
+        let stream = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\"}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"srv\"}}}\n"
+        );
+        let mut r = Cursor::new(stream.as_bytes());
+        let resp = await_response(&mut r, ID_INITIALIZE, far_deadline()).unwrap();
+        assert_eq!(resp["result"]["serverInfo"]["name"], "srv");
+    }
+
+    #[test]
+    fn await_response_skips_wrong_id_and_noise() {
+        // A stray non-JSON log line + a response to a different id, then ours.
+        let stream = concat!(
+            "not json at all\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[]}}\n"
+        );
+        let mut r = Cursor::new(stream.as_bytes());
+        let resp = await_response(&mut r, ID_RESOURCES, far_deadline()).unwrap();
+        assert!(resp.get("result").is_some());
+        assert_eq!(resp["id"], 3);
+    }
+
+    #[test]
+    fn await_response_errors_on_eof() {
+        let mut r = Cursor::new(&b""[..]);
+        assert!(await_response(&mut r, ID_TOOLS, far_deadline()).is_err());
+    }
+
+    #[test]
+    fn await_response_bounded_against_notification_flood() {
+        // A server that only ever sends notifications must not hang the reader forever.
+        let flood = "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}\n".repeat(1000);
+        let mut r = Cursor::new(flood.into_bytes());
+        assert!(await_response(&mut r, ID_TOOLS, far_deadline()).is_err());
+    }
+
+    #[test]
+    fn read_line_bounded_handles_crlf_and_eof() {
+        let mut r = Cursor::new(&b"hello\r\nworld"[..]);
+        assert_eq!(read_line_bounded(&mut r, 1024).unwrap(), Some(b"hello".to_vec()));
+        assert_eq!(read_line_bounded(&mut r, 1024).unwrap(), Some(b"world".to_vec()));
+        assert_eq!(read_line_bounded(&mut r, 1024).unwrap(), None);
+    }
+
+    #[test]
+    fn read_line_bounded_rejects_oversized_line() {
+        let huge = vec![b'a'; 2048];
+        let mut r = Cursor::new(huge);
+        assert!(read_line_bounded(&mut r, 1024).is_err());
     }
 }

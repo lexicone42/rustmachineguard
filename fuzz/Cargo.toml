@@ -77,3 +77,10 @@ path = "fuzz_targets/fuzz_fleet_report.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_mcp_probe_reader"
+path = "fuzz_targets/fuzz_mcp_probe_reader.rs"
+test = false
+doc = false
+bench = false

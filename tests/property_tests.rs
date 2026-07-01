@@ -1591,6 +1591,99 @@ fn findings_dangerous_hook_is_critical() {
     assert!(f.iter().any(|x| x.category == "Permissions"));
 }
 
+// ─── Mutation-testing-driven assertions (pin exact behavior) ───
+
+#[test]
+fn severity_labels_are_exact() {
+    use rustmachineguard::analysis::Severity;
+    // These strings become HTML/CSS class names and pill text — they must be exact.
+    assert_eq!(Severity::Critical.label(), "critical");
+    assert_eq!(Severity::High.label(), "high");
+    assert_eq!(Severity::Medium.label(), "medium");
+    assert_eq!(Severity::Low.label(), "low");
+}
+
+#[test]
+fn findings_sort_by_severity_not_insertion_order() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::models::*;
+    // A LOW rules finding is COLLECTED before the HIGH toxic-flow surface, so a correct
+    // sort must reorder them. This fails if Severity::rank is a constant.
+    let report = make_test_report(|r| {
+        r.rules_files = vec![RulesFile {
+            path: "/r".into(), file_name: "R".into(), sha256: "h".into(), git_tracked: true,
+            size_bytes: 1,
+            findings: vec![RulesFileFinding { severity: "low".into(), pattern: "meh".into() }],
+        }];
+        // filesystem (source) + network (sink) → toxic-flow HIGH, collected last
+        r.agent_skills = vec![AgentSkill {
+            name: "s".into(), path: "/s".into(), framework: "cc".into(), scope: "p".into(),
+            file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
+            capabilities: vec!["filesystem".into(), "network".into()],
+        }];
+    });
+    let f = collect_findings(&report);
+    assert!(f.len() >= 2);
+    assert_eq!(f.first().unwrap().severity, Severity::High, "highest severity must sort first");
+    assert_eq!(f.last().unwrap().severity, Severity::Low, "lowest severity must sort last");
+}
+
+#[test]
+fn findings_map_rules_severity_strings_precisely() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::models::*;
+    for (sev_str, expected) in [
+        ("critical", Severity::Critical),
+        ("high", Severity::High),
+        ("medium", Severity::Medium),
+        ("weird-unknown", Severity::Low), // unknown → Low
+    ] {
+        let report = make_test_report(|r| {
+            r.rules_files = vec![RulesFile {
+                path: "/r".into(), file_name: "R".into(), sha256: "h".into(), git_tracked: true,
+                size_bytes: 1,
+                findings: vec![RulesFileFinding { severity: sev_str.into(), pattern: "p".into() }],
+            }];
+        });
+        let f = collect_findings(&report);
+        let rf = f.iter().find(|x| x.category == "Rules file").unwrap();
+        assert_eq!(rf.severity, expected, "rules severity {:?} must map to {:?}", sev_str, expected);
+    }
+}
+
+#[test]
+fn fleet_counts_are_exact_per_severity() {
+    use rustmachineguard::output::fleet::render_fleet;
+    use rustmachineguard::models::*;
+    // Two exposures (both Critical) + one unprotected key (High) → the pill must read
+    // exactly "2 critical", not "1". Kills a mis-counting mutation in MachineReport::count.
+    let report = make_test_report(|r| {
+        r.exposure_findings = vec![
+            ExposureFinding { ecosystem: "npm".into(), name: "a".into(), version: "1".into(), advisory: "x".into(), found_in: "/m".into() },
+            ExposureFinding { ecosystem: "npm".into(), name: "b".into(), version: "1".into(), advisory: "x".into(), found_in: "/m".into() },
+        ];
+        r.ssh_keys = vec![SshKey { path: "/k".into(), key_type: "rsa".into(), has_passphrase: PassphraseStatus::NoPassphrase, comment: None }];
+    });
+    let html = render_fleet(&[report]);
+    assert!(html.contains(r#"<span class="pill critical">2 critical"#), "exactly 2 criticals");
+    assert!(html.contains(r#"<span class="pill high">1 high"#), "exactly 1 high");
+}
+
+#[test]
+fn diff_identical_rules_file_reports_no_change() {
+    // Pins the hash-comparison direction: EQUAL hashes must NOT report CONTENT CHANGED.
+    let one = serde_json::json!({
+        "ai_agents_and_tools": [], "mcp_configs": [], "ide_extensions": [],
+        "browser_extensions": [], "agent_skills": [], "ssh_keys": [],
+        "cloud_credentials": [], "exposure_findings": [],
+        "rules_files": [{"path": "/p/CLAUDE.md", "file_name": "CLAUDE.md", "sha256": "same", "git_tracked": true, "findings": []}],
+        "summary": {}
+    });
+    let diff = diff_reports(&one, &one);
+    let output = render_diff(&diff);
+    assert!(!output.contains("CONTENT CHANGED"), "identical hashes must not report a change");
+}
+
 #[test]
 fn html_report_leads_with_findings_and_is_escaped() {
     use rustmachineguard::models::*;
