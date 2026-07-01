@@ -14,6 +14,7 @@ pub enum OutputFormat {
     Html,
     Sbom,
     Blueprint,
+    Compliance,
 }
 
 pub fn render(report: &ScanReport, format: OutputFormat) -> String {
@@ -23,5 +24,6 @@ pub fn render(report: &ScanReport, format: OutputFormat) -> String {
         OutputFormat::Html => html::render(report),
         OutputFormat::Sbom => sbom::render(report),
         OutputFormat::Blueprint => blueprint::render(report),
+        OutputFormat::Compliance => crate::compliance::render(report),
     }
 }

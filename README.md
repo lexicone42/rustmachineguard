@@ -76,6 +76,23 @@ packages, MCP servers, and IDE/browser extensions during the scan. See
 - **`html`** — **Risk-first** dark-themed report: severity pills, a ranked Security Findings section, then inventory + detail. Meant to be shared/archived.
 - **`sbom`** — CycloneDX 1.6 SBOM
 - **`blueprint`** — CycloneDX 2.0 Blueprint (draft) — agent posture as assets/behaviors/flows, schema-validated in CI
+- **`compliance`** — control-coverage report (see below)
+
+## Compliance evidence
+
+`--format compliance` maps rmguard's inventory and findings to the control frameworks
+organizations are being asked to satisfy for AI-agent / MCP security, and reports honest
+coverage (Covered / Partial / Out-of-scope) per control:
+
+- **NSA/CISA "MCP Security" CSI** (U/OO/6030316-26, 2026-06)
+- **OWASP Top 10 for Agentic Applications** (ASI01–ASI10) and **Agentic Skills Top 10** (AST)
+- **OWASP MCP Top 10** (MCP)
+- **EU AI Act** AI-component inventory / transparency obligations (enforceable 2026-08-02)
+
+This is posture **evidence** (inventory + detection), **not a compliance attestation** —
+runtime controls (invocation logging, network segmentation) are explicitly marked
+out-of-scope. It's the artifact you bring to a compliance program to demonstrate agent/MCP
+inventory and detection coverage, with each finding tied to the control it evidences.
 
 ## Team / fleet reporting
 

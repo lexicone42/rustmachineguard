@@ -70,6 +70,8 @@ enum Format {
     Sbom,
     /// CycloneDX 2.0 Blueprint (draft) — agent posture with assets, behaviors, flows
     Blueprint,
+    /// Compliance coverage: maps findings/inventory to NSA-CISA / OWASP / EU AI Act controls
+    Compliance,
 }
 
 const VALID_SKIP: &[&str] = &[
@@ -182,6 +184,7 @@ fn main() {
         Format::Html => OutputFormat::Html,
         Format::Sbom => OutputFormat::Sbom,
         Format::Blueprint => OutputFormat::Blueprint,
+        Format::Compliance => OutputFormat::Compliance,
     };
 
     let skip: Vec<&str> = cli
