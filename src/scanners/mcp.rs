@@ -428,28 +428,31 @@ pub fn split_npm_package_version(spec: &str) -> (String, Option<String>) {
     }
 }
 
-/// Sanitize a URL by stripping credentials, paths beyond the host, and query strings.
+/// Sanitize a URL down to `scheme://host[:port]`, stripping userinfo, path, query, AND
+/// fragment. The scheme is kept (http vs https drives the plaintext-transport finding);
+/// everything that can carry a secret is dropped so the stored/displayed value never
+/// leaks a token.
+///
+/// Robust against the same evasions as [`crate::scanners::agent_settings`]'s host
+/// parsing: the authority ends at the first `/`, `?`, or `#` (so an `@`, `#`, or `?`
+/// in the path/query can't be mistaken for the host), and userinfo is stripped at the
+/// LAST `@` within the authority.
 fn sanitize_url(url: &str) -> String {
-    // Strip userinfo
-    if let Some(scheme_end) = url.find("://") {
-        let after_scheme = &url[scheme_end + 3..];
-        let host_part = if let Some(at_idx) = after_scheme.find('@') {
-            &after_scheme[at_idx + 1..]
-        } else {
-            after_scheme
-        };
-        // Strip path and query
-        let host = host_part
-            .split('/')
-            .next()
-            .unwrap_or(host_part)
-            .split('?')
-            .next()
-            .unwrap_or(host_part);
-        format!("{}://{}", &url[..scheme_end], host)
-    } else {
-        url.to_string()
-    }
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let after_scheme = &url[scheme_end + 3..];
+    // The authority ends at the first path/query/fragment delimiter.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Strip userinfo — the host[:port] is after the last '@'.
+    let host_port = match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => host,
+        None => authority,
+    };
+    format!("{}://{}", &url[..scheme_end], host_port)
 }
 
 /// Convert a YAML config to the canonical JSON value so ONE parser handles every
@@ -544,6 +547,36 @@ PORT = "8080"
         assert_eq!(d.name, "leaky");
         assert_eq!(d.package_name.as_deref(), Some("some-mcp"));
         assert_eq!(d.inline_secret_env_keys, vec!["SLACK_TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_url_never_leaks_credentials() {
+        // Userinfo, query tokens, and fragment tokens must all be stripped; the host
+        // must be parsed correctly even when '@'/'?'/'#' appear in path or query.
+        let cases = [
+            ("https://user:SECRETPASS@host.com/p?token=ABC", "https://host.com"),
+            ("https://host.com#token=SECRET", "https://host.com"),
+            ("https://host.com?a=1@evil.com/p", "https://host.com"),
+            ("http://tok@a/b@c", "http://a"),
+            ("https://host.com:8443/path", "https://host.com:8443"),
+            ("stdio://local", "stdio://local"),
+            ("no-scheme-here", "no-scheme-here"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_url(input), expected, "input: {input}");
+        }
+        // No secret token should ever survive.
+        for leaky in [
+            "https://u:SECRETPASS@h/x",
+            "https://h#SECRETPASS",
+            "https://h?k=SECRETPASS",
+        ] {
+            assert!(
+                !sanitize_url(leaky).contains("SECRETPASS"),
+                "leaked secret in: {leaky} -> {}",
+                sanitize_url(leaky)
+            );
+        }
     }
 
     #[test]
