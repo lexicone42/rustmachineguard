@@ -39,6 +39,13 @@ struct BlueprintDocument {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dependencies: Vec<Dependency>,
     blueprints: Vec<Blueprint>,
+    // The risk layer — omitted entirely when there's nothing to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threats: Option<ThreatsWrapper>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    risks: Option<RisksWrapper>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    controls: Vec<Control>,
 }
 
 #[derive(Serialize)]
@@ -225,6 +232,104 @@ struct Boundary {
     #[serde(rename = "type")]
     boundary_type: String,
     zones: Vec<String>,
+}
+
+// ── The risk layer (top-level in CycloneDX 2.0) ──────────────────────────────
+// These carry what used to live only in `rmg:` properties or the separate terminal
+// report: each finding is a `threat`, the toxic-flow surface is a scored `risk`, and
+// the compliance assessment becomes `controls` — all native, standards-track fields.
+
+/// `threats` is an object wrapper (`{ threats: [...] }`), not a bare array.
+#[derive(Serialize)]
+struct ThreatsWrapper {
+    threats: Vec<Threat>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Threat {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    /// bom-refs of assets this threat acts on. Kept to emitted refs (no dangling links).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    affected_assets: Vec<String>,
+}
+
+/// `risks` is an object wrapper (`{ risks: [...] }`).
+#[derive(Serialize)]
+struct RisksWrapper {
+    risks: Vec<Risk>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Risk {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    name: String,
+    statement: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    affects: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related_threats: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inherent_risk: Option<Rating>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    responses: Vec<RiskResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+}
+
+/// A likelihood × impact rating. Both sub-objects carry a required `level` (from
+/// different enums, but the same field name).
+#[derive(Serialize)]
+struct Rating {
+    likelihood: Level,
+    impact: Level,
+}
+
+#[derive(Serialize)]
+struct Level {
+    level: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RiskResponse {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    /// avoid | reduce | transfer | accept | exploit | enhance
+    strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Control {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    /// implementationStatus: recommended | planned | in-progress | implemented | …
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    applies_to: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effectiveness: Option<Effectiveness>,
+}
+
+#[derive(Serialize)]
+struct Effectiveness {
+    /// ineffective | marginal | adequate | good | excellent
+    rating: String,
 }
 
 // Injection-specific phrases that suggest MCP tool/resource description poisoning
@@ -426,6 +531,26 @@ impl BlueprintDocument {
             boundary_type: "trust".into(),
             zones: vec!["zone:local".into(), "zone:remote".into()],
         }];
+
+        // The scanned machine itself — a `system` asset that the risk layer
+        // (threats / risks / controls) attaches to. Per-asset precision (a threat
+        // pointing at the exact gateway/endpoint) is the next refinement; for now the
+        // machine is the shared, always-valid anchor.
+        let machine_ref = format!("asset:{host_ref}");
+        assets.push(Asset {
+            bom_ref: machine_ref.clone(),
+            asset_type: "system".into(),
+            name: Some(report.device.hostname.clone()),
+            description: Some(format!(
+                "The scanned developer machine ({} {})",
+                report.device.os_name, report.device.os_version
+            )),
+            zone: Some("zone:local".into()),
+            component_ref: None,
+            responsibilities: Vec::new(),
+            interfaces: Vec::new(),
+            properties: Vec::new(),
+        });
 
         // AI tools → agent assets
         for tool in &report.ai_agents_and_tools {
@@ -1312,6 +1437,82 @@ impl BlueprintDocument {
             boundaries,
         };
 
+        // ── Risk layer: reuse the same analysis the terminal/HTML reports lead with,
+        // expressed as native CycloneDX 2.0 constructs instead of rmg: properties.
+        let findings = crate::analysis::collect_findings(report);
+        let threats = (!findings.is_empty()).then(|| ThreatsWrapper {
+            threats: findings
+                .iter()
+                .enumerate()
+                .map(|(i, f)| Threat {
+                    bom_ref: format!("threat:{i}"),
+                    name: f.title.clone(),
+                    description: Some(format!(
+                        "{} severity · {} · at {}",
+                        f.severity.label(),
+                        f.category,
+                        f.location
+                    )),
+                    affected_assets: vec![machine_ref.clone()],
+                })
+                .collect(),
+        });
+
+        // The toxic-flow (lethal-trifecta) surface → a single scored risk.
+        let risks = crate::analysis::analyze_toxic_flow(report).map(|tf| RisksWrapper {
+            risks: vec![Risk {
+                bom_ref: "risk:toxic-flow".into(),
+                name: "Toxic flow (lethal trifecta)".into(),
+                statement: format!(
+                    "The connected agent surface combines a sensitive-data source ({}) with an exfiltration sink ({}), so a single prompt injection can read private data and send it out.",
+                    tf.sources.join("/"),
+                    tf.sinks.join("/")
+                ),
+                affects: vec![machine_ref.clone()],
+                related_threats: Vec::new(),
+                inherent_risk: Some(Rating {
+                    likelihood: Level { level: "high".into() },
+                    impact: Level { level: "major".into() },
+                }),
+                responses: vec![RiskResponse {
+                    bom_ref: "response:toxic-flow".into(),
+                    strategy: "reduce".into(),
+                    description: Some(
+                        "Separate the source and sink so no single agent context holds both, or require human approval on outbound flows."
+                            .into(),
+                    ),
+                    priority: Some("high".into()),
+                }],
+                status: Some("identified".into()),
+            }],
+        });
+
+        // Compliance coverage → controls, limited to the controls this machine's
+        // findings actually exercise (so the section reflects real posture, not the
+        // full 29-control catalog on every scan).
+        let controls: Vec<Control> = crate::compliance::assess(report)
+            .assessments
+            .iter()
+            .filter(|a| {
+                a.finding_count > 0
+                    && !matches!(a.control.coverage, crate::compliance::Coverage::OutOfScope)
+            })
+            .map(|a| {
+                let c = a.control;
+                let covered = matches!(c.coverage, crate::compliance::Coverage::Covered);
+                Control {
+                    bom_ref: format!("control:{}", sanitize_ref(c.id)),
+                    name: format!("{} — {}", c.id, c.title),
+                    description: Some(c.how.to_string()),
+                    status: Some(if covered { "implemented" } else { "in-progress" }.into()),
+                    applies_to: vec![machine_ref.clone()],
+                    effectiveness: Some(Effectiveness {
+                        rating: if covered { "good" } else { "marginal" }.into(),
+                    }),
+                }
+            })
+            .collect();
+
         // Surface scan warnings in document metadata as properties (schema-legal).
         let warning_props: Vec<Property> = report
             .warnings
@@ -1326,6 +1527,9 @@ impl BlueprintDocument {
             spec_format: "CycloneDX",
             spec_version: "2.0",
             version: 1,
+            threats,
+            risks,
+            controls,
             metadata: DocMetadata {
                 timestamp: report.scan_timestamp_iso.clone(),
                 tools: DocTools {

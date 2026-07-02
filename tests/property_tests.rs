@@ -1611,6 +1611,57 @@ fn blueprint_emits_toxic_flow_behavior() {
         && b["targets"][0] == "asset:agent-surface"));
 }
 
+#[test]
+fn blueprint_emits_the_risk_layer() {
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude Code".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: None, binary_path: None, config_dir: None, install_path: None, is_running: true,
+        }];
+        // A poisoned rules file -> a Critical finding -> a threat (+ a mapped control).
+        r.rules_files = vec![RulesFile {
+            path: "/p/CLAUDE.md".into(), file_name: "CLAUDE.md".into(), sha256: "y".into(),
+            git_tracked: false, size_bytes: 100,
+            findings: vec![RulesFileFinding {
+                severity: "critical".into(), pattern: "curl|wget piped to shell".into(),
+            }],
+        }];
+        // Source (filesystem) + sink (network) capabilities -> toxic flow -> a risk.
+        r.agent_skills = vec![AgentSkill {
+            name: "s".into(), path: "/s".into(), framework: "claude-code".into(),
+            scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
+            capabilities: vec!["filesystem".into(), "network".into()],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output); // also covers the new threat/risk/control links
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // Findings become top-level threats.
+    let threats = doc["threats"]["threats"].as_array().expect("threats present");
+    assert!(!threats.is_empty(), "a rules-file finding should produce a threat");
+    assert!(threats[0]["affectedAssets"][0].as_str().unwrap().starts_with("asset:host:"));
+
+    // The toxic-flow surface becomes a scored risk.
+    let risks = doc["risks"]["risks"].as_array().expect("risks present");
+    assert_eq!(risks[0]["name"], "Toxic flow (lethal trifecta)");
+    assert_eq!(risks[0]["inherentRisk"]["likelihood"]["level"], "high");
+    assert_eq!(risks[0]["inherentRisk"]["impact"]["level"], "major");
+    assert_eq!(risks[0]["responses"][0]["strategy"], "reduce");
+
+    // Compliance coverage becomes controls with status + effectiveness.
+    let controls = doc["controls"].as_array().expect("controls present");
+    assert!(!controls.is_empty(), "findings should map to compliance controls");
+    assert!(controls[0]["status"].is_string() && controls[0]["effectiveness"]["rating"].is_string());
+
+    // The machine `system` asset anchors the risk layer.
+    assert!(
+        doc["blueprints"][0]["assets"].as_array().unwrap().iter().any(|a| a["type"] == "system"),
+        "a system asset for the machine should be present"
+    );
+}
+
 // ─── Findings collector (risk-first reporting) ─────────────────
 
 #[test]
@@ -2578,6 +2629,23 @@ fn assert_no_dangling_refs(output: &str) {
             }
         }
     }
+
+    // The risk layer (top-level) must also point only at emitted assets.
+    let check_asset_links = |items: Option<&Vec<serde_json::Value>>, field: &str, kind: &str| {
+        if let Some(arr) = items {
+            for item in arr {
+                if let Some(links) = item[field].as_array() {
+                    for r in links {
+                        let r = r.as_str().unwrap();
+                        assert!(asset_refs.contains(r), "dangling {kind} {field} ref: {r}");
+                    }
+                }
+            }
+        }
+    };
+    check_asset_links(doc["threats"]["threats"].as_array(), "affectedAssets", "threat");
+    check_asset_links(doc["risks"]["risks"].as_array(), "affects", "risk");
+    check_asset_links(doc["controls"].as_array(), "appliesTo", "control");
 }
 
 #[test]
