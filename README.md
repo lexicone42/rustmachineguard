@@ -81,7 +81,7 @@ packages, MCP servers, and IDE/browser extensions during the scan. See
 - **`json`** — Structured data for programmatic consumption, CI pipelines, or SIEM ingestion (round-trippable — it deserializes back into a scan report)
 - **`html`** — **Risk-first** dark-themed report: severity pills, a ranked Security Findings section, then inventory + detail. Meant to be shared/archived. Each finding is **click-to-expand**: it reveals what it means, why it matters, how to fix it, the framework it maps to (EAA / OWASP / etc.), and — where relevant — the exact offending artifact (e.g. the actual shell command a hook runs). Self-contained (no external assets), so it renders offline and travels as a single file.
 - **`sbom`** — CycloneDX 1.6 SBOM
-- **`blueprint`** — CycloneDX 2.0 Blueprint (draft) — agent posture as assets/behaviors/flows, schema-validated in CI
+- **`blueprint`** — CycloneDX 2.0 Blueprint (draft) — agent posture as assets/behaviors/flows plus a native risk layer (threats/risks/controls), schema-validated in CI. New to Blueprints? [docs/BLUEPRINT-WALKTHROUGH.md](docs/BLUEPRINT-WALKTHROUGH.md) explains the output field by field.
 - **`compliance`** — control-coverage report (see below)
 
 ## Compliance evidence
