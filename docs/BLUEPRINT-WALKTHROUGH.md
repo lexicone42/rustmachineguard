@@ -139,10 +139,19 @@ where trust changes and where a crossing flow deserves scrutiny.
   "description": "MCP tool invocation via http transport" }
 ```
 
-- **`type`** `control` (commands/invocations) vs `data` (information moving). A flow can
-  also carry `encrypted: false` — which is how a plaintext hop becomes visible *in the model*.
-- `source`/`destination` are asset `bom-ref`s. **Invariant we enforce in tests:** every flow
-  and behavior ref must resolve to an emitted asset — no dangling links.
+- **`type`** `control` (commands/invocations) vs `data` (information moving).
+- **`encrypted`** — a flow to a remote MCP server over `http://` carries `encrypted: false`,
+  which is how a plaintext hop becomes visible *in the model* (a local stdio pipe omits the
+  field — transport encryption doesn't apply):
+
+  ```json
+  { "name": "Claude Code → analytics", "type": "control",
+    "source": "asset:ai-tool:claude-code", "destination": "asset:mcp:analytics",
+    "encrypted": false, "description": "MCP tool invocation via http transport" }
+  ```
+- `source`/`destination` are asset `bom-ref`s. **Invariant we enforce in tests:** every
+  flow, behavior, threat, risk, and control reference must resolve to an emitted asset —
+  no dangling links.
 
 ---
 
@@ -156,17 +165,19 @@ all three outputs.
 
 ```json
 "threats": { "threats": [
-  { "bom-ref": "threat:0",
-    "name": "Known-bad npm package: @modelcontextprotocol/server-filesystem",
-    "description": "critical severity · Exposure · at …/.cursor/mcp.json",
-    "affectedAssets": ["asset:host:bertie"] }
+  { "bom-ref": "threat:1",
+    "name": "MCP server 'analytics' uses plaintext HTTP (http://…) — traffic and tokens are unencrypted",
+    "description": "high severity · MCP transport · at …/.cursor/mcp.json",
+    "affectedAssets": ["asset:mcp:analytics"] }
 ] }
 ```
 
 Note `threats` is an **object** (`{ threats: [...] }`), not a bare array. Each rmguard
-finding becomes one threat. `affectedAssets` points at the assets it endangers — today the
-machine `system` asset; **per-asset precision** (a plaintext-transport threat pointing at
-the exact remote endpoint) is the next refinement.
+finding becomes one threat, and `affectedAssets` points at the **specific asset it
+concerns** — a plaintext-transport threat links to that MCP server (`asset:mcp:analytics`),
+a rules-file finding to `asset:rules:…`, a hostile-gateway finding to `asset:gateway:…`.
+Findings without a more precise target (e.g. an unprotected SSH key) fall back to the
+machine `system` asset.
 
 ### 5b. `risks` — a scored, composite judgment
 
@@ -221,11 +232,12 @@ producing silently-wrong output.
 
 ## 7. What's next
 
-- **Per-asset threat linking** — point each threat at the specific asset it concerns
-  (the gateway, the plaintext endpoint), not just the machine.
-- **`encrypted: false` on plaintext flows** — make the transport risk visible on the flow.
-- **Native `threats`/`risks` fields as the 2.0 draft firms them up** — this walkthrough
-  will track the schema.
+- **Attack patterns & CVEs on threats** — attach CAPEC `attackPatterns` and, where the
+  BOM carries them, `relatedVulnerabilities` (e.g. the gateway threat → CVE-2026-21852).
+- **`observed` acknowledgments** — as `--probe-mcp` coverage grows, promote inferred
+  behaviors from `declared` to `observed`.
+- **Track the draft to 2.0 final (2026-08-31)** — re-vendor the schema and re-run the
+  conformance gate on each bump; this walkthrough tracks the shape.
 
 See [AGENT-SBOM-PROPOSAL.md](AGENT-SBOM-PROPOSAL.md) for the strategic framing (why
 Blueprints, not more CycloneDX 1.6).

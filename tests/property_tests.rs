@@ -1638,10 +1638,19 @@ fn blueprint_emits_the_risk_layer() {
     assert_no_dangling_refs(&output); // also covers the new threat/risk/control links
     let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
 
-    // Findings become top-level threats.
+    // Findings become top-level threats, linked to the specific asset they concern:
+    // the rules-file threat points at the rules asset (not just the machine).
     let threats = doc["threats"]["threats"].as_array().expect("threats present");
     assert!(!threats.is_empty(), "a rules-file finding should produce a threat");
-    assert!(threats[0]["affectedAssets"][0].as_str().unwrap().starts_with("asset:host:"));
+    let rules_threat = threats
+        .iter()
+        .find(|t| t["name"].as_str().unwrap().contains("dangerous pattern"))
+        .expect("rules-file threat present");
+    assert!(
+        rules_threat["affectedAssets"][0].as_str().unwrap().starts_with("asset:rules:"),
+        "rules threat should link to the rules asset, got {}",
+        rules_threat["affectedAssets"][0]
+    );
 
     // The toxic-flow surface becomes a scored risk.
     let risks = doc["risks"]["risks"].as_array().expect("risks present");
@@ -1660,6 +1669,46 @@ fn blueprint_emits_the_risk_layer() {
         doc["blueprints"][0]["assets"].as_array().unwrap().iter().any(|a| a["type"] == "system"),
         "a system asset for the machine should be present"
     );
+}
+
+#[test]
+fn blueprint_links_mcp_threat_and_marks_plaintext_flow() {
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude Code".into(), vendor: "Anthropic".into(), tool_type: AiToolType::CliTool,
+            version: None, binary_path: None, config_dir: None, install_path: None, is_running: true,
+        }];
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(), config_path: "/p/.mcp.json".into(), vendor: "c".into(),
+            server_names: vec!["analytics".into()], server_count: 1, git_tracked: false,
+            servers: vec![McpServerDetail {
+                name: "analytics".into(), transport: "http".into(), command: None, args: vec![],
+                package_ecosystem: None, package_name: None, package_version: None,
+                url: Some("http://analytics.example.com/mcp".into()),
+                inline_secret_env_keys: vec![],
+            }],
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output);
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // The plaintext-transport threat links to the EXACT MCP server asset, not the machine.
+    let threats = doc["threats"]["threats"].as_array().unwrap();
+    let mcp_threat = threats
+        .iter()
+        .find(|t| t["name"].as_str().unwrap().contains("plaintext HTTP"))
+        .expect("plaintext transport threat present");
+    assert_eq!(mcp_threat["affectedAssets"][0], "asset:mcp:analytics");
+
+    // The agent → server flow is marked as an unencrypted hop.
+    let flows = doc["blueprints"][0]["flows"].as_array().unwrap();
+    let flow = flows
+        .iter()
+        .find(|f| f["destination"] == "asset:mcp:analytics")
+        .expect("flow to the analytics server present");
+    assert_eq!(flow["encrypted"], false, "a plaintext http:// flow must be encrypted:false");
 }
 
 // ─── Findings collector (risk-first reporting) ─────────────────
