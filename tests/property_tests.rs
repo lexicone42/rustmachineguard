@@ -1711,6 +1711,38 @@ fn blueprint_links_mcp_threat_and_marks_plaintext_flow() {
     assert_eq!(flow["encrypted"], false, "a plaintext http:// flow must be encrypted:false");
 }
 
+#[test]
+fn blueprint_threats_carry_cves_and_capec() {
+    use rustmachineguard::models::*;
+    let report = make_test_report(|r| {
+        // An exposure finding whose advisory names a CVE -> a vulnerability + relation.
+        r.exposure_findings = vec![ExposureFinding {
+            ecosystem: "npm".into(),
+            name: "mcp-remote".into(),
+            version: "0.1.10".into(),
+            advisory: "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth URL.".into(),
+            found_in: "/p/.mcp.json".into(),
+        }];
+    });
+    let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert_no_dangling_refs(&output); // also checks CVE/CAPEC refs resolve
+    let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // The CVE is a top-level vulnerability.
+    let vulns = doc["vulnerabilities"].as_array().expect("vulnerabilities present");
+    assert!(vulns.iter().any(|v| v["id"] == "CVE-2025-6514"), "CVE emitted as a vulnerability");
+
+    // A CAPEC attack pattern (supply chain) with the native integer capecId.
+    let patterns = doc["threats"]["attackPatterns"].as_array().expect("attackPatterns present");
+    let supply = patterns.iter().find(|a| a["capecId"] == 437).expect("CAPEC-437 present");
+    assert!(supply["name"].as_str().unwrap().contains("Supply Chain"));
+
+    // The exposure threat references both.
+    let threat = doc["threats"]["threats"].as_array().unwrap()[0].clone();
+    assert_eq!(threat["relatedVulnerabilities"][0], "vuln:cve-2025-6514");
+    assert_eq!(threat["attackPatterns"][0], "attack:capec-437");
+}
+
 // ─── Findings collector (risk-first reporting) ─────────────────
 
 #[test]
@@ -2720,6 +2752,26 @@ fn assert_no_dangling_refs(output: &str) {
     check_asset_links(doc["threats"]["threats"].as_array(), "affectedAssets", "threat");
     check_asset_links(doc["risks"]["risks"].as_array(), "affects", "risk");
     check_asset_links(doc["controls"].as_array(), "appliesTo", "control");
+
+    // CVE and CAPEC references must resolve to emitted vulnerability / attackPattern objects.
+    let collect_refs = |arr: Option<&Vec<serde_json::Value>>| -> std::collections::HashSet<String> {
+        arr.into_iter()
+            .flatten()
+            .filter_map(|o| o["bom-ref"].as_str().map(String::from))
+            .collect()
+    };
+    let vuln_refs = collect_refs(doc["vulnerabilities"].as_array());
+    let attack_refs = collect_refs(doc["threats"]["attackPatterns"].as_array());
+    if let Some(threats) = doc["threats"]["threats"].as_array() {
+        for t in threats {
+            for r in t["relatedVulnerabilities"].as_array().into_iter().flatten() {
+                assert!(vuln_refs.contains(r.as_str().unwrap()), "dangling CVE ref: {r}");
+            }
+            for r in t["attackPatterns"].as_array().into_iter().flatten() {
+                assert!(attack_refs.contains(r.as_str().unwrap()), "dangling CAPEC ref: {r}");
+            }
+        }
+    }
 }
 
 #[test]

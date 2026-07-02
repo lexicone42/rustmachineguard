@@ -164,20 +164,46 @@ all three outputs.
 ### 5a. `threats` — each finding, as a danger against assets
 
 ```json
-"threats": { "threats": [
-  { "bom-ref": "threat:1",
-    "name": "MCP server 'analytics' uses plaintext HTTP (http://…) — traffic and tokens are unencrypted",
-    "description": "high severity · MCP transport · at …/.cursor/mcp.json",
-    "affectedAssets": ["asset:mcp:analytics"] }
-] }
+"threats": {
+  "threats": [
+    { "bom-ref": "threat:0",
+      "name": "Known-bad npm package: mcp-remote 0.1.10",
+      "description": "critical severity · Exposure · at …/.mcp.json",
+      "affectedAssets": ["asset:mcp:proxy"],
+      "relatedVulnerabilities": ["vuln:cve-2025-6514"],
+      "attackPatterns": ["attack:capec-437"] }
+  ],
+  "attackPatterns": [
+    { "bom-ref": "attack:capec-437", "capecId": 437, "name": "Supply Chain",
+      "description": "Compromise introduced through a dependency the victim trusts." }
+  ]
+}
 ```
 
-Note `threats` is an **object** (`{ threats: [...] }`), not a bare array. Each rmguard
-finding becomes one threat, and `affectedAssets` points at the **specific asset it
-concerns** — a plaintext-transport threat links to that MCP server (`asset:mcp:analytics`),
-a rules-file finding to `asset:rules:…`, a hostile-gateway finding to `asset:gateway:…`.
-Findings without a more precise target (e.g. an unprotected SSH key) fall back to the
-machine `system` asset.
+`threats` is an **object** (`{ threats, attackPatterns }`), not a bare array. Each rmguard
+finding becomes one threat:
+
+- **`affectedAssets`** points at the **specific asset it concerns** — a plaintext-transport
+  threat links to that MCP server (`asset:mcp:…`), a rules-file finding to `asset:rules:…`,
+  a hostile-gateway finding to `asset:gateway:…`; findings without a precise target fall back
+  to the machine `system` asset.
+- **`relatedVulnerabilities`** references top-level `vulnerabilities[]` entries — CVEs parsed
+  from the threat-catalog advisory (e.g. `CVE-2025-6514`), and the EAA-007 gateway CVE.
+- **`attackPatterns`** references **CAPEC** (MITRE's Common Attack Pattern Enumeration &
+  Classification) entries carried in `threats.attackPatterns[]`, each with the native
+  integer **`capecId`**. The mapping is category-based and deliberately
+  conservative (e.g. plaintext transport → CAPEC-157 *Sniffing*, hostile gateway → CAPEC-94
+  *Adversary in the Middle*, known-bad package → CAPEC-437 *Supply Chain*); categories with
+  no clean CAPEC get none rather than a forced fit.
+
+The CVEs themselves live in a **top-level `vulnerabilities[]`** array:
+
+```json
+"vulnerabilities": [
+  { "bom-ref": "vuln:cve-2025-6514", "id": "CVE-2025-6514",
+    "description": "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth URL." }
+]
+```
 
 ### 5b. `risks` — a scored, composite judgment
 
@@ -232,10 +258,10 @@ producing silently-wrong output.
 
 ## 7. What's next
 
-- **Attack patterns & CVEs on threats** — attach CAPEC `attackPatterns` and, where the
-  BOM carries them, `relatedVulnerabilities` (e.g. the gateway threat → CVE-2026-21852).
 - **`observed` acknowledgments** — as `--probe-mcp` coverage grows, promote inferred
   behaviors from `declared` to `observed`.
+- **CVSS ratings on vulnerabilities** — the advisory text carries the score; surface it as
+  a structured `ratings` entry rather than only in the description.
 - **Track the draft to 2.0 final (2026-08-31)** — re-vendor the schema and re-run the
   conformance gate on each bump; this walkthrough tracks the shape.
 

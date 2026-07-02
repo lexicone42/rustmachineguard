@@ -40,6 +40,8 @@ struct BlueprintDocument {
     dependencies: Vec<Dependency>,
     blueprints: Vec<Blueprint>,
     // The risk layer — omitted entirely when there's nothing to say.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    vulnerabilities: Vec<Vulnerability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     threats: Option<ThreatsWrapper>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -244,10 +246,14 @@ struct Boundary {
 // report: each finding is a `threat`, the toxic-flow surface is a scored `risk`, and
 // the compliance assessment becomes `controls` — all native, standards-track fields.
 
-/// `threats` is an object wrapper (`{ threats: [...] }`), not a bare array.
+/// `threats` is an object wrapper (`{ threats: [...], attackPatterns: [...] }`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ThreatsWrapper {
     threats: Vec<Threat>,
+    /// The CAPEC attack-pattern objects threats reference by bom-ref.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    attack_patterns: Vec<AttackPattern>,
 }
 
 #[derive(Serialize)]
@@ -261,6 +267,36 @@ struct Threat {
     /// bom-refs of assets this threat acts on. Kept to emitted refs (no dangling links).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     affected_assets: Vec<String>,
+    /// bom-refs of top-level `vulnerabilities[]` entries (CVEs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related_vulnerabilities: Vec<String>,
+    /// bom-refs of `attackPattern` objects in the threats wrapper (CAPEC).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    attack_patterns: Vec<String>,
+}
+
+/// A CAPEC attack pattern. `capecId` is a native integer field in the schema.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttackPattern {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capec_id: Option<u32>,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+/// A top-level CycloneDX vulnerability (a CVE), referenced by a threat.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Vulnerability {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 /// `risks` is an object wrapper (`{ risks: [...] }`).
@@ -511,6 +547,73 @@ fn first_single_quoted(s: &str) -> Option<&str> {
     let rest = s.get(start..)?;
     let end = rest.find('\'')?;
     rest.get(..end)
+}
+
+/// Pull CVE identifiers (`CVE-YYYY-NNNN`) out of free advisory text, deduped and
+/// normalized to upper-case. Token-based, so punctuation around the id is ignored.
+fn extract_cves(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        let up = raw.trim_matches('-').to_uppercase();
+        let Some(rest) = up.strip_prefix("CVE-") else {
+            continue;
+        };
+        let mut parts = rest.splitn(2, '-');
+        let (Some(year), Some(num)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if year.len() >= 4
+            && year.bytes().all(|b| b.is_ascii_digit())
+            && !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit())
+        {
+            let cve = format!("CVE-{year}-{num}");
+            if !out.contains(&cve) {
+                out.push(cve);
+            }
+        }
+    }
+    out
+}
+
+/// Map a finding category to a CAPEC attack pattern `(id, name, plain-language gloss)`.
+/// Only well-established, defensible mappings are returned; categories without a clean
+/// CAPEC (e.g. prompt-injection via a rules file) return None rather than force a fit.
+fn capec_for_category(category: &str) -> Option<(u32, &'static str, &'static str)> {
+    Some(match category {
+        "MCP transport" => (
+            157,
+            "Sniffing Attacks",
+            "Intercepting unencrypted traffic to capture tokens and data in transit.",
+        ),
+        "Gateway routing" => (
+            94,
+            "Adversary in the Middle (AiTM)",
+            "Routing requests through an attacker-controlled host that can read and alter them.",
+        ),
+        "MCP command" => (
+            185,
+            "Malicious Software Download",
+            "Causing the victim to fetch and run attacker-controlled code at startup.",
+        ),
+        "Exposure" => (
+            437,
+            "Supply Chain",
+            "Compromise introduced through a dependency or package the victim trusts.",
+        ),
+        "Hook" => (
+            242,
+            "Code Injection",
+            "Injecting commands that execute in the victim's context.",
+        ),
+        "MCP secret" | "Settings secret" | "Secret leak" | "Secret exposure" | "Credential"
+        | "Transcript exposure" => (
+            37,
+            "Retrieve Embedded Sensitive Data",
+            "Reading credentials or sensitive data left accessible at rest.",
+        ),
+        _ => return None,
+    })
 }
 
 impl BlueprintDocument {
@@ -1548,11 +1651,61 @@ impl BlueprintDocument {
         };
 
         let findings = crate::analysis::collect_findings(report);
-        let threats = (!findings.is_empty()).then(|| ThreatsWrapper {
-            threats: findings
-                .iter()
-                .enumerate()
-                .map(|(i, f)| Threat {
+
+        // CVEs mentioned in exposure advisories, keyed by the finding title we can
+        // reconstruct, plus a description per CVE.
+        let mut cves_by_title: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut cve_desc: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for e in &report.exposure_findings {
+            let cves = extract_cves(&e.advisory);
+            if cves.is_empty() {
+                continue;
+            }
+            for cve in &cves {
+                cve_desc.entry(cve.clone()).or_insert_with(|| e.advisory.clone());
+            }
+            let title = format!("Known-bad {} package: {} {}", e.ecosystem, e.name, e.version);
+            cves_by_title.insert(title, cves);
+        }
+        // The hostile-gateway (EAA-007) finding maps to a known CVE.
+        const GATEWAY_CVE: &str = "CVE-2026-21852";
+        cve_desc.entry(GATEWAY_CVE.into()).or_insert_with(|| {
+            "AI base-URL / gateway override enabling API-key exfiltration via a malicious proxy (EAA-007).".into()
+        });
+
+        let mut used_cves: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut used_capec: std::collections::BTreeMap<u32, (&'static str, &'static str)> =
+            std::collections::BTreeMap::new();
+
+        let threat_list: Vec<Threat> = findings
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let mut related_vulnerabilities = Vec::new();
+                match f.category.as_str() {
+                    "Exposure" => {
+                        if let Some(cves) = cves_by_title.get(&f.title) {
+                            for cve in cves {
+                                used_cves.insert(cve.clone());
+                                related_vulnerabilities.push(format!("vuln:{}", cve.to_lowercase()));
+                            }
+                        }
+                    }
+                    "Gateway routing" => {
+                        used_cves.insert(GATEWAY_CVE.into());
+                        related_vulnerabilities
+                            .push(format!("vuln:{}", GATEWAY_CVE.to_lowercase()));
+                    }
+                    _ => {}
+                }
+                let mut attack_patterns = Vec::new();
+                if let Some((id, name, desc)) = capec_for_category(&f.category) {
+                    used_capec.insert(id, (name, desc));
+                    attack_patterns.push(format!("attack:capec-{id}"));
+                }
+                Threat {
                     bom_ref: format!("threat:{i}"),
                     name: f.title.clone(),
                     description: Some(format!(
@@ -1562,8 +1715,33 @@ impl BlueprintDocument {
                         f.location
                     )),
                     affected_assets: vec![resolve_asset(f)],
-                })
-                .collect(),
+                    related_vulnerabilities,
+                    attack_patterns,
+                }
+            })
+            .collect();
+
+        let vulnerabilities: Vec<Vulnerability> = used_cves
+            .iter()
+            .map(|cve| Vulnerability {
+                bom_ref: format!("vuln:{}", cve.to_lowercase()),
+                id: cve.clone(),
+                description: cve_desc.get(cve).cloned(),
+            })
+            .collect();
+        let attack_patterns: Vec<AttackPattern> = used_capec
+            .iter()
+            .map(|(id, (name, desc))| AttackPattern {
+                bom_ref: format!("attack:capec-{id}"),
+                capec_id: Some(*id),
+                name: (*name).to_string(),
+                description: Some((*desc).to_string()),
+            })
+            .collect();
+
+        let threats = (!threat_list.is_empty()).then_some(ThreatsWrapper {
+            threats: threat_list,
+            attack_patterns,
         });
 
         // The toxic-flow (lethal-trifecta) surface → a single scored risk.
@@ -1635,6 +1813,7 @@ impl BlueprintDocument {
             spec_format: "CycloneDX",
             spec_version: "2.0",
             version: 1,
+            vulnerabilities,
             threats,
             risks,
             controls,
