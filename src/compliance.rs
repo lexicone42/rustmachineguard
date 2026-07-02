@@ -428,6 +428,20 @@ mod tests {
     }
 
     #[test]
+    fn every_finding_category_has_bespoke_guidance() {
+        // The report's "learn more" detail must not fall back to the generic text for
+        // any real category — the fallback is identifiable by an empty `reference`.
+        for cat in KNOWN_CATEGORIES {
+            let g = crate::analysis::guidance(cat);
+            assert!(
+                !g.reference.is_empty(),
+                "category {cat:?} has no bespoke guidance (hit the fallback)"
+            );
+            assert!(!g.what.is_empty() && !g.why.is_empty() && !g.fix.is_empty());
+        }
+    }
+
+    #[test]
     fn every_mapped_category_is_a_real_finding_category() {
         for c in CONTROLS {
             for cat in c.finding_categories {

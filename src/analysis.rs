@@ -44,6 +44,147 @@ pub struct Finding {
     pub title: String,
     /// Where it was found (path / config source), for triage.
     pub location: String,
+    /// The concrete offending artifact when it isn't already in the title — e.g. the
+    /// actual shell command a hook runs. NEVER a secret value (the no-leak guarantee).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+
+/// Human-facing explanation for a finding category — the "click to learn more" detail:
+/// what was found, why it matters, how to fix it, and the framework it maps to.
+pub struct Guidance {
+    pub what: &'static str,
+    pub why: &'static str,
+    pub fix: &'static str,
+    /// Standard / catalog reference, or "" when none applies.
+    pub reference: &'static str,
+}
+
+/// Guidance for a finding category. Every category `collect_findings` can emit has an
+/// entry; the fallback keeps the report honest if a new category is added.
+pub fn guidance(category: &str) -> Guidance {
+    match category {
+        "Exposure" => Guidance {
+            what: "This package matches rmguard's threat catalog of known-malicious or known-vulnerable releases (compromised npm/PyPI packages, malicious MCP servers, and the like).",
+            why: "Installing or running a known-bad package executes attacker-controlled code with your privileges — the most direct compromise path on the machine.",
+            fix: "Remove or downgrade the package to a known-good version, rotate any credentials it could have touched, and check the linked advisory for indicators of compromise.",
+            reference: "rmguard threat catalog · see docs/THREAT-CATALOG.md",
+        },
+        "MCP transport" => Guidance {
+            what: "This MCP server is reached over plaintext http://, so the connection is unencrypted.",
+            why: "Any token in the request and all tool traffic travel in the clear — readable and modifiable by anyone on the network path (a coffee-shop Wi-Fi or a compromised proxy).",
+            fix: "Switch the server URL to https://. If the server only offers http, run it over a local loopback or a tunnel, and treat any bearer token it used as exposed.",
+            reference: "OWASP MCP Top 10",
+        },
+        "MCP scope" => Guidance {
+            what: "A filesystem MCP server is rooted at a very broad path (/, $HOME, or the home directory), granting the agent read/write across nearly the whole machine.",
+            why: "A prompt injection that reaches this agent can read or modify anything under that root — SSH keys, browser profiles, other projects — not just the intended workspace.",
+            fix: "Re-root the server at the specific project directory it needs. Filesystem servers should be scoped as narrowly as the task allows.",
+            reference: "OWASP Agentic Apps Top 10 (excessive agency)",
+        },
+        "MCP secret" | "Settings secret" => Guidance {
+            what: "A credential is hardcoded as a literal value in a config `env` block (rmguard reports the key NAME only, never the value).",
+            why: "Secrets in config get copied, synced, screen-shared, and backed up far more widely than a proper secret store — each copy is a place they can leak from.",
+            fix: "Replace the literal with an environment reference (e.g. \"${API_KEY}\") and move the real value into your OS keychain or a secrets manager. Rotate the exposed credential.",
+            reference: "OWASP MCP Top 10 · EAA-006",
+        },
+        "MCP command" => Guidance {
+            what: "This MCP server's launch command downloads and executes code at startup (a curl|bash-style bootstrap).",
+            why: "Every launch fetches and runs whatever the remote endpoint currently serves — a supply-chain foothold the server author (or anyone who compromises that endpoint) can weaponize silently.",
+            fix: "Pin the server to a vetted, versioned package instead of a fetch-and-run bootstrap; review the launch command shown below before trusting it.",
+            reference: "EAA-006 · supply-chain",
+        },
+        "Secret leak" => Guidance {
+            what: "A secret-bearing file (a .env or a config with an inline credential) is tracked by git — i.e. committed into a repository.",
+            why: "A committed secret is in the repo's history for every clone, fork, and CI run; deleting it later does not remove it from history. This is the highest-confidence credential exposure.",
+            fix: "Remove the file from tracking (git rm --cached), add it to .gitignore, ROTATE the credential immediately (assume it is public), and scrub history if the repo was shared.",
+            reference: "committed secret",
+        },
+        "Hook" => Guidance {
+            what: "An agent settings file registers a hook that runs a shell command automatically on an agent event (e.g. before every tool use).",
+            why: "Hooks execute silently with your privileges on every triggering event — a powerful persistence and code-execution mechanism if the settings file is tampered with or shared.",
+            fix: "Review the exact command below. Remove it if unexpected; if intended, confirm the settings file isn't world-writable or attacker-modifiable.",
+            reference: "EAA-003 (lifecycle hook persistence)",
+        },
+        "MCP auto-approval" => Guidance {
+            what: "`enableAllProjectMcpServers` is set, which auto-approves every MCP server a project defines — no per-server trust prompt.",
+            why: "Opening any project then silently trusts whatever MCP servers it ships, turning a cloned repo into arbitrary tool access (a workspace-trust bypass).",
+            fix: "Disable enableAllProjectMcpServers and approve project MCP servers individually.",
+            reference: "EAA-011 (environment-expanded MCP activation)",
+        },
+        "Permissions" => Guidance {
+            what: "The agent's permission mode is `bypassPermissions`, so it acts without the usual approval prompts.",
+            why: "The human-in-the-loop guardrail is off — the agent (or a prompt injection steering it) can run tools and edits with no confirmation.",
+            fix: "Set the permission mode back to a prompting mode (e.g. acceptEdits or default). Reserve bypass modes for disposable sandboxes.",
+            reference: "OWASP Agentic Apps Top 10 (excessive agency)",
+        },
+        "Gateway routing" => Guidance {
+            what: "An AI provider base-URL override points at a non-official host, so requests (and the API key) route through a third party.",
+            why: "Whoever controls that host sees every prompt and can capture the API key — the exfiltration vector behind CVE-2026-21852. A legitimate proxy looks identical, so this needs a human check.",
+            fix: "Confirm the host is a gateway you deliberately configured and trust. If not, remove the override and rotate the API key.",
+            reference: "EAA-007 · CVE-2026-21852",
+        },
+        "Credential" => Guidance {
+            what: "An at-rest AI-service credential file is world-readable (rmguard checks permissions only, never the contents).",
+            why: "Any local user or process can read the token and impersonate you to the service.",
+            fix: "Tighten permissions to owner-only (chmod 600). Rotate the token if the machine is shared or the file may already have been read.",
+            reference: "least privilege",
+        },
+        "Secret exposure" => Guidance {
+            what: "A .env file in an agent project root is world-readable.",
+            why: ".env files hold API keys and DB credentials; world-readable means any local user or process can read them.",
+            fix: "chmod 600 the file. Rotate anything in it if the machine is multi-user.",
+            reference: "least privilege",
+        },
+        "Transcript exposure" => Guidance {
+            what: "An agent transcript / conversation-state store (full chat history, prompts, and any secrets discussed) is world-readable.",
+            why: "Transcripts routinely contain pasted credentials, source code, and internal details — a rich target that any local user can read.",
+            fix: "Restrict the store's permissions to owner-only. Consider pruning old transcripts you no longer need.",
+            reference: "EAA-005 (agent-state collection)",
+        },
+        "Plugin marketplace" => Guidance {
+            what: "A third-party plugin marketplace is configured with auto-update on, so it pulls new remote code automatically.",
+            why: "Auto-update means today's vetted plugin can become tomorrow's malicious one with no review step — the rug-pull surface for hot-loaded agent code.",
+            fix: "Turn off auto-update for third-party sources and update deliberately after reviewing changes, or remove the marketplace if unused.",
+            reference: "EAA-009 (remote plugin hot-load)",
+        },
+        "SSH key" => Guidance {
+            what: "A private SSH key on disk has no passphrase.",
+            why: "If the key file is copied or the machine is compromised, the key is immediately usable — there's no second factor protecting it.",
+            fix: "Add a passphrase (ssh-keygen -p -f <key>) and use an agent to cache it. Prefer hardware-backed keys where possible.",
+            reference: "defense in depth",
+        },
+        "Rules file" => Guidance {
+            what: "An agent instruction/memory file (CLAUDE.md, .cursorrules, and similar) contains a pattern that could steer the agent into dangerous behavior — e.g. an instruction to pipe a download into a shell.",
+            why: "Agents follow these files as authoritative instructions, so a poisoned rules file is prompt injection that persists across every session.",
+            fix: "Review the matched pattern shown below and the surrounding instruction; remove anything that directs the agent to run untrusted code or exfiltrate data.",
+            reference: "EAA-004 (instruction/memory poisoning)",
+        },
+        "Registry" => Guidance {
+            what: "An MCP server package is either one edit away from a registered name (possible typosquat) or is deprecated in the official MCP registry.",
+            why: "A typosquat can substitute malicious code for the package you meant; a deprecated package no longer receives security fixes.",
+            fix: "Verify you have the exact intended package name from the official registry, and replace deprecated servers with maintained alternatives.",
+            reference: "official MCP registry",
+        },
+        "Agent identity" => Guidance {
+            what: "Agents authenticate with static, long-lived API keys — unbound bearer tokens rather than short-lived, scoped credentials.",
+            why: "A leaked static key is valid until someone notices and rotates it, and carries the full scope of the account. It's the weakest link if any of the above exposures hit.",
+            fix: "Move toward OAuth (refreshable/scoped) or SPIFFE workload identity (short-lived SVIDs) where the tooling supports it; at minimum rotate keys regularly and scope them tightly.",
+            reference: "OWASP ASI03 (identity & authentication)",
+        },
+        "Toxic Flow" => Guidance {
+            what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time.",
+            why: "Each capability is individually authorized and benign, but together they complete the \"lethal trifecta\": one prompt injection can read private data and send it out. No single MCP client sees this composition.",
+            fix: "Separate the source and sink so no single agent context has both, or add human approval on the sink. Review why this agent needs both at once.",
+            reference: "lethal trifecta / toxic flow",
+        },
+        _ => Guidance {
+            what: "An actionable security finding on this machine.",
+            why: "See the title and location for specifics.",
+            fix: "Review the offending item and remediate per your team's policy.",
+            reference: "",
+        },
+    }
 }
 
 /// Collect and rank the actionable findings in a scan. Highest severity first.
@@ -58,6 +199,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             category: "Exposure".into(),
             title: format!("Known-bad {} package: {} {}", e.ecosystem, e.name, e.version),
             location: e.found_in.clone(),
+            evidence: None,
         });
     }
 
@@ -77,6 +219,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         s.name, url
                     ),
                     location: mcp.config_path.clone(),
+                    evidence: None,
                 });
             }
             // Over-broad filesystem scope: a filesystem server rooted at / or $HOME
@@ -97,6 +240,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                                 s.name, arg
                             ),
                             location: mcp.config_path.clone(),
+                            evidence: None,
                         });
                     }
                 }
@@ -115,6 +259,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                             s.name, keys
                         ),
                         location: mcp.config_path.clone(),
+                        evidence: None,
                     }
                 } else {
                     Finding {
@@ -125,6 +270,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                             s.name, keys
                         ),
                         location: mcp.config_path.clone(),
+                        evidence: None,
                     }
                 };
                 f.push(finding);
@@ -146,6 +292,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         s.name
                     ),
                     location: mcp.config_path.clone(),
+                    evidence: Some(launch.trim().to_string()),
                 });
             }
         }
@@ -164,6 +311,8 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     if h.dangerous { " matching a dangerous pattern" } else { "" }
                 ),
                 location: s.path.clone(),
+                // The actual command is the offending artifact — surface it verbatim.
+                evidence: Some(h.command.clone()),
             });
         }
         if s.auto_approve_mcp {
@@ -172,6 +321,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "MCP auto-approval".into(),
                 title: "enableAllProjectMcpServers auto-approves project MCP servers".into(),
                 location: s.path.clone(),
+                evidence: None,
             });
         }
         if s.permission_mode.as_deref() == Some("bypassPermissions") {
@@ -180,6 +330,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Permissions".into(),
                 title: "permission mode is bypassPermissions".into(),
                 location: s.path.clone(),
+                evidence: None,
             });
         }
         // Credentials hardcoded inline in the settings `env` block (names only).
@@ -194,6 +345,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         "hardcoded credential(s) in a git-tracked settings env block: {keys} — committed secret"
                     ),
                     location: s.path.clone(),
+                    evidence: None,
                 }
             } else {
                 Finding {
@@ -203,6 +355,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         "hardcoded credential(s) in the settings env block: {keys} — reference ${{ENV_VAR}} instead"
                     ),
                     location: s.path.clone(),
+                    evidence: None,
                 }
             });
         }
@@ -219,6 +372,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         g.var, g.host
                     ),
                     location: s.path.clone(),
+                    evidence: None,
                 });
             }
         }
@@ -232,6 +386,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Credential".into(),
                 title: format!("{} {} is world-readable", c.provider, c.credential_type),
                 location: c.path.clone(),
+                evidence: None,
             });
         }
     }
@@ -244,6 +399,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Secret leak".into(),
                 title: format!(".env is git-tracked ({} keys) — committed secrets", e.key_count),
                 location: e.path.clone(),
+                evidence: None,
             });
         } else if e.world_readable {
             f.push(Finding {
@@ -251,6 +407,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Secret exposure".into(),
                 title: format!(".env is world-readable ({} keys)", e.key_count),
                 location: e.path.clone(),
+                evidence: None,
             });
         }
     }
@@ -268,6 +425,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     t.framework, t.kind, t.file_count
                 ),
                 location: t.path.clone(),
+                evidence: None,
             });
         }
     }
@@ -286,6 +444,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     m.name, m.source_ref
                 ),
                 location: "~/.claude/plugins/known_marketplaces.json".into(),
+                evidence: None,
             });
         }
     }
@@ -298,6 +457,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "SSH key".into(),
                 title: format!("{} key has no passphrase", k.key_type),
                 location: k.path.clone(),
+                evidence: None,
             });
         }
     }
@@ -316,6 +476,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Rules file".into(),
                 title: format!("dangerous pattern: {}", finding.pattern),
                 location: rf.path.clone(),
+                evidence: None,
             });
         }
     }
@@ -332,6 +493,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         check.package, registered_as
                     ),
                     location: check.server_name.clone(),
+                    evidence: None,
                 });
             }
             crate::registry::RegistryVerdict::Registered { deprecated: true, .. } => {
@@ -340,6 +502,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     category: "Registry".into(),
                     title: format!("{} is deprecated in the official MCP registry", check.package),
                     location: check.server_name.clone(),
+                    evidence: None,
                 });
             }
             _ => {}
@@ -365,6 +528,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     }
                 ),
                 location: id.static_api_keys.join(", "),
+                evidence: None,
             });
         }
     }
@@ -380,6 +544,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 tf.sinks.join("/")
             ),
             location: report.device.hostname.clone(),
+            evidence: None,
         });
     }
 

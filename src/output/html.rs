@@ -44,15 +44,32 @@ th {{ color: var(--dim); font-weight: 600; font-size: 0.8rem; text-transform: up
 .pill.high {{ background: rgba(240,136,62,0.15); color: var(--high); border: 1px solid var(--high); }}
 .pill.medium {{ background: rgba(210,153,34,0.15); color: var(--medium); border: 1px solid var(--medium); }}
 .pill.low {{ background: rgba(88,166,255,0.15); color: var(--low); border: 1px solid var(--low); }}
-.finding {{ padding: 0.75rem 1rem; border-left: 4px solid var(--dim); background: rgba(255,255,255,0.02); margin-bottom: 0.5rem; border-radius: 0 4px 4px 0; }}
+.finding {{ border-left: 4px solid var(--dim); background: rgba(255,255,255,0.02); margin-bottom: 0.5rem; border-radius: 0 4px 4px 0; }}
 .finding.critical {{ border-color: var(--critical); }} .finding.high {{ border-color: var(--high); }}
 .finding.medium {{ border-color: var(--medium); }} .finding.low {{ border-color: var(--low); }}
+.finding > summary {{ padding: 0.75rem 1rem; cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; list-style: none; }}
+.finding > summary::-webkit-details-marker {{ display: none; }}
+.finding > summary::before {{ content: "▸"; color: var(--dim); font-size: 0.75rem; }}
+.finding[open] > summary::before {{ content: "▾"; }}
+.finding > summary:hover {{ background: rgba(255,255,255,0.03); }}
 .finding .sev {{ font-size: 0.7rem; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em; }}
 .finding.critical .sev {{ color: var(--critical); }} .finding.high .sev {{ color: var(--high); }}
 .finding.medium .sev {{ color: var(--medium); }} .finding.low .sev {{ color: var(--low); }}
 .finding .cat {{ color: var(--dim); font-size: 0.75rem; }}
-.finding .title {{ margin: 0.15rem 0; }}
-.finding .loc {{ color: var(--dim); font-size: 0.8rem; word-break: break-all; }}
+.finding .title {{ flex: 1 1 100%; margin-top: 0.1rem; }}
+.finding .detail {{ padding: 0 1rem 1rem 1.75rem; font-size: 0.88rem; line-height: 1.5; }}
+.finding .loc {{ color: var(--dim); font-size: 0.8rem; word-break: break-all; margin-bottom: 0.5rem; }}
+.finding .loc-tag {{ color: var(--heading); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 0.35rem; }}
+.finding .evidence {{ margin: 0.5rem 0 0.7rem; }}
+.finding .evidence .label {{ color: var(--dim); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }}
+.finding .evidence code {{ display: block; background: #0d1117; border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; color: var(--high); white-space: pre-wrap; word-break: break-all; }}
+.finding dl {{ margin: 0.3rem 0 0; }}
+.finding dt {{ color: var(--heading); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 0.6rem; }}
+.finding dd {{ margin: 0.15rem 0 0; }}
+.finding .ref {{ margin-top: 0.7rem; color: var(--dim); font-size: 0.78rem; }}
+.findings-toolbar {{ margin-bottom: 0.75rem; display: flex; gap: 0.5rem; }}
+.findings-toolbar button {{ background: var(--bg); color: var(--heading); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.7rem; font-size: 0.8rem; cursor: pointer; }}
+.findings-toolbar button:hover {{ border-color: var(--heading); }}
 .clean {{ padding: 1rem; color: var(--green); font-weight: bold; }}
 </style>
 </head>
@@ -79,6 +96,10 @@ th {{ color: var(--dim); font-weight: 600; font-size: 0.8rem; text-transform: up
 <script>
 // Full scan data for programmatic access (base64 to prevent injection)
 window.__scanReport = JSON.parse(atob("{json_b64}"));
+// Expand/collapse every finding's detail at once.
+function rmToggleAll(open) {{
+    document.querySelectorAll('details.finding').forEach(function (d) {{ d.open = open; }});
+}}
 </script>
 </body>
 </html>"#,
@@ -125,15 +146,42 @@ fn render_findings(findings: &[Finding]) -> String {
         return r#"<div class="clean">✓ No actionable security findings on this machine.</div>"#
             .to_string();
     }
-    let mut html = String::new();
+    let mut html = String::from(
+        r#"<div class="findings-toolbar"><button type="button" onclick="rmToggleAll(true)">Expand all</button><button type="button" onclick="rmToggleAll(false)">Collapse all</button></div>"#,
+    );
     for f in findings {
         let class = f.severity.label();
+        let g = crate::analysis::guidance(&f.category);
+
+        // The offending artifact, when it isn't already in the title (e.g. a hook's
+        // actual shell command). Always escaped — never a secret value.
+        let evidence = match &f.evidence {
+            Some(ev) => format!(
+                r#"<div class="evidence"><div class="label">Offending command</div><code>{}</code></div>"#,
+                html_escape(ev)
+            ),
+            None => String::new(),
+        };
+        let reference = if g.reference.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<div class="ref">Reference: {}</div>"#,
+                html_escape(g.reference)
+            )
+        };
+
         html.push_str(&format!(
-            r#"<div class="finding {class}"><span class="sev">{sev}</span> <span class="cat">· {cat}</span><div class="title">{title}</div><div class="loc">{loc}</div></div>"#,
+            r#"<details class="finding {class}"><summary><span class="sev">{sev}</span><span class="cat">· {cat}</span><span class="title">{title}</span></summary><div class="detail"><div class="loc"><span class="loc-tag">Location</span> {loc}</div>{evidence}<dl><dt>What</dt><dd>{what}</dd><dt>Why it matters</dt><dd>{why}</dd><dt>How to fix</dt><dd>{fix}</dd></dl>{reference}</div></details>"#,
             sev = f.severity.label(),
             cat = html_escape(&f.category),
             title = html_escape(&f.title),
             loc = html_escape(&f.location),
+            evidence = evidence,
+            what = html_escape(g.what),
+            why = html_escape(g.why),
+            fix = html_escape(g.fix),
+            reference = reference,
         ));
     }
     html
