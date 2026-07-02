@@ -2492,6 +2492,31 @@ fn builtin_catalog_includes_chrome_extensions() {
     assert!(findings[0].advisory.contains("Facebook session"));
 }
 
+#[test]
+fn builtin_catalog_version_ranges_flag_only_vulnerable() {
+    // These entries carry a version_range so a *patched* install isn't false-flagged
+    // (and an unpinned `npx -y` fetch of the latest, patched version isn't either —
+    // an unknown version is a conservative non-match once a range is set).
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let flagged = |name: &str, ver: &str| {
+        let s = mcp_server_with_pkg("npm", name, ver);
+        !catalog.check_mcp_server(&s, "/t").is_empty()
+    };
+    // server-filesystem: EscapeRoute CVEs, fixed 2025.7.1.
+    let sf = "@modelcontextprotocol/server-filesystem";
+    assert!(flagged(sf, "2025.6.0"), "a vulnerable server-filesystem must still flag");
+    assert!(!flagged(sf, "2025.7.1"), "the patched server-filesystem must NOT flag");
+    assert!(!flagged(sf, "2025.8.0"), "a newer patched server-filesystem must NOT flag");
+    // mcp-remote: affected 0.0.5–0.1.15, fixed 0.1.16.
+    assert!(flagged("mcp-remote", "0.1.10"), "a vulnerable mcp-remote must flag");
+    assert!(!flagged("mcp-remote", "0.1.16"), "the patched mcp-remote must NOT flag");
+    assert!(!flagged("mcp-remote", "0.0.3"), "a below-affected mcp-remote must NOT flag");
+    // inspector: fixed 0.14.1.
+    let insp = "@modelcontextprotocol/inspector";
+    assert!(flagged(insp, "0.14.0"), "a vulnerable inspector must flag");
+    assert!(!flagged(insp, "0.14.1"), "the patched inspector must NOT flag");
+}
+
 // ─── 2026-06 catalog refresh ──────────────────────────────────
 
 #[test]

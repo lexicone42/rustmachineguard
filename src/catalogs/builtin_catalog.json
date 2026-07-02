@@ -77,16 +77,19 @@
   {
     "ecosystem": "npm",
     "name": "mcp-remote",
+    "version_range": ">=0.0.5, <0.1.16",
     "advisory": "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth authorization_endpoint URL. Affected: 0.0.5-0.1.15. Fixed: 0.1.16. Source: JFrog, GHSA-6xpm-ggf7-wc3p"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
+    "version_range": "<0.14.1",
     "advisory": "CVE-2025-49596 (CVSS 9.4): RCE via unauthenticated proxy commands, chainable with CSRF. Fixed: 0.14.1. Source: Oligo Security, GHSA-7f8r-222p-6f5g"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server-filesystem",
+    "version_range": "<2025.7.1",
     "advisory": "CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3): symlink bypass + directory containment bypass enabling arbitrary file read/write. Fixed: 2025.7.1. Source: Cymulate (EscapeRoute)"
   },
   {

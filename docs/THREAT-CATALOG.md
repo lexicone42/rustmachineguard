@@ -12,12 +12,13 @@ Some entries pin a **specific version** (e.g. `litellm@1.82.7`, `durabletask@1.4
 compromised via a stolen publisher token or supply-chain attack. We match the exact
 affected versions so we do **not** false-positive on the clean releases.
 
-A current limitation: the matcher supports exact-version or all-versions, but not
-**version ranges**. This matters for "vulnerable below version X" cases — e.g. the Amazon Q
-VS Code extension (CVE-2026-12957, fixed in Language Server 1.69.0) or Claude Code's own
-CVE-2025-59536 — where the product is legitimate and ubiquitous. We deliberately do **not**
-add denylist entries for these (it would flag every user); a `version_range` entry type is
-planned to handle them. See the open work in `docs/AGENT-SBOM-PROPOSAL.md`.
+For "vulnerable below version X" cases — legitimate, ubiquitous packages with a CVE fixed
+in a known release — entries carry a **`version_range`** (semver) instead: e.g.
+`@modelcontextprotocol/server-filesystem` (`<2025.7.1`, the EscapeRoute CVEs),
+`mcp-remote` (`>=0.0.5, <0.1.16`), and `@modelcontextprotocol/inspector` (`<0.14.1`). A
+patched install isn't flagged — and because a range treats an *unknown* version as a
+conservative non-match, an unpinned `npx -y …` (which fetches the latest, patched release)
+isn't flagged either, while a pinned vulnerable version still is.
 
 Use `--no-builtin-catalog` to disable it, or `--threat-catalog <file>` to add your own
 entries (merged with the built-in catalog by default).
