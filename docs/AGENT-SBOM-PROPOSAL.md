@@ -1,8 +1,18 @@
 # Agent Dependency SBOM: A Proposal for MCP Servers and AI Agent Skills
 
-**Status**: Draft proposal  
-**Date**: June 2026  
+**Status**: Draft proposal — the forward plan is CycloneDX 2.0 Blueprints  
+**Date**: July 2026  
 **Authors**: rustmachineguard contributors  
+
+> **Direction (2026-07):** we are **not** extending CycloneDX 1.6 with more
+> agent-specific machinery. The custom `rmg:` property approach was an interim step to
+> prove the model; the plan going forward is the **CycloneDX 2.0 Blueprint** draft
+> (`--format blueprint`), which expresses agent posture — assets, behaviors, flows,
+> trust zones — as **native, standards-track schema fields** instead of vendor
+> properties. `--format sbom` (CycloneDX 1.6) is kept only as a frozen, plain
+> component inventory for wide tooling compatibility (Dependency-Track, grype); no new
+> agent-specific surface is being retrofitted onto it. This document is a plan for the
+> Blueprint work, not a proposal to grow the 1.6 output.
 
 ## Problem Statement
 
@@ -47,141 +57,69 @@ These components form the **agent supply chain** — the software an AI agent de
 
 **Rules files are completely ungoverned** — no integrity verification, no signing, no provenance, no SBOM inclusion. Yet they directly control agent behavior and have been weaponized (Rules File Backdoor attack, 84% success rate).
 
-## Proposed Solution: Agent Dependency BOM (ADBOM)
+## Proposed Direction: CycloneDX 2.0 Blueprints
 
-We propose extending CycloneDX with agent-specific component types and properties, producing a unified inventory of everything an AI agent depends on.
+The question is not *"what custom fields do we bolt onto an SBOM?"* — it is *"which
+standard already models what an agent **does**, so we don't invent a private schema?"*
+CycloneDX 2.0's **Blueprint** draft answers that: it describes software *behaviorally* —
+**assets**, the **behaviors** they exhibit, the **flows** between them, and the trust
+**zones** they sit in — with first-class `agent` and `tool` asset types added
+specifically for AI use cases.
 
-### Component Taxonomy
+**Decision: build forward on Blueprints; freeze the 1.6 SBOM.** Our earlier work
+encoded agent posture in a custom `rmg:` property namespace on a CycloneDX 1.6 document.
+That proved the model — but it is a private dialect no other tool reads. Every signal we
+expressed as an `rmg:` property (transport, config source, skill type, capabilities,
+findings) has a **native** home in the Blueprint schema. So instead of retrofitting more
+`rmg:` properties onto 1.6, **all new agent-posture work targets 2.0 Blueprints**. The
+1.6 SBOM stays as a plain component inventory (see below), unextended.
 
-```
-Agent Dependency BOM
-├── MCP Servers (application components)
-│   ├── STDIO transport (local process)
-│   │   └── Package identity: ecosystem, name, version, PURL
-│   ├── SSE/HTTP transport (remote)
-│   │   └── Endpoint URL (sanitized), auth method
-│   └── Metadata: config source, activation state
-├── Agent Skills (application components)
-│   ├── Built-in skills (.claude/commands/)
-│   ├── Marketplace skills (installed, with provenance)
-│   └── Project-local skills (per-repo)
-├── Rules Files (data components)
-│   ├── .cursorrules, CLAUDE.md, copilot-instructions.md, AGENTS.md
-│   └── Integrity: SHA-256 hash, git-tracked status
-├── Agent Plugins (library components)
-│   ├── DXT archives (Claude Desktop extensions)
-│   ├── Claude Code plugins (marketplace + community)
-│   └── IDE extensions with AI capabilities
-└── Agent Hooks (application components)
-    ├── Pre/post tool use hooks
-    └── Session lifecycle hooks
-```
+### Why not keep extending 1.6?
 
-### CycloneDX Property Namespace
+| Custom 1.6 + `rmg:` properties | CycloneDX 2.0 Blueprint |
+|---|---|
+| Agent posture lives in vendor properties no other tool understands | Posture lives in native schema fields (assets, behaviors, flows, zones) |
+| We define and maintain the vocabulary ourselves | Closed 740-value behavior taxonomy, OWASP / Ecma-governed |
+| Flat component list; "what does it do?" is left for the reader to infer | Explicit behavioral model; capability + risk are first-class |
+| Functionally identical to SkillFortify's private `skillfortify:` properties | The standards-track successor to both |
 
-We propose the `rmg:` (rustmachineguard) property namespace for agent-specific metadata:
+### How agent surfaces map to Blueprint constructs
 
-| Property | Description | Example |
-|---|---|---|
-| `rmg:transport` | MCP transport type | `stdio`, `sse`, `http` |
-| `rmg:config-source` | Where the component was discovered | `Claude Code`, `Cursor`, `Project MCP (/home/user/proj)` |
-| `rmg:command` | Launch command for STDIO servers | `npx` |
-| `rmg:skill-type` | Skill classification | `builtin`, `marketplace`, `project-local` |
-| `rmg:rules-hash` | SHA-256 of rules file content | `a1b2c3...` |
-| `rmg:git-tracked` | Whether the file is under git | `true` |
-| `rmg:activation-state` | Whether the component is currently active | `enabled`, `disabled` |
-| `rmg:auth-method` | Authentication for remote transports | `oauth`, `bearer`, `none` |
-| `rmg:tool-type` | AI tool classification | `cli_tool`, `desktop_app`, `agent` |
+| Agent surface rmguard discovers | Blueprint construct |
+|---|---|
+| AI tools (Claude Code, Cursor, Codex, …) | `agent` assets |
+| MCP servers, agent skills | `tool` assets (transport modeled as `interfaces`) |
+| Rules / memory files (CLAUDE.md, .cursorrules, …) | `data` assets |
+| Inferred capabilities (filesystem, network, shell, …) | `behavior` instances (mapped to the closed taxonomy) |
+| agent→MCP, agent→skill, rules→agent connections | typed `flows` (control / data) |
+| Local workstation vs remote SSE/HTTP endpoints | trust `zones` + a `boundary` between them |
+| Static inference vs live probing | behavior `acknowledgment`: `declared` vs `observed` |
 
-### PURL Extensions
+**Forward roadmap** (tracks the draft to its 2026-08-31 milestone — see
+[Planned Additions](#planned-additions)): adopt the 2.0 `threats` / `risks` constructs
+when they land so findings move from asset properties onto native threat objects; grow
+`observed` acknowledgments as `--probe-mcp` coverage increases; and re-vendor the schema
+fixtures (and re-run the conformance gate) on each draft bump. Feedback from this
+implementation goes back to the spec process — the `agent` and `tool` asset types exist
+because of use cases like this one.
 
-Package URLs for agent components:
+## Inventory layer (frozen): `--format sbom`, CycloneDX 1.6
 
-```
-# npm MCP server
-pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0
+`--format sbom` emits a **plain CycloneDX 1.6 component inventory** — "what is installed"
+— for compatibility with existing SBOM tooling (Dependency-Track, grype). It is
+**frozen**: it still carries agent metadata via the `rmg:` property namespace we already
+ship, but no *new* agent-specific surface is added here — that all goes to Blueprints.
 
-# PyPI MCP server
-pkg:pypi/mcp-server-sqlite@0.3.1
+What it emits today: MCP servers, IDE / browser extensions, AI tools, rules files, and
+skills as CycloneDX `application` / `data` components, PURLs for npm/PyPI/Docker MCP
+packages, and properties including `rmg:transport`, `rmg:config-source`, `rmg:command`,
+`rmg:rules-hash`, `rmg:git-tracked`, `rmg:skill-type`, `rmg:capabilities`,
+`rmg:finding:<severity>`, and `rmg:tool-type`.
 
-# Docker MCP server
-pkg:docker/mcp/postgres@latest
-
-# VSCode extension
-pkg:vscode/publisher/extension-name@1.2.3
-
-# Agent skill (proposed new PURL type)
-pkg:agent-skill/openclaw/skill-name@0.1.0
-
-# Claude Code plugin (proposed new PURL type)
-pkg:claude-plugin/marketplace/plugin-name@1.0.0
-```
-
-### Example Output
-
-```json
-{
-  "bomFormat": "CycloneDX",
-  "specVersion": "1.6",
-  "version": 1,
-  "metadata": {
-    "timestamp": "2026-06-30T12:00:00Z",
-    "tools": [{
-      "vendor": "rustmachineguard",
-      "name": "rmguard",
-      "version": "0.2.0"
-    }],
-    "component": {
-      "type": "device",
-      "name": "dev-laptop-01",
-      "version": "Gentoo Linux 2.15"
-    }
-  },
-  "components": [
-    {
-      "type": "application",
-      "bom-ref": "mcp:filesystem",
-      "name": "@modelcontextprotocol/server-filesystem",
-      "version": "1.0.0",
-      "group": "mcp-server/npm",
-      "purl": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0",
-      "properties": [
-        {"name": "rmg:transport", "value": "stdio"},
-        {"name": "rmg:config-source", "value": "Claude Code"},
-        {"name": "rmg:command", "value": "npx"}
-      ]
-    },
-    {
-      "type": "application",
-      "bom-ref": "mcp:remote-api",
-      "name": "remote-api",
-      "group": "mcp-server/unknown",
-      "properties": [
-        {"name": "rmg:transport", "value": "sse"},
-        {"name": "rmg:config-source", "value": "Cursor"}
-      ],
-      "externalReferences": [
-        {"type": "distribution", "url": "https://mcp.example.com"}
-      ]
-    },
-    {
-      "type": "data",
-      "bom-ref": "rules:cursorrules",
-      "name": ".cursorrules",
-      "properties": [
-        {"name": "rmg:rules-hash", "value": "sha256:a1b2c3..."},
-        {"name": "rmg:git-tracked", "value": "true"}
-      ]
-    }
-  ],
-  "dependencies": [
-    {
-      "ref": "host:dev-laptop-01",
-      "dependsOn": ["mcp:filesystem", "mcp:remote-api", "rules:cursorrules"]
-    }
-  ]
-}
-```
+> **PURL note:** MCP packages get real PURLs (`pkg:npm/…`, `pkg:pypi/…`, `pkg:docker/…`).
+> We do **not** mint custom `pkg:agent-skill/…` / `pkg:claude-plugin/…` PURL types — the
+> 1.6 SBOM carries skills/plugins as component *groups*, and the Blueprint models them as
+> native `tool` assets, so a bespoke PURL type isn't needed.
 
 ## Implementation in rustmachineguard
 
@@ -244,15 +182,25 @@ We have implemented the foundation:
 
 ### Planned Additions
 
+**Blueprint track (the plan) — as the 2.0 draft stabilizes toward 2026-08-31:**
+
+| Feature | Priority | Effort |
+|---|---|---|
+| Adopt native `threats` / `risks` constructs — move findings off asset properties onto first-class threat objects | High | Medium |
+| Grow `observed` acknowledgments as `--probe-mcp` coverage expands (declared → observed) | High | High |
+| Re-vendor schema fixtures + re-run the conformance gate on each draft bump | High | Low |
+| Contribute mapping feedback (agent/tool assets, MCP transports, rules files) back to the spec | Medium | Low |
+
+**Inventory / scanning track (feeds both outputs):**
+
 | Feature | Priority | Effort |
 |---|---|---|
 | Per-plugin / DXT content scanning (marketplace-level inventory already Done) | Medium | Medium |
 | JetBrains plugin scanner (catalog has entries; no scanner yet) | Medium | Medium |
-| VEX overlay generation for exposure findings | Low | Medium |
-| SPDX output format | Low | High |
-| Sigstore-compatible signing of SBOM output | Low | High |
-| Native `threats`/`risks` modeling once CycloneDX 2.0 finalizes (2026-08-31) | Medium | Medium |
-| Runtime behavior monitoring (declared → observed) | Low | High |
+
+**Not planned for the frozen 1.6 SBOM** (would be Blueprint work instead): VEX overlays,
+SPDX output, Sigstore signing, runtime monitoring — parked at low priority; if pursued,
+they attach to the Blueprint, not the 1.6 inventory.
 
 ### Blueprint Example Output
 
@@ -394,7 +342,7 @@ the gate when bumping the pin.
 ### What This Enables
 
 1. **Incident response**: "Which developer machines have the compromised `postmark-mcp@0.3.1` installed?" — answered in seconds by querying SBOMs
-2. **Compliance**: EU AI Act requires inventory of AI components; an ADBOM provides auditable evidence
+2. **Compliance**: EU AI Act requires inventory of AI components; the SBOM + Blueprint outputs provide auditable evidence
 3. **Drift detection**: Comparing SBOMs across runs detects unauthorized MCP server additions or version changes
 4. **Fleet visibility**: Aggregating SBOMs across an organization reveals the total agent attack surface
 
@@ -406,17 +354,17 @@ the gate when bumping the pin.
 
 ## Relationship to Existing Standards
 
-### CycloneDX 1.6 (Current Stable)
+### CycloneDX 1.6 (frozen inventory only)
 
-We target CycloneDX 1.6 for our `--format sbom` output because:
-- It has the most flexible property system for agent-specific metadata
-- ML-BOM v1.7 provides precedent for AI component types
-- The `application` and `data` component types map naturally to MCP servers and rules files
-- Wide tooling support (dependency-track, grype, etc.)
+`--format sbom` stays on CycloneDX 1.6 purely as a plain component inventory, because
+1.6 has wide tooling support (Dependency-Track, grype) and its `application` / `data`
+component types map cleanly to MCP servers and rules files. We are **not** growing the
+agent-specific surface here — the flexible-property system that made 1.6 convenient for a
+first pass is exactly the private-dialect problem Blueprints solve. New work targets 2.0.
 
-### CycloneDX 2.0 Blueprints (Draft — `--format blueprint`)
+### CycloneDX 2.0 Blueprints (Draft — `--format blueprint`) — the direction
 
-CycloneDX 2.0 (milestone due 2026-08-31, 27/89 issues closed) introduces **Blueprints** — a schema that describes *what software does*, not just what it contains. This is the standards-track successor to both our `rmg:` property approach and SkillFortify's ASBOM.
+CycloneDX 2.0 (milestone due 2026-08-31, 27/89 issues closed) introduces **Blueprints** — a schema that describes *what software does*, not just what it contains. This is the standards-track successor to both our interim `rmg:` property approach and SkillFortify's ASBOM, and it is where all forward agent-posture work lands.
 
 **Key references:**
 - Milestone: https://github.com/CycloneDX/specification/milestone/8
@@ -472,24 +420,31 @@ The actual work landed in PR #951 (blueprint schema) and PR #760 (Petra's schema
 
 ### OWASP MCP Top 10
 
-Our ADBOM addresses several OWASP MCP risk categories:
+Our outputs address several OWASP MCP risk categories:
 - **MCP04 (Tool Poisoning)**: Exposure catalog matching detects known-poisoned tools
 - **MCP08 (Supply Chain)**: Package identity resolution enables version pinning and vulnerability scanning
-- **MCP10 (Logging)**: SBOM generation provides auditable inventory
+- **MCP10 (Logging)**: inventory + Blueprint generation provides auditable evidence
 
 ### Package URL (PURL)
 
-We follow the PURL specification for npm, PyPI, and Docker ecosystems. We propose new PURL types for agent-specific components (`agent-skill`, `claude-plugin`) that don't fit existing types.
+We follow the PURL specification for the ecosystems that have one — `pkg:npm/…`,
+`pkg:pypi/…`, `pkg:docker/…` for MCP packages. We deliberately do **not** invent custom
+`agent-skill` / `claude-plugin` PURL types (an earlier idea): skills and plugins have no
+registry to anchor a PURL, and the Blueprint models them as native `tool` assets, so a
+bespoke PURL type would be a private dialect for no gain.
 
 ## Call to Action
 
-1. **Track CycloneDX 2.0**: The Blueprint schema (due 2026-08-31) will formalize everything we currently encode in `rmg:` properties. Our `--format blueprint` output is an early implementation — we should update it as the schema stabilizes and contribute feedback to the spec process
+1. **Move the posture model fully onto Blueprints**: The 2.0 Blueprint schema (due 2026-08-31) provides native fields for everything the interim `rmg:` property approach encoded. The plan is to track the draft and deepen `--format blueprint` — **not** to retrofit more agent-specific machinery onto the frozen 1.6 SBOM
 2. **Contribute to the spec**: Our practical experience mapping agent capabilities, MCP transports, and rules files to Blueprints could inform the CycloneDX 2.0 design. The `agent` and `tool` asset types exist because of use cases like ours
 3. **Registry integration**: MCP registries should publish package metadata in a format consumable by SBOM generators
 4. **Signing**: Both SBOMs and the components they describe need cryptographic provenance — Sigstore/Cosign for SBOMs, registry-level signing for MCP servers and skills
 5. **Benchmark against peers**: Compare output quality with NVIDIA SkillSpector, Bumblebee, mcp-scan, and Snyk Agent Scan to identify coverage gaps
 
-The agent supply chain is the least-governed software surface in modern development. An ADBOM doesn't solve the governance problem, but it makes the problem visible — and visibility is the prerequisite for every other defense.
+The agent supply chain is the least-governed software surface in modern development. A
+standards-track Blueprint doesn't solve the governance problem, but it makes the problem
+visible in a language other tools can read — and visibility is the prerequisite for every
+other defense.
 
 ## Acknowledgments
 
