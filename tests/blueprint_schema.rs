@@ -80,6 +80,22 @@ fn empty_blueprint_conforms() {
     assert_blueprint_valid(&report);
 }
 
+/// A hand-authored "complete" Blueprint (assets/zones/boundaries/flows/behaviors PLUS
+/// top-level threats/risks/controls) validates against the same vendored draft schema —
+/// proof that a much richer output than we currently emit is already expressible.
+#[test]
+fn rich_handwritten_blueprint_conforms() {
+    let instance: Value =
+        serde_json::from_str(include_str!("fixtures/rich-blueprint-example.json"))
+            .expect("rich example is valid JSON");
+    let validator = build_validator();
+    let errors: Vec<String> = validator
+        .iter_errors(&instance)
+        .map(|e| format!("  at {}: {}", e.instance_path(), e))
+        .collect();
+    assert!(errors.is_empty(), "rich example does not conform:\n{}", errors.join("\n"));
+}
+
 #[test]
 fn rich_blueprint_conforms() {
     use rustmachineguard::models::*;

@@ -1,0 +1,344 @@
+{
+  "specFormat": "CycloneDX",
+  "specVersion": "2.0",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-02T12:00:00Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "group": "rustmachineguard",
+          "name": "rmguard",
+          "version": "0.1.0"
+        }
+      ]
+    },
+    "component": {
+      "type": "device",
+      "name": "orion",
+      "version": "macOS 15.5"
+    }
+  },
+  "components": [
+    {
+      "type": "application",
+      "bom-ref": "ai-tool:claude-code",
+      "name": "Claude Code",
+      "version": "2.1.196"
+    },
+    {
+      "type": "application",
+      "bom-ref": "mcp:filesystem",
+      "name": "@modelcontextprotocol/server-filesystem",
+      "version": "1.0.0",
+      "properties": [
+        {
+          "name": "rmg:purl",
+          "value": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0"
+        }
+      ]
+    }
+  ],
+  "blueprints": [
+    {
+      "bom-ref": "blueprint:agent-posture",
+      "name": "Agent Security Posture — orion",
+      "description": "What the AI agent surface on this machine can do, how it connects, and where the risk concentrates.",
+      "modelTypes": [
+        "behavioral",
+        "data-flow"
+      ],
+      "zones": [
+        {
+          "bom-ref": "zone:local",
+          "name": "Local Machine",
+          "type": "trust",
+          "description": "The developer's workstation — high trust."
+        },
+        {
+          "bom-ref": "zone:remote",
+          "name": "Remote Services",
+          "type": "trust",
+          "description": "Off-host endpoints reached over the network — lower trust."
+        },
+        {
+          "bom-ref": "zone:sandbox",
+          "name": "Agent Execution Sandbox",
+          "type": "process",
+          "description": "Process-isolation boundary the agent's tools run within (or don't)."
+        }
+      ],
+      "boundaries": [
+        {
+          "bom-ref": "boundary:local-remote",
+          "name": "Local ↔ Remote",
+          "type": "trust",
+          "zones": [
+            "zone:local",
+            "zone:remote"
+          ]
+        }
+      ],
+      "assets": [
+        {
+          "bom-ref": "asset:agent:claude-code",
+          "type": "agent",
+          "name": "Claude Code",
+          "zone": "zone:local",
+          "responsibilities": [
+            "Code generation",
+            "Tool orchestration",
+            "Acts on behalf of the developer"
+          ],
+          "tags": [
+            "identity:static-api-key"
+          ]
+        },
+        {
+          "bom-ref": "asset:tool:filesystem",
+          "type": "tool",
+          "name": "filesystem MCP server",
+          "zone": "zone:local",
+          "responsibilities": [
+            "Read and write project files"
+          ],
+          "interfaces": [
+            {
+              "name": "stdio",
+              "type": "cli",
+              "protocol": "mcp",
+              "dataFormat": "JSON-RPC"
+            }
+          ]
+        },
+        {
+          "bom-ref": "asset:endpoint:analytics",
+          "type": "endpoint",
+          "name": "analytics MCP (remote)",
+          "zone": "zone:remote",
+          "description": "A remote MCP server reached over PLAINTEXT http:// — tokens and traffic are unencrypted.",
+          "interfaces": [
+            {
+              "name": "http",
+              "type": "api",
+              "protocol": "http",
+              "dataFormat": "JSON-RPC"
+            }
+          ],
+          "tags": [
+            "transport:plaintext-http"
+          ]
+        },
+        {
+          "bom-ref": "asset:gateway:base-url",
+          "type": "gateway",
+          "name": "ANTHROPIC_BASE_URL override",
+          "zone": "zone:remote",
+          "description": "The AI base URL is pointed at a non-official host, so requests and the API key route through it (EAA-007 / CVE-2026-21852).",
+          "tags": [
+            "eaa-007",
+            "hostile-gateway"
+          ]
+        },
+        {
+          "bom-ref": "asset:data-store:transcripts",
+          "type": "data-store",
+          "name": "Claude Code transcript store",
+          "zone": "zone:local",
+          "description": "Full conversation history — code, prompts, and any secrets discussed. World-readable on disk (EAA-005).",
+          "tags": [
+            "world-readable",
+            "confidential"
+          ]
+        },
+        {
+          "bom-ref": "asset:data:claude-md",
+          "type": "data",
+          "name": "CLAUDE.md",
+          "zone": "zone:local",
+          "description": "Agent instruction file — followed as authoritative directives."
+        }
+      ],
+      "flows": [
+        {
+          "bom-ref": "flow:agent->fs",
+          "name": "Claude Code → filesystem",
+          "type": "control",
+          "source": "asset:agent:claude-code",
+          "destination": "asset:tool:filesystem",
+          "description": "MCP tool invocation over local stdio."
+        },
+        {
+          "bom-ref": "flow:agent->analytics",
+          "name": "Claude Code → analytics (remote)",
+          "type": "data",
+          "source": "asset:agent:claude-code",
+          "destination": "asset:endpoint:analytics",
+          "encrypted": false,
+          "description": "Plaintext HTTP MCP call — crosses the trust boundary unencrypted."
+        },
+        {
+          "bom-ref": "flow:agent->gateway",
+          "name": "Claude Code → gateway",
+          "type": "control",
+          "source": "asset:agent:claude-code",
+          "destination": "asset:gateway:base-url",
+          "description": "Model API requests (carrying the API key) routed via a non-official host."
+        },
+        {
+          "bom-ref": "flow:fs->agent",
+          "name": "filesystem → Claude Code",
+          "type": "data",
+          "source": "asset:tool:filesystem",
+          "destination": "asset:agent:claude-code",
+          "description": "Sensitive file contents flow back into the agent context (the toxic-flow source)."
+        }
+      ],
+      "behaviors": {
+        "instances": [
+          {
+            "bom-ref": "behavior:0",
+            "behavior": "ai:agent:invokesTool",
+            "acknowledgment": [
+              "declared"
+            ],
+            "actors": [
+              "asset:agent:claude-code"
+            ],
+            "targets": [
+              "asset:tool:filesystem",
+              "asset:endpoint:analytics"
+            ]
+          },
+          {
+            "bom-ref": "behavior:1",
+            "behavior": "data:ingestion:readsFile",
+            "acknowledgment": [
+              "declared"
+            ],
+            "actors": [
+              "asset:tool:filesystem"
+            ],
+            "targets": [
+              "asset:agent:claude-code"
+            ]
+          },
+          {
+            "bom-ref": "behavior:2",
+            "behavior": "network:connection:establishesConnection",
+            "acknowledgment": [
+              "declared"
+            ],
+            "actors": [
+              "asset:agent:claude-code"
+            ],
+            "targets": [
+              "asset:endpoint:analytics"
+            ]
+          },
+          {
+            "bom-ref": "behavior:3",
+            "behavior": "application:codeExecution:executesNativeCommand",
+            "acknowledgment": [
+              "declared"
+            ],
+            "actors": [
+              "asset:data:claude-md"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "threats": {
+    "threats": [
+      {
+        "bom-ref": "threat:eaa-007",
+        "name": "Hostile model/API gateway routing",
+        "description": "A non-official AI base URL captures every prompt and the API key (CVE-2026-21852).",
+        "affectedAssets": [
+          "asset:gateway:base-url",
+          "asset:agent:claude-code"
+        ]
+      },
+      {
+        "bom-ref": "threat:plaintext",
+        "name": "Unencrypted MCP transport",
+        "description": "Tokens and tool traffic to the analytics MCP server travel in cleartext over http://.",
+        "affectedAssets": [
+          "asset:endpoint:analytics"
+        ]
+      },
+      {
+        "bom-ref": "threat:transcript-exposure",
+        "name": "Conversation-history disclosure",
+        "description": "The world-readable transcript store lets any local user read code, prompts, and secrets (EAA-005).",
+        "affectedAssets": [
+          "asset:data-store:transcripts"
+        ]
+      }
+    ]
+  },
+  "risks": {
+    "risks": [
+      {
+        "bom-ref": "risk:toxic-flow",
+        "name": "Lethal trifecta (toxic flow)",
+        "statement": "The agent surface holds a sensitive-data source (filesystem) and an exfiltration sink (remote network) at once, so a single prompt injection can read private data and send it out.",
+        "affects": [
+          "asset:agent:claude-code",
+          "asset:tool:filesystem",
+          "asset:endpoint:analytics"
+        ],
+        "relatedThreats": [
+          "threat:plaintext"
+        ],
+        "inherentRisk": {
+          "likelihood": {
+            "level": "high"
+          },
+          "impact": {
+            "level": "major"
+          }
+        },
+        "responses": [
+          {
+            "bom-ref": "response:0",
+            "strategy": "reduce",
+            "description": "Separate the source and sink, or require human approval on any outbound flow.",
+            "priority": "high"
+          }
+        ],
+        "status": "identified"
+      }
+    ]
+  },
+  "controls": [
+    {
+      "bom-ref": "control:nsa-mcp",
+      "name": "MCP inventory & configuration hardening",
+      "description": "NSA/CISA MCP Security CSI — inventory MCP servers, enforce encrypted transport, scope filesystem access.",
+      "status": "recommended",
+      "appliesTo": [
+        "asset:tool:filesystem",
+        "asset:endpoint:analytics"
+      ],
+      "effectiveness": {
+        "rating": "adequate"
+      }
+    },
+    {
+      "bom-ref": "control:eaa-007",
+      "name": "Verify AI gateway provenance",
+      "description": "Confirm any base-URL override points at a trusted gateway; rotate the key otherwise.",
+      "status": "recommended",
+      "appliesTo": [
+        "asset:gateway:base-url"
+      ],
+      "effectiveness": {
+        "rating": "good"
+      }
+    }
+  ]
+}
