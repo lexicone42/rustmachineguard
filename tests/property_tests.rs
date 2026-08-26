@@ -1728,9 +1728,15 @@ fn blueprint_threats_carry_cves_and_capec() {
     assert_no_dangling_refs(&output); // also checks CVE/CAPEC refs resolve
     let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
 
-    // The CVE is a top-level vulnerability.
+    // The CVE is a top-level vulnerability, carrying a structured CVSS rating parsed
+    // from the advisory text (score + derived severity band).
     let vulns = doc["vulnerabilities"].as_array().expect("vulnerabilities present");
-    assert!(vulns.iter().any(|v| v["id"] == "CVE-2025-6514"), "CVE emitted as a vulnerability");
+    let cve = vulns
+        .iter()
+        .find(|v| v["id"] == "CVE-2025-6514")
+        .expect("CVE emitted as a vulnerability");
+    assert_eq!(cve["ratings"][0]["score"], 9.6, "CVSS score parsed from the advisory");
+    assert_eq!(cve["ratings"][0]["severity"], "critical", "9.6 is the critical band");
 
     // A CAPEC attack pattern (supply chain) with the native integer capecId.
     let patterns = doc["threats"]["attackPatterns"].as_array().expect("attackPatterns present");

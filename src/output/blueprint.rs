@@ -297,6 +297,17 @@ struct Vulnerability {
     id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ratings: Vec<VulnRating>,
+}
+
+/// A CVSS rating for a vulnerability. We emit `score` + the derived `severity` band
+/// only: the advisory text states a base score but not the scoring method version or
+/// the vector string, and inventing either would be a fabrication.
+#[derive(Serialize)]
+struct VulnRating {
+    score: f64,
+    severity: String,
 }
 
 /// `risks` is an object wrapper (`{ risks: [...] }`).
@@ -549,31 +560,115 @@ fn first_single_quoted(s: &str) -> Option<&str> {
     rest.get(..end)
 }
 
-/// Pull CVE identifiers (`CVE-YYYY-NNNN`) out of free advisory text, deduped and
-/// normalized to upper-case. Token-based, so punctuation around the id is ignored.
-fn extract_cves(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for raw in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-        let up = raw.trim_matches('-').to_uppercase();
-        let Some(rest) = up.strip_prefix("CVE-") else {
-            continue;
-        };
-        let mut parts = rest.splitn(2, '-');
-        let (Some(year), Some(num)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        if year.len() >= 4
-            && year.bytes().all(|b| b.is_ascii_digit())
-            && !num.is_empty()
-            && num.bytes().all(|b| b.is_ascii_digit())
-        {
-            let cve = format!("CVE-{year}-{num}");
-            if !out.contains(&cve) {
-                out.push(cve);
+/// Locate every `CVE-YYYY-NNNN` in `text`, returning `(start, end, id)` byte spans.
+/// ASCII-case-insensitive; the returned id is normalized to upper case.
+fn find_cve_spans(text: &str) -> Vec<(usize, usize, String)> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 4 <= b.len() {
+        if b[i..i + 4].eq_ignore_ascii_case(b"CVE-") {
+            let year_start = i + 4;
+            let mut j = year_start;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
             }
+            if j - year_start >= 4 && j < b.len() && b[j] == b'-' {
+                let num_start = j + 1;
+                let mut k = num_start;
+                while k < b.len() && b[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k > num_start {
+                    out.push((
+                        i,
+                        k,
+                        format!("CVE-{}-{}", &text[year_start..j], &text[num_start..k]),
+                    ));
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Find a CVSS base score in `window` — the first number in 0.0..=10.0 following a
+/// "CVSS" marker that is not part of a version token. Numbers directly preceded by
+/// `v`/`V` or `:` are version markers ("CVSS v3.1", "CVSS:3.1/AV:N/...") and skipped,
+/// so "CVSS v3.1 9.6" yields 9.6, not 3.1.
+fn cvss_score_in(window: &str) -> Option<f64> {
+    let b = window.as_bytes();
+    let mut i = 0usize;
+    while i + 4 <= b.len() {
+        if !b[i..i + 4].eq_ignore_ascii_case(b"CVSS") {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 4;
+        while j < b.len() {
+            if b[j].is_ascii_digit() {
+                let is_version_token =
+                    j > 0 && (b[j - 1] == b'v' || b[j - 1] == b'V' || b[j - 1] == b':');
+                let start = j;
+                while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
+                    j += 1;
+                }
+                if !is_version_token
+                    && let Ok(score) = window[start..j].trim_end_matches('.').parse::<f64>()
+                    && (0.0..=10.0).contains(&score)
+                {
+                    return Some(score);
+                }
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Pull CVE identifiers out of advisory text along with an adjacent CVSS base score
+/// when the advisory states one. A score is only attributed to a CVE if it appears
+/// before the NEXT CVE id, so "CVE-A (CVSS 8.4) + CVE-B (CVSS 7.3)" attributes each
+/// score correctly and a CVE with no stated score gets `None`.
+fn extract_cve_ratings(text: &str) -> Vec<(String, Option<f64>)> {
+    let spans = find_cve_spans(text);
+    let mut out: Vec<(String, Option<f64>)> = Vec::new();
+    for (idx, (_, end, id)) in spans.iter().enumerate() {
+        // The window runs to the next CVE id (so scores aren't stolen from a later CVE),
+        // capped so a score far downstream isn't misattributed.
+        let next_start = spans.get(idx + 1).map(|(s, _, _)| *s).unwrap_or(text.len());
+        let cap = (end + 40).min(text.len());
+        let mut window_end = next_start.min(cap);
+        while window_end < text.len() && !text.is_char_boundary(window_end) {
+            window_end += 1;
+        }
+        let score = text.get(*end..window_end).and_then(cvss_score_in);
+        if !out.iter().any(|(existing, _)| existing == id) {
+            out.push((id.clone(), score));
         }
     }
     out
+}
+
+/// CVSS severity band for a base score. The bands are identical in CVSS v3.x and v4,
+/// so this is safe without knowing which version produced the score.
+fn cvss_severity(score: f64) -> &'static str {
+    if score >= 9.0 {
+        "critical"
+    } else if score >= 7.0 {
+        "high"
+    } else if score >= 4.0 {
+        "medium"
+    } else if score > 0.0 {
+        "low"
+    } else {
+        "none"
+    }
 }
 
 /// Map a finding category to a CAPEC attack pattern `(id, name, plain-language gloss)`.
@@ -1658,16 +1753,21 @@ impl BlueprintDocument {
             std::collections::HashMap::new();
         let mut cve_desc: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        let mut cve_score: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
         for e in &report.exposure_findings {
-            let cves = extract_cves(&e.advisory);
-            if cves.is_empty() {
+            let rated = extract_cve_ratings(&e.advisory);
+            if rated.is_empty() {
                 continue;
             }
-            for cve in &cves {
+            for (cve, score) in &rated {
                 cve_desc.entry(cve.clone()).or_insert_with(|| e.advisory.clone());
+                if let Some(sc) = score {
+                    cve_score.entry(cve.clone()).or_insert(*sc);
+                }
             }
             let title = format!("Known-bad {} package: {} {}", e.ecosystem, e.name, e.version);
-            cves_by_title.insert(title, cves);
+            cves_by_title.insert(title, rated.into_iter().map(|(c, _)| c).collect());
         }
         // The hostile-gateway (EAA-007) finding maps to a known CVE.
         const GATEWAY_CVE: &str = "CVE-2026-21852";
@@ -1727,6 +1827,14 @@ impl BlueprintDocument {
                 bom_ref: format!("vuln:{}", cve.to_lowercase()),
                 id: cve.clone(),
                 description: cve_desc.get(cve).cloned(),
+                ratings: cve_score
+                    .get(cve)
+                    .map(|score| VulnRating {
+                        score: *score,
+                        severity: cvss_severity(*score).to_string(),
+                    })
+                    .into_iter()
+                    .collect(),
             })
             .collect();
         let attack_patterns: Vec<AttackPattern> = used_capec
@@ -1886,4 +1994,80 @@ fn build_purl(
         purl.push_str(v);
     }
     Some(purl)
+}
+
+#[cfg(test)]
+mod cvss_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_advisory_formats_in_the_catalog() {
+        // Parenthesized, adjacent — the most common form.
+        assert_eq!(
+            extract_cve_ratings("CVE-2025-6514 (CVSS 9.6): OS command injection."),
+            vec![("CVE-2025-6514".to_string(), Some(9.6))]
+        );
+        // Comma-separated form.
+        assert_eq!(
+            extract_cve_ratings("CVE-2026-45321, CVSS 9.1: something bad"),
+            vec![("CVE-2026-45321".to_string(), Some(9.1))]
+        );
+        // No score stated -> None, not a guess.
+        assert_eq!(
+            extract_cve_ratings("CVE-2025-66414: DNS rebinding vulnerability"),
+            vec![("CVE-2025-66414".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn attributes_each_score_to_its_own_cve() {
+        // The real server-filesystem advisory: two CVEs, each with its own score.
+        let adv = "CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3): symlink bypass";
+        assert_eq!(
+            extract_cve_ratings(adv),
+            vec![
+                ("CVE-2025-53109".to_string(), Some(8.4)),
+                ("CVE-2025-53110".to_string(), Some(7.3)),
+            ]
+        );
+        // A scoreless CVE must NOT inherit a later CVE's score.
+        let mixed = "CVE-2025-11111: no score here. CVE-2025-22222 (CVSS 9.8): critical";
+        assert_eq!(
+            extract_cve_ratings(mixed),
+            vec![
+                ("CVE-2025-11111".to_string(), None),
+                ("CVE-2025-22222".to_string(), Some(9.8)),
+            ]
+        );
+    }
+
+    #[test]
+    fn version_tokens_are_not_mistaken_for_scores() {
+        assert_eq!(cvss_score_in(" (CVSS v3.1 9.6)"), Some(9.6));
+        assert_eq!(cvss_score_in(" (CVSS:3.1/AV:N/AC:L 8.8)"), Some(8.8));
+        assert_eq!(cvss_score_in(" no score here"), None);
+        // Out-of-range numbers are rejected rather than emitted as a bogus score.
+        assert_eq!(cvss_score_in(" CVSS 42"), None);
+    }
+
+    #[test]
+    fn severity_bands_match_cvss() {
+        assert_eq!(cvss_severity(9.8), "critical");
+        assert_eq!(cvss_severity(9.0), "critical");
+        assert_eq!(cvss_severity(8.9), "high");
+        assert_eq!(cvss_severity(7.0), "high");
+        assert_eq!(cvss_severity(6.9), "medium");
+        assert_eq!(cvss_severity(4.0), "medium");
+        assert_eq!(cvss_severity(3.9), "low");
+        assert_eq!(cvss_severity(0.0), "none");
+    }
+
+    #[test]
+    fn cve_scan_is_total_on_arbitrary_text() {
+        for s in ["", "CVE-", "CVE-20", "cve-2025-1", "CVE--", "…CVE-2025-1234…", "CVE-2025-"] {
+            let _ = extract_cve_ratings(s);
+        }
+        // Lower-case ids are normalized to upper case.
+        assert_eq!(extract_cve_ratings("cve-2025-1234")[0].0, "CVE-2025-1234");
+    }
 }

@@ -201,9 +201,18 @@ The CVEs themselves live in a **top-level `vulnerabilities[]`** array:
 ```json
 "vulnerabilities": [
   { "bom-ref": "vuln:cve-2025-6514", "id": "CVE-2025-6514",
-    "description": "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth URL." }
+    "description": "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth URL.",
+    "ratings": [ { "score": 9.6, "severity": "critical" } ] }
 ]
 ```
+
+The **`ratings`** carry the CVSS base score parsed out of the advisory plus the derived
+severity band. Two honesty notes: each score is attributed to *its own* CVE (an advisory
+naming two CVEs with two scores maps each correctly, and a CVE with no stated score gets
+no rating rather than a guess), and we emit only `score` + `severity` — not `method` or
+`vector`, because the advisory states a base score but not which CVSS version produced it
+or the full vector, and inventing either would be fabrication. The severity bands are
+identical in CVSS v3.x and v4, so the band is safe without knowing the version.
 
 ### 5b. `risks` — a scored, composite judgment
 
@@ -260,8 +269,6 @@ producing silently-wrong output.
 
 - **`observed` acknowledgments** — as `--probe-mcp` coverage grows, promote inferred
   behaviors from `declared` to `observed`.
-- **CVSS ratings on vulnerabilities** — the advisory text carries the score; surface it as
-  a structured `ratings` entry rather than only in the description.
 - **Track the draft to 2.0 final (2026-08-31)** — re-vendor the schema and re-run the
   conformance gate on each bump; this walkthrough tracks the shape.
 
