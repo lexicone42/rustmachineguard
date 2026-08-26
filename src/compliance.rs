@@ -12,7 +12,11 @@
 //! - OWASP Top 10 for Agentic Applications 2026 (ASI01–ASI10)
 //! - OWASP Agentic Skills Top 10 (AST01–AST10)
 //! - OWASP MCP Top 10 (MCP01–MCP10)
-//! - EU AI Act — AI-system inventory / transparency obligations (enforceable 2026-08-02)
+//! - EU AI Act — AI-system inventory / transparency obligations (Article 50 and the
+//!   general application date; applicable since 2026-08-02). NOTE: the Digital Omnibus,
+//!   Regulation (EU) 2026/1744, deferred the Chapter III HIGH-RISK obligations to
+//!   2027-12-02 (Annex III) and 2028-08-02 (Annex I) — this mapping covers the
+//!   inventory/transparency bucket only, not high-risk conformity.
 //! - Endpoint AI Agent Abuse (EAA) catalog — github.com/0x4D31/endpoint-ai-agent-abuse (CC0)
 
 use crate::analysis::collect_findings;
@@ -196,7 +200,7 @@ pub const CONTROLS: &[Control] = &[
     },
     // ── EU AI Act ──
     Control {
-        framework: "EU AI Act (inventory obligations, 2026-08)",
+        framework: "EU AI Act (inventory/transparency, applicable since 2026-08-02)",
         id: "AI-INVENTORY",
         title: "Catalogue AI systems incl. third-party & embedded components",
         coverage: Coverage::Covered,
@@ -204,7 +208,7 @@ pub const CONTROLS: &[Control] = &[
         finding_categories: &[],
     },
     Control {
-        framework: "EU AI Act (inventory obligations, 2026-08)",
+        framework: "EU AI Act (inventory/transparency, applicable since 2026-08-02)",
         id: "AI-TRANSPARENCY",
         title: "Transparency of AI components in use",
         coverage: Coverage::Partial,
