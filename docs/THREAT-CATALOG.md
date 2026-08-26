@@ -15,10 +15,16 @@ affected versions so we do **not** false-positive on the clean releases.
 For "vulnerable below version X" cases — legitimate, ubiquitous packages with a CVE fixed
 in a known release — entries carry a **`version_range`** (semver) instead: e.g.
 `@modelcontextprotocol/server-filesystem` (`<2025.7.1`, the EscapeRoute CVEs),
-`mcp-remote` (`>=0.0.5, <0.1.16`), and `@modelcontextprotocol/inspector` (`<0.14.1`). A
+`mcp-remote` (`>=0.0.5, <0.1.16`), `@modelcontextprotocol/inspector` (`<0.14.1`), the MCP
+Python SDK `mcp` (`<1.23.0`) and TypeScript SDK `@modelcontextprotocol/sdk` (`<1.26.0`),
+`mcp-server-git` (`<2025.9.25`), and `@cyanheads/git-mcp-server` (`<2.1.5`). A
 patched install isn't flagged — and because a range treats an *unknown* version as a
 conservative non-match, an unpinned `npx -y …` (which fetches the latest, patched release)
 isn't flagged either, while a pinned vulnerable version still is.
+
+A test (`cve_citing_catalog_entries_must_be_version_bounded`) enforces the rule that any
+entry citing a CVE must carry a version bound — an unbounded CVE entry flags every
+install, including patched ones.
 
 Use `--no-builtin-catalog` to disable it, or `--threat-catalog <file>` to add your own
 entries (merged with the built-in catalog by default).
@@ -110,8 +116,14 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
 }
 ```
 
-- Omit `version` to match all versions (use for fully malicious packages)
-- Include `version` for exact version matching (use for specific vulnerable releases)
+- Omit both `version` and `version_range` to match all versions — **only** for fully
+  malicious packages, where every release is bad
+- Include `version` for exact matching (a single compromised release, e.g. Nx Console
+  `18.95.0`)
+- Include `version_range` (semver, e.g. `<1.23.0` or `>=0.0.5, <0.1.16`) for a
+  legitimate package with a CVE fixed in a known release
+- **Any entry citing a CVE must carry a bound** — an unbounded CVE entry flags every
+  install including patched ones. This is enforced by a test
 - Always include the source in the advisory string
 
 To contribute additional entries, please open a PR with:

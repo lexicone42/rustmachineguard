@@ -95,17 +95,20 @@
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/sdk",
-    "advisory": "CVE-2025-66414: DNS rebinding vulnerability. CVE-2026-25536 (CVSS 7.1): cross-client data leak. Source: vulnerablemcp.info"
+    "version_range": "<1.26.0",
+    "advisory": "CVE-2025-66414: DNS rebinding vulnerability. CVE-2026-25536 (CVSS 7.1): cross-client data leak. Source: vulnerablemcp.info Affected: <1.24.0 (CVE-2025-66414, GHSA-w48q-cv73-mx4w) and 1.10.0-1.25.x (CVE-2026-25536, GHSA-345p-7cg4-v4c7); range covers both."
   },
   {
     "ecosystem": "pypi",
     "name": "mcp-server-git",
-    "advisory": "CVE-2025-68143 + CVE-2025-68144 + CVE-2025-68145: path traversal, Git CLI argument injection, path validation bypass. Chainable for full RCE. Source: Cyata, Endor Labs"
+    "version_range": "<2025.9.25",
+    "advisory": "CVE-2025-68143 + CVE-2025-68144 + CVE-2025-68145: path traversal, Git CLI argument injection, path validation bypass. Chainable for full RCE. Source: Cyata, Endor Labs Affected: <2025.9.25 (GHSA-5cgr-j3jf-jw3v)."
   },
   {
     "ecosystem": "pypi",
     "name": "mcp",
-    "advisory": "CVE-2025-66416: DNS rebinding vulnerability in MCP Python SDK. Source: vulnerablemcp.info"
+    "version_range": "<1.23.0",
+    "advisory": "CVE-2025-66416: DNS rebinding vulnerability in MCP Python SDK. Source: vulnerablemcp.info Affected: <1.23.0 (fixed 1.23.0, GHSA-9h52-p55h-vw2f)."
   },
   {
     "ecosystem": "vscode",
@@ -130,7 +133,8 @@
   {
     "ecosystem": "vscode",
     "name": "nrwl.angular-console",
-    "advisory": "CVE-2026-48027 (CVSS 9.8): Nx Console compromised via TanStack supply chain attack. Payload harvested 1Password vaults, Claude Code configs, npm tokens. CISA KEV 2026-05-27. Source: Aikido, The Hacker News"
+    "version": "18.95.0",
+    "advisory": "CVE-2026-48027 (CVSS 9.8): Nx Console compromised via TanStack supply chain attack. Payload harvested 1Password vaults, Claude Code configs, npm tokens. CISA KEV 2026-05-27. Source: Aikido, The Hacker News Only the compromised release 18.95.0 is affected."
   },
   {
     "ecosystem": "npm",
@@ -252,7 +256,8 @@
   {
     "ecosystem": "npm",
     "name": "@cyanheads/git-mcp-server",
-    "advisory": "CVE-2025-53107 (GHSA-3q26-f695-pp76): command injection in several tools of this third-party git MCP server. Source: GitHub Advisory DB"
+    "version_range": "<2.1.5",
+    "advisory": "CVE-2025-53107 (GHSA-3q26-f695-pp76): command injection in several tools of this third-party git MCP server. Source: GitHub Advisory DB Affected: <2.1.5 (fixed 2.1.5)."
   },
   {
     "ecosystem": "pypi",

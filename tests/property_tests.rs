@@ -3287,3 +3287,70 @@ proptest! {
         );
     }
 }
+
+#[test]
+fn cve_citing_catalog_entries_must_be_version_bounded() {
+    // A catalog entry that cites a CVE describes a LEGITIMATE package with a
+    // vulnerability, not an outright-malicious one. `version_matches` treats an entry
+    // with neither `version` nor `version_range` as "applies to all versions", so such
+    // an entry flags every install — including patched ones — and cries wolf at users.
+    // (This regressed twice: once for server-filesystem/mcp-remote/inspector, then for
+    // five more entries that cited a CVE without saying "Fixed:".) Outright-malicious
+    // packages legitimately carry no bound; they just must not cite a CVE, or must be
+    // bounded to the compromised release.
+    let raw = rustmachineguard::catalogs::BUILTIN_CATALOG;
+    let entries: Vec<serde_json::Value> = serde_json::from_str(raw).expect("catalog is JSON");
+    let mut unbounded = Vec::new();
+    for e in &entries {
+        let has_bound = e.get("version").is_some() || e.get("version_range").is_some();
+        let advisory = e["advisory"].as_str().unwrap_or("");
+        let cites_cve = advisory.contains("CVE-");
+        if cites_cve && !has_bound {
+            unbounded.push(format!(
+                "{}/{}",
+                e["ecosystem"].as_str().unwrap_or("?"),
+                e["name"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+    assert!(
+        unbounded.is_empty(),
+        "these entries cite a CVE but have no version/version_range, so they flag EVERY \
+         install including patched ones: {unbounded:?}"
+    );
+}
+
+#[test]
+fn newly_bounded_entries_stop_flagging_patched_installs() {
+    // Regression for the five entries that cited a CVE with no version bound and so
+    // flagged every install. Bounds come from OSV/GHSA.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let flagged = |eco: &str, name: &str, ver: &str| {
+        let s = mcp_server_with_pkg(eco, name, ver);
+        !catalog.check_mcp_server(&s, "/t").is_empty()
+    };
+    // MCP Python SDK — the worst offender: every install was flagged. Fixed 1.23.0.
+    assert!(flagged("pypi", "mcp", "1.22.0"), "a vulnerable mcp must still flag");
+    assert!(!flagged("pypi", "mcp", "1.23.0"), "the patched mcp must NOT flag");
+    assert!(!flagged("pypi", "mcp", "2.1.1"), "a current mcp must NOT flag");
+    // MCP TypeScript SDK — range covers both CVEs (fixed 1.24.0 / 1.26.0).
+    assert!(flagged("npm", "@modelcontextprotocol/sdk", "1.25.0"), "1.25.0 still has CVE-2026-25536");
+    assert!(!flagged("npm", "@modelcontextprotocol/sdk", "1.26.0"), "1.26.0 is patched");
+    // mcp-server-git — CalVer, fixed 2025.9.25.
+    assert!(flagged("pypi", "mcp-server-git", "2025.9.1"), "pre-fix mcp-server-git flags");
+    assert!(!flagged("pypi", "mcp-server-git", "2025.9.25"), "patched mcp-server-git must NOT flag");
+    // Third-party git MCP server — fixed 2.1.5.
+    assert!(flagged("npm", "@cyanheads/git-mcp-server", "2.1.4"), "pre-fix flags");
+    assert!(!flagged("npm", "@cyanheads/git-mcp-server", "2.1.5"), "patched must NOT flag");
+}
+
+#[test]
+fn nx_console_flags_only_the_compromised_release() {
+    // A supply-chain compromise of a single release: exact-version match, so the
+    // clean releases either side are not flagged.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let hit = |v: &str| !catalog.check_extension("vscode", "nrwl.angular-console", v, "vscode").is_empty();
+    assert!(hit("18.95.0"), "the compromised Nx Console release must flag");
+    assert!(!hit("18.94.0"), "the release before the compromise must NOT flag");
+    assert!(!hit("18.96.0"), "the release after the compromise must NOT flag");
+}
