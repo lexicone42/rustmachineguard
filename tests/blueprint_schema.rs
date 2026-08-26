@@ -1,10 +1,11 @@
 //! Validates `--format blueprint` output against the vendored CycloneDX 2.0 draft
-//! threat-modeling schema (branch 2.0-dev-threatmodeling, head 03a8eaa7).
+//! threat-modeling schema (branch 2.0-dev, head 72b37340).
 //!
 //! This is the conformance gate: if our generator drifts from the schema, or the
 //! vendored schema is refreshed and changes shape, this test fails. The draft is
-//! still moving (milestone 2.0 due 2026-08-31), so re-vendor the fixtures when
-//! bumping the pin.
+//! still moving: the 2.0 milestone was due 2026-08-31 but slipped (upstream now targets
+//! a fall 2026 release, Ecma ratification ~December). Re-vendor the fixtures when bumping
+//! the pin — see tests/fixtures/README.md for the current branch and fetch commands.
 
 use serde_json::Value;
 

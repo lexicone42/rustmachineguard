@@ -314,7 +314,7 @@ they attach to the Blueprint, not the 1.6 inventory.
 ```
 
 **Schema conformance (enforced).** The Blueprint output is validated against the
-vendored CycloneDX 2.0 draft schema (branch `2.0-dev-threatmodeling`, head `03a8eaa7`)
+vendored CycloneDX 2.0 draft schema (branch `2.0-dev`, head `72b37340`)
 by `tests/blueprint_schema.rs`, using the `jsonschema` crate. This is a real gate:
 drift in either the generator or a re-vendored schema fails the build. Highlights of
 the draft we conform to:

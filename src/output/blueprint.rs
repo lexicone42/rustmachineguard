@@ -4,8 +4,9 @@ use serde::Serialize;
 /// Generate a CycloneDX 2.0 Blueprint document from scan results.
 ///
 /// Conforms to the draft CycloneDX 2.0 threat-modeling schema (branch
-/// `2.0-dev-threatmodeling`, head 03a8eaa7 as of 2026-06-30; milestone 2.0 ~30%,
-/// due 2026-08-31). Schema source: github.com/CycloneDX/specification (Apache-2.0).
+/// `2.0-dev`, head 72b37340 as of 2026-08-26). The 2.0 milestone was due 2026-08-31 but
+/// has slipped — upstream now targets a fall 2026 release. Schema source:
+/// github.com/CycloneDX/specification (Apache-2.0).
 ///
 /// Output is validated against the vendored schema by `tests/blueprint_schema.rs`,
 /// which is the conformance gate — drift in either the generator or a re-vendored
