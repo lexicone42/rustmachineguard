@@ -2558,9 +2558,16 @@ fn builtin_catalog_version_ranges_flag_only_vulnerable() {
 // ─── 2026-06 catalog refresh ──────────────────────────────────
 
 #[test]
-fn builtin_catalog_now_has_62_entries() {
+fn builtin_catalog_entry_count_is_pinned() {
+    // Pinned so a catalog edit is always a deliberate, reviewed change. Bump this
+    // together with the entries; the docs quote the same number.
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
-    assert_eq!(catalog.len(), 62, "catalog refresh added the verified June-2026 threats");
+    assert_eq!(
+        catalog.len(),
+        73,
+        "catalog size changed — update this pin and the counts quoted in README.md \
+         and docs/THREAT-CATALOG.md"
+    );
 }
 
 #[test]
@@ -3395,4 +3402,42 @@ fn invisible_unicode_severity_is_graded_not_uniform() {
     sev("a\u{200B}b", "high");        // zero width
     sev("a\u{202E}b", "medium");      // bidi override
     sev("a\u{00AD}b", "low");         // soft hyphen
+}
+
+#[test]
+fn agent_runtime_cves_match_installed_cli_versions() {
+    // Agent CLIs are CVE-bearing packages themselves. We already resolve each tool's
+    // version; this asserts it is actually matched against the catalog.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let hits = |key: &str, ver: &str| catalog.check_extension("agent-runtime", key, ver, "/usr/bin/x").len();
+
+    // A version inside several overlapping ranges reports each applicable CVE.
+    assert!(hits("claude-code", "2.1.100") >= 2, "an old 2.1.x must match several CVEs");
+    // A version at/after the highest fix is clean.
+    assert_eq!(hits("claude-code", "2.1.163"), 0, "the fixed version must be clean");
+    assert_eq!(hits("claude-code", "2.2.0"), 0, "a newer version must be clean");
+    // Range floors are respected: 2.1.84 is past CVE-2026-40068's ceiling.
+    let at_84: Vec<_> = catalog
+        .check_extension("agent-runtime", "claude-code", "2.1.84", "/x")
+        .into_iter().map(|f| f.advisory).collect();
+    assert!(!at_84.iter().any(|a| a.contains("CVE-2026-40068")), "40068 fixed in 2.1.84");
+
+    assert!(hits("copilot-cli", "1.0.42") >= 1, "vulnerable copilot-cli flags");
+    assert_eq!(hits("copilot-cli", "1.0.43"), 0, "patched copilot-cli is clean");
+    assert!(hits("gemini-cli", "0.39.0") >= 1, "vulnerable gemini-cli flags");
+    assert_eq!(hits("gemini-cli", "0.39.1"), 0, "patched gemini-cli is clean");
+}
+
+#[test]
+fn agent_runtime_key_maps_only_known_tools() {
+    use rustmachineguard::scanners::exposure::agent_runtime_key;
+    assert_eq!(agent_runtime_key("Claude Code"), Some("claude-code"));
+    assert_eq!(agent_runtime_key("Gemini CLI"), Some("gemini-cli"));
+    assert_eq!(agent_runtime_key("GitHub Copilot CLI"), Some("copilot-cli"));
+    // Claude Desktop shares a GHSA package name with the CLI but NOT a version line
+    // (1.2xxx-1.4xxx vs 2.x). Mapping it to claude-code would match desktop CVE ranges
+    // against CLI versions and silently never fire — so it must stay unmapped.
+    assert_eq!(agent_runtime_key("Claude Desktop"), None);
+    assert_eq!(agent_runtime_key("Aider"), None);
+    assert_eq!(agent_runtime_key(""), None);
 }

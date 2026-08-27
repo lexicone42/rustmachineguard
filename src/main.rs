@@ -393,6 +393,25 @@ fn main() {
                 catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
             );
         }
+        // Agent CLIs are CVE-bearing packages themselves. We already resolve each
+        // tool's version; match it against the `agent-runtime` catalog ecosystem.
+        // Tools with no version (not on PATH, or --version unparseable) are skipped:
+        // a range against an unknown version is a conservative non-match anyway.
+        for tool in &report.ai_agents_and_tools {
+            let (Some(key), Some(version)) = (
+                scanners::exposure::agent_runtime_key(&tool.name),
+                tool.version.as_deref(),
+            ) else {
+                continue;
+            };
+            let found_in = tool.binary_path.as_deref().unwrap_or(tool.name.as_str());
+            report.exposure_findings.extend(catalog.check_extension(
+                "agent-runtime",
+                key,
+                version,
+                found_in,
+            ));
+        }
     }
 
     // MCP live probing (opt-in)

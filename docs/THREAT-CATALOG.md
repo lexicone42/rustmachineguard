@@ -1,9 +1,11 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 62 entries
+that is automatically checked during every scan. The catalog currently contains 73 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
-extensions, and malicious browser extensions.
+extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
+in the agent CLIs themselves (Claude Code, Copilot CLI, Gemini CLI), matched against the
+installed tool's own `--version`.
 
 ### A note on legitimate-but-compromised packages
 

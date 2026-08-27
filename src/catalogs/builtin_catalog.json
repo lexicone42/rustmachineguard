@@ -326,5 +326,71 @@
     "ecosystem": "chrome",
     "name": "jcbjcocinigpbgfpnhlpagidbmlngnnn",
     "advisory": "Operation PromptSnatcher \"Adblock for Browser\" (10K users): sleeper adblocker capturing AI assistant conversations. Source: The Hacker News (2026-06)"
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.163",
+    "advisory": "CVE-2026-54316: out-of-band data exfiltration via pre-approved commands. Affected >=0.2.54, <2.1.163. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": ">=2.1.38, <2.1.163",
+    "advisory": "CVE-2026-55607: sandbox escape via git worktree path confusion. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": ">=2.1.59, <2.1.128",
+    "advisory": "CVE-2026-46406: insecure temporary file handling. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": ">=2.1.63, <2.1.84",
+    "advisory": "CVE-2026-40068: workspace trust dialog bypass via git worktree spoofing. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.75",
+    "advisory": "CVE-2026-35603: insecure system-wide configuration loading enables privilege escalation. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.64",
+    "advisory": "CVE-2026-39861: sandbox escape via symlink following. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.53",
+    "advisory": "CVE-2026-33068: workspace trust dialog bypass via repo-controlled config. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.0.65",
+    "advisory": "CVE-2026-21852 (CVSS 7.5): leaks data incl. the Anthropic API key via a malicious repo's environment configuration, before the user confirms trust. This is the ANTHROPIC_BASE_URL pre-trust exfil behind the EAA-007 gateway-routing detection. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "copilot-cli",
+    "version_range": "<1.0.43",
+    "advisory": "CVE-2026-45033 (GHSA-9ccr-r5hg-74gf): nested bare repository can execute arbitrary commands. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "copilot-cli",
+    "version_range": "<0.0.423",
+    "advisory": "CVE-2026-29783: dangerous shell expansion pattern. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "gemini-cli",
+    "version_range": "<0.39.1",
+    "advisory": "CVE-2026-12537: remote code execution via workspace trust bypass. Verified against OSV/GHSA 2026-08-26."
   }
 ]

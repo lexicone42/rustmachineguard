@@ -129,7 +129,7 @@ pub const CONTROLS: &[Control] = &[
         id: "ASI04",
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
-        how: "Threat catalog (62 entries, exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
+        how: "Threat catalog (73 entries, exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
         finding_categories: &["Exposure", "Registry"],
     },
     Control {

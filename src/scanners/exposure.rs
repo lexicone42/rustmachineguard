@@ -101,6 +101,25 @@ impl ExposureCatalog {
     }
 }
 
+/// Map a detected AI tool's display name to its key in the `agent-runtime` catalog
+/// ecosystem, so an installed agent CLI's own version can be matched against known
+/// vulnerable ranges. Agent CLIs are now CVE-bearing packages in their own right.
+///
+/// Returns `None` for tools we have no stable versioned identity for. Deliberately
+/// conservative: a wrong mapping would match one product's CVE ranges against another
+/// product's version numbering, which either cries wolf or silently never fires.
+/// In particular Claude Code (a CLI, versions 2.x) and Claude Desktop (an app,
+/// versions 1.2xxx-1.4xxx) share a GHSA package name but NOT a version line, so
+/// desktop CVEs must never be keyed to the CLI.
+pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
+    Some(match tool_name.trim().to_ascii_lowercase().as_str() {
+        "claude code" => "claude-code",
+        "gemini cli" => "gemini-cli",
+        "github copilot cli" | "copilot cli" | "copilot" => "copilot-cli",
+        _ => return None,
+    })
+}
+
 fn eq_case_insensitive(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }

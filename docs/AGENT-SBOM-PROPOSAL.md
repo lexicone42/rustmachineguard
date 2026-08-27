@@ -155,7 +155,7 @@ We have implemented the foundation:
 
 | Feature | Status |
 |---|---|
-| Built-in threat catalog (62 entries, fully attributed — see THREAT-CATALOG.md) | Done |
+| Built-in threat catalog (73 entries, fully attributed — see THREAT-CATALOG.md) | Done |
 | Exact + **semver version-range** matching (`version_range`, e.g. `<1.4.3`) | Done |
 | MCP live probing (`--probe-mcp`) — tools/resources enumeration over JSON-RPC | Done |
 | Tool & parameter description poisoning + invisible-Unicode smuggling detection | Done |
