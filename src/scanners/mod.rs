@@ -271,6 +271,17 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
     Some(buf)
 }
 
+/// Read the first N raw BYTES of a file. Unlike [`read_head`], this does not require
+/// valid UTF-8, so it works for magic-byte checks on binaries.
+pub fn read_head_bytes(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; max_bytes];
+    let n = file.read(&mut buf).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}
+
 /// Read only the first N bytes of a file (for key header detection).
 pub fn read_head(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     use std::io::Read;

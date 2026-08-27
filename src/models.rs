@@ -362,6 +362,11 @@ pub struct AgentHook {
     pub command: String,
     /// True if the command matches a dangerous pattern (curl|bash, base64 decode, …).
     pub dangerous: bool,
+    /// What the command *references*, as distinct from what it pattern-matches — e.g.
+    /// a script stored in an agent-config directory, or a native binary. Empty for an
+    /// ordinary inline command. See `agent_settings::classify_hook_command`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<String>,
 }
 
 /// An agent transcript / conversation-state store (EAA-005 collection surface).

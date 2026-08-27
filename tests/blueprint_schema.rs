@@ -211,7 +211,7 @@ fn rich_blueprint_conforms() {
                 event: "PreToolUse".into(),
                 matcher: Some("Bash".into()),
                 command: "echo hi".into(),
-                dangerous: false,
+                dangerous: false, risks: vec![],
             }],
             permission_mode: Some("acceptEdits".into()),
             allow_rules: 2,

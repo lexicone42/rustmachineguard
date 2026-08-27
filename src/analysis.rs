@@ -301,14 +301,32 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     // Settings hooks run shell commands on agent events (silent code execution).
     for s in &report.agent_settings {
         for h in &s.hooks {
+            // A hook that points at a script in ANOTHER tool's config directory is the
+            // 2026 persistence fingerprint (a Claude hook running .vscode/setup.mjs and
+            // vice versa). The command itself looks mundane, so it would otherwise score
+            // as an ordinary hook — elevate it on the reference, not the text.
+            let cross_dir = h.risks.iter().any(|r| r.starts_with("cross-references"));
+            let severity = if h.dangerous {
+                Severity::Critical
+            } else if cross_dir {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let detail = if h.risks.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", h.risks.join("; "))
+            };
             f.push(Finding {
-                severity: if h.dangerous { Severity::Critical } else { Severity::Medium },
+                severity,
                 category: "Hook".into(),
                 title: format!(
-                    "{} hook [{}] runs a command{}",
+                    "{} hook [{}] runs a command{}{}",
                     h.event,
                     h.matcher.as_deref().unwrap_or("*"),
-                    if h.dangerous { " matching a dangerous pattern" } else { "" }
+                    if h.dangerous { " matching a dangerous pattern" } else { "" },
+                    detail
                 ),
                 location: s.path.clone(),
                 // The actual command is the offending artifact — surface it verbatim.

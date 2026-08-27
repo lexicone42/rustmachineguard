@@ -75,7 +75,7 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         return;
     };
 
-    let hooks = extract_hooks(&json);
+    let hooks = extract_hooks(&json, path);
 
     let permissions = json.get("permissions");
     let permission_mode = permissions
@@ -172,9 +172,97 @@ fn url_host(url: &str) -> String {
     host.trim().to_ascii_lowercase()
 }
 
+/// Agent-config directories a hook command might reference. A hook that runs a script
+/// stored in one of these travels with a repo or a package install, which is what makes
+/// it a persistence surface rather than just a local convenience.
+const AGENT_CONFIG_DIRS: &[&str] = &[".claude", ".vscode", ".cursor", ".codex", ".gemini"];
+
+/// Tokens in a hook command that look like a filesystem path (rather than a flag,
+/// a bare command name, or a shell operator).
+fn referenced_paths(command: &str) -> Vec<&str> {
+    command
+        .split(|c: char| c.is_whitespace() || c == ';' || c == '|' || c == '&')
+        .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
+        .filter(|t| !t.is_empty() && !t.starts_with('-'))
+        .filter(|t| {
+            t.contains('/')
+                || t.ends_with(".sh")
+                || t.ends_with(".mjs")
+                || t.ends_with(".js")
+                || t.ends_with(".py")
+        })
+        .collect()
+}
+
+/// True if `path` is a native executable rather than a script, by magic bytes.
+/// A hook is normally a shell command or a script; a shipped binary is not normal.
+fn is_native_binary(path: &std::path::Path) -> bool {
+    // Raw bytes: a binary is not valid UTF-8, so the String-returning read_head()
+    // would silently return None here and the check would never fire.
+    let Some(b) = crate::scanners::read_head_bytes(path, 4) else {
+        return false;
+    };
+    let b = b.as_slice();
+    b.starts_with(b"\x7fELF")                       // Linux/BSD
+        || b.starts_with(b"MZ")                     // Windows PE
+        || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) // Mach-O 64 LE
+        || b.starts_with(&[0xce, 0xfa, 0xed, 0xfe]) // Mach-O 32 LE
+        || b.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) // Mach-O universal
+}
+
+/// Classify what a hook command *references*, as distinct from what it pattern-matches.
+///
+/// The 2026 campaigns (Shai-Hulud, the safedep typosquats) do not put a `curl | bash`
+/// in the hook — they drop a script into an agent-config directory and point a hook at
+/// it, so the command itself looks mundane. Crucially they CROSS directories: the
+/// Claude hook points at `.vscode/setup.mjs` while the VS Code task points at
+/// `.claude/setup.mjs`. A rule that only looks for self-references misses both halves.
+///
+/// Graded to avoid crying wolf: a script in the agent's own config directory is common
+/// and frequently legitimate; a cross-directory reference is not.
+pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> Vec<String> {
+    let mut risks = Vec::new();
+    // Which agent-config dir does this settings file itself live under?
+    let own_dir = settings_path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .find(|c| AGENT_CONFIG_DIRS.contains(c));
+    let base = settings_path.parent().unwrap_or(std::path::Path::new("."));
+
+    for token in referenced_paths(command) {
+        let referenced_dir = token
+            .split('/')
+            .find(|seg| AGENT_CONFIG_DIRS.contains(seg));
+
+        if let Some(dir) = referenced_dir {
+            if Some(dir) != own_dir {
+                risks.push(format!(
+                    "cross-references another tool's config directory ({token}) — the \
+                     Shai-Hulud persistence pattern"
+                ));
+            } else {
+                risks.push(format!("runs a script stored in {dir}/ ({token})"));
+            }
+        }
+
+        // Resolve relative to the settings file and check what it actually is.
+        let candidate = if token.starts_with('/') {
+            std::path::PathBuf::from(token)
+        } else {
+            base.join(token.trim_start_matches("./"))
+        };
+        if is_native_binary(&candidate) {
+            risks.push(format!("executes a native binary, not a script ({token})"));
+        }
+    }
+    risks.sort();
+    risks.dedup();
+    risks
+}
+
 /// Parse the Claude Code `hooks` object:
 /// `{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "..." } ] } ] }`
-pub fn extract_hooks(json: &serde_json::Value) -> Vec<AgentHook> {
+pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
     let mut hooks = Vec::new();
     let Some(hooks_obj) = json.get("hooks").and_then(|h| h.as_object()) else {
         return hooks;
@@ -199,11 +287,13 @@ pub fn extract_hooks(json: &serde_json::Value) -> Vec<AgentHook> {
                 };
                 let dangerous =
                     !crate::scanners::rules_files::check_dangerous_patterns(command).is_empty();
+                let risks = classify_hook_command(command, settings_path);
                 hooks.push(AgentHook {
                     event: event.clone(),
                     matcher: matcher.clone(),
                     command: command.to_string(),
                     dangerous,
+                    risks,
                 });
             }
         }
