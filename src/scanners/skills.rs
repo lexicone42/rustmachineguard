@@ -46,11 +46,114 @@ impl Scanner for SkillsScanner {
             scan_skill_dir(&codex_dir, "codex", "global", &mut results);
         }
 
+        // Skill BUNDLES (SKILL.md + sibling scripts), which the flat walk above cannot
+        // see. `plugins/` covers the marketplace -> plugin -> skill chain: marketplaces
+        // are already inventoried as a remote hot-load surface, but the skills they
+        // actually install were never walked.
+        scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", &mut results);
+        scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", &mut results);
+        if let Some(project_dirs) = extract_project_dirs(&home.join(".claude.json")) {
+            for dir in project_dirs {
+                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", &mut results);
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            scan_skill_bundles(&cwd.join(".claude").join("skills"), "claude-code", "project", &mut results);
+        }
+
         // Dedupe by path
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(r.path.clone()));
 
         results
+    }
+}
+
+/// Cap the recursive bundle walk so a pathological tree can't hang the scan.
+const MAX_BUNDLE_FILES: usize = 5_000;
+
+/// Recursively discover skill BUNDLES: a `SKILL.md` manifest plus the scripts shipped
+/// alongside it.
+///
+/// Modern agent skills are not flat files in `commands/` — they are directories
+/// (`skills/<name>/SKILL.md` + `scripts/*.sh|*.py|*.js`), and they arrive through the
+/// marketplace -> plugin -> skill chain under `~/.claude/plugins/`. The flat
+/// `scan_skill_dir` walk cannot see any of it: it does not recurse, so on a machine with
+/// 200 installed `SKILL.md` manifests it happily reports the three (empty) directories
+/// it does know about.
+///
+/// Bundled siblings are inventoried too, not just the manifest: the manifest routinely
+/// reads clean while the payload sits in an adjacent script.
+fn scan_skill_bundles(
+    root: &std::path::Path,
+    framework: &str,
+    scope: &str,
+    results: &mut Vec<AgentSkill>,
+) {
+    if !root.is_dir() {
+        return;
+    }
+    let mut budget = MAX_BUNDLE_FILES;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if budget == 0 {
+                return;
+            }
+            let path = entry.path();
+            // symlink_metadata: never follow a link out of the tree we were pointed at.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            budget -= 1;
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // The manifest, or a script shipped beside it.
+            let is_manifest = file_name.eq_ignore_ascii_case("SKILL.md");
+            if !is_manifest && !matches!(ext, "sh" | "bash" | "py" | "js" | "ts" | "mjs") {
+                continue;
+            }
+            let content = read_bounded(&path);
+            // A manifest is named by its bundle directory (the unit users think in);
+            // a bundled script is named by its path relative to the walk root, which
+            // stays unambiguous when several bundles each ship a `scripts/run.sh`.
+            let name = if is_manifest {
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else {
+                path.strip_prefix(root)
+                    .ok()
+                    .and_then(|rel| rel.to_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| file_name.to_string())
+            };
+            results.push(AgentSkill {
+                name,
+                path: path.to_string_lossy().to_string(),
+                framework: framework.to_string(),
+                scope: scope.to_string(),
+                file_type: if is_manifest { "skill-manifest".into() } else { ext.to_string() },
+                size_bytes: content.as_ref().map(|c| c.len()).unwrap_or(0),
+                sha256: content
+                    .as_ref()
+                    .map(|c| sha256_hex(c))
+                    .unwrap_or_else(|| "unreadable".to_string()),
+                capabilities: content.as_ref().map(|c| infer_capabilities(c)).unwrap_or_default(),
+            });
+        }
     }
 }
 
