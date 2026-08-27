@@ -404,7 +404,7 @@ mod tests {
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
         "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
-        "Plugin marketplace", "Settings secret", "Auto-run task",
+        "Plugin marketplace", "Settings secret", "Auto-run task", "Config integrity",
     ];
 
     fn empty_report() -> ScanReport {

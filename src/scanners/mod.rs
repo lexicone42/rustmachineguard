@@ -158,6 +158,78 @@ pub fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
     cats
 }
 
+/// Confusable characters that render like an ASCII letter but are a different
+/// codepoint. Cyrillic and Greek lookalikes are the classic trick: `сurl` with a
+/// Cyrillic `с` (U+0441) reads as "curl" to a human and to nothing else.
+/// Deliberately limited to unambiguous ASCII-lookalikes so folding cannot mangle
+/// genuinely non-Latin text into false matches.
+const CONFUSABLES: &[(char, char)] = &[
+    // Cyrillic
+    ('\u{0430}', 'a'), ('\u{0435}', 'e'), ('\u{043e}', 'o'), ('\u{0440}', 'p'),
+    ('\u{0441}', 'c'), ('\u{0445}', 'x'), ('\u{0443}', 'y'), ('\u{0456}', 'i'),
+    ('\u{0455}', 's'), ('\u{04bb}', 'h'), ('\u{0432}', 'b'), ('\u{043a}', 'k'),
+    ('\u{043c}', 'm'), ('\u{0442}', 't'), ('\u{0448}', 'w'),
+    // Greek
+    ('\u{03bf}', 'o'), ('\u{03c1}', 'p'), ('\u{03b5}', 'e'), ('\u{03b1}', 'a'),
+    ('\u{03bd}', 'v'), ('\u{03c5}', 'u'), ('\u{03ba}', 'k'), ('\u{03c4}', 't'),
+];
+
+/// Fold text into a canonical form for pattern matching.
+///
+/// Static instruction scanning is a substring match, which several published techniques
+/// defeat without touching the visible text: homoglyph swaps (`сurl` with a Cyrillic
+/// `с`), shell quoting that the shell collapses (`c"u"rl`, `c\url`), invisible
+/// characters wedged mid-word, and fullwidth forms. This folds all of those to the
+/// plain ASCII a shell would actually execute.
+///
+/// It is deliberately NOT used to replace raw matching — see
+/// `rules_files::check_dangerous_patterns`, which matches both and treats a
+/// normalization-only hit as its own (stronger) signal, because text that matches only
+/// after de-obfuscation was obfuscated on purpose.
+pub fn normalize_for_matching(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut escaped = false;
+    for ch in input.chars() {
+        // A backslash escapes the next character in shell; both vanish on execution.
+        if escaped {
+            escaped = false;
+            out.push(fold_char(ch));
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            // Quotes are collapsed by the shell: c"u"rl and 'c'url both run curl.
+            '"' | '\'' => {}
+            // Invisible/zero-width characters carry no meaning to the shell.
+            _ if is_invisible(ch) => {}
+            _ => out.push(fold_char(ch)),
+        }
+    }
+    out.to_lowercase()
+}
+
+/// Map one character to its ASCII lookalike: confusables, then fullwidth forms.
+fn fold_char(ch: char) -> char {
+    if let Some((_, ascii)) = CONFUSABLES.iter().find(|(c, _)| *c == ch) {
+        return *ascii;
+    }
+    // Fullwidth ASCII (U+FF01..U+FF5E) maps onto ASCII by a fixed offset.
+    let cp = ch as u32;
+    if (0xFF01..=0xFF5E).contains(&cp) {
+        if let Some(a) = char::from_u32(cp - 0xFEE0) {
+            return a;
+        }
+    }
+    ch
+}
+
+/// Characters that render as nothing and so cannot change what a shell executes.
+fn is_invisible(ch: char) -> bool {
+    matches!(ch as u32,
+        0x200B..=0x200F | 0x2060..=0x2064 | 0xFEFF | 0x00AD
+        | 0x202A..=0x202E | 0x2066..=0x2069 | 0xE0000..=0xE007F)
+}
+
 /// Trait for all scanners.
 pub trait Scanner {
     type Output;
@@ -208,6 +280,26 @@ pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {
     {
         let _ = path;
         None
+    }
+}
+
+/// True if `path` is writable by group or other. A config that any local process can
+/// modify is a trivial persistence foothold: an attacker appends a hook and the agent
+/// runs it. Returns false on non-Unix or if the file can't be stat'd.
+pub fn is_world_or_group_writable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        let mode = meta.permissions().mode();
+        mode & 0o022 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
     }
 }
 

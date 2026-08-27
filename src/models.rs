@@ -349,6 +349,10 @@ pub struct AgentSettings {
     /// the settings `env` block — a credential committed inline rather than referenced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inline_secret_env_keys: Vec<String>,
+    /// True if the config file is writable by group or other — any local process can
+    /// append a hook, which the agent then runs.
+    #[serde(default)]
+    pub world_writable: bool,
 }
 
 /// An AI provider base-URL override (e.g. ANTHROPIC_BASE_URL) found in a settings

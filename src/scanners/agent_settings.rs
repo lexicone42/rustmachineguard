@@ -136,6 +136,7 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         enabled_mcp_servers,
         gateway_overrides,
         inline_secret_env_keys,
+        world_writable: crate::scanners::is_world_or_group_writable(path),
     });
 }
 
@@ -218,6 +219,7 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         inline_secret_env_keys: crate::scanners::mcp::extract_inline_secret_env_keys(
             json.get("env"),
         ),
+        world_writable: crate::scanners::is_world_or_group_writable(path),
     });
 }
 

@@ -106,6 +106,12 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Review the exact command below. Remove the runOn setting if the task should not auto-start, and keep VS Code's task.allowAutomaticTasks at its default (off) so automatic tasks require an explicit prompt.",
             reference: "workspace auto-execution · EAA-003 (lifecycle persistence)",
         },
+        "Config integrity" => Guidance {
+            what: "An agent configuration file (settings.json, hooks.json, …) is writable by group or other, not just by you.",
+            why: "Agent configs are executable surface: a hook entry is a shell command the agent runs on its own events. Anything on the machine that can write this file gets silent code execution as you, with no vulnerability required — just the loose permission.",
+            fix: "Restrict the file to owner-only (chmod 600, or 644 if it must be world-readable but not writable), and check the parent directory's permissions too. Review the current contents for hooks you did not add.",
+            reference: "least privilege · EAA-003 (lifecycle persistence)",
+        },
         "Hook" => Guidance {
             what: "An agent settings file registers a hook that runs a shell command automatically on an agent event (e.g. before every tool use).",
             why: "Hooks execute silently with your privileges on every triggering event — a powerful persistence and code-execution mechanism if the settings file is tampered with or shared.",
@@ -348,6 +354,22 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 evidence: None,
             });
         }
+        // A config any local process can write is a persistence foothold: append a
+        // hook and the agent runs it on the next event. This is the cheapest possible
+        // implant, and it needs no vulnerability — just a loose mode bit.
+        if s.world_writable {
+            f.push(Finding {
+                severity: Severity::High,
+                category: "Config integrity".into(),
+                title: format!(
+                    "{} config is writable by group/other — any local process can inject a hook",
+                    s.framework
+                ),
+                location: s.path.clone(),
+                evidence: None,
+            });
+        }
+
         // The same "act without asking" setting under two names: Claude Code calls it
         // permissions.defaultMode = bypassPermissions, Cursor calls it
         // approvalMode = unrestricted.

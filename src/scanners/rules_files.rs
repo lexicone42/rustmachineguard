@@ -32,8 +32,6 @@ const RULES_FILE_NAMES: &[&str] = &[
 /// Dangerous patterns in rules files.
 /// Inspired by SkillFortify (arXiv:2603.00195) phase-2 pattern catalog.
 const DANGEROUS_PATTERNS: &[(&str, &str, &str)] = &[
-    ("curl|wget piped to shell", "curl ", "critical"),
-    ("curl|wget piped to shell", "wget ", "critical"),
     ("base64 decode to shell", "base64 -d", "critical"),
     ("base64 decode to shell", "base64 --decode", "critical"),
     ("dynamic code evaluation", "eval(", "high"),
@@ -135,16 +133,68 @@ fn is_git_tracked(path: &std::path::Path) -> bool {
 
 pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFinding> {
     let lower = content.to_lowercase();
+    // The same text with homoglyphs folded, shell quoting collapsed and invisible
+    // characters dropped — i.e. what a shell would actually execute.
+    let normalized = crate::scanners::normalize_for_matching(content);
     let mut findings = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for (description, pattern, severity) in DANGEROUS_PATTERNS {
-        if lower.contains(&pattern.to_lowercase()) && seen.insert(*description) {
+        let needle = pattern.to_lowercase();
+        let raw_hit = lower.contains(&needle);
+        let folded_hit = normalized.contains(&needle);
+        if !raw_hit && !folded_hit {
+            continue;
+        }
+        if !seen.insert(*description) {
+            continue;
+        }
+        if raw_hit {
             findings.push(crate::models::RulesFileFinding {
                 severity: severity.to_string(),
                 pattern: description.to_string(),
             });
+        } else {
+            // Visible only after de-obfuscation. Text that matches ONLY once
+            // homoglyphs/quoting/invisible characters are folded away was obfuscated
+            // deliberately — that intent is a stronger signal than the pattern alone,
+            // so it is never reported below "high".
+            let escalated = if *severity == "medium" || *severity == "low" {
+                "high"
+            } else {
+                severity
+            };
+            findings.push(crate::models::RulesFileFinding {
+                severity: escalated.to_string(),
+                pattern: format!("{description} (obfuscated — only visible after de-obfuscation)"),
+            });
         }
+    }
+
+    // curl/wget PIPED TO A SHELL. This used to be a bare substring match on "curl "
+    // labelled "piped to shell" at critical, so any prose mentioning curl produced a
+    // critical finding claiming a pipe that was not there. Match the actual shape
+    // instead: a fetch and a pipe into a shell on the SAME line.
+    let has_fetch_pipe = |text: &str| {
+        text.lines().any(|line| {
+            (line.contains("curl") || line.contains("wget"))
+                && ["| sh", "|sh", "| bash", "|bash", "| zsh", "|zsh", "| dash", "|dash"]
+                    .iter()
+                    .any(|p| line.contains(p))
+        })
+    };
+    if has_fetch_pipe(&normalized) && seen.insert("curl|wget piped to shell") {
+        // Same obfuscation rule as above: visible only after folding means deliberate.
+        let obfuscated = !has_fetch_pipe(&lower);
+        findings.push(crate::models::RulesFileFinding {
+            severity: "critical".to_string(),
+            pattern: if obfuscated {
+                "curl|wget piped to shell (obfuscated — only visible after de-obfuscation)"
+                    .to_string()
+            } else {
+                "curl|wget piped to shell".to_string()
+            },
+        });
     }
 
     // Cross-channel detection: encoding + network access (SkillFortify information flow check)
