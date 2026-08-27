@@ -3354,3 +3354,45 @@ fn nx_console_flags_only_the_compromised_release() {
     assert!(!hit("18.94.0"), "the release before the compromise must NOT flag");
     assert!(!hit("18.96.0"), "the release after the compromise must NOT flag");
 }
+
+#[test]
+fn rules_files_detect_invisible_unicode_payloads() {
+    use rustmachineguard::scanners::rules_files::check_dangerous_patterns;
+    // A clean file yields no invisible-Unicode finding.
+    let clean = check_dangerous_patterns("# Setup\nRun the tests before committing.\n");
+    assert!(!clean.iter().any(|f| f.pattern.contains("invisible Unicode")));
+
+    // TrapDoor-style payload: zero-width characters hidden in ordinary prose. This is
+    // the case a case-insensitive substring matcher is structurally blind to.
+    let zw = check_dangerous_patterns("# Setup\u{200B}\u{200D}\nLooks completely normal.\n");
+    let f = zw.iter().find(|f| f.pattern.contains("invisible Unicode")).expect("zero-width flagged");
+    assert_eq!(f.severity, "high");
+
+    // U+200E (LRM) — named in the TrapDoor advisory and NOT covered before this change.
+    let lrm = check_dangerous_patterns("Instructions\u{200E} follow.");
+    assert!(
+        lrm.iter().any(|f| f.pattern.contains("bidi-control")),
+        "LRM must be detected: {lrm:?}"
+    );
+
+    // Tag-block smuggling has no legitimate use in an instruction file -> critical.
+    let tag = check_dangerous_patterns("Hello\u{E0041}\u{E0042}");
+    let t = tag.iter().find(|f| f.pattern.contains("tag-block")).expect("tag block flagged");
+    assert_eq!(t.severity, "critical");
+}
+
+#[test]
+fn invisible_unicode_severity_is_graded_not_uniform() {
+    // Guards the "don't cry wolf" intent: bidi marks are ordinary in RTL text, so they
+    // must not carry the same weight as a tag-block smuggling sequence.
+    use rustmachineguard::scanners::rules_files::check_dangerous_patterns;
+    let sev = |s: &str, want: &str| {
+        let f = check_dangerous_patterns(s);
+        let hit = f.iter().find(|f| f.pattern.contains("invisible Unicode"));
+        assert_eq!(hit.map(|h| h.severity.as_str()), Some(want), "for {s:?} -> {f:?}");
+    };
+    sev("a\u{E0041}b", "critical");   // tag block
+    sev("a\u{200B}b", "high");        // zero width
+    sev("a\u{202E}b", "medium");      // bidi override
+    sev("a\u{00AD}b", "low");         // soft hyphen
+}

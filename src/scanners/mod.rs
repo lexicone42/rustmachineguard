@@ -124,6 +124,39 @@ pub fn extract_version(text: &str) -> Option<String> {
     )
 }
 
+/// Detect invisible / smuggled Unicode that ASCII pattern-matching is blind to — the
+/// dominant 2025-2026 evasion. A "Provides weather forecasts" tool description, or a
+/// clean-looking CLAUDE.md, can carry a full invisible instruction payload.
+///
+/// Returns deduped, stable-ordered category labels. Character-class based, so it is
+/// language-agnostic and needs no pattern catalog.
+///
+/// Coverage note: the bidi class deliberately includes the *marks* U+200E/U+200F, not
+/// just the embedding/override controls. The TrapDoor campaign's advisory names LRM
+/// (U+200E) among its payload characters, and a detector keyed only on
+/// ZWSP/ZWJ/ZWNJ/BOM silently misses it.
+pub fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
+    let mut cats: Vec<&'static str> = Vec::new();
+    for ch in s.chars() {
+        let label = match ch as u32 {
+            0xE0000..=0xE007F => "tag-block",
+            0xE0100..=0xE01EF => "variation-selector-smuggler",
+            // Zero-width joiners/non-joiners, BOM, and the invisible math operators
+            // (U+2060 word joiner .. U+2064) which are equally invisible carriers.
+            0x200B | 0x200C | 0x200D | 0xFEFF | 0x2060..=0x2064 => "zero-width",
+            0x00AD => "soft-hyphen",
+            // Directional marks (200E/200F) as well as embeddings/overrides/isolates.
+            0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
+            _ if ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r' => "other-control",
+            _ => continue,
+        };
+        if !cats.contains(&label) {
+            cats.push(label);
+        }
+    }
+    cats
+}
+
 /// Trait for all scanners.
 pub trait Scanner {
     type Output;

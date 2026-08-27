@@ -18,9 +18,12 @@ const RULES_FILE_NAMES: &[&str] = &[
     ".clinerules",
     ".aiderignore",
     // Agent long-term memory / persona files: malicious postinstall scripts append
-    // operating instructions here (e.g. Cisco CVE-2026-21852), which the agent then
-    // loads into its system prompt every session. Tamper detection (hash + git_tracked)
-    // makes cross-session mutation visible via --diff.
+    // operating instructions here, which the agent then loads into its context every
+    // session (the EAA-004 instruction/memory-poisoning surface). Tamper detection
+    // (hash + git_tracked) makes cross-session mutation visible via --diff.
+    // NB: do not cite CVE-2026-21852 here — that is Claude Code's ANTHROPIC_BASE_URL
+    // pre-trust key exfil (<2.0.65), which is the "Gateway routing" detection in
+    // agent_settings.rs, not a memory-file issue.
     "MEMORY.md",
     "SOUL.md",
     ".serena/memories",
@@ -158,5 +161,42 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
         });
     }
 
+    // Invisible / smuggled Unicode. An instruction file that renders perfectly clean can
+    // carry a hidden payload: the TrapDoor campaign wrote zero-width and directional-mark
+    // sequences into CLAUDE.md and .cursorrules. Visible-text pattern matching is
+    // structurally blind to this, so it is detected as a character class instead.
+    //
+    // Severity is graded by how smuggling-specific the class is, to avoid crying wolf on
+    // legitimately multilingual files: tag blocks and variation-selector sequences have no
+    // legitimate use in an instruction file, whereas bidi marks are normal in RTL text and
+    // soft hyphens are ordinary typography.
+    for cat in crate::scanners::scan_suspicious_unicode(content) {
+        if seen.insert(cat) {
+            findings.push(crate::models::RulesFileFinding {
+                severity: invisible_unicode_severity(cat).to_string(),
+                pattern: format!(
+                    "invisible Unicode ({cat}) — text that renders clean but carries hidden characters"
+                ),
+            });
+        }
+    }
+
     findings
+}
+
+/// How suspicious an invisible-Unicode class is when found in an instruction file.
+/// Graded, not uniform: some classes are pure smuggling vectors, others have ordinary
+/// uses in multilingual or typeset text.
+fn invisible_unicode_severity(category: &str) -> &'static str {
+    match category {
+        // No legitimate use in an agent instruction file — these exist to hide data.
+        "tag-block" | "variation-selector-smuggler" => "critical",
+        // Rare but not unheard of (emoji ZWJ sequences, some Indic scripts).
+        "zero-width" => "high",
+        // Normal in right-to-left text, so advisory rather than damning.
+        "bidi-control" => "medium",
+        // Ordinary typography; worth surfacing only because it can split keywords.
+        "soft-hyphen" => "low",
+        _ => "medium",
+    }
 }

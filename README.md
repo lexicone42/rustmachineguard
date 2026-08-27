@@ -59,7 +59,7 @@ cargo build --release
 | **Notebook Servers**\* | Computational notebooks | Jupyter, JupyterLab, Marimo |
 | **Browser Extensions**\* | AI-related browser add-ons | Chrome/Firefox extension inventory with known-malicious matching |
 | **Package Config Audits**\* | Registry/install hijacks | `.npmrc`, pip, bun config — custom registries, disabled SSL, auth tokens |
-| **Rules Files**\* | Agent instruction files | `CLAUDE.md` and similar, with dangerous-pattern + tamper (hash) detection |
+| **Rules Files**\* | Agent instruction files | `CLAUDE.md` and similar, with dangerous-pattern + tamper (hash) detection, and **invisible-Unicode** detection (zero-width, bidi marks, tag blocks, variation-selector smuggling) — catches payloads that render as clean text, e.g. the TrapDoor campaign |
 | **Agent Skills**\* | Custom commands / hooks / plugins | Capability inference across the SkillFortify 8-resource taxonomy |
 | **Agent Settings**\* | `settings.json` hooks + MCP auto-approval | Hooks that run shell commands on tool-use events (silent code exec), `enableAllProjectMcpServers` workspace-trust bypass, permission modes |
 | **AI Credentials**\* | At-rest agent tokens + permissions | `~/.claude/.credentials.json`, Codex/Gemini/Copilot/OpenCode token files — existence and loose permissions only (values never read) |

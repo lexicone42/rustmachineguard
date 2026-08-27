@@ -454,28 +454,10 @@ fn scan_injection_text(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// Detect invisible / smuggled Unicode that ASCII pattern-matching is blind to —
-/// the dominant 2025-2026 evasion (a "Provides weather forecasts" tool can carry a
-/// full invisible exfiltration prompt). Returns deduped, stable-ordered category
-/// labels. Character-class based, so language-agnostic.
-fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
-    let mut cats: Vec<&'static str> = Vec::new();
-    for ch in s.chars() {
-        let label = match ch as u32 {
-            0xE0000..=0xE007F => "tag-block",
-            0xE0100..=0xE01EF => "variation-selector-smuggler",
-            0x200B | 0x200C | 0x200D | 0xFEFF => "zero-width",
-            0x00AD => "soft-hyphen",
-            0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
-            _ if ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r' => "other-control",
-            _ => continue,
-        };
-        if !cats.contains(&label) {
-            cats.push(label);
-        }
-    }
-    cats
-}
+// Invisible-Unicode detection lives in `scanners` so every text surface (MCP tool
+// descriptions, rules files, skills) uses the same detector.
+use crate::scanners::scan_suspicious_unicode;
+
 
 /// Map an internal behavior label to a value from the CycloneDX 2.0 behavior
 /// taxonomy (a closed enum). The schema requires `behaviorInstance.behavior` to be
