@@ -206,6 +206,28 @@ The CVEs themselves live in a **top-level `vulnerabilities[]`** array:
 ]
 ```
 
+Each vulnerability also carries **`evidence`** — where a scanner states *how it knows*:
+
+```json
+"evidence": { "presence": [ {
+  "exploitability": "component-present",
+  "confidence": 0.9,
+  "methods": [ { "technique": "manifest-analysis", "confidence": 0.9, "result": "detected" } ],
+  "timestamp": "2026-08-27T00:39:57Z"
+} ] }
+```
+
+`exploitability` is a **ladder**: `component-present` → `code-present` → `code-reachable`
+→ … → `proven-exploitable` → `exploited`. rmguard sits on the bottom rung *by design*:
+our evidence is manifest and config parsing, which is exactly `manifest-analysis` at
+`component-present`. We never claim reachability we did not compute — and this isn't just
+a promise, it's enforced: the schema conditionally requires dynamic-analysis-class backing
+for the upper rungs, so an overclaim is **rejected by the validator**. A test
+(`schema_rejects_exploitability_overclaim`) pins that our honest claim validates and a
+`proven-exploitable` overclaim does not. Confidence is 0.9 rather than 1.0 because the
+match is on *declared* identity, which we don't cryptographically verify against the
+installed artifact.
+
 The **`ratings`** carry the CVSS base score parsed out of the advisory plus the derived
 severity band. Two honesty notes: each score is attributed to *its own* CVE (an advisory
 naming two CVEs with two scores maps each correctly, and a CVE with no stated score gets

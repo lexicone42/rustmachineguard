@@ -23,6 +23,21 @@ use serde::Serialize;
 ///
 /// The draft is still moving; re-vendor `tests/fixtures/` and re-run the gate when
 /// bumping the pin.
+/// The CycloneDX specification version this generator emits.
+///
+/// Bumping a spec version is a THREE-part change, all of which must move together:
+///   1. this constant,
+///   2. the vendored schema pair in `tests/fixtures/` (see its README for the
+///      fetch commands), and
+///   3. any emitter changes the new schema requires.
+///
+/// Note the schema does NOT constrain `specVersion` — it carries only an `examples`
+/// hint — so emitting the wrong version against the right schema would otherwise
+/// validate silently. `emitted_spec_version_matches_vendored_schema` in
+/// `tests/blueprint_schema.rs` closes that gap by cross-checking this constant
+/// against the vendored schema's `$id`.
+pub const SPEC_VERSION: &str = "2.0";
+
 pub fn render(report: &ScanReport) -> String {
     let doc = BlueprintDocument::from_report(report);
     serde_json::to_string_pretty(&doc).unwrap_or_default()
@@ -300,6 +315,8 @@ struct Vulnerability {
     description: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ratings: Vec<VulnRating>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<VulnEvidence>,
 }
 
 /// A CVSS rating for a vulnerability. We emit `score` + the derived `severity` band
@@ -309,6 +326,45 @@ struct Vulnerability {
 struct VulnRating {
     score: f64,
     severity: String,
+}
+
+/// Evidence substantiating that a vulnerability is present (CycloneDX 2.0 evidence
+/// model). This is where a scanner states *how it knows*.
+///
+/// rmguard's evidence is manifest and config parsing: we resolved an installed
+/// package identity plus version and matched it against the threat catalog. In the
+/// schema's vocabulary that is exactly `manifest-analysis` at the `component-present`
+/// exploitability level — the weakest rung of the ladder.
+///
+/// We deliberately never claim `code-reachable` or higher. The schema conditionally
+/// requires dynamic-analysis-class backing (instrumentation, penetration-testing,
+/// exploitation, ...) for the upper rungs, so an overclaim would be rejected by the
+/// validator — a guardrail worth leaning on rather than working around. Saying
+/// "component-present, by manifest analysis" honestly is more useful than asserting a
+/// reachability we never computed.
+#[derive(Serialize)]
+struct VulnEvidence {
+    presence: Vec<PresenceEvidence>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresenceEvidence {
+    /// Always `component-present` — see the type doc.
+    exploitability: &'static str,
+    /// Required by the schema; 0..1.
+    confidence: f64,
+    methods: Vec<AssessmentMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AssessmentMethod {
+    /// Always `manifest-analysis` — we parse manifests/configs, we do not run code.
+    technique: &'static str,
+    confidence: f64,
+    result: &'static str,
 }
 
 /// `risks` is an object wrapper (`{ risks: [...] }`).
@@ -1818,6 +1874,22 @@ impl BlueprintDocument {
                     })
                     .into_iter()
                     .collect(),
+                // How we know: identity + version resolved from a manifest/config and
+                // matched against the catalog. Confidence 0.9 rather than 1.0 — the
+                // match is on declared identity, which we did not cryptographically
+                // verify against the installed artifact.
+                evidence: Some(VulnEvidence {
+                    presence: vec![PresenceEvidence {
+                        exploitability: "component-present",
+                        confidence: 0.9,
+                        methods: vec![AssessmentMethod {
+                            technique: "manifest-analysis",
+                            confidence: 0.9,
+                            result: "detected",
+                        }],
+                        timestamp: Some(report.scan_timestamp_iso.clone()),
+                    }],
+                }),
             })
             .collect();
         let attack_patterns: Vec<AttackPattern> = used_capec
@@ -1902,7 +1974,7 @@ impl BlueprintDocument {
 
         BlueprintDocument {
             spec_format: "CycloneDX",
-            spec_version: "2.0",
+            spec_version: SPEC_VERSION,
             version: 1,
             vulnerabilities,
             threats,

@@ -97,6 +97,45 @@ fn rich_handwritten_blueprint_conforms() {
     assert!(errors.is_empty(), "rich example does not conform:\n{}", errors.join("\n"));
 }
 
+/// The evidence model's overclaim guardrail is real, not just a comment: the schema
+/// conditionally requires dynamic-analysis-class backing for the upper exploitability
+/// rungs. We emit `component-present` / `manifest-analysis`, which validates; asserting
+/// `proven-exploitable` off the back of manifest analysis must be REJECTED.
+#[test]
+fn schema_rejects_exploitability_overclaim() {
+    let validator = build_validator();
+    let doc = |exploitability: &str| {
+        serde_json::json!({
+            "specFormat": "CycloneDX", "specVersion": "2.0", "version": 1,
+            "metadata": {
+                "timestamp": "2026-08-26T00:00:00Z",
+                "tools": {"components": [{"type": "application", "name": "rmguard", "version": "0.1.0"}]},
+                "component": {"type": "device", "name": "h"}
+            },
+            "components": [],
+            "blueprints": [{"bom-ref": "bp", "name": "b", "modelTypes": ["behavioral"], "assets": []}],
+            "vulnerabilities": [{
+                "bom-ref": "vuln:x", "id": "CVE-2025-6514",
+                "evidence": {"presence": [{
+                    "exploitability": exploitability,
+                    "confidence": 0.9,
+                    "methods": [{"technique": "manifest-analysis", "confidence": 0.9, "result": "detected"}]
+                }]}
+            }]
+        })
+    };
+    // What we actually emit validates.
+    assert!(
+        validator.iter_errors(&doc("component-present")).next().is_none(),
+        "component-present via manifest-analysis must validate"
+    );
+    // Claiming exploitation off manifest analysis alone must not.
+    assert!(
+        validator.iter_errors(&doc("proven-exploitable")).next().is_some(),
+        "proven-exploitable backed only by manifest-analysis must be REJECTED by the schema"
+    );
+}
+
 #[test]
 fn rich_blueprint_conforms() {
     use rustmachineguard::models::*;
@@ -430,4 +469,66 @@ fn validator_rejects_non_taxonomy_behavior() {
     });
     let validator = build_validator();
     assert!(validator.validate(&bad).is_err(), "non-taxonomy behavior must be rejected");
+}
+
+/// The emitted `specVersion` must match the version of the schema we validate against.
+///
+/// This is not redundant with the conformance gate: the schema does NOT constrain
+/// `specVersion` (it carries only an `examples` hint), so emitting "2.1" while
+/// validating against the 2.0 schema would pass validation silently. That is precisely
+/// the mistake a future 2.0 -> 2.1 bump could make, so it is pinned here.
+#[test]
+fn emitted_spec_version_matches_vendored_schema() {
+    let schema: Value = serde_json::from_str(BUNDLED_SCHEMA).expect("bundled schema is JSON");
+    let id = schema["$id"].as_str().expect("schema declares an $id");
+    let emitted = rustmachineguard::output::blueprint::SPEC_VERSION;
+    assert!(
+        id.contains(&format!("/schema/{emitted}/")),
+        "emitter says specVersion={emitted} but the vendored schema $id is {id} — \
+         bump the schema and SPEC_VERSION together"
+    );
+
+    let report = make_report(|_| {});
+    let rendered =
+        rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(doc["specVersion"], emitted, "output must carry SPEC_VERSION");
+}
+
+/// CycloneDX 2.0 removed the `service` module entirely (upstream PR #975): services are
+/// now components with `type: "service"`. Emitting either the root `services` array or
+/// an asset `serviceRef` would be a hard schema error, so this pins that we never do —
+/// including if someone ports 1.6-shaped code forward.
+#[test]
+fn blueprint_never_emits_removed_service_constructs() {
+    use rustmachineguard::models::*;
+    let report = make_report(|r| {
+        r.mcp_configs = vec![McpConfig {
+            config_source: "project".into(),
+            config_path: "/p/.mcp.json".into(),
+            vendor: "c".into(),
+            server_names: vec!["remote".into()],
+            server_count: 1,
+            git_tracked: false,
+            servers: vec![McpServerDetail {
+                name: "remote".into(),
+                transport: "http".into(),
+                command: None,
+                args: vec![],
+                package_ecosystem: None,
+                package_name: None,
+                package_version: None,
+                url: Some("https://mcp.example.com".into()),
+                inline_secret_env_keys: vec![],
+            }],
+        }];
+    });
+    let rendered =
+        rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: Value = serde_json::from_str(&rendered).unwrap();
+    assert!(doc.get("services").is_none(), "root `services` was removed in 2.0");
+    assert!(
+        !rendered.contains("serviceRef"),
+        "asset.serviceRef was removed in 2.0; use componentRef with component.type=service"
+    );
 }
