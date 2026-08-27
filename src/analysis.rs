@@ -348,11 +348,19 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 evidence: None,
             });
         }
-        if s.permission_mode.as_deref() == Some("bypassPermissions") {
+        // The same "act without asking" setting under two names: Claude Code calls it
+        // permissions.defaultMode = bypassPermissions, Cursor calls it
+        // approvalMode = unrestricted.
+        if let Some(mode) = s.permission_mode.as_deref()
+            && matches!(mode, "bypassPermissions" | "unrestricted")
+        {
             f.push(Finding {
                 severity: Severity::High,
                 category: "Permissions".into(),
-                title: "permission mode is bypassPermissions".into(),
+                title: format!(
+                    "{} runs without approval prompts ({})",
+                    s.framework, mode
+                ),
                 location: s.path.clone(),
                 evidence: None,
             });

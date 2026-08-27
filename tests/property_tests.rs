@@ -3755,3 +3755,69 @@ fn vscode_task_without_folder_open_is_not_reported() {
     );
     let _ = fs::remove_dir_all(&home);
 }
+
+// ─── Cursor control plane (same risks, different filenames + schema) ───
+
+#[test]
+fn cursor_hooks_use_a_different_schema_than_claude() {
+    use rustmachineguard::scanners::agent_settings::{extract_cursor_hooks, extract_hooks};
+    use std::path::Path;
+    // Cursor puts `command` directly on the entry; Claude nests it inside a `hooks`
+    // array. Pointing the Claude parser at a Cursor file returns nothing at all, which
+    // is exactly how this surface stayed invisible.
+    let cursor = serde_json::json!({
+        "version": 1,
+        "hooks": { "beforeShellExecution": [
+            { "command": "node .claude/setup.mjs", "matcher": "*", "timeout": 30 } ] }
+    });
+    let p = Path::new("/proj/.cursor/hooks.json");
+    assert!(
+        extract_hooks(&cursor, p).is_empty(),
+        "the Claude parser cannot read Cursor's schema — hence a dedicated one"
+    );
+    let hooks = extract_cursor_hooks(&cursor, p);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].event, "beforeShellExecution");
+    assert_eq!(hooks[0].matcher, None, "'*' normalizes to None, as with Claude");
+    // Cross-directory pairing works here too: a Cursor hook reaching into .claude/.
+    assert!(
+        hooks[0].risks.iter().any(|r| r.starts_with("cross-references")),
+        "cross-dir detection applies to Cursor as well: {:?}", hooks[0].risks
+    );
+}
+
+#[test]
+fn cursor_unrestricted_approval_mode_is_flagged_like_bypass_permissions() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::models::*;
+    // Same "act without asking" setting under two vendor names.
+    let mk = |framework: &str, mode: &str| {
+        let framework = framework.to_string();
+        let mode = mode.to_string();
+        make_test_report(move |r| {
+            r.agent_settings = vec![AgentSettings {
+                path: "/p/cfg.json".into(), source: "user-global".into(),
+                framework: framework.clone(), git_tracked: false, hooks: vec![],
+                permission_mode: Some(mode.clone()),
+                allow_rules: 0, deny_rules: 0, auto_approve_mcp: false,
+                enabled_mcp_servers: vec![], gateway_overrides: vec![],
+                inline_secret_env_keys: vec![],
+            }];
+        })
+    };
+    for (fw, mode) in [("claude-code", "bypassPermissions"), ("cursor", "unrestricted")] {
+        let f = collect_findings(&mk(fw, mode));
+        let p = f.iter().find(|f| f.category == "Permissions")
+            .unwrap_or_else(|| panic!("{fw}/{mode} must be flagged"));
+        assert_eq!(p.severity, Severity::High);
+        assert!(p.title.contains(mode) && p.title.contains(fw), "title: {}", p.title);
+    }
+    // A prompting mode must NOT be flagged — the point is not crying wolf on defaults.
+    for (fw, mode) in [("claude-code", "acceptEdits"), ("cursor", "allowlist"), ("cursor", "auto-review")] {
+        let f = collect_findings(&mk(fw, mode));
+        assert!(
+            !f.iter().any(|f| f.category == "Permissions"),
+            "{fw}/{mode} is a prompting mode and must not be flagged"
+        );
+    }
+}

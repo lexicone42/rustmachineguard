@@ -44,6 +44,18 @@ impl Scanner for AgentSettingsScanner {
             );
         }
 
+        // Cursor's control plane: same risks, different filenames and schema.
+        parse_cursor_settings(&home.join(".cursor").join("hooks.json"), "user-global", &mut results);
+        parse_cursor_settings(&home.join(".cursor").join("cli-config.json"), "user-global", &mut results);
+        let mut cursor_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
+        if let Ok(cwd) = std::env::current_dir() {
+            cursor_dirs.push(cwd);
+        }
+        for dir in cursor_dirs {
+            parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &mut results);
+            parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &mut results);
+        }
+
         // Dedupe by path (projects + cwd can overlap).
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(r.path.clone()));
@@ -124,6 +136,88 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         enabled_mcp_servers,
         gateway_overrides,
         inline_secret_env_keys,
+    });
+}
+
+/// Parse Cursor's `hooks.json`, whose schema differs from Claude Code's: the command
+/// sits directly on each entry rather than in a nested `hooks` array, so the Claude
+/// parser returns empty even when pointed straight at it.
+///
+/// `{ "version": 1, "hooks": { "<event>": [ { "command": "./x.sh", "matcher": "..." } ] } }`
+pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
+    let mut out = Vec::new();
+    let Some(hooks_obj) = json.get("hooks").and_then(|h| h.as_object()) else {
+        return out;
+    };
+    for (event, entries) in hooks_obj {
+        let Some(arr) = entries.as_array() else { continue };
+        for entry in arr {
+            let Some(command) = entry.get("command").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            let matcher = entry
+                .get("matcher")
+                .and_then(|m| m.as_str())
+                .filter(|s| !s.is_empty() && *s != "*")
+                .map(String::from);
+            out.push(AgentHook {
+                event: event.clone(),
+                matcher,
+                command: command.to_string(),
+                dangerous: !crate::scanners::rules_files::check_dangerous_patterns(command)
+                    .is_empty(),
+                risks: classify_hook_command(command, settings_path),
+            });
+        }
+    }
+    out
+}
+
+/// Parse a Cursor config file (`hooks.json`, `cli-config.json`, or a project `cli.json`)
+/// into the shared AgentSettings shape, so every downstream consumer — findings, --diff
+/// drift, Blueprint assets — covers Cursor without special-casing.
+fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>) {
+    if !path.is_file() {
+        return;
+    }
+    let Some(content) = read_bounded(path) else { return };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let hooks = extract_cursor_hooks(&json, path);
+    // Cursor's approvalMode is the direct analogue of Claude Code's permission mode:
+    // `unrestricted` means the agent acts without approval prompts.
+    let permission_mode = json
+        .get("approvalMode")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let permissions = json.get("permissions");
+    let count = |key: &str| {
+        permissions
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+    // Nothing to say about this file? Don't manufacture an entry.
+    if hooks.is_empty() && permission_mode.is_none() && count("allow") == 0 && count("deny") == 0 {
+        return;
+    }
+    out.push(AgentSettings {
+        path: path.to_string_lossy().to_string(),
+        source: source.to_string(),
+        framework: "cursor".to_string(),
+        git_tracked: is_git_tracked(path),
+        hooks,
+        permission_mode,
+        allow_rules: count("allow"),
+        deny_rules: count("deny"),
+        auto_approve_mcp: false,
+        enabled_mcp_servers: Vec::new(),
+        gateway_overrides: extract_gateway_overrides(&json),
+        inline_secret_env_keys: crate::scanners::mcp::extract_inline_secret_env_keys(
+            json.get("env"),
+        ),
     });
 }
 
