@@ -415,6 +415,7 @@ fn make_report(
         agent_identity: None,
         transcripts: vec![],
         marketplaces: vec![],
+        vscode_tasks: vec![],
         warnings: vec![ScanWarning {
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),
@@ -440,6 +441,7 @@ fn make_report(
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
     customize(&mut report);

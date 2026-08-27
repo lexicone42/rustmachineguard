@@ -20,6 +20,7 @@ pub mod shell_configs;
 pub mod skills;
 pub mod ssh_keys;
 pub mod transcripts;
+pub mod vscode_tasks;
 
 use crate::platform::PlatformInfo;
 use std::time::Duration;

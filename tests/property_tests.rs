@@ -330,6 +330,7 @@ fn summary_counts_match_vector_lengths() {
         agent_identity: None,
         transcripts: vec![],
         marketplaces: vec![],
+        vscode_tasks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -344,6 +345,7 @@ fn summary_counts_match_vector_lengths() {
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
 
@@ -395,6 +397,7 @@ fn json_output_is_valid_json() {
         agent_identity: None,
         transcripts: vec![],
         marketplaces: vec![],
+        vscode_tasks: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -409,6 +412,7 @@ fn json_output_is_valid_json() {
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
     report.compute_summary();
@@ -457,6 +461,7 @@ fn html_output_no_script_injection() {
         agent_identity: None,
         transcripts: vec![],
         marketplaces: vec![],
+        vscode_tasks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -471,6 +476,7 @@ fn html_output_no_script_injection() {
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
     report.compute_summary();
@@ -3090,6 +3096,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         agent_identity: None,
         transcripts: vec![],
         marketplaces: vec![],
+        vscode_tasks: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -3103,6 +3110,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             mcp_servers_count: 0, exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
     customize(&mut report);
@@ -3665,4 +3673,85 @@ for line in sys.stdin:
         "server instructions must be captured: {:?}", result.instructions
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ─── VS Code auto-run tasks (the other half of the persistence pair) ───
+
+#[test]
+fn strip_jsonc_handles_comments_and_trailing_commas() {
+    use rustmachineguard::scanners::vscode_tasks::strip_jsonc;
+    // tasks.json is JSONC — serde_json rejects both comments and trailing commas, so
+    // without stripping we would silently skip every commented config (i.e. most).
+    let src = r#"{
+        // a line comment
+        "version": "2.0.0", /* block */
+        "tasks": [ { "label": "x", } ],
+    }"#;
+    let cleaned = strip_jsonc(src);
+    let v: serde_json::Value = serde_json::from_str(&cleaned).expect("JSONC becomes valid JSON");
+    assert_eq!(v["tasks"][0]["label"], "x");
+    // A `//` inside a string must survive — it is a URL, not a comment.
+    let s = strip_jsonc(r#"{"u":"https://example.com/x"}"#);
+    assert!(s.contains("https://example.com/x"), "string-internal // preserved: {s}");
+}
+
+#[test]
+fn vscode_folder_open_task_is_detected_and_paired_with_agent_dirs() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::models::*;
+    // The mirror half of the Shai-Hulud pair: a folderOpen task pointing back into
+    // .claude/. The command is mundane; only the auto-run + cross-reference give it away.
+    let report = make_test_report(|r| {
+        r.vscode_tasks = vec![VsCodeTask {
+            path: "/proj/.vscode/tasks.json".into(),
+            label: "setup".into(),
+            command: "node .claude/setup.mjs".into(),
+            git_tracked: true,
+            dangerous: false,
+            risks: vec!["cross-references another tool's config directory (.claude/setup.mjs)".into()],
+        }];
+    });
+    let f = collect_findings(&report);
+    let t = f.iter().find(|f| f.category == "Auto-run task").expect("auto-run finding");
+    assert_eq!(t.severity, Severity::High, "git-tracked + cross-dir auto-run is High");
+    assert!(t.title.contains("automatically when the folder is opened"));
+    assert!(t.title.contains("git-tracked"), "repo-travelling is called out: {}", t.title);
+    assert_eq!(t.evidence.as_deref(), Some("node .claude/setup.mjs"));
+}
+
+#[test]
+fn vscode_task_without_folder_open_is_not_reported() {
+    use rustmachineguard::scanners::Scanner;
+    use std::fs;
+    // Only runOn == folderOpen auto-executes. An ordinary build task must not be
+    // reported — the whole point is not crying wolf on normal tasks.
+    let home = std::env::temp_dir().join(format!("rmg-vsctasks-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".vscode")).unwrap();
+    fs::write(
+        proj.join(".vscode/tasks.json"),
+        r#"{ "version": "2.0.0", "tasks": [
+             { "label": "build", "command": "npm run build" },
+             { "label": "boot", "command": "node", "args": [".claude/x.mjs"],
+               "runOptions": { "runOn": "folderOpen" } } ] }"#,
+    )
+    .unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        format!(r#"{{"projects": {{"{}": {{}}}}}}"#, proj.display()),
+    )
+    .unwrap();
+
+    let plat = rustmachineguard::platform::platform_for_home(home.clone());
+    let tasks = rustmachineguard::scanners::vscode_tasks::VsCodeTasksScanner.scan(plat.as_ref());
+    assert_eq!(tasks.len(), 1, "only the folderOpen task is reported: {tasks:?}");
+    assert_eq!(tasks[0].label, "boot");
+    assert_eq!(tasks[0].command, "node .claude/x.mjs", "args are folded into the command");
+    assert!(
+        tasks[0].risks.iter().any(|r| r.starts_with("cross-references")),
+        "a task reaching into .claude/ is the paired persistence pattern: {:?}",
+        tasks[0].risks
+    );
+    let _ = fs::remove_dir_all(&home);
 }

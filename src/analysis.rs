@@ -100,6 +100,12 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Remove the file from tracking (git rm --cached), add it to .gitignore, ROTATE the credential immediately (assume it is public), and scrub history if the repo was shared.",
             reference: "committed secret",
         },
+        "Auto-run task" => Guidance {
+            what: "A VS Code task in .vscode/tasks.json is configured with runOptions.runOn = \"folderOpen\", so it executes automatically when the folder is opened.",
+            why: "Opening a project becomes code execution. Combined with an agent hook pointing the other way, it is the 2026 persistence pattern: removing one half leaves the other to re-establish it. A git-tracked auto-run task ships with the repository, so cloning and opening it is enough.",
+            fix: "Review the exact command below. Remove the runOn setting if the task should not auto-start, and keep VS Code's task.allowAutomaticTasks at its default (off) so automatic tasks require an explicit prompt.",
+            reference: "workspace auto-execution · EAA-003 (lifecycle persistence)",
+        },
         "Hook" => Guidance {
             what: "An agent settings file registers a hook that runs a shell command automatically on an agent event (e.g. before every tool use).",
             why: "Hooks execute silently with your privileges on every triggering event — a powerful persistence and code-execution mechanism if the settings file is tampered with or shared.",
@@ -394,6 +400,39 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 });
             }
         }
+    }
+
+    // VS Code tasks that auto-run on folder open — the other half of the 2026
+    // persistence pair (an agent hook pointing into .vscode/, and a folderOpen task
+    // pointing back into .claude/). VS Code gates this behind allowAutomaticTasks and
+    // workspace trust, so a plain auto-run task is a Medium to review; it escalates
+    // when the task is git-tracked (clone the repo, open it, it runs) or when it
+    // references another tool's config directory.
+    for t in &report.vscode_tasks {
+        let cross_dir = t.risks.iter().any(|r| r.starts_with("cross-references"));
+        let severity = if t.dangerous {
+            Severity::Critical
+        } else if cross_dir || t.git_tracked {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        let mut why = Vec::new();
+        if t.git_tracked {
+            why.push("git-tracked, so it travels with the repository".to_string());
+        }
+        why.extend(t.risks.iter().cloned());
+        f.push(Finding {
+            severity,
+            category: "Auto-run task".into(),
+            title: format!(
+                "VS Code task '{}' runs automatically when the folder is opened{}",
+                t.label,
+                if why.is_empty() { String::new() } else { format!(" — {}", why.join("; ")) }
+            ),
+            location: t.path.clone(),
+            evidence: Some(t.command.clone()),
+        });
     }
 
     // At-rest AI tokens with loose permissions.

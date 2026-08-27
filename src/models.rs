@@ -42,6 +42,8 @@ pub struct ScanReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marketplaces: Vec<AgentMarketplace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vscode_tasks: Vec<VsCodeTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
@@ -407,6 +409,25 @@ pub struct AgentMarketplace {
     pub installed_plugin_count: usize,
 }
 
+/// A VS Code task that runs automatically when a folder is opened
+/// (`runOptions.runOn == "folderOpen"`) — an auto-execution surface that travels with
+/// a repository. Gated by `task.allowAutomaticTasks` and workspace trust, so it is
+/// reported as a risk to review rather than as confirmed execution.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VsCodeTask {
+    pub path: String,
+    pub label: String,
+    /// The command plus its args, as executed.
+    pub command: String,
+    /// A git-tracked auto-run task travels with the repo: clone, open, it runs.
+    pub git_tracked: bool,
+    /// True if the command matches a dangerous pattern (curl|bash, base64 decode, …).
+    pub dangerous: bool,
+    /// What the command references — see `agent_settings::classify_hook_command`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<String>,
+}
+
 /// At-rest AI-service credential file (existence + permissions only; values never read).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AiCredential {
@@ -485,6 +506,7 @@ pub struct Summary {
     pub exposure_findings_count: usize,
     pub transcript_stores_count: usize,
     pub marketplaces_count: usize,
+    pub vscode_autorun_tasks_count: usize,
 }
 
 impl ScanReport {
@@ -514,6 +536,7 @@ impl ScanReport {
             exposure_findings_count: self.exposure_findings.len(),
             transcript_stores_count: self.transcripts.len(),
             marketplaces_count: self.marketplaces.len(),
+            vscode_autorun_tasks_count: self.vscode_tasks.len(),
         };
     }
 }

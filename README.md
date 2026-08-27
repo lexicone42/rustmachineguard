@@ -65,6 +65,7 @@ cargo build --release
 | **AI Credentials**\* | At-rest agent tokens + permissions | `~/.claude/.credentials.json`, Codex/Gemini/Copilot/OpenCode token files — existence and loose permissions only (values never read) |
 | **`.env` Files**\* | Secrets in agent project roots | `.env`/`.env.local`/… in project roots agents operate on — git-tracked (committed-secret) and world-readable flags, secret-bearing key **names** (never values) |
 | **Transcript Stores**\* | Agent conversation-state collection (EAA-005) | Claude Code (`projects/`, `history.jsonl`, `todos/`), Codex (`sessions/`, `history.jsonl`), Gemini (`tmp/`) — existence, file count, size, and permissions only (content never read); world-readable stores flagged |
+| **VS Code Auto-run Tasks**\* | Tasks that execute on folder open | `.vscode/tasks.json` entries with `runOptions.runOn: folderOpen` — opening a project becomes code execution. Escalated when git-tracked (ships with the repo) or when the task reaches into an agent-config directory: that plus an agent hook pointing the other way is the 2026 persistence pair, where removing one half leaves the other to restore it |
 | **Plugin Marketplaces**\* | Remote plugin/skill hot-load sources (EAA-009) | Claude Code plugin marketplaces — source (git/github), official-vs-third-party, installed-plugin counts; auto-updating third-party sources (unreviewed remote code) flagged |
 
 \* New detection categories not in the original bash tool.
@@ -207,7 +208,7 @@ Options:
                                      shell, ssh, cloud, containers, notebooks,
                                      browser, packages, rules, skills, settings,
                                      aicreds, envfiles, transcripts,
-                                     marketplaces
+                                     marketplaces, vscodetasks
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
                                      Home-rooted scanners run once per directory
                                      and merge results.

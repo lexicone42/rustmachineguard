@@ -105,7 +105,7 @@ enum Format {
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
-    "settings", "aicreds", "envfiles", "transcripts", "marketplaces",
+    "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -179,6 +179,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .marketplaces
             .extend(scanners::marketplaces::MarketplacesScanner.scan(plat));
+    }
+    if !skip.contains(&"vscodetasks") {
+        report
+            .vscode_tasks
+            .extend(scanners::vscode_tasks::VsCodeTasksScanner.scan(plat));
     }
 }
 
@@ -291,6 +296,7 @@ fn main() {
         agent_identity: None,
         transcripts: Vec::new(),
         marketplaces: Vec::new(),
+        vscode_tasks: Vec::new(),
         warnings: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
@@ -317,6 +323,7 @@ fn main() {
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
+            vscode_autorun_tasks_count: 0,
         },
     };
 

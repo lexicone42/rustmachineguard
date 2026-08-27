@@ -404,7 +404,7 @@ mod tests {
         "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
         "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
-        "Plugin marketplace", "Settings secret",
+        "Plugin marketplace", "Settings secret", "Auto-run task",
     ];
 
     fn empty_report() -> ScanReport {
@@ -426,7 +426,8 @@ mod tests {
             "package_config_audits_count":0,"rules_files_count":0,"agent_skills_count":0,
             "agent_settings_count":0,"agent_hooks_count":0,"ai_credentials_count":0,
             "env_files_count":0,"rules_file_findings_count":0,"exposure_findings_count":0,
-            "transcript_stores_count":0,"marketplaces_count":0}}"#,
+            "transcript_stores_count":0,"marketplaces_count":0,
+            "vscode_autorun_tasks_count":0}}"#,
         )
         .unwrap()
     }
