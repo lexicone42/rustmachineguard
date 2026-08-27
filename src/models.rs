@@ -66,6 +66,14 @@ pub struct McpProbeResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub observed_capabilities: Vec<String>,
+    /// The server's free-text `instructions`, which the host splices into the model's
+    /// system prompt. Scanned for injection like any tool description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Which protocol era the server actually spoke: "modern" (2026-07-28+, no
+    /// handshake) or "legacy" (initialize). Determined by probing, never assumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_era: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

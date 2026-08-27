@@ -1145,6 +1145,61 @@ impl BlueprintDocument {
                 .flat_map(|c| &c.servers)
                 .any(|s| s.name == probe.server_name);
 
+            // The server's `instructions` are spliced into the model's system prompt,
+            // which makes them the highest-leverage injection carrier MCP offers — and
+            // one the probe never read before. Scan them exactly like a tool
+            // description, including the invisible-Unicode pass.
+            if let Some(instr) = probe.instructions.as_deref() {
+                let poison = scan_injection_text(instr);
+                let hidden = scan_suspicious_unicode(instr);
+                if !poison.is_empty() || !hidden.is_empty() {
+                    let mut props = vec![Property {
+                        name: "rmg:instructions-length".into(),
+                        value: instr.chars().count().to_string(),
+                    }];
+                    if !poison.is_empty() {
+                        props.push(Property {
+                            name: "rmg:poisoning-risk".into(),
+                            value: format!("suspicious patterns: {}", poison.join(", ")),
+                        });
+                    }
+                    if !hidden.is_empty() {
+                        props.push(Property {
+                            name: "rmg:hidden-unicode-risk".into(),
+                            value: hidden.join(", "),
+                        });
+                    }
+                    let instr_ref = format!("asset:mcp-instructions:{}", probe.server_name);
+                    assets.push(Asset {
+                        bom_ref: instr_ref.clone(),
+                        asset_type: "data".into(),
+                        name: Some(format!("{} server instructions", probe.server_name)),
+                        description: Some(
+                            "Server-supplied instructions, spliced into the model's system prompt"
+                                .into(),
+                        ),
+                        zone: Some("zone:local".into()),
+                        component_ref: None,
+                        responsibilities: Vec::new(),
+                        interfaces: Vec::new(),
+                        properties: props,
+                    });
+                    if server_asset_exists {
+                        flows.push(Flow {
+                            bom_ref: format!("flow:{}-instructions", probe.server_name),
+                            name: format!("{} instructions → agent context", probe.server_name),
+                            flow_type: "data".into(),
+                            source: server_ref.clone(),
+                            destination: instr_ref,
+                            encrypted: None,
+                            description: Some(
+                                "Server text injected into the system prompt".into(),
+                            ),
+                        });
+                    }
+                }
+            }
+
             // Enrich component version from probe server_info
             if let Some(ref info) = probe.server_info
                 && let Some(ref ver) = info.version

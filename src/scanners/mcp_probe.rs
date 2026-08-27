@@ -8,9 +8,67 @@ use std::time::{Duration, Instant};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // JSON-RPC request ids for each phase of the handshake.
+const ID_DISCOVER: u64 = 0;
 const ID_INITIALIZE: u64 = 1;
 const ID_TOOLS: u64 = 2;
 const ID_RESOURCES: u64 = 3;
+
+/// The modern protocol revision we announce. MCP revision 2026-07-28 removed the
+/// `initialize` handshake: version, identity and capabilities are now per-request
+/// `_meta` instead of session state.
+const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// How long to wait for the `server/discover` probe before concluding the server is
+/// legacy. Deliberately a fraction of PROBE_TIMEOUT: the spec says a silent server is
+/// legacy, and we must leave budget for the `initialize` fallback that follows.
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// MCP error codes reserved by the spec (-32020..-32099). Receiving ANY of these
+/// identifies a modern server, so we must not fall back to `initialize`.
+fn is_modern_error_code(code: i64) -> bool {
+    (-32099..=-32020).contains(&code)
+}
+
+/// Which protocol era a server speaks. Determined by probing, never assumed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ServerEra {
+    /// Revision 2026-07-28+: per-request `_meta`, no handshake.
+    Modern,
+    /// Revision 2025-11-25 and earlier: requires the `initialize` handshake.
+    Legacy,
+}
+
+/// The `_meta` block every modern request must carry. `protocolVersion` and
+/// `clientCapabilities` are REQUIRED — a request missing either is malformed and the
+/// server must reject it with -32602.
+fn modern_meta() -> serde_json::Value {
+    serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {
+            "name": "rustmachineguard-probe", "version": "0.1.0"
+        }
+    })
+}
+
+/// Classify the `server/discover` probe result into a protocol era.
+///
+/// Per the stdio binding's backward-compatibility rules, the fallback MUST NOT be
+/// keyed to one specific error code: legacy servers answer an unknown pre-`initialize`
+/// method with implementation-defined errors (commonly -32601 or -32602) or not at all.
+/// So: a result means modern; a spec-reserved error code means modern (do not fall
+/// back); anything else means legacy.
+pub fn classify_discover_response(response: &serde_json::Value) -> ServerEra {
+    if response.get("result").is_some() {
+        return ServerEra::Modern;
+    }
+    if let Some(code) = response.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64())
+        && is_modern_error_code(code)
+    {
+        return ServerEra::Modern;
+    }
+    ServerEra::Legacy
+}
 
 /// Max size of a single newline-delimited message (a hostile server could otherwise
 /// send an unbounded line and OOM the probe).
@@ -114,6 +172,23 @@ struct ProbeData {
     server_info: Option<McpServerInfo>,
     tools: Vec<McpToolInfo>,
     resources: Vec<McpResourceInfo>,
+    /// The server's free-text `instructions`, which the host splices into the model's
+    /// system prompt — the highest-leverage injection carrier MCP offers, and one we
+    /// previously never read.
+    instructions: Option<String>,
+    era: ServerEra,
+}
+
+/// Probe one stdio server directly. Exposed so tests can point the real probe at a
+/// fake server and assert end-to-end behaviour (era detection, instructions capture)
+/// rather than only unit-testing the pure classifier.
+pub fn probe_server_for_test(
+    name: &str,
+    config_source: &str,
+    command: &str,
+    args: &[String],
+) -> McpProbeResult {
+    probe_stdio_server(name, config_source, command, args)
 }
 
 fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[String]) -> McpProbeResult {
@@ -164,6 +239,14 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
                 resources: data.resources,
                 error: None,
                 observed_capabilities,
+                instructions: data.instructions,
+                protocol_era: Some(
+                    match data.era {
+                        ServerEra::Modern => "modern",
+                        ServerEra::Legacy => "legacy",
+                    }
+                    .to_string(),
+                ),
             }
         }
         Err(e) => error_result(name, config_source, &e),
@@ -186,32 +269,69 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     // desync if a response doesn't arrive as the very next message.
     let deadline = Instant::now() + PROBE_TIMEOUT;
 
-    // Phase 1: initialize (required first; failure aborts the probe).
-    let init_req = serde_json::json!({
+    // Phase 0: era detection. MCP revision 2026-07-28 REMOVED the `initialize`
+    // handshake, and servers must implement `server/discover`. Sending `initialize`
+    // first to a modern server gets an implementation-defined rejection, which used to
+    // abort the probe and report the server as clean — the worst outcome for a posture
+    // tool. So probe with `server/discover` first and fall back only on a non-modern
+    // error or silence, exactly as the stdio binding prescribes.
+    let discover_req = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": ID_INITIALIZE,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "rustmachineguard-probe", "version": "0.1.0" }
-        }
+        "id": ID_DISCOVER,
+        "method": "server/discover",
+        "params": { "_meta": modern_meta() }
     });
-    send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
-    let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
-        .map_err(|e| format!("init response: {}", e))?;
-    let server_info = extract_server_info(&init_response);
+    send_message(&mut stdin, &discover_req)
+        .map_err(|e| format!("send server/discover failed: {}", e))?;
+    let discover_deadline = Instant::now() + DISCOVER_TIMEOUT.min(PROBE_TIMEOUT);
+    let discover = await_response(&mut reader, ID_DISCOVER, discover_deadline);
+    // No response at all (or a read error) means legacy, per the spec's timeout rule.
+    let era = discover
+        .as_ref()
+        .map(classify_discover_response)
+        .unwrap_or(ServerEra::Legacy);
 
-    // The client must acknowledge initialization before issuing requests.
-    let initialized = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized"
-    });
-    let _ = send_message(&mut stdin, &initialized);
+    let mut server_info = discover.as_ref().ok().and_then(extract_server_info);
+    let mut instructions = discover.as_ref().ok().and_then(extract_instructions);
+
+    if era == ServerEra::Legacy {
+        // Phase 1 (legacy only): initialize handshake.
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": ID_INITIALIZE,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "rustmachineguard-probe", "version": "0.1.0" }
+            }
+        });
+        send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
+        let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
+            .map_err(|e| format!("init response: {}", e))?;
+        server_info = extract_server_info(&init_response);
+        instructions = extract_instructions(&init_response);
+
+        // The client must acknowledge initialization before issuing requests.
+        let initialized = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        let _ = send_message(&mut stdin, &initialized);
+    }
+
+    // Modern requests must carry `_meta`; legacy ones must not (it would be ignored,
+    // but keeping them clean avoids confusing older servers).
+    let params = |era: ServerEra| -> serde_json::Value {
+        match era {
+            ServerEra::Modern => serde_json::json!({ "_meta": modern_meta() }),
+            ServerEra::Legacy => serde_json::json!({}),
+        }
+    };
 
     // Phase 2: tools/list (best-effort — a missing/failed list yields none).
     let tools_req = serde_json::json!({
-        "jsonrpc": "2.0", "id": ID_TOOLS, "method": "tools/list", "params": {}
+        "jsonrpc": "2.0", "id": ID_TOOLS, "method": "tools/list", "params": params(era)
     });
     let _ = send_message(&mut stdin, &tools_req);
     let tools = await_response(&mut reader, ID_TOOLS, deadline)
@@ -220,7 +340,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
 
     // Phase 3: resources/list (best-effort).
     let resources_req = serde_json::json!({
-        "jsonrpc": "2.0", "id": ID_RESOURCES, "method": "resources/list", "params": {}
+        "jsonrpc": "2.0", "id": ID_RESOURCES, "method": "resources/list", "params": params(era)
     });
     let _ = send_message(&mut stdin, &resources_req);
     let resources = await_response(&mut reader, ID_RESOURCES, deadline)
@@ -233,6 +353,8 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
         server_info,
         tools,
         resources,
+        instructions,
+        era,
     })
 }
 
@@ -306,6 +428,16 @@ fn read_line_bounded(reader: &mut impl Read, max: usize) -> Result<Option<Vec<u8
             Err(e) => return Err(format!("read error: {}", e)),
         }
     }
+}
+
+/// Pull the server's `instructions` string out of a discover/initialize result.
+fn extract_instructions(response: &serde_json::Value) -> Option<String> {
+    response
+        .get("result")?
+        .get("instructions")?
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
 }
 
 fn extract_server_info(response: &serde_json::Value) -> Option<McpServerInfo> {
@@ -473,6 +605,8 @@ fn error_result(name: &str, config_source: &str, error: &str) -> McpProbeResult 
         resources: Vec::new(),
         error: Some(error.to_string()),
         observed_capabilities: Vec::new(),
+        instructions: None,
+        protocol_era: None,
     }
 }
 

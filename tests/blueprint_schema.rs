@@ -247,6 +247,8 @@ fn rich_blueprint_conforms() {
             }],
             error: None,
             observed_capabilities: vec!["filesystem".into()],
+            instructions: None,
+            protocol_era: None,
         }];
     });
     assert_blueprint_valid(&report);
@@ -290,6 +292,8 @@ fn shadowing_blueprint_conforms() {
                 resources: vec![],
                 error: None,
                 observed_capabilities: vec![],
+                instructions: None,
+                protocol_era: None,
             });
         }
     });
