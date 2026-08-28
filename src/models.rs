@@ -539,6 +539,8 @@ pub struct Summary {
     /// Installed Python distributions examined for catalog matches.
     #[serde(default)]
     pub python_packages_count: usize,
+    #[serde(default)]
+    pub npm_packages_count: usize,
 }
 
 impl ScanReport {
@@ -571,6 +573,7 @@ impl ScanReport {
             vscode_autorun_tasks_count: self.vscode_tasks.len(),
             git_autorun_configs_count: self.git_autorun_configs.len(),
             python_packages_count: self.summary.python_packages_count,
+            npm_packages_count: self.summary.npm_packages_count,
         };
     }
 }

@@ -211,7 +211,7 @@ Options:
                                      browser, packages, rules, skills, settings,
                                      aicreds, envfiles, transcripts,
                                      marketplaces, vscodetasks, gitconfig,
-                                     pypkgs
+                                     pypkgs, npmpkgs
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
                                      Home-rooted scanners run once per directory
                                      and merge results.

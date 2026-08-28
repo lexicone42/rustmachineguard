@@ -16,6 +16,7 @@ pub mod mcp_probe;
 pub mod node_packages;
 pub mod notebook_servers;
 pub mod package_configs;
+pub mod npm_packages;
 pub mod python_packages;
 pub mod rules_files;
 pub mod shell_configs;

@@ -106,6 +106,7 @@ const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
     "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig", "pypkgs",
+    "npmpkgs",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -332,6 +333,7 @@ fn main() {
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
             python_packages_count: 0,
+            npm_packages_count: 0,
         },
     };
 
@@ -425,6 +427,22 @@ fn main() {
             for pkg in &pkgs {
                 report.exposure_findings.extend(catalog.check_extension(
                     "pypi",
+                    &pkg.name,
+                    &pkg.version,
+                    &pkg.location,
+                ));
+            }
+        }
+
+        // Installed npm packages. The npm catalog rows are mostly typosquats of agent
+        // CLIs, which are installed by mistyping `npm i -g` and never appear as MCP
+        // servers -- so without this enumeration they were unreachable.
+        if !skip.contains(&"npmpkgs") {
+            let pkgs = scanners::npm_packages::NpmPackagesScanner.scan(primary_plat.as_ref());
+            report.summary.npm_packages_count = pkgs.len();
+            for pkg in &pkgs {
+                report.exposure_findings.extend(catalog.check_extension(
+                    "npm",
                     &pkg.name,
                     &pkg.version,
                     &pkg.location,
