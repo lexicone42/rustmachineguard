@@ -65,6 +65,7 @@ cargo build --release
 | **AI Credentials**\* | At-rest agent tokens + permissions | `~/.claude/.credentials.json`, Codex/Gemini/Copilot/OpenCode token files — existence and loose permissions only (values never read) |
 | **`.env` Files**\* | Secrets in agent project roots | `.env`/`.env.local`/… in project roots agents operate on — git-tracked (committed-secret) and world-readable flags, secret-bearing key **names** (never values) |
 | **Transcript Stores**\* | Agent conversation-state collection (EAA-005) | Claude Code (`projects/`, `history.jsonl`, `todos/`), Codex (`sessions/`, `history.jsonl`), Gemini (`tmp/`) — existence, file count, size, and permissions only (content never read); world-readable stores flagged |
+| **Python Packages**\* | Installed distributions matched to the catalog | Reads `*.dist-info/METADATA` / `*.egg-info/PKG-INFO` in system, user and project-venv site-packages to resolve name + version — identities only, never package code. This is what makes the catalog's PyPI rows reachable for a package that is merely *installed*, rather than only one launched as an MCP server |
 | **Git Autorun Config**\* | git settings that execute a command | Keys git runs as commands (`core.fsmonitor`, `diff.external`, `filter.*`, …) — but **value-gated, not key-gated**: only reported when the value chains shell commands, matches a dangerous pattern, or runs a script the repo ships, and only in a scope an untrusted repo controls. `core.fsmonitor=true`, husky's `core.hooksPath`, git-lfs filters and your keychain helper stay silent. A git directory **buried** inside a project (the CVE-2026-45033 shape) is Critical. Resolves `include.path`, so a payload hidden in an included file is still found |
 | **VS Code Auto-run Tasks**\* | Tasks that execute on folder open | `.vscode/tasks.json` entries with `runOptions.runOn: folderOpen` — opening a project becomes code execution. Escalated when git-tracked (ships with the repo) or when the task reaches into an agent-config directory: that plus an agent hook pointing the other way is the 2026 persistence pair, where removing one half leaves the other to restore it |
 | **Plugin Marketplaces**\* | Remote plugin/skill hot-load sources (EAA-009) | Claude Code plugin marketplaces — source (git/github), official-vs-third-party, installed-plugin counts; auto-updating third-party sources (unreviewed remote code) flagged |
@@ -209,7 +210,8 @@ Options:
                                      shell, ssh, cloud, containers, notebooks,
                                      browser, packages, rules, skills, settings,
                                      aicreds, envfiles, transcripts,
-                                     marketplaces, vscodetasks, gitconfig
+                                     marketplaces, vscodetasks, gitconfig,
+                                     pypkgs
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
                                      Home-rooted scanners run once per directory
                                      and merge results.

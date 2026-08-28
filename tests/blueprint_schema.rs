@@ -445,6 +445,7 @@ fn make_report(
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
     customize(&mut report);

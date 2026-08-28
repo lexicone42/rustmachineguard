@@ -536,6 +536,9 @@ pub struct Summary {
     pub marketplaces_count: usize,
     pub vscode_autorun_tasks_count: usize,
     pub git_autorun_configs_count: usize,
+    /// Installed Python distributions examined for catalog matches.
+    #[serde(default)]
+    pub python_packages_count: usize,
 }
 
 impl ScanReport {
@@ -567,6 +570,7 @@ impl ScanReport {
             marketplaces_count: self.marketplaces.len(),
             vscode_autorun_tasks_count: self.vscode_tasks.len(),
             git_autorun_configs_count: self.git_autorun_configs.len(),
+            python_packages_count: self.summary.python_packages_count,
         };
     }
 }

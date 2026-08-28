@@ -105,7 +105,7 @@ enum Format {
 const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
-    "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig",
+    "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig", "pypkgs",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -331,6 +331,7 @@ fn main() {
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
 
@@ -415,6 +416,22 @@ fn main() {
                 ),
             );
         }
+        // Installed Python distributions. Until this existed, the only path to a pypi
+        // catalog row was an MCP server whose launch command pinned a version, so a
+        // compromised package merely installed on the machine was invisible.
+        if !skip.contains(&"pypkgs") {
+            let pkgs = scanners::python_packages::PythonPackagesScanner.scan(primary_plat.as_ref());
+            report.summary.python_packages_count = pkgs.len();
+            for pkg in &pkgs {
+                report.exposure_findings.extend(catalog.check_extension(
+                    "pypi",
+                    &pkg.name,
+                    &pkg.version,
+                    &pkg.location,
+                ));
+            }
+        }
+
         // Agent CLIs are CVE-bearing packages themselves. We already resolve each
         // tool's version; match it against the `agent-runtime` catalog ecosystem.
         // Tools with no version (not on PATH, or --version unparseable) are skipped:

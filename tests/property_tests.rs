@@ -348,6 +348,7 @@ fn summary_counts_match_vector_lengths() {
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
 
@@ -417,6 +418,7 @@ fn json_output_is_valid_json() {
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
     report.compute_summary();
@@ -483,6 +485,7 @@ fn html_output_no_script_injection() {
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
     report.compute_summary();
@@ -3123,6 +3126,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
             git_autorun_configs_count: 0,
+            python_packages_count: 0,
         },
     };
     customize(&mut report);
@@ -4173,4 +4177,55 @@ fn mcp_typosquat_pypi_rows_match_through_a_uvx_launch() {
             "{pkg}@{ok} is not a compromised release and must stay silent"
         );
     }
+}
+
+// ─── installed Python distributions (makes pypi catalog rows reachable) ───
+
+#[test]
+fn python_metadata_parsing_reads_headers_only() {
+    use rustmachineguard::scanners::python_packages::parse_metadata_name_version;
+    use std::fs;
+    let dir = std::env::temp_dir().join(format!("rmg-pymeta-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    // A README can be enormous and can contain anything, including text that looks like
+    // a header. Parsing must stop at the blank line so package prose never reaches the
+    // report — the same no-leak reasoning as every other scanner.
+    let p = dir.join("METADATA");
+    fs::write(
+        &p,
+        "Metadata-Version: 2.1\nName: real-pkg\nVersion: 1.2.3\nSummary: s\n\n\
+         # README\nName: not-the-name\nVersion: 9.9.9\nAWS_SECRET_ACCESS_KEY=hunter2\n",
+    )
+    .unwrap();
+    assert_eq!(
+        parse_metadata_name_version(&p),
+        Some(("real-pkg".to_string(), "1.2.3".to_string())),
+        "headers win; the description is not parsed"
+    );
+
+    // Missing Version -> no identity rather than a half-guess.
+    let p2 = dir.join("PKG-INFO");
+    fs::write(&p2, "Metadata-Version: 2.1\nName: only-name\n\nbody\n").unwrap();
+    assert_eq!(parse_metadata_name_version(&p2), None);
+    // Absent file is not a panic.
+    assert_eq!(parse_metadata_name_version(&dir.join("nope")), None);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn installed_python_package_matches_a_catalog_row() {
+    use rustmachineguard::scanners::exposure::ExposureCatalog;
+    // The end-to-end reason this scanner exists: a compromised distribution merely
+    // INSTALLED on the machine was previously invisible, because the only path to a
+    // pypi row was an MCP server whose launch command pinned a version.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    assert!(
+        !catalog.check_extension("pypi", "openai-mcp", "2.41.1", "/venv").is_empty(),
+        "an installed compromised release must flag"
+    );
+    // A clean release of the same package, and an ordinary package, stay silent.
+    assert!(catalog.check_extension("pypi", "openai-mcp", "2.41.0", "/venv").is_empty());
+    assert!(catalog.check_extension("pypi", "requests", "2.32.3", "/venv").is_empty());
 }
