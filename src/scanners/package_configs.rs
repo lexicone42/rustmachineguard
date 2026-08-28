@@ -51,8 +51,13 @@ impl Scanner for PackageConfigsScanner {
             }
         }
 
-        // bunfig.toml
-        let bunfig = home.join("bunfig.toml");
+        // Bun's global config is `~/.bunfig.toml`; the un-dotted name is the
+        // per-project form. Only the dotted one existed here, so a global bun
+        // registry override was never read at all.
+        let bunfig = [home.join(".bunfig.toml"), home.join("bunfig.toml")]
+            .into_iter()
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| home.join(".bunfig.toml"));
         if bunfig.is_file() {
             if let Some(content) = crate::scanners::read_bounded(&bunfig) {
                 let findings = audit_bunfig(&content);
@@ -121,7 +126,7 @@ pub fn audit_npmrc(content: &str) -> Vec<PackageConfigFinding> {
 
         if lower.starts_with("registry=") || lower.contains(":registry=") {
             let val = line.splitn(2, '=').nth(1).unwrap_or("");
-            if !val.contains("registry.npmjs.org") {
+            if !crate::scanners::is_official_registry(val, &["registry.npmjs.org"]) {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
                     description: format!("Custom npm registry: {}", redact(val)),
@@ -212,7 +217,7 @@ pub fn audit_bunfig(content: &str) -> Vec<PackageConfigFinding> {
 
     if let Some(install) = table.get("install").and_then(|v| v.as_table()) {
         if let Some(registry) = install.get("registry").and_then(|v| v.as_str()) {
-            if !registry.contains("registry.npmjs.org") {
+            if !crate::scanners::is_official_registry(registry, &["registry.npmjs.org"]) {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
                     description: format!("Custom bun registry: {}", redact(registry)),
@@ -245,7 +250,10 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
 
             if lower.starts_with("registry") {
                 let val = line.splitn(2, ' ').nth(1).unwrap_or("").trim_matches('"');
-                if !val.contains("registry.yarnpkg.com") && !val.contains("registry.npmjs.org") {
+                if !crate::scanners::is_official_registry(
+                    val,
+                    &["registry.yarnpkg.com", "registry.npmjs.org"],
+                ) {
                     findings.push(PackageConfigFinding {
                         severity: "high".to_string(),
                         description: format!("Custom yarn classic registry: {}", redact(val)),
@@ -268,7 +276,10 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
 
             if lower.starts_with("npmregistryserver:") {
                 let val = line.splitn(2, ':').nth(1).unwrap_or("").trim().trim_matches('"');
-                if !val.contains("registry.yarnpkg.com") && !val.contains("registry.npmjs.org") {
+                if !crate::scanners::is_official_registry(
+                    val,
+                    &["registry.yarnpkg.com", "registry.npmjs.org"],
+                ) {
                     findings.push(PackageConfigFinding {
                         severity: "high".to_string(),
                         description: format!("Custom yarn berry registry: {}", redact(val)),

@@ -154,7 +154,6 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             if budget == 0 {
                 return;
             }
-            budget -= 1;
             let p = entry.path();
             let Ok(meta) = std::fs::symlink_metadata(&p) else {
                 continue;
@@ -162,6 +161,11 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             if !meta.is_dir() {
                 continue;
             }
+            // Spend budget only on directories. Charging it per plain FILE let a repo
+            // with a few thousand junk files exhaust the walk before reaching the buried
+            // git dir -- a deterministic, attacker-controllable way to hide from the
+            // CVE-2026-45033 check.
+            budget -= 1;
             // A git dir has a config file plus HEAD; that pair is the cheap signal.
             let cfg = p.join("config");
             if cfg.is_file() && p.join("HEAD").is_file() {
@@ -254,4 +258,10 @@ pub fn attack_shape(value: &str) -> Option<String> {
         return Some("value runs a script from inside the repository".to_string());
     }
     None
+}
+
+/// Test hook for the nested-repo walk, which is otherwise reachable only through a full
+/// platform scan.
+pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
+    scan_nested_repos(root, out);
 }

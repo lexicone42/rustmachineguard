@@ -102,3 +102,30 @@ fn redaction_leaves_non_secrets_alone() {
         assert_eq!(redact(benign), benign, "over-redacted a benign value");
     }
 }
+
+/// A lookalike registry must not be mistaken for the official one. `contains()` matching
+/// treated `registry.npmjs.org.evil.example.com` as npm's own registry, so a host that
+/// receives every install and every auth token produced no finding at all.
+#[test]
+fn lookalike_registry_is_not_official() {
+    use rustmachineguard::scanners::is_official_registry as official;
+    let npm = &["registry.npmjs.org"][..];
+    for hostile in [
+        "https://registry.npmjs.org.evil.example.com/",
+        "https://evil.example.com/registry.npmjs.org",
+        "https://registry.npmjs.org@evil.example.com/",
+        "https://registry-npmjs-org.evil.example.com/",
+        "\"https://registry.npmjs.org.evil.example.com/\"",
+    ] {
+        assert!(!official(hostile, npm), "lookalike accepted as official: {hostile}");
+    }
+    for benign in [
+        "https://registry.npmjs.org/",
+        "https://registry.npmjs.org",
+        "\"https://registry.npmjs.org/\"",
+        "https://REGISTRY.NPMJS.ORG/",
+        "https://registry.npmjs.org:443/",
+    ] {
+        assert!(official(benign, npm), "official registry flagged as custom: {benign}");
+    }
+}

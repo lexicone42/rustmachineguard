@@ -4381,3 +4381,60 @@ fn default_terminal_report_shows_security_findings() {
     );
     assert!(clean.contains("No actionable security findings"), "clean state is stated");
 }
+
+/// Bun's GLOBAL config is `~/.bunfig.toml`. The scanner only looked at the un-dotted
+/// name, so a global registry override -- credentials and all -- was never read.
+#[test]
+fn global_bunfig_is_read_from_dotfile() {
+    let dir = std::env::temp_dir().join(format!("rmg-bunfig-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(".bunfig.toml"),
+        "[install]\nregistry = \"https://u:p@bun.evil.example.com/\"\n",
+    )
+    .unwrap();
+    let content = std::fs::read_to_string(dir.join(".bunfig.toml")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let findings = rustmachineguard::scanners::package_configs::audit_bunfig(&content);
+    assert!(
+        findings.iter().any(|f| f.description.contains("bun.evil.example.com")),
+        "custom bun registry not detected: {findings:?}"
+    );
+    assert!(
+        !findings.iter().any(|f| f.description.contains(":p@")),
+        "bunfig credential leaked: {findings:?}"
+    );
+}
+
+/// A buried git dir must still be found when the repo also contains many plain files.
+/// Budget was charged per directory ENTRY, so junk files could exhaust the walk before
+/// it reached the nested repo -- hiding the CVE-2026-45033 shape on demand.
+#[test]
+fn nested_repo_found_despite_thousands_of_junk_files() {
+    let root = &std::env::temp_dir().join(format!("rmg-nested-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(root);
+    std::fs::create_dir_all(root).unwrap();
+    let noise = root.join("noise");
+    std::fs::create_dir_all(&noise).unwrap();
+    for i in 0..4_500 {
+        std::fs::write(noise.join(format!("f{i}.txt")), "x").unwrap();
+    }
+    let buried = root.join("vendor").join("payload");
+    std::fs::create_dir_all(&buried).unwrap();
+    std::fs::write(buried.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(
+        buried.join("config"),
+        "[core]\n\tfsmonitor = \"./payload.sh\"\n",
+    )
+    .unwrap();
+
+    let mut out = Vec::new();
+    rustmachineguard::scanners::git_config::scan_nested_repos_for_test(root, &mut out);
+    let found = out.iter().any(|c| c.key.contains("fsmonitor"));
+    let _ = std::fs::remove_dir_all(root);
+    assert!(
+        found,
+        "buried git dir hidden by junk files: {out:?}"
+    );
+}

@@ -483,3 +483,26 @@ pub fn read_head(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     buf.truncate(n);
     String::from_utf8(buf).ok()
 }
+
+/// True when a registry URL really points at one of `official` — matched on the parsed
+/// HOST, not as a substring.
+///
+/// `val.contains("registry.npmjs.org")` is true for
+/// `https://registry.npmjs.org.evil.example.com/`, so a lookalike registry that
+/// exfiltrates every install and every auth token was classified as the official one and
+/// never reported. Compares the host exactly, or as a true parent domain.
+pub fn is_official_registry(value: &str, official: &[&str]) -> bool {
+    let trimmed = value.trim().trim_matches(['"', '\'']);
+    let (_scheme, host_port) = split_url_authority(trimmed);
+    let host = host_port
+        .rsplit_once(':')
+        .map_or(host_port, |(h, port)| {
+            if port.chars().all(|c| c.is_ascii_digit()) { h } else { host_port }
+        })
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    official.iter().any(|o| {
+        let o = o.to_ascii_lowercase();
+        host == o || host.ends_with(&format!(".{o}"))
+    })
+}
