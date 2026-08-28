@@ -117,7 +117,10 @@ pub fn audit_npmrc(content: &str) -> Vec<PackageConfigFinding> {
             if !val.contains("registry.npmjs.org") {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
-                    description: format!("Custom npm registry: {}", val),
+                    description: format!(
+                        "Custom npm registry: {}",
+                        crate::scanners::redact_secrets_in_text(val)
+                    ),
                 });
             }
         }

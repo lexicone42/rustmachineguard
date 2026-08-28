@@ -4288,3 +4288,31 @@ fn package_identity_still_resolves_from_unredacted_args() {
         "but the stored args must be redacted: {:?}", d.args
     );
 }
+
+#[test]
+fn reported_values_are_stripped_of_credentials() {
+    use rustmachineguard::scanners::redact_secrets_in_text;
+    // git credential.helper and npm registry URLs are reported as evidence, and both
+    // routinely carry live credentials. The command SHAPE is the finding; the secret
+    // is not, so only the secret goes.
+    assert_eq!(
+        redact_secrets_in_text("!f() { echo password=HELPERSECRET42; }; f"),
+        "!f() { echo password=<redacted> }; f"
+    );
+    assert_eq!(
+        redact_secrets_in_text("https://deploy:NPMPASS@npm.internal.example.com/"),
+        "https://<redacted>@npm.internal.example.com/"
+    );
+    assert_eq!(redact_secrets_in_text("token=abc123"), "token=<redacted>");
+    assert_eq!(redact_secrets_in_text("_authToken=xyz"), "_authToken=<redacted>");
+    // Non-secret assignments and ordinary text are preserved — redacting them would
+    // destroy the signal we are reporting.
+    for keep in [
+        "https://registry.npmjs.org/",
+        "core.fsmonitor=true",
+        "git-lfs clean -- %f",
+        "delta --dark",
+    ] {
+        assert_eq!(redact_secrets_in_text(keep), keep, "must preserve {keep:?}");
+    }
+}

@@ -200,7 +200,9 @@ fn collect(text: &str, location: &Path, scope: &str, nested: bool, out: &mut Vec
             path: location.to_string_lossy().to_string(),
             origin,
             key,
-            value,
+            // A credential.helper can embed a live password; the command SHAPE is the
+            // finding, the credential is not.
+            value: crate::scanners::redact_secrets_in_text(&value),
             scope: scope.to_string(),
             nested,
             reason,

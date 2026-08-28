@@ -232,6 +232,44 @@ fn is_invisible(ch: char) -> bool {
         | 0x202A..=0x202E | 0x2066..=0x2069 | 0xE0000..=0xE007F)
 }
 
+/// Remove credential material from a free-text value that is about to be reported.
+///
+/// Two shapes cover the realistic cases: userinfo inside a URL
+/// (`https://user:pw@host/…`) and a `key=value` assignment whose key names a secret
+/// (`password=…`, `token=…`). Everything else is preserved, because the surrounding
+/// text is usually the finding itself — a git credential.helper command, a registry
+/// URL — and blanking it would destroy the signal.
+pub fn redact_secrets_in_text(text: &str) -> String {
+    text.split(' ')
+        .map(|tok| {
+            // URL userinfo.
+            if let Some(scheme_end) = tok.find("://") {
+                let after = &tok[scheme_end + 3..];
+                let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+                if let Some(at) = after[..authority_end].rfind('@') {
+                    return format!(
+                        "{}://<redacted>@{}",
+                        &tok[..scheme_end],
+                        &after[at + 1..]
+                    );
+                }
+            }
+            // key=value where the key names a secret. Split on the FIRST '=' so a
+            // base64 value containing '=' is still fully covered.
+            if let Some((k, v)) = tok.split_once('=')
+                && !v.is_empty()
+            {
+                let bare = k.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+                if crate::scanners::env_files::is_secret_key_name(bare) {
+                    return format!("{k}=<redacted>");
+                }
+            }
+            tok.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Trait for all scanners.
 pub trait Scanner {
     type Output;
