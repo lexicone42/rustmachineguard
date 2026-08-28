@@ -164,7 +164,7 @@ pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> V
             out.push(AgentHook {
                 event: event.clone(),
                 matcher,
-                command: command.to_string(),
+                command: crate::scanners::redact_secrets_in_text(command),
                 dangerous: !crate::scanners::rules_files::check_dangerous_patterns(command)
                     .is_empty(),
                 risks: classify_hook_command(command, settings_path),
@@ -387,7 +387,7 @@ pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<Agen
                 hooks.push(AgentHook {
                     event: event.clone(),
                     matcher: matcher.clone(),
-                    command: command.to_string(),
+                    command: crate::scanners::redact_secrets_in_text(command),
                     dangerous,
                     risks,
                 });

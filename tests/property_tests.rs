@@ -3627,6 +3627,32 @@ fn discover_response_classifies_protocol_era() {
 }
 
 #[cfg(unix)]
+/// Resolve an interpreter that actually EXECUTES. A bare `python3` on PATH is not
+/// enough: wrapper shims can intercept it and exit non-zero, which surfaces as a
+/// confusing "broken pipe" from the stub server rather than a missing dependency.
+/// Returns (program, leading args) or None if nothing usable is installed.
+fn working_python() -> Option<(String, Vec<String>)> {
+    let candidates: [(&str, &[&str]); 3] = [
+        ("python3", &[]),
+        ("python", &[]),
+        ("uv", &["run", "python"]),
+    ];
+    for (prog, pre) in candidates {
+        let mut cmd = std::process::Command::new(prog);
+        cmd.args(pre).args(["-c", "print(42)"]);
+        if let Ok(out) = cmd.output()
+            && out.status.success()
+            && String::from_utf8_lossy(&out.stdout).trim() == "42"
+        {
+            return Some((
+                prog.to_string(),
+                pre.iter().map(|s| s.to_string()).collect(),
+            ));
+        }
+    }
+    None
+}
+
 #[test]
 fn probe_does_not_report_a_modern_server_as_clean() {
     use std::fs;
@@ -3676,9 +3702,14 @@ for line in sys.stdin:
 "#).unwrap();
     fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let result = rustmachineguard::scanners::mcp_probe::probe_server_for_test(
-        "modern", "test", "python3", &[server.to_string_lossy().to_string()],
-    );
+    let Some((py, pre)) = working_python() else {
+        eprintln!("skipping: no working python interpreter on PATH");
+        return;
+    };
+    let mut argv = pre;
+    argv.push(server.to_string_lossy().to_string());
+    let result =
+        rustmachineguard::scanners::mcp_probe::probe_server_for_test("modern", "test", &py, &argv);
 
     assert!(result.success, "modern server must probe successfully: {:?}", result.error);
     assert_eq!(result.protocol_era.as_deref(), Some("modern"), "era must be detected");

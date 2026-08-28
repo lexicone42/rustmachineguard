@@ -240,34 +240,93 @@ fn is_invisible(ch: char) -> bool {
 /// text is usually the finding itself — a git credential.helper command, a registry
 /// URL — and blanking it would destroy the signal.
 pub fn redact_secrets_in_text(text: &str) -> String {
-    text.split(' ')
-        .map(|tok| {
-            // URL userinfo.
-            if let Some(scheme_end) = tok.find("://") {
-                let after = &tok[scheme_end + 3..];
-                let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
-                if let Some(at) = after[..authority_end].rfind('@') {
-                    return format!(
-                        "{}://<redacted>@{}",
-                        &tok[..scheme_end],
-                        &after[at + 1..]
-                    );
-                }
-            }
-            // key=value where the key names a secret. Split on the FIRST '=' so a
-            // base64 value containing '=' is still fully covered.
-            if let Some((k, v)) = tok.split_once('=')
-                && !v.is_empty()
-            {
-                let bare = k.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-                if crate::scanners::env_files::is_secret_key_name(bare) {
-                    return format!("{k}=<redacted>");
-                }
-            }
-            tok.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::with_capacity(text.len());
+    let mut prev: Option<&str> = None;
+    let mut idx = 0;
+    while idx < text.len() {
+        // Copy the run of whitespace verbatim so the value stays readable. Splitting on
+        // ' ' alone used to let a tab- or newline-separated secret through untouched.
+        let tok_start = text[idx..]
+            .find(|c: char| !c.is_whitespace())
+            .map_or(text.len(), |o| idx + o);
+        out.push_str(&text[idx..tok_start]);
+        if tok_start == text.len() {
+            break;
+        }
+        let tok_end = text[tok_start..]
+            .find(char::is_whitespace)
+            .map_or(text.len(), |o| tok_start + o);
+        let tok = &text[tok_start..tok_end];
+        out.push_str(&redact_token(tok, prev));
+        prev = Some(tok);
+        idx = tok_end;
+    }
+    out
+}
+
+/// True when the PRECEDING token means this token is a secret's value:
+/// `Authorization: <tok>`, `Bearer <tok>`, `--token <tok>`, `password: <tok>`.
+fn is_secret_value_position(prev: Option<&str>) -> bool {
+    let Some(p) = prev else { return false };
+    // A complete `KEY=value` pair already carried its own secret; the token AFTER it is
+    // the next argument, not a value. Redacting it hid the command a hook actually runs.
+    if p.split_once('=').is_some_and(|(_, v)| !v.is_empty()) {
+        return false;
+    }
+    let p = p.trim_end_matches([':', '=']);
+    if p.eq_ignore_ascii_case("bearer") || p.eq_ignore_ascii_case("basic") {
+        return true;
+    }
+    let bare = p.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    !bare.is_empty() && crate::scanners::env_files::is_secret_key_name(bare)
+}
+
+/// Strip `user:pass@` from a value, with or without a URL scheme. The HOST is kept —
+/// it is the security-relevant half of the finding; the credential is not.
+fn redact_userinfo(value: &str) -> String {
+    if let Some(scheme_end) = value.find("://") {
+        let after = &value[scheme_end + 3..];
+        let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+        if let Some(at) = after[..authority_end].rfind('@') {
+            return format!("{}://<redacted>@{}", &value[..scheme_end], &after[at + 1..]);
+        }
+        return value.to_string();
+    }
+    // Scheme-less `user:pass@host`, as pip's `trusted-host` and git remotes write it.
+    // Require a non-empty password segment so plain `user@host` and email addresses,
+    // which carry no credential, are left intact.
+    if let Some(at) = value.rfind('@')
+        && at + 1 < value.len()
+        && let Some(colon) = value[..at].find(':')
+        && colon + 1 < at
+    {
+        return format!("<redacted>@{}", &value[at + 1..]);
+    }
+    value.to_string()
+}
+
+fn redact_token(tok: &str, prev: Option<&str>) -> String {
+    // `Bearer` / `Basic` are scheme keywords, not the credential; keeping them visible
+    // shows WHICH auth scheme is in use, and the token after them is still redacted.
+    if tok.eq_ignore_ascii_case("bearer") || tok.eq_ignore_ascii_case("basic") {
+        return tok.to_string();
+    }
+    if is_secret_value_position(prev) {
+        return "<redacted>".to_string();
+    }
+    // key=value: redact the whole value when the KEY names a secret, otherwise keep the
+    // key and scrub only credentials embedded in the value. Split on the FIRST '=' so a
+    // base64 value containing '=' is still fully covered.
+    if let Some((k, v)) = tok.split_once('=')
+        && !v.is_empty()
+    {
+        let bare = k.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+        if crate::scanners::env_files::is_secret_key_name(bare) {
+            return format!("{k}=<redacted>");
+        }
+        return format!("{k}={}", redact_userinfo(v));
+    }
+    redact_userinfo(tok)
 }
 
 /// Trait for all scanners.

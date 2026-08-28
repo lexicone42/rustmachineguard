@@ -108,7 +108,9 @@ fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
         out.push(VsCodeTask {
             path: path.to_string_lossy().to_string(),
             label,
-            command,
+            // Redacted for storage; `dangerous` and `risks` above were computed from
+            // the raw command, so detection is unaffected.
+            command: crate::scanners::redact_secrets_in_text(&command),
             git_tracked,
             dangerous,
             risks,

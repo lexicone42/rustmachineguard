@@ -1,3 +1,10 @@
+/// Every registry/index value echoed into a finding goes through this. These configs
+/// routinely embed basic-auth credentials, and the URL is the finding — so the
+/// credential is removed and the rest kept.
+fn redact(s: &str) -> String {
+    crate::scanners::redact_secrets_in_text(s)
+}
+
 use crate::models::{PackageConfigAudit, PackageConfigFinding};
 use crate::platform::PlatformInfo;
 use crate::scanners::Scanner;
@@ -117,10 +124,7 @@ pub fn audit_npmrc(content: &str) -> Vec<PackageConfigFinding> {
             if !val.contains("registry.npmjs.org") {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
-                    description: format!(
-                        "Custom npm registry: {}",
-                        crate::scanners::redact_secrets_in_text(val)
-                    ),
+                    description: format!("Custom npm registry: {}", redact(val)),
                 });
             }
         }
@@ -149,7 +153,7 @@ pub fn audit_npmrc(content: &str) -> Vec<PackageConfigFinding> {
         if lower.starts_with("cafile=") || lower.starts_with("cert=") {
             findings.push(PackageConfigFinding {
                 severity: "medium".to_string(),
-                description: format!("Custom certificate configuration: {}", line),
+                description: format!("Custom certificate configuration: {}", redact(line)),
             });
         }
 
@@ -176,7 +180,7 @@ pub fn audit_pip_config(content: &str) -> Vec<PackageConfigFinding> {
             if !val.contains("pypi.org") {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
-                    description: format!("Custom PyPI index: {}", val),
+                    description: format!("Custom PyPI index: {}", redact(val)),
                 });
             }
         }
@@ -184,14 +188,14 @@ pub fn audit_pip_config(content: &str) -> Vec<PackageConfigFinding> {
         if lower.starts_with("trusted-host") {
             findings.push(PackageConfigFinding {
                 severity: "high".to_string(),
-                description: format!("Trusted host (bypasses TLS verification): {}", line),
+                description: format!("Trusted host (bypasses TLS verification): {}", redact(line)),
             });
         }
 
         if lower.contains("cert") && lower.contains("=") && !lower.starts_with("#") && !lower.starts_with(";") {
             findings.push(PackageConfigFinding {
                 severity: "medium".to_string(),
-                description: format!("Custom certificate configuration: {}", line),
+                description: format!("Custom certificate configuration: {}", redact(line)),
             });
         }
     }
@@ -211,7 +215,7 @@ pub fn audit_bunfig(content: &str) -> Vec<PackageConfigFinding> {
             if !registry.contains("registry.npmjs.org") {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
-                    description: format!("Custom bun registry: {}", registry),
+                    description: format!("Custom bun registry: {}", redact(registry)),
                 });
             }
         }
@@ -222,7 +226,7 @@ pub fn audit_bunfig(content: &str) -> Vec<PackageConfigFinding> {
             if let Some(url) = cfg.as_table().and_then(|t| t.get("url")).and_then(|v| v.as_str()) {
                 findings.push(PackageConfigFinding {
                     severity: "medium".to_string(),
-                    description: format!("Scoped registry for @{}: {}", scope, url),
+                    description: format!("Scoped registry for @{}: {}", scope, redact(url)),
                 });
             }
         }
@@ -244,7 +248,7 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
                 if !val.contains("registry.yarnpkg.com") && !val.contains("registry.npmjs.org") {
                     findings.push(PackageConfigFinding {
                         severity: "high".to_string(),
-                        description: format!("Custom yarn classic registry: {}", val),
+                        description: format!("Custom yarn classic registry: {}", redact(val)),
                     });
                 }
             }
@@ -267,7 +271,7 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
                 if !val.contains("registry.yarnpkg.com") && !val.contains("registry.npmjs.org") {
                     findings.push(PackageConfigFinding {
                         severity: "high".to_string(),
-                        description: format!("Custom yarn berry registry: {}", val),
+                        description: format!("Custom yarn berry registry: {}", redact(val)),
                     });
                 }
             }
