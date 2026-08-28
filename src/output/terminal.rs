@@ -35,6 +35,38 @@ pub fn render(report: &ScanReport) -> String {
     kv(&mut out, "Scanned at", &report.scan_timestamp_iso);
     out.push('\n');
 
+    // Security findings, risk-first — the same ranked list the HTML and fleet reports
+    // lead with. Without this the DEFAULT output was a pure inventory, so any finding
+    // whose category has no inventory section of its own (Git autorun, Auto-run task,
+    // Config integrity, …) was invisible to anyone who just ran `rmguard`: real High
+    // findings existed in the analysis and the user was shown a clean report.
+    let findings = crate::analysis::collect_findings(report);
+    section_header(&mut out, &format!("Security Findings ({})", findings.len()));
+    if findings.is_empty() {
+        out.push_str(&format!("  {}\n", "✓ No actionable security findings.".green()));
+    } else {
+        for f in &findings {
+            let sev = match f.severity {
+                crate::analysis::Severity::Critical => f.severity.label().red().bold(),
+                crate::analysis::Severity::High => f.severity.label().red(),
+                crate::analysis::Severity::Medium => f.severity.label().yellow(),
+                crate::analysis::Severity::Low => f.severity.label().blue(),
+            };
+            out.push_str(&format!(
+                "  {} [{}] {} {}\n      {}\n",
+                "!".bold(),
+                sev,
+                f.category.dimmed(),
+                f.title,
+                f.location.dimmed()
+            ));
+            if let Some(ev) = &f.evidence {
+                out.push_str(&format!("      {} {}\n", "→".dimmed(), ev.yellow()));
+            }
+        }
+    }
+    out.push('\n');
+
     // Summary
     section_header(&mut out, "Summary");
     let s = &report.summary;

@@ -4316,3 +4316,37 @@ fn reported_values_are_stripped_of_credentials() {
         assert_eq!(redact_secrets_in_text(keep), keep, "must preserve {keep:?}");
     }
 }
+
+#[test]
+fn default_terminal_report_shows_security_findings() {
+    use rustmachineguard::models::*;
+    // The default `rmguard` run was a pure inventory: it never called collect_findings,
+    // so any category without its own inventory section (Git autorun, Auto-run task,
+    // Config integrity) was invisible. Real High findings existed and the user was
+    // shown a clean report — the same "looks like coverage" class as the dead catalog
+    // rows, but hitting the primary output.
+    let report = make_test_report(|r| {
+        r.vscode_tasks = vec![VsCodeTask {
+            path: "/p/.vscode/tasks.json".into(), label: "boot".into(),
+            command: "node .claude/x.mjs".into(), git_tracked: true, dangerous: false,
+            risks: vec!["cross-references another tool's config directory".into()],
+        }];
+        r.agent_settings = vec![AgentSettings {
+            path: "/p/.claude/settings.json".into(), source: "project".into(),
+            framework: "claude-code".into(), git_tracked: false, hooks: vec![],
+            permission_mode: None, allow_rules: 0, deny_rules: 0, auto_approve_mcp: false,
+            enabled_mcp_servers: vec![], gateway_overrides: vec![],
+            inline_secret_env_keys: vec![], world_writable: true,
+        }];
+    });
+    let out = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Terminal);
+    assert!(out.contains("Security Findings"), "the default report must lead with risk");
+    assert!(out.contains("Auto-run task"), "auto-run finding must be visible: {out}");
+    assert!(out.contains("Config integrity"), "config-integrity finding must be visible");
+    // A clean machine says so rather than silently omitting the section.
+    let clean = rustmachineguard::output::render(
+        &make_test_report(|_| {}),
+        rustmachineguard::output::OutputFormat::Terminal,
+    );
+    assert!(clean.contains("No actionable security findings"), "clean state is stated");
+}
