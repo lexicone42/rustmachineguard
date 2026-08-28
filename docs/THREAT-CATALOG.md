@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 73 entries
+that is automatically checked during every scan. The catalog currently contains 82 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent CLIs themselves (Claude Code, Copilot CLI, Gemini CLI), matched against the
@@ -74,6 +74,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **Datadog Security Labs** | Discovered the TeamPCP `litellm`/`telnyx` PyPI compromises | Public blog post |
 | **Tenable** | Mini Shai-Hulud worm (CVE-2026-45321) analysis and FAQ | Public blog post |
 | **OX Security** | SANDWORM_MODE 19-package re-analysis; AI-chat Chrome extension stealers | Public blog posts |
+| **OSV.dev / PyPA Advisory DB** | MAL-/PYSEC records for the 2026 MCP-named PyPI typosquat wave (`openai-mcp`, `langchain-core-mcp`, `instructor-mcp`, `tiktoken-mcp`, `ray-mcp-server`) | OSV (CC-BY-4.0) |
 | **GitHub Advisory Database** | GHSA records for `@mcpjam/inspector` (CVE-2026-23744), `@cyanheads/git-mcp-server` (CVE-2025-53107) | GHSA (CC-BY-4.0) |
 
 ### Individual Researchers

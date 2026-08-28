@@ -392,5 +392,59 @@
     "name": "gemini-cli",
     "version_range": "<0.39.1",
     "advisory": "CVE-2026-12537: remote code execution via workspace trust bypass. Verified against OSV/GHSA 2026-08-26."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "openai-mcp",
+    "version": "2.41.1",
+    "advisory": "MAL-2026-5320 / PYSEC-2026-1072: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "openai-mcp",
+    "version": "2.41.2",
+    "advisory": "MAL-2026-5320 / PYSEC-2026-1072: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "langchain-core-mcp",
+    "version": "1.4.2",
+    "advisory": "MAL-2026-5318 / PYSEC-2026-1070: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "langchain-core-mcp",
+    "version": "1.4.3",
+    "advisory": "MAL-2026-5318 / PYSEC-2026-1070: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "instructor-mcp",
+    "version": "1.15.2",
+    "advisory": "MAL-2026-5317 / PYSEC-2026-1069: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "instructor-mcp",
+    "version": "1.15.3",
+    "advisory": "MAL-2026-5317 / PYSEC-2026-1069: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "tiktoken-mcp",
+    "version": "0.13.1",
+    "advisory": "MAL-2026-5326 / PYSEC-2026-1075: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "tiktoken-mcp",
+    "version": "0.13.2",
+    "advisory": "MAL-2026-5326 / PYSEC-2026-1075: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "ray-mcp-server",
+    "version": "0.2.1",
+    "advisory": "MAL-2026-5325 / PYSEC-2026-1074: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
   }
 ]

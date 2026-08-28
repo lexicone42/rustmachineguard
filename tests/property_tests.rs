@@ -2585,7 +2585,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        73,
+        82,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
@@ -4131,4 +4131,46 @@ fn pypi_catalog_rows_are_now_reachable_through_real_launchers() {
     assert_eq!(name.as_deref(), Some("mcp-remote"));
     assert_eq!(ver.as_deref(), Some("0.1.10"));
     let _ = (eco, catalog); // identity resolution is the part that was broken
+}
+
+#[test]
+fn mcp_typosquat_pypi_rows_match_through_a_uvx_launch() {
+    use rustmachineguard::scanners::exposure::ExposureCatalog;
+    use rustmachineguard::models::McpServerDetail;
+    // These are MCP-named PyPI typosquats, i.e. exactly the packages someone would
+    // launch AS an MCP server. They are only reachable because the launcher parser
+    // now resolves `uvx pkg@version` and `pipx run pkg==version`.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let server = |args: Vec<&str>| {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let (eco, name, ver) =
+            rustmachineguard::scanners::mcp::infer_package_from_command("uvx", &args);
+        McpServerDetail {
+            name: "s".into(), transport: "stdio".into(), command: Some("uvx".into()),
+            args, package_ecosystem: eco, package_name: name, package_version: ver,
+            url: None, inline_secret_env_keys: vec![],
+        }
+    };
+    // The compromised release flags...
+    for (pkg, bad) in [
+        ("openai-mcp", "2.41.1"),
+        ("langchain-core-mcp", "1.4.3"),
+        ("tiktoken-mcp", "0.13.2"),
+        ("ray-mcp-server", "0.2.1"),
+    ] {
+        let s = server(vec![&format!("{pkg}@{bad}")]);
+        assert!(
+            !catalog.check_mcp_server(&s, "/t").is_empty(),
+            "{pkg}@{bad} must flag (identity: {:?} {:?})", s.package_name, s.package_version
+        );
+    }
+    // ...and a clean release of the same name does NOT. These are point compromises
+    // pinned to exact versions, so neighbouring releases stay silent.
+    for (pkg, ok) in [("openai-mcp", "2.41.0"), ("tiktoken-mcp", "0.13.0")] {
+        let s = server(vec![&format!("{pkg}@{ok}")]);
+        assert!(
+            catalog.check_mcp_server(&s, "/t").is_empty(),
+            "{pkg}@{ok} is not a compromised release and must stay silent"
+        );
+    }
 }
