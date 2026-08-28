@@ -100,6 +100,12 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Remove the file from tracking (git rm --cached), add it to .gitignore, ROTATE the credential immediately (assume it is public), and scrub history if the repo was shared.",
             reference: "committed secret",
         },
+        "Git autorun" => Guidance {
+            what: "A git configuration setting whose value git executes as a command — for example core.fsmonitor, which git runs every time it refreshes the index, so an ordinary `git status` or `git add` triggers it.",
+            why: "It turns routine git use into code execution, with no prompt and no vulnerability required. The dangerous case is a repository you did not write supplying the config: a git directory buried inside a project is auto-discovered by git and its config is honoured, which is the class behind CVE-2026-45033.",
+            fix: "Inspect the command shown below before running any git command in this directory. Remove the setting (git config --unset <key>), and consider `git config --global safe.bareRepository explicit` — noting that this blocks bare-repo auto-discovery only, not the nested non-bare case.",
+            reference: "CVE-2026-45033 · git config autorun",
+        },
         "Auto-run task" => Guidance {
             what: "A VS Code task in .vscode/tasks.json is configured with runOptions.runOn = \"folderOpen\", so it executes automatically when the folder is opened.",
             why: "Opening a project becomes code execution. Combined with an agent hook pointing the other way, it is the 2026 persistence pattern: removing one half leaves the other to re-establish it. A git-tracked auto-run task ships with the repository, so cloning and opening it is enough.",
@@ -462,6 +468,29 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             ),
             location: t.path.clone(),
             evidence: Some(t.command.clone()),
+        });
+    }
+
+    // Git configuration that turns an ordinary git command into code execution.
+    // Value-gated and scope-gated, so reaching here already means the value chains
+    // shell commands / matches a dangerous pattern / runs a script the repo ships,
+    // in a scope an untrusted repository controls.
+    for g in &report.git_autorun_configs {
+        f.push(Finding {
+            // A BURIED git dir is attacker-authored by construction — a project's own
+            // .git/config is at least something the developer may have written.
+            severity: if g.nested { Severity::Critical } else { Severity::High },
+            category: "Git autorun".into(),
+            title: format!(
+                "git {} in {} runs a command on ordinary git operations — {}{}",
+                g.key,
+                if g.nested { "a nested git directory" } else { "this repository" },
+                g.reason,
+                if g.origin.ends_with("/config") { String::new() }
+                else { format!(" (hidden via include: {})", g.origin) }
+            ),
+            location: g.path.clone(),
+            evidence: Some(format!("{} = {}", g.key, g.value)),
         });
     }
 

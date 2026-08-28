@@ -417,6 +417,7 @@ fn make_report(
         transcripts: vec![],
         marketplaces: vec![],
         vscode_tasks: vec![],
+        git_autorun_configs: vec![],
         warnings: vec![ScanWarning {
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),
@@ -443,6 +444,7 @@ fn make_report(
             transcript_stores_count: 0,
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
+            git_autorun_configs_count: 0,
         },
     };
     customize(&mut report);

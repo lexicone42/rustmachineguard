@@ -44,6 +44,8 @@ pub struct ScanReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vscode_tasks: Vec<VsCodeTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git_autorun_configs: Vec<GitAutorunConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     pub summary: Summary,
 }
@@ -413,6 +415,28 @@ pub struct AgentMarketplace {
     pub installed_plugin_count: usize,
 }
 
+/// Git configuration whose value git executes as a command, found in a scope an
+/// untrusted repository can control. Value-gated: ordinary settings like
+/// `core.fsmonitor=true` or a git-lfs filter are deliberately NOT recorded.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitAutorunConfig {
+    /// The repository or git directory this was found in.
+    pub path: String,
+    /// The config file git attributed the setting to. Differs from `path/config` when
+    /// an `include.path` was used to hide it.
+    pub origin: String,
+    pub key: String,
+    /// The command git would run. Not a secret: these are program invocations.
+    pub value: String,
+    /// "repo-local" or "nested-repo".
+    pub scope: String,
+    /// True when found in a git directory BURIED inside the project rather than the
+    /// project's own .git — the CVE-2026-45033 shape.
+    pub nested: bool,
+    /// Why the value was judged attack-shaped.
+    pub reason: String,
+}
+
 /// A VS Code task that runs automatically when a folder is opened
 /// (`runOptions.runOn == "folderOpen"`) — an auto-execution surface that travels with
 /// a repository. Gated by `task.allowAutomaticTasks` and workspace trust, so it is
@@ -511,6 +535,7 @@ pub struct Summary {
     pub transcript_stores_count: usize,
     pub marketplaces_count: usize,
     pub vscode_autorun_tasks_count: usize,
+    pub git_autorun_configs_count: usize,
 }
 
 impl ScanReport {
@@ -541,6 +566,7 @@ impl ScanReport {
             transcript_stores_count: self.transcripts.len(),
             marketplaces_count: self.marketplaces.len(),
             vscode_autorun_tasks_count: self.vscode_tasks.len(),
+            git_autorun_configs_count: self.git_autorun_configs.len(),
         };
     }
 }

@@ -8,6 +8,7 @@ pub mod cloud_credentials;
 pub mod exposure;
 pub mod container_tools;
 pub mod extensions;
+pub mod git_config;
 pub mod ide;
 pub mod marketplaces;
 pub mod mcp;

