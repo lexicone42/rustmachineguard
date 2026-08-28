@@ -101,6 +101,19 @@ impl ExposureCatalog {
     }
 }
 
+/// Map a browser's display name to the catalog ecosystem its extensions belong to.
+///
+/// Chromium-family browsers share the Chrome Web Store extension-ID namespace, so a
+/// compromised Chrome extension is the same artifact when installed in Brave or Edge
+/// and must match the same catalog row.
+pub fn browser_catalog_ecosystem(browser: &str) -> &'static str {
+    match browser.trim().to_ascii_lowercase().as_str() {
+        "firefox" | "librewolf" | "waterfox" | "zen" => "firefox",
+        // Chrome, Chromium, Brave, Edge, Opera, Vivaldi, Arc… all share the namespace.
+        _ => "chrome",
+    }
+}
+
 /// Map a detected AI tool's display name to its key in the `agent-runtime` catalog
 /// ecosystem, so an installed agent CLI's own version can be matched against known
 /// vulnerable ranges. Agent CLIs are now CVE-bearing packages in their own right.

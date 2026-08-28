@@ -397,7 +397,15 @@ fn main() {
         }
         for ext in &report.browser_extensions {
             report.exposure_findings.extend(
-                catalog.check_extension("browser", &ext.id, &ext.version, &ext.browser),
+                // The catalog keys browser rows by store namespace (chrome/firefox),
+                // NOT by the literal string "browser" — passing that matched nothing,
+                // silently disabling every browser-extension detection.
+                catalog.check_extension(
+                    scanners::exposure::browser_catalog_ecosystem(&ext.browser),
+                    &ext.id,
+                    &ext.version,
+                    &ext.browser,
+                ),
             );
         }
         // Agent CLIs are CVE-bearing packages themselves. We already resolve each

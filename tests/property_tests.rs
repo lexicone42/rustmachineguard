@@ -3932,3 +3932,59 @@ fn normalization_does_not_invent_matches_in_ordinary_text() {
         let _ = normalize_for_matching(s);
     }
 }
+
+#[test]
+fn every_catalog_ecosystem_is_reachable_from_a_call_site() {
+    // Regression for a silent, shipping bug: main.rs called
+    // check_extension("browser", …) while every browser row in the catalog uses
+    // ecosystem "chrome". eq_case_insensitive("chrome","browser") is false, so all
+    // seven browser rows — including the Cyberhaven compromise — could NEVER match.
+    // A detection that cannot fire is worse than no detection: it reads as coverage.
+    use rustmachineguard::scanners::exposure::browser_catalog_ecosystem;
+    let raw = rustmachineguard::catalogs::BUILTIN_CATALOG;
+    let entries: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
+    let mut ecosystems: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e["ecosystem"].as_str().map(str::to_string))
+        .collect();
+    ecosystems.sort();
+    ecosystems.dedup();
+
+    // The ecosystems any call site can actually produce.
+    let mut reachable: Vec<String> = vec![
+        "vscode".into(),        // IDE extensions
+        "agent-runtime".into(), // agent CLI self-version
+        "npm".into(),           // MCP server package identity
+        "pypi".into(),
+        "docker".into(),
+    ];
+    for b in ["Chrome", "Chromium", "Brave", "Edge", "Firefox"] {
+        reachable.push(browser_catalog_ecosystem(b).to_string());
+    }
+    for eco in &ecosystems {
+        assert!(
+            reachable.contains(eco),
+            "catalog ecosystem {eco:?} is unreachable from any check_* call site — those \
+             rows can never match. Reachable: {reachable:?}"
+        );
+    }
+}
+
+#[test]
+fn browser_extension_catalog_rows_actually_match() {
+    use rustmachineguard::scanners::exposure::{browser_catalog_ecosystem, ExposureCatalog};
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    // The real Cyberhaven row, matched the way main.rs matches it.
+    let eco = browser_catalog_ecosystem("Chrome");
+    let hits = catalog.check_extension(eco, "cyberhaven-extension", "24.10.4", "Chrome");
+    assert!(!hits.is_empty(), "the Cyberhaven row must be reachable (eco={eco})");
+    // Chromium-family browsers share the store namespace, so the same row applies.
+    for b in ["Brave", "Edge", "Chromium"] {
+        assert!(
+            !catalog
+                .check_extension(browser_catalog_ecosystem(b), "cyberhaven-extension", "24.10.4", b)
+                .is_empty(),
+            "a Chrome-store extension must still match when installed in {b}"
+        );
+    }
+}
