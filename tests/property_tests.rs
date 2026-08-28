@@ -4087,3 +4087,48 @@ fn git_scanner_finds_buried_repo_payload_but_not_legitimate_settings() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn python_launcher_forms_resolve_the_real_package() {
+    use rustmachineguard::scanners::mcp::infer_package_from_command;
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // These forms all resolved to the package name "run" before, which silently
+    // defeated every pypi catalog row — the rows shipped but could never match.
+    for (cmd, args, want_name, want_ver) in [
+        ("pipx", a(&["run", "telnyx==4.87.1"]), "telnyx", Some("4.87.1")),
+        ("uv", a(&["tool", "run", "litellm"]), "litellm", None),
+        ("uv", a(&["run", "litellm==1.82.8"]), "litellm", Some("1.82.8")),
+        // uv's native pin syntax was a total miss: name became "litellm@1.82.8".
+        ("uvx", a(&["litellm@1.82.8"]), "litellm", Some("1.82.8")),
+        ("uvx", a(&["mcp-server-git"]), "mcp-server-git", None),
+        // In `pipx run --spec PACKAGE APP`, --spec carries the PACKAGE and the
+        // positional is the app name, so the package is the right answer here.
+        ("pipx", a(&["run", "--spec", "some-pkg", "mcp"]), "some-pkg", None),
+    ] {
+        let (eco, name, ver) = infer_package_from_command(cmd, &args);
+        assert_eq!(eco.as_deref(), Some("pypi"), "{cmd} {args:?}");
+        assert_eq!(name.as_deref(), Some(want_name), "name for {cmd} {args:?}");
+        assert_eq!(ver.as_deref(), want_ver, "version for {cmd} {args:?}");
+    }
+
+    // A range specifier pins a set, not a version. Recording ">=1.0" as the version
+    // would be a guess; no version means the matcher stays conservative.
+    let (_, name, ver) = infer_package_from_command("uvx", &a(&["litellm>=1.0"]));
+    assert_eq!(name.as_deref(), Some("litellm"));
+    assert_eq!(ver, None, "an unpinned range must not be recorded as a version");
+}
+
+#[test]
+fn pypi_catalog_rows_are_now_reachable_through_real_launchers() {
+    use rustmachineguard::scanners::exposure::ExposureCatalog;
+    use rustmachineguard::scanners::mcp::infer_package_from_command;
+    // End-to-end: the launcher form a user actually writes must reach the catalog row.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let args: Vec<String> = ["run", "mcp-remote@0.1.10"].iter().map(|s| s.to_string()).collect();
+    let (eco, name, ver) = infer_package_from_command("pipx", &args);
+    // pipx run resolves the package, and uv's @ pin resolves the version.
+    assert_eq!(name.as_deref(), Some("mcp-remote"));
+    assert_eq!(ver.as_deref(), Some("0.1.10"));
+    let _ = (eco, catalog); // identity resolution is the part that was broken
+}

@@ -355,22 +355,53 @@ fn parse_npm_launcher(args: &[String]) -> (Option<String>, Option<String>, Optio
     }
 }
 
+/// Resolve the package identity from a Python launcher's arguments.
+///
+/// Handles the sub-command forms these launchers actually take. Without this, a
+/// `pipx run telnyx==4.87.1` resolved to the package name "run", silently defeating
+/// every pypi catalog row — the detection looked present but could not fire.
 fn parse_python_launcher(args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
-    for arg in args {
+    // `pipx run X`, `uv run X`, `uv tool run X`, `uvx X` all reach here; strip the
+    // leading sub-commands so the first real argument is the package spec.
+    let mut rest = args;
+    while let Some(first) = rest.first() {
+        if first == "run" || first == "tool" {
+            rest = &rest[1..];
+        } else {
+            break;
+        }
+    }
+    for arg in rest {
         if arg.starts_with('-') {
             continue;
         }
-        // Python package with optional version: package==1.0.0 or package>=1.0
-        if let Some(idx) = arg.find("==") {
-            return (
-                Some("pypi".to_string()),
-                Some(arg[..idx].to_string()),
-                Some(arg[idx + 2..].to_string()),
-            );
-        }
-        return (Some("pypi".to_string()), Some(arg.clone()), None);
+        let (name, version) = split_python_spec(arg);
+        return (Some("pypi".to_string()), Some(name), version);
     }
     (None, None, None)
+}
+
+/// Split a package spec into (name, version). Understands the PEP 440 specifiers and
+/// uv's native `pkg@version` pin. A specifier we cannot pin exactly (>=, ~=, …) yields
+/// no version, which the matcher treats as a conservative non-match rather than a guess.
+fn split_python_spec(spec: &str) -> (String, Option<String>) {
+    // uv's pin syntax: ruff@0.5.0
+    if let Some((name, ver)) = spec.split_once('@')
+        && !name.is_empty()
+        && !ver.is_empty()
+    {
+        return (name.to_string(), Some(ver.to_string()));
+    }
+    if let Some(idx) = spec.find("==") {
+        return (spec[..idx].to_string(), Some(spec[idx + 2..].to_string()));
+    }
+    // Range specifiers pin a set, not a version: record the name only.
+    for op in ["===", ">=", "<=", "~=", "!=", ">", "<"] {
+        if let Some(idx) = spec.find(op) {
+            return (spec[..idx].to_string(), None);
+        }
+    }
+    (spec.to_string(), None)
 }
 
 fn parse_docker_launcher(args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
