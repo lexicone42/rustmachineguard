@@ -4652,3 +4652,39 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     assert!(mcp["duration_ms"].is_u64() && mcp["files_read"].is_u64() && mcp["items"].is_u64());
     assert!(mcp["root"].is_string(), "home-rooted scanner records its root");
 }
+
+/// Pruning must be by generator MARKER, not by name: `target/` and `env/` are plausible
+/// tracked directory names, and the attacker picks the layout. A gitdir under a tracked
+/// `target/` is found; the same gitdir under a cargo `target/` (CACHEDIR.TAG present)
+/// and under `node_modules/` is skipped as generated content.
+#[test]
+fn nested_repo_pruning_is_by_marker_not_by_name() {
+    fn plant(root: &std::path::Path, rel: &str, marker: Option<&str>) {
+        let parent = root.join(rel);
+        let git = parent.join("payload");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n").unwrap();
+        if let Some(m) = marker {
+            std::fs::write(parent.join(m), "").unwrap();
+        }
+    }
+    let root = &std::env::temp_dir().join(format!("rmg-prune-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(root);
+    std::fs::create_dir_all(root).unwrap();
+    plant(root, "target", None);                     // tracked dir that happens to be named target
+    plant(root, "env", None);                        // ditto
+    plant(root, "build/target", Some("CACHEDIR.TAG")); // real cargo/cache output
+    plant(root, "venv", Some("pyvenv.cfg"));         // real virtualenv
+    plant(root, "node_modules/x", None);             // dependency tree, by name
+    let mut out = Vec::new();
+    rustmachineguard::scanners::git_config::scan_nested_repos_for_test(root, &mut out);
+    let found: Vec<String> = out.iter().map(|c| c.origin.clone()).collect();
+    let _ = std::fs::remove_dir_all(root);
+    let has = |s: &str| found.iter().any(|l| l.contains(s));
+    assert!(has("/target/payload"), "tracked target/ must be scanned: {found:?}");
+    assert!(has("/env/payload"), "tracked env/ must be scanned: {found:?}");
+    assert!(!has("/build/target/payload"), "CACHEDIR.TAG tree must be skipped: {found:?}");
+    assert!(!has("/venv/payload"), "pyvenv.cfg tree must be skipped: {found:?}");
+    assert!(!has("node_modules"), "node_modules must be skipped: {found:?}");
+}

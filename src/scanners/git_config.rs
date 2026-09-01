@@ -170,14 +170,22 @@ fn config_needs_git(cfg: &Path) -> bool {
 /// attacker-authored in a way the project's own `.git/config` is not.
 fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     const MAX_DIRS: usize = 4_000;
-    /// Generated or vendored trees. A clone does not ship these -- they are built or
-    /// installed afterwards -- so a repo cannot plant a gitdir in them, and they are
-    /// where nearly all of a project's directories live. Skipping them is what keeps
-    /// this walk from spending its whole budget inside node_modules.
-    const PRUNE: &[&str] = &[
-        "node_modules", ".venv", "venv", "env", ".tox", ".mypy_cache", ".pytest_cache",
-        "__pycache__", "target", ".cache", ".npm", ".cargo", "site-packages", "dist-packages",
+    /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
+    /// a project's directories live, and that no sane repo ships as tracked content.
+    /// Deliberately NOT here: `env`, `venv`, `target`, `build`, `dist` -- those are
+    /// plausible names for tracked directories, and an attacker chooses the layout, so
+    /// skipping them by name would be a deterministic way to hide a gitdir. Those are
+    /// recognised by marker instead (see GENERATED_MARKERS).
+    const PRUNE_BY_NAME: &[&str] = &[
+        "node_modules", ".tox", ".mypy_cache", ".pytest_cache", "__pycache__", ".cache",
+        ".npm", ".cargo", "site-packages", "dist-packages",
     ];
+    /// A directory whose listing contains one of these was produced by a tool, not
+    /// committed: `pyvenv.cfg` marks a virtualenv, `CACHEDIR.TAG` marks cargo's target/
+    /// and most caches. The gitdir check runs BEFORE this skip, so planting a marker in
+    /// the payload directory itself does not hide it; planting one in an ancestor does,
+    /// which is the same adversarial floor as exhausting the directory budget.
+    const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
     let own_git = root.join(".git");
     let mut budget = MAX_DIRS;
     let mut stack = vec![root.to_path_buf()];
@@ -196,7 +204,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
         // descend into?" -- using the entry type the listing already carries. The
         // previous version stat'ed every entry and then stat'ed config and HEAD again
         // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
-        let (mut has_config, mut has_head) = (false, false);
+        let (mut has_config, mut has_head, mut generated) = (false, false, false);
         let mut children = Vec::new();
         for entry in entries.flatten() {
             let Ok(kind) = entry.file_type() else {
@@ -208,8 +216,10 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
                     has_config = true;
                 } else if name == "HEAD" {
                     has_head = true;
+                } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
+                    generated = true;
                 }
-            } else if kind.is_dir() && !PRUNE.iter().any(|p| name == *p) {
+            } else if kind.is_dir() && !PRUNE_BY_NAME.iter().any(|p| name == *p) {
                 // Symlinks report their own type here, so a symlinked dir is not
                 // followed -- same as the old symlink_metadata() check.
                 children.push(entry.path());
@@ -229,6 +239,9 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
                 }
             }
             continue; // don't descend into a git dir's internals
+        }
+        if generated {
+            continue; // a virtualenv or build cache: nothing in it was shipped by the repo
         }
         stack.extend(children);
     }
