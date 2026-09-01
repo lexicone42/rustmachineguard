@@ -2552,7 +2552,7 @@ fn builtin_catalog_includes_vscode_extensions() {
 #[test]
 fn builtin_catalog_includes_chrome_extensions() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
-    let findings = catalog.check_extension("chrome", "ai-assistant-chatgpt", "1.0.0", "chrome");
+    let findings = catalog.check_extension("chrome", "kgnddmccicfibljeodejjmekeiilkfhk", "1.0.0", "chrome");
     assert_eq!(findings.len(), 1);
     assert!(findings[0].advisory.contains("Facebook session"));
 }
@@ -2591,7 +2591,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        82,
+        84,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
@@ -2822,7 +2822,7 @@ fn blueprint_no_dangling_refs_with_unmatched_extension_exposure() {
     let report = make_test_report(|r| {
         r.exposure_findings = vec![ExposureFinding {
             ecosystem: "chrome".into(),
-            name: "ai-assistant-chatgpt".into(),
+            name: "kgnddmccicfibljeodejjmekeiilkfhk".into(),
             version: "1.0.0".into(),
             advisory: "Steals Facebook session cookies".into(),
             found_in: "Firefox".into(),
@@ -2830,7 +2830,7 @@ fn blueprint_no_dangling_refs_with_unmatched_extension_exposure() {
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert_no_dangling_refs(&output);
-    assert!(output.contains("threat-match: ai-assistant-chatgpt"), "exposure asset created");
+    assert!(output.contains("threat-match: kgnddmccicfibljeodejjmekeiilkfhk"), "exposure asset created");
     assert!(!output.contains("asset:mcp:Firefox"), "must not fabricate a dangling MCP ref");
 }
 
@@ -4023,13 +4023,13 @@ fn browser_extension_catalog_rows_actually_match() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     // The real Cyberhaven row, matched the way main.rs matches it.
     let eco = browser_catalog_ecosystem("Chrome");
-    let hits = catalog.check_extension(eco, "cyberhaven-extension", "24.10.4", "Chrome");
+    let hits = catalog.check_extension(eco, "pajkjnmeojmbapicmbpliphjmcekeaac", "24.10.4", "Chrome");
     assert!(!hits.is_empty(), "the Cyberhaven row must be reachable (eco={eco})");
     // Chromium-family browsers share the store namespace, so the same row applies.
     for b in ["Brave", "Edge", "Chromium"] {
         assert!(
             !catalog
-                .check_extension(browser_catalog_ecosystem(b), "cyberhaven-extension", "24.10.4", b)
+                .check_extension(browser_catalog_ecosystem(b), "pajkjnmeojmbapicmbpliphjmcekeaac", "24.10.4", b)
                 .is_empty(),
             "a Chrome-store extension must still match when installed in {b}"
         );
@@ -4526,4 +4526,56 @@ fn every_npm_catalog_row_is_reachable_by_installed_package_scan() {
         );
     }
     assert!(checked >= 31, "expected >=31 npm rows, saw {checked}");
+}
+
+/// A pre-2026 server that silently IGNORES unknown methods never answers
+/// `server/discover`. The spec's fallback rule says: no reply within the timeout means
+/// legacy, so send `initialize`. Before the reader thread existed, the blocking read
+/// sat on that silence until the watchdog killed the child at 10s, and `initialize`
+/// then failed on a dead pipe -- the fallback path was unreachable for the one server
+/// shape it exists for. Measured: 10.0s, "send init failed: Broken pipe", success=false.
+#[test]
+fn legacy_server_that_ignores_discover_is_still_probed_within_the_discover_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("rmg-legacy-quiet-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let server = dir.join("server.py");
+    std::fs::write(&server, r#"
+import sys, json
+for line in sys.stdin:
+    try: msg = json.loads(line)
+    except Exception: continue
+    m = msg.get("method"); i = msg.get("id")
+    if m == "initialize":
+        out = {"jsonrpc":"2.0","id":i,"result":{"protocolVersion":"2025-06-18",
+               "capabilities":{"tools":{}},"serverInfo":{"name":"legacy-quiet","version":"1.0"}}}
+    elif m == "tools/list":
+        out = {"jsonrpc":"2.0","id":i,"result":{"tools":[{"name":"read_file","description":"Reads a file"}]}}
+    elif m == "resources/list":
+        out = {"jsonrpc":"2.0","id":i,"result":{"resources":[]}}
+    else:
+        continue  # silence on anything unknown, including server/discover
+    sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+"#).unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let Some((py, pre)) = working_python() else {
+        eprintln!("skipping: no working python interpreter on PATH");
+        return;
+    };
+    let mut argv = pre;
+    argv.push(server.to_string_lossy().to_string());
+    let start = std::time::Instant::now();
+    let result = rustmachineguard::scanners::mcp_probe::probe_server_for_test(
+        "legacy-quiet", "test", &py, &argv,
+    );
+    let took = start.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(result.success, "legacy fallback must succeed: {:?}", result.error);
+    assert_eq!(result.protocol_era.as_deref(), Some("legacy"));
+    assert_eq!(result.tools.len(), 1, "tools must be listed after the fallback");
+    // 3s discover timeout plus a fast handshake. The old behaviour was a hard 10s.
+    assert!(took < std::time::Duration::from_secs(7), "fallback took {took:?}");
 }

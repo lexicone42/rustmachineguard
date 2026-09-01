@@ -21,6 +21,9 @@ const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 /// How long to wait for the `server/discover` probe before concluding the server is
 /// legacy. Deliberately a fraction of PROBE_TIMEOUT: the spec says a silent server is
 /// legacy, and we must leave budget for the `initialize` fallback that follows.
+/// How long to wait for a `server/discover` reply before treating the server as legacy
+/// and falling back to `initialize`. Enforced mid-read by `TimedLineSource`; the overall
+/// probe is still bounded by PROBE_TIMEOUT.
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// MCP error codes reserved by the spec (-32020..-32099). Receiving ANY of these
@@ -259,7 +262,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
 fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut reader = BufReader::new(stdout);
+    let mut reader = TimedLineSource::spawn(stdout);
 
     // The stdio probe is a small state machine over newline-delimited JSON-RPC
     // (per the MCP spec, stdio messages are newline-delimited, NOT Content-Length
@@ -371,8 +374,67 @@ fn send_message(stdin: &mut impl Write, msg: &serde_json::Value) -> std::io::Res
 /// interleaved notifications, server->client requests, and unrelated/unparseable
 /// lines. Bounded by `deadline` and `MAX_INTERLEAVED`. Reads adversarial MCP-server
 /// stdout, so it's exposed for fuzzing.
+/// A source of newline-delimited JSON-RPC messages that can give up at a deadline.
+pub trait LineSource {
+    fn next_line(&mut self, deadline: Instant) -> Result<Option<Vec<u8>>, String>;
+}
+
+/// Blocking adapter over any `Read`. It cannot honor the deadline mid-read, so it is
+/// for in-memory buffers (tests); a live child process goes through `TimedLineSource`.
+impl<R: Read> LineSource for R {
+    fn next_line(&mut self, _deadline: Instant) -> Result<Option<Vec<u8>>, String> {
+        read_line_bounded(self, MAX_MESSAGE_BYTES)
+    }
+}
+
+/// Reads lines on a helper thread and hands them over a channel, so `next_line` can
+/// return `timeout` at the deadline instead of sitting inside a blocking read.
+///
+/// Before this, `await_response` checked the deadline only BETWEEN reads. A server that
+/// never wrote anything held the read until the watchdog killed it at PROBE_TIMEOUT, so
+/// the 3s DISCOVER_TIMEOUT was unenforceable -- and worse, a legacy server that simply
+/// ignores unknown methods (common pre-2026) never answered `server/discover`, sat there
+/// for the full 10s, and then failed `initialize` on a dead pipe. The fallback path that
+/// exists for exactly that server was unreachable. Measured: 10.0s and "send init
+/// failed: Broken pipe" for every shape of silent server.
+pub struct TimedLineSource {
+    rx: std::sync::mpsc::Receiver<Result<Option<Vec<u8>>, String>>,
+}
+
+impl TimedLineSource {
+    pub fn spawn<R: Read + Send + 'static>(reader: R) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(reader);
+            loop {
+                let item = read_line_bounded(&mut reader, MAX_MESSAGE_BYTES);
+                let done = !matches!(item, Ok(Some(_)));
+                // A send error means the probe moved on; EOF or a read error ends the
+                // stream. Either way the thread exits once the child's stdout closes,
+                // which the caller guarantees by killing and reaping the child.
+                if tx.send(item).is_err() || done {
+                    break;
+                }
+            }
+        });
+        Self { rx }
+    }
+}
+
+impl LineSource for TimedLineSource {
+    fn next_line(&mut self, deadline: Instant) -> Result<Option<Vec<u8>>, String> {
+        use std::sync::mpsc::RecvTimeoutError;
+        let wait = deadline.saturating_duration_since(Instant::now());
+        match self.rx.recv_timeout(wait) {
+            Ok(item) => item,
+            Err(RecvTimeoutError::Timeout) => Err("timeout".into()),
+            Err(RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+}
+
 pub fn await_response(
-    reader: &mut impl Read,
+    reader: &mut impl LineSource,
     expected_id: u64,
     deadline: Instant,
 ) -> Result<serde_json::Value, String> {
@@ -380,7 +442,7 @@ pub fn await_response(
         if Instant::now() >= deadline {
             return Err("timeout".into());
         }
-        let line = match read_line_bounded(reader, MAX_MESSAGE_BYTES)? {
+        let line = match reader.next_line(deadline)? {
             Some(bytes) => bytes,
             None => return Err("connection closed".into()),
         };
@@ -617,6 +679,26 @@ mod tests {
 
     fn far_deadline() -> Instant {
         Instant::now() + Duration::from_secs(30)
+    }
+
+    /// A reader that blocks for a long time before yielding EOF -- the shape of a
+    /// server that never writes. The deadline must win, quickly.
+    struct Stalls;
+    impl Read for Stalls {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn timed_source_gives_up_at_the_deadline_mid_read() {
+        let mut src = TimedLineSource::spawn(Stalls);
+        let start = Instant::now();
+        let r = await_response(&mut src, ID_DISCOVER, start + Duration::from_millis(150));
+        let took = start.elapsed();
+        assert_eq!(r, Err("timeout".to_string()));
+        assert!(took < Duration::from_secs(1), "deadline not honored: took {took:?}");
     }
 
     #[test]
