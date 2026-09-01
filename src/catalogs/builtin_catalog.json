@@ -177,21 +177,6 @@
     "advisory": "Steals source code and exfiltrates to external servers. Source: ReversingLabs"
   },
   {
-    "ecosystem": "chrome",
-    "name": "cyberhaven-extension",
-    "advisory": "Cyberhaven extension compromised (2024-12): injected code to steal Facebook tokens and session cookies. 400K+ corporate users affected. Source: Cyberhaven disclosure, BleepingComputer"
-  },
-  {
-    "ecosystem": "chrome",
-    "name": "ai-assistant-chatgpt",
-    "advisory": "Fake ChatGPT extension stealing Facebook session cookies. 9K+ installs. Source: Guardio Labs"
-  },
-  {
-    "ecosystem": "chrome",
-    "name": "chatgpt-for-google-fake",
-    "advisory": "Trojanized clone of legitimate ChatGPT for Google: steals session tokens. Source: Guardio Labs (2023-03)"
-  },
-  {
     "ecosystem": "npm",
     "name": "crypto-locale",
     "advisory": "SANDWORM_MODE typosquat (1 of 19): injects rogue MCP servers into Claude Code/Cursor/VS Code, steals LLM API keys + SSH keys, exfil to pkg-metrics.official334.workers.dev. Source: Socket.dev (2026-02-20), OX Security"
@@ -306,6 +291,32 @@
     "name": "guardrails-ai",
     "version": "0.10.1",
     "advisory": "Mini Shai-Hulud worm node (CVE-2026-45321): credential-stealing payload. Only this version is compromised; the package itself is legitimate. Source: The Hacker News, Tenable"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "pajkjnmeojmbapicmbpliphjmcekeaac",
+    "version_range": ">=24.10.4, <24.10.5",
+    "advisory": "Cyberhaven Security Extension v24.10.4 compromised (2024-12-24/25) via phished developer account: injected code exfiltrated cookies and authenticated sessions to cyberhavenext[.]pro; 400K+ users. Clean release is 24.10.5, so only the one malicious version is flagged. Source: Cyberhaven incident report, Sekoia.io TDR, eSentire"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "kgnddmccicfibljeodejjmekeiilkfhk",
+    "advisory": "'Quick access to Chat GPT' (FakeGPT, latest variant): fake ChatGPT extension that stole Facebook session cookies and installed backdoor apps for account takeover; ~2,000 installs/day 2023-03-03..09, removed from Chrome Web Store 2023-03-09. Source: Guardio Labs (2023-03-08)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "coegmjlpjblmfpcnleenkhggdebdcpho",
+    "advisory": "'Quick access to Chat GPT' (FakeGPT, earlier variant): fake ChatGPT extension stealing Facebook session cookies. Source: Guardio Labs (2023-03-08)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "boofekcjiojcpcehaldjhjfhcienopme",
+    "advisory": "'Quick access to Chat GPT' (FakeGPT, earlier variant): fake ChatGPT extension stealing Facebook session cookies. Source: Guardio Labs (2023-03-08)"
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "hacfaophiklaeolhnmckojjjjbnappen",
+    "advisory": "'Chat GPT For Google' (FakeGPT #2): trojanized clone of the legitimate open-source extension; stole Facebook session cookies, 9,000+ installs 2023-03-14..22, removed from Chrome Web Store 2023-03-22. Source: Guardio Labs (2023-03-22)"
   },
   {
     "ecosystem": "chrome",
