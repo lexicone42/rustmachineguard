@@ -98,3 +98,9 @@ path = "fuzz_targets/fuzz_marketplaces.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_redact_secrets"
+path = "fuzz_targets/fuzz_redact_secrets.rs"
+test = false
+doc = false

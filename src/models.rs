@@ -47,6 +47,14 @@ pub struct ScanReport {
     pub git_autorun_configs: Vec<GitAutorunConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
+    /// Per-scanner telemetry: how long it ran, how many files it opened or found
+    /// missing, how many items it produced. This exists to make "clean machine"
+    /// distinguishable from "looked in the wrong place" -- every silent-zero bug in the
+    /// project's history (bunfig at the wrong path, 31 unreachable catalog rows, a
+    /// budget exhausted before the walk reached anything) would have shown here as
+    /// files_read=0.
+    #[serde(default)]
+    pub diagnostics: Vec<ScannerStat>,
     pub summary: Summary,
 }
 
@@ -576,4 +584,25 @@ impl ScanReport {
             npm_packages_count: self.summary.npm_packages_count,
         };
     }
+}
+
+/// One scanner's run. See [`ScanReport::diagnostics`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScannerStat {
+    /// The `--skip` label of the scanner, e.g. "mcp", "packages".
+    pub scanner: String,
+    /// Home root the scanner ran against, for home-rooted scanners under --search-dirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    pub duration_ms: u64,
+    /// Files successfully opened through the shared bounded readers. Scanners that only
+    /// probe binaries on PATH or list directories legitimately read zero files.
+    pub files_read: u64,
+    /// Paths the scanner tried to read that did not exist or were rejected. A scanner
+    /// with files_missing > 0 and files_read == 0 LOOKED and found nothing there.
+    pub files_missing: u64,
+    /// Items the scanner returned.
+    pub items: usize,
+    /// Excluded via --skip; the other counters are zero.
+    pub skipped: bool,
 }

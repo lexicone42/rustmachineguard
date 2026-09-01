@@ -73,9 +73,8 @@ impl Scanner for CloudCredentialsScanner {
 
             // Active config
             let properties = gcloud_dir.join("properties");
-            let active_account = if properties.is_file() {
-                std::fs::read_to_string(&properties)
-                    .ok()
+            let active_account = if crate::scanners::probe_file(&properties) {
+                crate::scanners::read_bounded(&properties)
                     .and_then(|c| {
                         c.lines()
                             .find(|l| l.starts_with("account"))
@@ -100,9 +99,8 @@ impl Scanner for CloudCredentialsScanner {
         let azure_dir = platform.azure_config_dir();
         if azure_dir.is_dir() {
             let az_profile = azure_dir.join("azureProfile.json");
-            let profiles = if az_profile.is_file() {
-                std::fs::read_to_string(&az_profile)
-                    .ok()
+            let profiles = if crate::scanners::probe_file(&az_profile) {
+                crate::scanners::read_bounded(&az_profile)
                     .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                     .and_then(|v| {
                         v["subscriptions"]

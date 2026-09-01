@@ -114,8 +114,7 @@ fn scan_zed_extensions(
         };
 
         // Try to read extension.json for version info
-        let version = std::fs::read_to_string(path.join("extension.json"))
-            .ok()
+        let version = crate::scanners::read_bounded(&path.join("extension.json"))
             .and_then(|content| {
                 serde_json::from_str::<serde_json::Value>(&content).ok()
             })

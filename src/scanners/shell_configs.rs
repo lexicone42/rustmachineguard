@@ -41,7 +41,7 @@ impl Scanner for ShellConfigsScanner {
         let mut results = Vec::new();
 
         for (shell, path) in platform.shell_config_paths() {
-            if !path.is_file() {
+            if !crate::scanners::probe_file(&path) {
                 continue;
             }
 
@@ -54,9 +54,8 @@ impl Scanner for ShellConfigsScanner {
                 continue;
             }
 
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Some(content) = crate::scanners::read_bounded(&path) else {
+                continue;
             };
 
             let mut ai_entries = Vec::new();

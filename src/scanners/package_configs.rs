@@ -21,7 +21,7 @@ impl Scanner for PackageConfigsScanner {
 
         // .npmrc locations
         for path in npmrc_paths(&home) {
-            if path.is_file() {
+            if crate::scanners::probe_file(&path) {
                 if let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_npmrc(&content);
                     if !findings.is_empty() {
@@ -37,7 +37,7 @@ impl Scanner for PackageConfigsScanner {
 
         // pip config
         for path in pip_config_paths(&home) {
-            if path.is_file() {
+            if crate::scanners::probe_file(&path) {
                 if let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_pip_config(&content);
                     if !findings.is_empty() {
@@ -54,11 +54,10 @@ impl Scanner for PackageConfigsScanner {
         // Bun's global config is `~/.bunfig.toml`; the un-dotted name is the
         // per-project form. Only the dotted one existed here, so a global bun
         // registry override was never read at all.
-        let bunfig = [home.join(".bunfig.toml"), home.join("bunfig.toml")]
+        if let Some(bunfig) = [home.join(".bunfig.toml"), home.join("bunfig.toml")]
             .into_iter()
-            .find(|p| p.is_file())
-            .unwrap_or_else(|| home.join(".bunfig.toml"));
-        if bunfig.is_file() {
+            .find(|p| crate::scanners::probe_file(p))
+        {
             if let Some(content) = crate::scanners::read_bounded(&bunfig) {
                 let findings = audit_bunfig(&content);
                 if !findings.is_empty() {
@@ -73,7 +72,7 @@ impl Scanner for PackageConfigsScanner {
 
         // .yarnrc / .yarnrc.yml
         for (name, path) in yarn_config_paths(&home) {
-            if path.is_file() {
+            if crate::scanners::probe_file(&path) {
                 if let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_yarn_config(&content, &name);
                     if !findings.is_empty() {

@@ -267,6 +267,10 @@ pub fn redact_secrets_in_text(text: &str) -> String {
 
 /// True when the PRECEDING token means this token is a secret's value:
 /// `Authorization: <tok>`, `Bearer <tok>`, `--token <tok>`, `password: <tok>`.
+///
+/// Single-letter flags are deliberately NOT markers. `-p` is a port (`ssh -p 22`,
+/// `-p 3000`) or `mkdir -p /path` at least as often as it is a password, and redacting
+/// the argument after it would erase exactly the path or port a finding is about.
 fn is_secret_value_position(prev: Option<&str>) -> bool {
     let Some(p) = prev else { return false };
     // A complete `KEY=value` pair already carried its own secret; the token AFTER it is
@@ -325,7 +329,10 @@ fn redact_token(tok: &str, prev: Option<&str>) -> String {
         if crate::scanners::env_files::is_secret_key_name(bare) {
             return format!("{k}=<redacted>");
         }
-        return format!("{k}={}", redact_userinfo(v));
+        // The "key" may itself be a URL whose query string holds the '=' we split on:
+        // `https://u:p@host/path?q=1` splits into k=`https://u:p@host/path?q`, v=`1`,
+        // and the credential in k walked through untouched. Scrub both halves.
+        return format!("{}={}", redact_userinfo(k), redact_userinfo(v));
     }
     redact_userinfo(tok)
 }
@@ -442,11 +449,16 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
     use std::io::Read;
     // metadata() follows symlinks: for a symlink→regular file this is the target's
     // metadata (good); for a symlink→device/FIFO, is_file() is false → rejected.
-    let meta = std::fs::metadata(path).ok()?;
+    let Ok(meta) = std::fs::metadata(path) else {
+        telemetry::note_read(path, "missing");
+        return None;
+    };
     if !meta.is_file() {
+        telemetry::note_read(path, "not a regular file");
         return None;
     }
     if meta.len() > MAX_CONFIG_SIZE {
+        telemetry::note_read(path, "too large");
         eprintln!(
             "warning: skipping {} ({} bytes exceeds {} byte limit)",
             path.display(),
@@ -456,11 +468,14 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
         return None;
     }
     let mut buf = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX_CONFIG_SIZE)
-        .read_to_string(&mut buf)
-        .ok()?;
+    let opened = std::fs::File::open(path)
+        .ok()
+        .and_then(|f| f.take(MAX_CONFIG_SIZE).read_to_string(&mut buf).ok());
+    if opened.is_none() {
+        telemetry::note_read(path, "unreadable");
+        return None;
+    }
+    telemetry::note_read(path, "ok");
     Some(buf)
 }
 
@@ -468,7 +483,11 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
 /// valid UTF-8, so it works for magic-byte checks on binaries.
 pub fn read_head_bytes(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u8>> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        telemetry::note_read(path, "missing");
+        return None;
+    };
+    telemetry::note_read(path, "ok");
     let mut buf = vec![0u8; max_bytes];
     let n = file.read(&mut buf).ok()?;
     buf.truncate(n);
@@ -478,7 +497,11 @@ pub fn read_head_bytes(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u
 /// Read only the first N bytes of a file (for key header detection).
 pub fn read_head(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        telemetry::note_read(path, "missing");
+        return None;
+    };
+    telemetry::note_read(path, "ok");
     let mut buf = vec![0u8; max_bytes];
     let n = file.read(&mut buf).ok()?;
     buf.truncate(n);
@@ -506,4 +529,119 @@ pub fn is_official_registry(value: &str, official: &[&str]) -> bool {
         let o = o.to_ascii_lowercase();
         host == o || host.ends_with(&format!(".{o}"))
     })
+}
+
+/// `path.is_file()` that the diagnostics can see. Use this instead of a bare `is_file()`
+/// when deciding whether to read a config file, so a wrong path shows up as a miss.
+pub fn probe_file(path: &std::path::Path) -> bool {
+    let present = path.is_file();
+    telemetry::note_probe(path, present);
+    present
+}
+
+/// Scan telemetry. Answers the one question a silent scanner never could: did it look?
+///
+/// Counters are process-global because scanners run sequentially; [`timed`] snapshots
+/// them around each scanner. If scanning ever goes parallel these must move to
+/// per-scanner state, or every attribution here becomes wrong.
+pub mod telemetry {
+    use crate::models::ScannerStat;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::Instant;
+
+    static FILES_READ: AtomicU64 = AtomicU64::new(0);
+    static FILES_MISSING: AtomicU64 = AtomicU64::new(0);
+    static TRACE: AtomicBool = AtomicBool::new(false);
+
+    /// Turn on per-path tracing to stderr (`--trace`, or RMGUARD_TRACE=1).
+    pub fn enable_trace() {
+        TRACE.store(true, Ordering::Relaxed);
+    }
+
+    pub fn trace_enabled() -> bool {
+        TRACE.load(Ordering::Relaxed)
+    }
+
+    /// Record one read attempt through a shared reader. `outcome` is "ok" for a
+    /// successful open; anything else counts as missing. Only the PATH is ever
+    /// traced, never content.
+    pub fn note_read(path: &Path, outcome: &str) {
+        if outcome == "ok" {
+            FILES_READ.fetch_add(1, Ordering::Relaxed);
+        } else {
+            FILES_MISSING.fetch_add(1, Ordering::Relaxed);
+        }
+        if trace_enabled() {
+            eprintln!("trace: read {} -> {outcome}", path.display());
+        }
+    }
+
+    /// Record an existence check that did not open the file. A `false` counts as a
+    /// missing path, so "looked for ~/.bunfig.toml, not there" is visible in the
+    /// diagnostics rather than indistinguishable from never having looked.
+    pub fn note_probe(path: &Path, present: bool) {
+        if !present {
+            FILES_MISSING.fetch_add(1, Ordering::Relaxed);
+        }
+        if trace_enabled() {
+            eprintln!(
+                "trace: probe {} -> {}",
+                path.display(),
+                if present { "present" } else { "missing" }
+            );
+        }
+    }
+
+    pub fn snapshot() -> (u64, u64) {
+        (
+            FILES_READ.load(Ordering::Relaxed),
+            FILES_MISSING.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Run one scanner, attributing wall time and read counters to it.
+    pub fn timed<T>(
+        diagnostics: &mut Vec<ScannerStat>,
+        scanner: &str,
+        root: Option<PathBuf>,
+        f: impl FnOnce() -> Vec<T>,
+    ) -> Vec<T> {
+        let (r0, m0) = snapshot();
+        let start = Instant::now();
+        if trace_enabled() {
+            eprintln!("trace: scanner {scanner} start");
+        }
+        let out = f();
+        let (r1, m1) = snapshot();
+        let stat = ScannerStat {
+            scanner: scanner.to_string(),
+            root: root.map(|p| p.display().to_string()),
+            duration_ms: start.elapsed().as_millis() as u64,
+            files_read: r1 - r0,
+            files_missing: m1 - m0,
+            items: out.len(),
+            skipped: false,
+        };
+        if trace_enabled() {
+            eprintln!(
+                "trace: scanner {scanner} done: {}ms, {} read, {} missing, {} items",
+                stat.duration_ms, stat.files_read, stat.files_missing, stat.items
+            );
+        }
+        diagnostics.push(stat);
+        out
+    }
+
+    pub fn skipped(scanner: &str) -> ScannerStat {
+        ScannerStat {
+            scanner: scanner.to_string(),
+            root: None,
+            duration_ms: 0,
+            files_read: 0,
+            files_missing: 0,
+            items: 0,
+            skipped: true,
+        }
+    }
 }

@@ -947,3 +947,39 @@ pub fn human_bytes(bytes: u64) -> String {
         format!("{:.1} {}", val, UNITS[unit])
     }
 }
+
+/// The `--verbose` diagnostics table. Not part of the default report: it is for the
+/// person asking "did the scanner actually look?", which is the question every
+/// silent-zero bug in this project's history came down to.
+pub fn render_diagnostics(report: &ScanReport) -> String {
+    let mut out = String::new();
+    section_header(&mut out, "Scanner Diagnostics");
+    out.push_str(&format!(
+        "  {:<13} {:>7} {:>6} {:>8} {:>6}  {}\n",
+        "scanner", "ms", "read", "missing", "items", "status"
+    ));
+    for d in &report.diagnostics {
+        let status = if d.skipped {
+            "skipped"
+        } else if d.files_read == 0 && d.items == 0 {
+            "no inputs"
+        } else {
+            "ok"
+        };
+        let root = d
+            .root
+            .as_deref()
+            .map(|r| format!("  ({r})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  {:<13} {:>7} {:>6} {:>8} {:>6}  {status}{root}\n",
+            d.scanner, d.duration_ms, d.files_read, d.files_missing, d.items
+        ));
+    }
+    out.push_str(
+        "\n  \"no inputs\" = opened no files and produced nothing: either this machine has \
+         none of what the scanner\n  looks for, or it is looking in the wrong place. Run with \
+         --trace to see every path it tried.\n\n",
+    );
+    out
+}

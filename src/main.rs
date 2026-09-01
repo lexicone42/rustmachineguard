@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use rustmachineguard::scanners::telemetry::timed;
 use rustmachineguard::models::{self, ScanReport};
 use rustmachineguard::output::{self, OutputFormat};
 use rustmachineguard::platform::{self, PlatformInfo};
@@ -66,6 +67,17 @@ struct Cli {
     /// machine's check on any Critical). Operational errors still exit 1.
     #[arg(long, value_name = "SEVERITY")]
     fail_on: Option<FailOn>,
+
+    /// Append a per-scanner diagnostics table to the terminal report: duration, files
+    /// read, files missing, items. Tells "clean machine" apart from "looked in the
+    /// wrong place". Always present in JSON output as `diagnostics`.
+    #[arg(long)]
+    verbose: bool,
+
+    /// Print every file the scanners open or find missing to stderr, as it happens.
+    /// Paths only, never contents. Same as RMGUARD_TRACE=1.
+    #[arg(long)]
+    trace: bool,
 }
 
 /// Severity threshold for `--fail-on`, ordered most- to least-severe.
@@ -114,107 +126,107 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
     if !skip.contains(&"extensions") {
         report
             .ide_extensions
-            .extend(scanners::extensions::ExtensionsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "extensions", Some(plat.home_dir()), || scanners::extensions::ExtensionsScanner.scan(plat)));
     }
     if !skip.contains(&"mcp") {
         report
             .mcp_configs
-            .extend(scanners::mcp::McpScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "mcp", Some(plat.home_dir()), || scanners::mcp::McpScanner.scan(plat)));
     }
     if !skip.contains(&"shell") {
         report
             .shell_configs
-            .extend(scanners::shell_configs::ShellConfigsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "shell", Some(plat.home_dir()), || scanners::shell_configs::ShellConfigsScanner.scan(plat)));
     }
     if !skip.contains(&"ssh") {
         report
             .ssh_keys
-            .extend(scanners::ssh_keys::SshKeysScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "ssh", Some(plat.home_dir()), || scanners::ssh_keys::SshKeysScanner.scan(plat)));
     }
     if !skip.contains(&"cloud") {
         report
             .cloud_credentials
-            .extend(scanners::cloud_credentials::CloudCredentialsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "cloud", Some(plat.home_dir()), || scanners::cloud_credentials::CloudCredentialsScanner.scan(plat)));
     }
     if !skip.contains(&"browser") {
         report
             .browser_extensions
-            .extend(scanners::browser_extensions::BrowserExtensionsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "browser", Some(plat.home_dir()), || scanners::browser_extensions::BrowserExtensionsScanner.scan(plat)));
     }
     if !skip.contains(&"packages") {
         report
             .package_config_audits
-            .extend(scanners::package_configs::PackageConfigsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "packages", Some(plat.home_dir()), || scanners::package_configs::PackageConfigsScanner.scan(plat)));
     }
     if !skip.contains(&"rules") {
         report
             .rules_files
-            .extend(scanners::rules_files::RulesFilesScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "rules", Some(plat.home_dir()), || scanners::rules_files::RulesFilesScanner.scan(plat)));
     }
     if !skip.contains(&"skills") {
         report
             .agent_skills
-            .extend(scanners::skills::SkillsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "skills", Some(plat.home_dir()), || scanners::skills::SkillsScanner.scan(plat)));
     }
     if !skip.contains(&"settings") {
         report
             .agent_settings
-            .extend(scanners::agent_settings::AgentSettingsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "settings", Some(plat.home_dir()), || scanners::agent_settings::AgentSettingsScanner.scan(plat)));
     }
     if !skip.contains(&"aicreds") {
         report
             .ai_credentials
-            .extend(scanners::ai_credentials::AiCredentialsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "aicreds", Some(plat.home_dir()), || scanners::ai_credentials::AiCredentialsScanner.scan(plat)));
     }
     if !skip.contains(&"envfiles") {
         report
             .env_files
-            .extend(scanners::env_files::EnvFilesScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "envfiles", Some(plat.home_dir()), || scanners::env_files::EnvFilesScanner.scan(plat)));
     }
     if !skip.contains(&"transcripts") {
         report
             .transcripts
-            .extend(scanners::transcripts::TranscriptsScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "transcripts", Some(plat.home_dir()), || scanners::transcripts::TranscriptsScanner.scan(plat)));
     }
     if !skip.contains(&"marketplaces") {
         report
             .marketplaces
-            .extend(scanners::marketplaces::MarketplacesScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "marketplaces", Some(plat.home_dir()), || scanners::marketplaces::MarketplacesScanner.scan(plat)));
     }
     if !skip.contains(&"vscodetasks") {
         report
             .vscode_tasks
-            .extend(scanners::vscode_tasks::VsCodeTasksScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "vscodetasks", Some(plat.home_dir()), || scanners::vscode_tasks::VsCodeTasksScanner.scan(plat)));
     }
     if !skip.contains(&"gitconfig") {
         report
             .git_autorun_configs
-            .extend(scanners::git_config::GitConfigScanner.scan(plat));
+            .extend(timed(&mut report.diagnostics, "gitconfig", Some(plat.home_dir()), || scanners::git_config::GitConfigScanner.scan(plat)));
     }
 }
 
 /// Scanners that don't depend on home dir (run once).
 fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut ScanReport) {
     if !skip.contains(&"ai") {
-        report.ai_agents_and_tools = scanners::ai_tools::AiToolsScanner.scan(plat);
+        report.ai_agents_and_tools = timed(&mut report.diagnostics, "ai", None, || scanners::ai_tools::AiToolsScanner.scan(plat));
     }
     if !skip.contains(&"frameworks") {
-        report.ai_frameworks = scanners::ai_frameworks::AiFrameworksScanner.scan(plat);
+        report.ai_frameworks = timed(&mut report.diagnostics, "frameworks", None, || scanners::ai_frameworks::AiFrameworksScanner.scan(plat));
     }
     if !skip.contains(&"ide") {
-        report.ide_installations = scanners::ide::IdeScanner.scan(plat);
+        report.ide_installations = timed(&mut report.diagnostics, "ide", None, || scanners::ide::IdeScanner.scan(plat));
     }
     if !skip.contains(&"node") {
         report.node_package_managers =
-            scanners::node_packages::NodePackagesScanner.scan(plat);
+            timed(&mut report.diagnostics, "node", None, || scanners::node_packages::NodePackagesScanner.scan(plat));
     }
     if !skip.contains(&"containers") {
         report.container_tools =
-            scanners::container_tools::ContainerToolsScanner.scan(plat);
+            timed(&mut report.diagnostics, "containers", None, || scanners::container_tools::ContainerToolsScanner.scan(plat));
     }
     if !skip.contains(&"notebooks") {
         report.notebook_servers =
-            scanners::notebook_servers::NotebookServersScanner.scan(plat);
+            timed(&mut report.diagnostics, "notebooks", None, || scanners::notebook_servers::NotebookServersScanner.scan(plat));
     }
 }
 
@@ -235,6 +247,10 @@ fn main() {
         Format::Blueprint => OutputFormat::Blueprint,
         Format::Compliance => OutputFormat::Compliance,
     };
+
+    if cli.trace || std::env::var_os("RMGUARD_TRACE").is_some() {
+        rustmachineguard::scanners::telemetry::enable_trace();
+    }
 
     let skip: Vec<&str> = cli
         .skip
@@ -305,6 +321,7 @@ fn main() {
         vscode_tasks: Vec::new(),
         git_autorun_configs: Vec::new(),
         warnings: Vec::new(),
+        diagnostics: Vec::new(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -422,7 +439,7 @@ fn main() {
         // catalog row was an MCP server whose launch command pinned a version, so a
         // compromised package merely installed on the machine was invisible.
         if !skip.contains(&"pypkgs") {
-            let pkgs = scanners::python_packages::PythonPackagesScanner.scan(primary_plat.as_ref());
+            let pkgs = timed(&mut report.diagnostics, "pypkgs", None, || scanners::python_packages::PythonPackagesScanner.scan(primary_plat.as_ref()));
             report.summary.python_packages_count = pkgs.len();
             for pkg in &pkgs {
                 report.exposure_findings.extend(catalog.check_extension(
@@ -438,7 +455,7 @@ fn main() {
         // CLIs, which are installed by mistyping `npm i -g` and never appear as MCP
         // servers -- so without this enumeration they were unreachable.
         if !skip.contains(&"npmpkgs") {
-            let pkgs = scanners::npm_packages::NpmPackagesScanner.scan(primary_plat.as_ref());
+            let pkgs = timed(&mut report.diagnostics, "npmpkgs", None, || scanners::npm_packages::NpmPackagesScanner.scan(primary_plat.as_ref()));
             report.summary.npm_packages_count = pkgs.len();
             for pkg in &pkgs {
                 report.exposure_findings.extend(catalog.check_extension(
@@ -514,7 +531,16 @@ fn main() {
         return;
     }
 
-    let rendered = output::render(&report, format);
+    // Skipped scanners appear in diagnostics too, so the table answers "did it run?"
+    // for every scanner, not just the ones that did.
+    for label in &skip {
+        report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
+    }
+
+    let mut rendered = output::render(&report, format);
+    if cli.verbose && format == OutputFormat::Terminal {
+        rendered.push_str(&output::terminal::render_diagnostics(&report));
+    }
 
     if let Some(ref path) = cli.output {
         std::fs::write(path, &rendered).unwrap_or_else(|e| {

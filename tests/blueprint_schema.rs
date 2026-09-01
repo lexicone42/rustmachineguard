@@ -422,6 +422,7 @@ fn make_report(
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),
         }],
+        diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,

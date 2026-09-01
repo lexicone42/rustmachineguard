@@ -333,6 +333,7 @@ fn summary_counts_match_vector_lengths() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
@@ -404,6 +405,7 @@ fn json_output_is_valid_json() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
+        diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
@@ -472,6 +474,7 @@ fn html_output_no_script_injection() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
@@ -3115,6 +3118,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
             ide_installations_count: 0, ide_extensions_count: 0,
@@ -4578,4 +4582,73 @@ for line in sys.stdin:
     assert_eq!(result.tools.len(), 1, "tools must be listed after the fallback");
     // 3s discover timeout plus a fast handshake. The old behaviour was a hard 10s.
     assert!(took < std::time::Duration::from_secs(7), "fallback took {took:?}");
+}
+
+/// The read counters are what let a "0 items" row be read as "looked and found none"
+/// versus "never opened a file". Both directions must count.
+#[test]
+fn telemetry_counts_reads_and_misses_and_attributes_them_to_the_scanner() {
+    use rustmachineguard::scanners::{read_bounded, telemetry};
+    let dir = std::env::temp_dir().join(format!("rmg-telemetry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let present = dir.join("present.json");
+    std::fs::write(&present, "{}").unwrap();
+    let absent = dir.join("absent.json");
+
+    let mut diag = Vec::new();
+    let items = telemetry::timed(&mut diag, "probe", Some(dir.clone()), || {
+        let a = read_bounded(&present);
+        let b = read_bounded(&absent);
+        vec![a.is_some(), b.is_some()]
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(items, vec![true, false]);
+    let stat = &diag[0];
+    assert_eq!(stat.scanner, "probe");
+    assert_eq!(stat.files_read, 1, "one successful read: {stat:?}");
+    assert_eq!(stat.files_missing, 1, "one missing path: {stat:?}");
+    assert_eq!(stat.items, 2);
+    assert!(!stat.skipped);
+    assert_eq!(stat.root.as_deref(), Some(dir.to_string_lossy().as_ref()));
+}
+
+/// Every scanner -- run or skipped -- must appear in the JSON diagnostics, so the
+/// report can answer "did it run?" for all of them, not just the ones that did.
+#[test]
+fn json_report_lists_every_scanner_in_diagnostics() {
+    let home = std::env::temp_dir().join(format!("rmg-diag-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(".claude.json"), "{}").unwrap();
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
+                transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,\
+                settings,aicreds,envfiles,vscodetasks,shell";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip])
+        .env("HOME", &home)
+        .output()
+        .expect("run rmguard");
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(out.status.success(), "rmguard failed: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json report");
+    let diag = v["diagnostics"].as_array().expect("diagnostics array");
+
+    let ran: Vec<&str> = diag
+        .iter()
+        .filter(|d| d["skipped"] == false)
+        .filter_map(|d| d["scanner"].as_str())
+        .collect();
+    let skipped: Vec<&str> = diag
+        .iter()
+        .filter(|d| d["skipped"] == true)
+        .filter_map(|d| d["scanner"].as_str())
+        .collect();
+    assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
+    assert_eq!(skipped.len(), 23, "every --skip label is recorded: {skipped:?}");
+    assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));
+    let mcp = diag.iter().find(|d| d["scanner"] == "mcp").unwrap();
+    assert!(mcp["duration_ms"].is_u64() && mcp["files_read"].is_u64() && mcp["items"].is_u64());
+    assert!(mcp["root"].is_string(), "home-rooted scanner records its root");
 }

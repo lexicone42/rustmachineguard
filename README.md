@@ -135,6 +135,25 @@ rmguard --fail-on critical || echo "machine failed its security gate"
 Operational errors exit 1, findings-at-threshold exit 2, clean exits 0 — so scripts can
 tell "the scan couldn't run" from "the scan found something."
 
+### Debugging a scan
+
+A scanner that finds nothing looks the same whether the machine is clean or the scanner
+looked in the wrong place. `--verbose` appends a diagnostics table that tells them apart:
+
+```
+  ── Scanner Diagnostics ──
+  scanner            ms   read  missing  items  status
+  packages            0      1        3      0  ok          (/home/me)
+  gitconfig         210      1        0      0  ok          (/home/me)
+  notebooks           0      0        0      0  no inputs
+```
+
+`read` and `missing` count the files a scanner opened or looked for; `no inputs` means
+it opened nothing and produced nothing — either this machine has none of what it looks
+for, or it is looking in the wrong place. `--trace` (or `RMGUARD_TRACE=1`) then prints
+every path as it is tried. The same numbers are in `--format json` under `diagnostics`,
+so a fleet aggregator can spot a scanner that silently stopped working across machines.
+
 ## Validating detection
 
 `tests/vulnerable_range.rs` builds a deliberately-vulnerable "machine" (a
@@ -226,6 +245,12 @@ Options:
       --verify-registry              Verify MCP servers against the official MCP
                                      registry (opt-in; NETWORK — sends server
                                      package names to registry.modelcontextprotocol.io).
+      --verbose                      Append a per-scanner diagnostics table to the
+                                     terminal report (duration, files read/missing,
+                                     items). Always present in JSON as `diagnostics`.
+      --trace                        Print every path the scanners open or probe to
+                                     stderr as it happens (paths only, never
+                                     contents). Same as RMGUARD_TRACE=1.
       --fail-on <SEVERITY>           Exit 2 if any finding is at or above this
                                      severity [values: critical, high, medium,
                                      low]. The report still prints; only the exit
