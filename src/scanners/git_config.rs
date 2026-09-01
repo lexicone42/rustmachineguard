@@ -131,11 +131,37 @@ fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
     if !git_dir.exists() {
         return;
     }
+    if !config_needs_git(&git_dir.join("config")) {
+        return;
+    }
     let gd = git_dir.to_string_lossy().to_string();
     let Some(text) = run_git_config(&[format!("--git-dir={gd}")], &["--local".to_string()]) else {
         return;
     };
     collect(&text, dir, "repo-local", false, out);
+}
+
+/// Decide, from the file itself, whether `git config --list` needs to run on it.
+///
+/// Spawning git is the faithful way to resolve `include`/`includeIf` and git's own key
+/// normalisation, but it costs a process per config -- 774 execs and 2.5s on one
+/// developer machine with 32 registered projects, almost all for files holding nothing
+/// but `[core]` and `[remote "origin"]`. So read the file first (bounded, and counted
+/// in the scan diagnostics) and spawn only when it mentions an exec-capable key, the
+/// `ext` transport, or an include that could pull one in from elsewhere.
+///
+/// Anything we cannot read -- a worktree's `.git` FILE, a permissions problem -- is
+/// handed to git anyway: the conservative direction is to spawn.
+fn config_needs_git(cfg: &Path) -> bool {
+    const NEEDLES: &[&str] = &[
+        "fsmonitor", "hookspath", "sshcommand", "gitproxy", "external", "credential",
+        "textconv", "clean", "smudge", "process", "driver", "command", "include", "ext",
+    ];
+    let Some(text) = crate::scanners::read_bounded(cfg) else {
+        return true;
+    };
+    let lower = text.to_ascii_lowercase();
+    NEEDLES.iter().any(|n| lower.contains(n))
 }
 
 /// Walk for git directories BURIED inside the project — the CVE-2026-45033 shape. A
@@ -144,42 +170,67 @@ fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
 /// attacker-authored in a way the project's own `.git/config` is not.
 fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     const MAX_DIRS: usize = 4_000;
+    /// Generated or vendored trees. A clone does not ship these -- they are built or
+    /// installed afterwards -- so a repo cannot plant a gitdir in them, and they are
+    /// where nearly all of a project's directories live. Skipping them is what keeps
+    /// this walk from spending its whole budget inside node_modules.
+    const PRUNE: &[&str] = &[
+        "node_modules", ".venv", "venv", "env", ".tox", ".mypy_cache", ".pytest_cache",
+        "__pycache__", "target", ".cache", ".npm", ".cargo", "site-packages", "dist-packages",
+    ];
+    let own_git = root.join(".git");
     let mut budget = MAX_DIRS;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        // Budget is spent per directory LISTED, never per file: charging it per entry
+        // let a few thousand junk files exhaust the walk before it reached a buried git
+        // dir -- an attacker-controllable way to hide from the CVE-2026-45033 check.
+        if budget == 0 {
+            return;
+        }
+        budget -= 1;
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
+        // One listing answers both questions -- "is this a git dir?" and "what do I
+        // descend into?" -- using the entry type the listing already carries. The
+        // previous version stat'ed every entry and then stat'ed config and HEAD again
+        // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
+        let (mut has_config, mut has_head) = (false, false);
+        let mut children = Vec::new();
         for entry in entries.flatten() {
-            if budget == 0 {
-                return;
-            }
-            let p = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            if !meta.is_dir() {
-                continue;
+            let name = entry.file_name();
+            if kind.is_file() {
+                if name == "config" {
+                    has_config = true;
+                } else if name == "HEAD" {
+                    has_head = true;
+                }
+            } else if kind.is_dir() && !PRUNE.iter().any(|p| name == *p) {
+                // Symlinks report their own type here, so a symlinked dir is not
+                // followed -- same as the old symlink_metadata() check.
+                children.push(entry.path());
             }
-            // Spend budget only on directories. Charging it per plain FILE let a repo
-            // with a few thousand junk files exhaust the walk before reaching the buried
-            // git dir -- a deterministic, attacker-controllable way to hide from the
-            // CVE-2026-45033 check.
-            budget -= 1;
-            // A git dir has a config file plus HEAD; that pair is the cheap signal.
-            let cfg = p.join("config");
-            if cfg.is_file() && p.join("HEAD").is_file() {
-                // The project's own .git is handled by scan_repo_local.
-                if p != root.join(".git")
+        }
+        // A git dir has a config file plus HEAD; that pair is the cheap signal.
+        if has_config && has_head {
+            // The project's own .git is handled by scan_repo_local; the project root
+            // itself is never a nested repo.
+            if dir != own_git && dir != root {
+                let cfg = dir.join("config");
+                if config_needs_git(&cfg)
                     && let Some(text) =
                         run_git_config(&[], &[format!("--file={}", cfg.display())])
                 {
-                    collect(&text, &p, "nested-repo", true, out);
+                    collect(&text, &dir, "nested-repo", true, out);
                 }
-                continue; // don't descend into a git dir's internals
             }
-            stack.push(p);
+            continue; // don't descend into a git dir's internals
         }
+        stack.extend(children);
     }
 }
 
@@ -264,4 +315,46 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     scan_nested_repos(root, out);
+}
+
+#[cfg(test)]
+mod needs_git_tests {
+    use super::config_needs_git;
+
+    fn tmp(name: &str, body: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("rmg-cfg-{}-{name}", std::process::id()));
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn boring_config_does_not_spawn_git() {
+        let p = tmp("boring", "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/x.git\n");
+        assert!(!config_needs_git(&p));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn exec_keys_includes_and_ext_transport_spawn_git() {
+        for (n, body) in [
+            ("fsm", "[core]\n\tfsmonitor = ./x\n"),
+            ("hooks", "[core]\n\thooksPath = .hooks\n"),
+            ("filter", "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n"),
+            ("inc", "[include]\n\tpath = ../other\n"),
+            ("incif", "[includeIf \"gitdir:~/w/\"]\n\tpath = x\n"),
+            ("ext", "[protocol \"ext\"]\n\tallow = always\n"),
+            ("cred", "[credential]\n\thelper = !f() { :; }; f\n"),
+        ] {
+            let p = tmp(n, body);
+            assert!(config_needs_git(&p), "{n}: {body:?}");
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn unreadable_config_is_left_to_git() {
+        // A worktree's `.git` is a FILE, so `.git/config` does not exist; git resolves
+        // the real gitdir itself, and we must not skip it.
+        assert!(config_needs_git(std::path::Path::new("/nonexistent/.git/config")));
+    }
 }
