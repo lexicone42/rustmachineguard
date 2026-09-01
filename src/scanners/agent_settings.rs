@@ -200,8 +200,23 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
             .map(|a| a.len())
             .unwrap_or(0)
     };
+    // These three are findings in their own right, so they must be computed BEFORE
+    // the "nothing to say" check below. They used to be filled in after it, which meant
+    // a Cursor settings file whose only content was a hostile gateway override, an
+    // inline API key, or a group-writable mode produced no entry -- and no finding.
+    let gateway_overrides = extract_gateway_overrides(&json);
+    let inline_secret_env_keys =
+        crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
+    let world_writable = crate::scanners::is_world_or_group_writable(path);
     // Nothing to say about this file? Don't manufacture an entry.
-    if hooks.is_empty() && permission_mode.is_none() && count("allow") == 0 && count("deny") == 0 {
+    if hooks.is_empty()
+        && permission_mode.is_none()
+        && count("allow") == 0
+        && count("deny") == 0
+        && gateway_overrides.is_empty()
+        && inline_secret_env_keys.is_empty()
+        && !world_writable
+    {
         return;
     }
     out.push(AgentSettings {
@@ -215,11 +230,9 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         deny_rules: count("deny"),
         auto_approve_mcp: false,
         enabled_mcp_servers: Vec::new(),
-        gateway_overrides: extract_gateway_overrides(&json),
-        inline_secret_env_keys: crate::scanners::mcp::extract_inline_secret_env_keys(
-            json.get("env"),
-        ),
-        world_writable: crate::scanners::is_world_or_group_writable(path),
+        gateway_overrides,
+        inline_secret_env_keys,
+        world_writable,
     });
 }
 
@@ -324,6 +337,11 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
         .filter_map(|c| c.as_os_str().to_str())
         .find(|c| AGENT_CONFIG_DIRS.contains(c));
     let base = settings_path.parent().unwrap_or(std::path::Path::new("."));
+    // The directory that CONTAINS the agent-config dir (proj/ for proj/.claude/...).
+    let project_root = settings_path.ancestors().find_map(|a| {
+        let name = a.file_name()?.to_str()?;
+        AGENT_CONFIG_DIRS.contains(&name).then(|| a.parent()).flatten()
+    });
 
     for token in referenced_paths(command) {
         let referenced_dir = token
@@ -341,13 +359,22 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
             }
         }
 
-        // Resolve relative to the settings file and check what it actually is.
-        let candidate = if token.starts_with('/') {
-            std::path::PathBuf::from(token)
+        // Resolve a relative path and check what it actually is. Hooks run with the
+        // PROJECT ROOT as cwd, not the settings directory, so `./payload` in
+        // proj/.claude/settings.json means proj/payload. Resolving only against the
+        // settings dir meant this check could never fire for the relative form -- the
+        // one a repo-shipped payload actually uses. Try both.
+        let candidates: Vec<std::path::PathBuf> = if token.starts_with('/') {
+            vec![std::path::PathBuf::from(token)]
         } else {
-            base.join(token.trim_start_matches("./"))
+            let rel = token.trim_start_matches("./");
+            let mut v = vec![base.join(rel)];
+            if let Some(root) = project_root {
+                v.push(root.join(rel));
+            }
+            v
         };
-        if is_native_binary(&candidate) {
+        if candidates.iter().any(|c| is_native_binary(c)) {
             risks.push(format!("executes a native binary, not a script ({token})"));
         }
     }

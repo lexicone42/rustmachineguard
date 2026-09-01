@@ -113,7 +113,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Least-privilege / scoped tokens for agents",
         coverage: Coverage::Partial,
         how: "Flags bypassPermissions and blanket MCP auto-approval; surfaces at-rest credentials. Full agent-identity/scope modeling is not yet implemented.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Credential"],
+        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret", "Secret exposure", "Secret leak", "SSH key"],
     },
     // ── OWASP Agentic Applications Top 10 (ASI) ──
     Control {
@@ -130,7 +130,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
         how: "Threat catalog (82 entries, exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
-        finding_categories: &["Exposure", "Registry"],
+        finding_categories: &["Exposure", "Registry", "Git autorun"],
     },
     Control {
         framework: "OWASP Agentic Applications Top 10 (2026)",
@@ -231,7 +231,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Lifecycle hook persistence",
         coverage: Coverage::Covered,
         how: "Parses settings hooks (shell commands run on agent events) and flags dangerous patterns.",
-        finding_categories: &["Hook"],
+        finding_categories: &["Hook", "Auto-run task", "Git autorun"],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -255,10 +255,7 @@ pub const CONTROLS: &[Control] = &[
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
         how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks.",
-        finding_categories: &[
-            "Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret",
-            "MCP command",
-        ],
+        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret"],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -298,7 +295,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Inherited authority abuse",
         coverage: Coverage::Partial,
         how: "Surfaces at-rest credentials and static-key vs OAuth/SPIFFE identity posture; runtime token use is out of scope.",
-        finding_categories: &["Credential", "Agent identity"],
+        finding_categories: &["Credential", "Agent identity", "Secret exposure", "Secret leak", "SSH key"],
     },
 ];
 
@@ -443,6 +440,27 @@ mod tests {
                 "category {cat:?} has no bespoke guidance (hit the fallback)"
             );
             assert!(!g.what.is_empty() && !g.why.is_empty() && !g.fix.is_empty());
+        }
+    }
+
+    /// Categories the tool emits but deliberately maps to no framework control. Empty
+    /// today; anything added here must say why in a comment.
+    const UNMAPPED_BY_DESIGN: &[&str] = &[];
+
+    /// The inverse of the test below. Seven categories -- every VS Code auto-run task,
+    /// every git autorun config, every leaked .env, every passphrase-less SSH key --
+    /// used to contribute to NO control, so the compliance report silently understated
+    /// coverage for exactly the findings a reviewer would ask about.
+    #[test]
+    fn every_finding_category_is_mapped_to_some_control() {
+        for cat in KNOWN_CATEGORIES {
+            if UNMAPPED_BY_DESIGN.contains(cat) {
+                continue;
+            }
+            assert!(
+                CONTROLS.iter().any(|c| c.finding_categories.contains(cat)),
+                "finding category {cat:?} maps to no compliance control"
+            );
         }
     }
 
