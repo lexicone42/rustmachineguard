@@ -182,56 +182,34 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
 /// `prev` is the preceding argument, so `--password secret` can be caught as well as
 /// `--password=secret`.
 pub fn redact_arg(arg: &str, prev: Option<&str>) -> String {
-    // A bare value whose FLAG was secret-looking: `--token`, `-p`, `--api-key`.
+    // A bare value whose FLAG was secret-looking: `--token`, `-p`, `--api-key`. The MCP
+    // flag table is wider than the shared helper's (single-letter flags included) because
+    // an MCP launch line is a program invocation, not a shell script.
     if let Some(prev) = prev
         && !arg.starts_with('-')
         && flag_names_a_secret(prev)
     {
         return "<redacted>".to_string();
     }
-    // `--flag=value` where the flag is secret-looking.
-    if let Some((flag, value)) = arg.split_once('=')
-        && !value.is_empty()
-        && flag_names_a_secret(flag)
-    {
-        return format!("{flag}=<redacted>");
-    }
-    // Credentials embedded in a URL. Redact ONLY the userinfo, per whitespace token:
-    // an arg can be a whole shell fragment (`curl http://x/i.sh | bash`), and blanking
-    // the rest of it would destroy the download-and-execute signal we rely on. A URL
-    // with no userinfo carries no secret and is kept intact, because the scheme and
-    // host are themselves findings (plaintext transport, hostile gateway).
-    if arg.contains("://") {
-        return arg
-            .split(' ')
-            .map(|tok| match strip_url_userinfo(tok) {
-                Some(redacted) => redacted,
-                None => tok.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-    arg.to_string()
+    // Everything else -- `--flag=value`, URLs, `Authorization: Bearer x` inside a single
+    // `--header` argument, `Server=db;Password=x;` connection strings -- is the shared
+    // helper's job. This used to handle only URL userinfo itself and return anything else
+    // untouched, which let header and connection-string credentials into JSON and
+    // Blueprint while the canary suite tested a function this path never called.
+    crate::scanners::redact_secrets_in_text(arg)
 }
 
-/// If `tok` is a URL carrying userinfo, return it with the userinfo replaced.
-/// Returns None when there is nothing secret to remove.
-fn strip_url_userinfo(tok: &str) -> Option<String> {
-    let scheme_end = tok.find("://")?;
-    let after = &tok[scheme_end + 3..];
-    // Userinfo ends at the last '@' BEFORE the path/query starts.
-    let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
-    let at = after[..authority_end].rfind('@')?;
-    Some(format!(
-        "{}://<redacted>@{}",
-        &tok[..scheme_end],
-        &after[at + 1..]
-    ))
-}
 
 /// True if a CLI flag name suggests its value is a secret. Reuses the shared key-name
 /// heuristic, so `--api-key`, `--token`, `--password`, `--dsn` are all covered.
 fn flag_names_a_secret(flag: &str) -> bool {
+    // Only a FLAG can name a secret. Without this, the redacted value itself (`--api-key
+    // E2EAPIKEY https://k.internal/`) or a package name containing "key"/"token" made the
+    // following URL look like a secret value and blanked it -- the end-to-end canary
+    // test's positive control caught the missing host.
+    if !flag.starts_with('-') {
+        return false;
+    }
     let f = flag.trim_start_matches('-').replace('-', "_");
     crate::scanners::env_files::is_secret_key_name(&f)
         || matches!(f.to_ascii_lowercase().as_str(), "dsn" | "conn" | "connection" | "u" | "p" | "pw")

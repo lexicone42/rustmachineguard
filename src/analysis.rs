@@ -310,7 +310,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                         s.name
                     ),
                     location: mcp.config_path.clone(),
-                    evidence: Some(launch.trim().to_string()),
+                    evidence: Some(crate::scanners::redact_secrets_in_text(launch.trim())),
                 });
             }
         }

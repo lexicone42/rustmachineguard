@@ -4336,7 +4336,7 @@ fn reported_values_are_stripped_of_credentials() {
     // is not, so only the secret goes.
     assert_eq!(
         redact_secrets_in_text("!f() { echo password=HELPERSECRET42; }; f"),
-        "!f() { echo password=<redacted> }; f"
+        "!f() { echo password=<redacted>; }; f"
     );
     assert_eq!(
         redact_secrets_in_text("https://deploy:NPMPASS@npm.internal.example.com/"),

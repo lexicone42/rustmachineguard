@@ -293,6 +293,9 @@ fn referenced_paths(command: &str) -> Vec<&str> {
         .split(|c: char| c.is_whitespace() || c == ';' || c == '|' || c == '&')
         .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
         .filter(|t| !t.is_empty() && !t.starts_with('-'))
+        // A URL is never a hook binary; probing it as a path only puts the URL -- userinfo
+        // and all -- into the trace log and the miss counters.
+        .filter(|t| !t.contains("://"))
         .filter(|t| {
             t.contains('/')
                 || t.ends_with(".sh")

@@ -242,7 +242,7 @@ fn is_invisible(ch: char) -> bool {
 /// URL — and blanking it would destroy the signal.
 pub fn redact_secrets_in_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut prev: Option<&str> = None;
+    let (mut prev, mut prev2): (Option<&str>, Option<&str>) = (None, None);
     let mut idx = 0;
     while idx < text.len() {
         // Copy the run of whitespace verbatim so the value stays readable. Splitting on
@@ -258,44 +258,125 @@ pub fn redact_secrets_in_text(text: &str) -> String {
             .find(char::is_whitespace)
             .map_or(text.len(), |o| tok_start + o);
         let tok = &text[tok_start..tok_end];
-        out.push_str(&redact_token(tok, prev));
+        out.push_str(&redact_token(tok, prev, prev2));
+        prev2 = prev;
         prev = Some(tok);
         idx = tok_end;
     }
     out
 }
 
-/// True when the PRECEDING token means this token is a secret's value:
-/// `Authorization: <tok>`, `Bearer <tok>`, `--token <tok>`, `password: <tok>`.
+/// Flags whose value is `user:password` (curl, wget, httpie). The user half is kept.
+const USER_FLAGS: &[&str] = &["-u", "--user", "--proxy-user", "-U", "--http-user"];
+
+fn is_scheme_word(s: &str) -> bool {
+    s.eq_ignore_ascii_case("bearer") || s.eq_ignore_ascii_case("basic")
+}
+
+fn bare_key(k: &str) -> &str {
+    k.trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+}
+
+fn is_secret_key(k: &str) -> bool {
+    let b = bare_key(k);
+    !b.is_empty() && crate::scanners::env_files::is_secret_key_name(b)
+}
+
+/// `key=value` if the token has an '=', else `key:value` if it has a ':'. The '=' wins
+/// so `//host/:_authToken=X` keys on `_authToken`, not on `//host/`.
+fn split_pair(tok: &str) -> Option<(&str, char, &str)> {
+    if let Some(i) = tok.find('=') {
+        return Some((&tok[..i], '=', &tok[i + 1..]));
+    }
+    let i = tok.find(':')?;
+    Some((&tok[..i], ':', &tok[i + 1..]))
+}
+
+/// True when the PRECEDING token(s) mean this token is a secret's value:
+/// `Authorization: <tok>`, `Bearer <tok>`, `--token <tok>`, `password: <tok>`,
+/// `password = <tok>`, `Authorization=Bearer <tok>`.
+///
+/// A marker has to LOOK like a key: a flag (`--token`), a key with its separator
+/// (`password:`), a scheme word, or a bare key followed by a lone `=`/`:` token (INI
+/// style). Bare words are not markers -- `gh auth login` must not redact `login`.
 ///
 /// Single-letter flags are deliberately NOT markers. `-p` is a port (`ssh -p 22`,
 /// `-p 3000`) or `mkdir -p /path` at least as often as it is a password, and redacting
 /// the argument after it would erase exactly the path or port a finding is about.
-fn is_secret_value_position(prev: Option<&str>) -> bool {
+fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
     let Some(p) = prev else { return false };
-    // A complete `KEY=value` pair already carried its own secret; the token AFTER it is
-    // the next argument, not a value. Redacting it hid the command a hook actually runs.
-    if p.split_once('=').is_some_and(|(_, v)| !v.is_empty()) {
-        return false;
+    if p == "=" || p == ":" {
+        return prev2.is_some_and(is_secret_key);
     }
-    let p = p.trim_end_matches([':', '=']);
-    if p.eq_ignore_ascii_case("bearer") || p.eq_ignore_ascii_case("basic") {
+    if is_scheme_word(p) {
         return true;
     }
-    let bare = p.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-    !bare.is_empty() && crate::scanners::env_files::is_secret_key_name(bare)
+    if let Some((_, _, v)) = split_pair(p) {
+        // `Authorization=Bearer` / `Authorization:Bearer`: the pair's value is the scheme
+        // word, so the credential is the NEXT token.
+        if is_scheme_word(v) {
+            return true;
+        }
+        // Any other complete pair already carried its own value; the token after it is
+        // the next argument. Redacting it hid the command a hook actually runs.
+        if !v.is_empty() {
+            return false;
+        }
+    }
+    let flag_shaped = p.starts_with('-') || p.ends_with(':') || p.ends_with('=');
+    flag_shaped && is_secret_key(p)
 }
 
-/// Strip `user:pass@` from a value, with or without a URL scheme. The HOST is kept —
+/// The authority of `after_scheme` (everything up to the path) and the remainder.
+/// A backslash ends the authority too: WHATWG treats `\` as `/` for special schemes,
+/// so `https://evil.com\@registry.npmjs.org/` has host evil.com. Splitting only on
+/// `/?#` read the host as registry.npmjs.org and called a hostile registry official.
+fn split_authority(after_scheme: &str) -> (&str, &str) {
+    let end = after_scheme
+        .find(['/', '?', '#', '\\'])
+        .unwrap_or(after_scheme.len());
+    after_scheme.split_at(end)
+}
+
+/// Redact a URL: userinfo, and any query parameter whose NAME is secret-shaped.
+/// `?a=1&token=X` used to leak because only a leading `key=` was recognised.
+fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let (scheme, after) = (&url[..scheme_end], &url[scheme_end + 3..]);
+    let (authority, rest) = split_authority(after);
+    let host = match authority.rfind('@') {
+        Some(at) => format!("<redacted>@{}", &authority[at + 1..]),
+        None => authority.to_string(),
+    };
+    let rest = match rest.find('?') {
+        Some(q) => {
+            let (path, query) = (&rest[..q], &rest[q + 1..]);
+            let (query, frag) = match query.find('#') {
+                Some(h) => (&query[..h], &query[h..]),
+                None => (query, ""),
+            };
+            let query: Vec<String> = query
+                .split('&')
+                .map(|kv| match kv.split_once('=') {
+                    Some((k, v)) if !v.is_empty() && is_secret_key(k) => format!("{k}=<redacted>"),
+                    _ => kv.to_string(),
+                })
+                .collect();
+            format!("{path}?{}{frag}", query.join("&"))
+        }
+        None => rest.to_string(),
+    };
+    format!("{scheme}://{host}{rest}")
+}
+
+/// Strip `user:pass@` from a value, with or without a URL scheme. The HOST is kept --
 /// it is the security-relevant half of the finding; the credential is not.
 fn redact_userinfo(value: &str) -> String {
-    if let Some(scheme_end) = value.find("://") {
-        let after = &value[scheme_end + 3..];
-        let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
-        if let Some(at) = after[..authority_end].rfind('@') {
-            return format!("{}://<redacted>@{}", &value[..scheme_end], &after[at + 1..]);
-        }
-        return value.to_string();
+    if value.contains("://") {
+        return redact_url(value);
     }
     // Scheme-less `user:pass@host`, as pip's `trusted-host` and git remotes write it.
     // Require a non-empty password segment so plain `user@host` and email addresses,
@@ -304,37 +385,93 @@ fn redact_userinfo(value: &str) -> String {
         && at + 1 < value.len()
         && let Some(colon) = value[..at].find(':')
         && colon + 1 < at
+        && !value[..at].contains('=')
     {
         return format!("<redacted>@{}", &value[at + 1..]);
     }
     value.to_string()
 }
 
-fn redact_token(tok: &str, prev: Option<&str>) -> String {
+/// Redact a quoted value while keeping the quotes and whatever follows the close, so
+/// `'{"token":"X"}'` becomes `'{"token":"<redacted>"}'` rather than losing its tail.
+fn redact_value_keeping_quotes(v: &str) -> String {
+    let q = v.chars().next().filter(|c| *c == '"' || *c == '\'');
+    match q {
+        Some(q) if v.len() > 1 => match v[1..].find(q) {
+            Some(close) => format!("{q}<redacted>{}", &v[1 + close..]),
+            None => format!("{q}<redacted>"),
+        },
+        _ => "<redacted>".to_string(),
+    }
+}
+
+/// One `;`- or `&`-free segment: a URL, a `user:pass@host`, or a `key=value` pair.
+fn redact_segment(seg: &str) -> String {
+    if let Some(sc) = seg.find("://")
+        && !seg[..sc].contains(['=', ':'])
+    {
+        return redact_url(seg);
+    }
+    let userinfo = redact_userinfo(seg);
+    if userinfo != seg {
+        return userinfo;
+    }
+    let Some((k, sep, v)) = split_pair(seg) else {
+        return seg.to_string();
+    };
+    if v.is_empty() {
+        return seg.to_string();
+    }
+    if is_secret_key(k) {
+        // `Authorization=Bearer`: keep the scheme word so the NEXT token is redacted.
+        if is_scheme_word(v) {
+            return seg.to_string();
+        }
+        return format!("{k}{sep}{}", redact_value_keeping_quotes(v));
+    }
+    // `--user=admin:pw`: keep the user, drop the password.
+    if USER_FLAGS.iter().any(|f| f.trim_start_matches('-') == bare_key(k))
+        && let Some((u, _)) = v.split_once(':')
+    {
+        return format!("{k}{sep}{u}:<redacted>");
+    }
+    format!("{k}{sep}{}", redact_userinfo(v))
+}
+
+fn redact_token(tok: &str, prev: Option<&str>, prev2: Option<&str>) -> String {
     // `Bearer` / `Basic` are scheme keywords, not the credential; keeping them visible
     // shows WHICH auth scheme is in use, and the token after them is still redacted.
-    if tok.eq_ignore_ascii_case("bearer") || tok.eq_ignore_ascii_case("basic") {
+    if is_scheme_word(tok) {
         return tok.to_string();
     }
-    if is_secret_value_position(prev) {
+    if is_secret_value_position(prev, prev2) {
         return "<redacted>".to_string();
     }
-    // key=value: redact the whole value when the KEY names a secret, otherwise keep the
-    // key and scrub only credentials embedded in the value. Split on the FIRST '=' so a
-    // base64 value containing '=' is still fully covered.
-    if let Some((k, v)) = tok.split_once('=')
-        && !v.is_empty()
+    // curl-style basic auth: `-u admin:pw`. Keep the user, drop the password. The flag
+    // alone is not a marker (`python -u script.py`), the `user:pass` shape is.
+    if prev.is_some_and(|p| USER_FLAGS.contains(&p))
+        && let Some((u, _)) = tok.split_once(':')
     {
-        let bare = k.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-        if crate::scanners::env_files::is_secret_key_name(bare) {
-            return format!("{k}=<redacted>");
-        }
-        // The "key" may itself be a URL whose query string holds the '=' we split on:
-        // `https://u:p@host/path?q=1` splits into k=`https://u:p@host/path?q`, v=`1`,
-        // and the credential in k walked through untouched. Scrub both halves.
-        return format!("{}={}", redact_userinfo(k), redact_userinfo(v));
+        return format!("{u}:<redacted>");
     }
-    redact_userinfo(tok)
+    // A URL is one unit and must not be split on its query string's '&' or '='.
+    if let Some(sc) = tok.find("://")
+        && !tok[..sc].contains(['=', ':'])
+    {
+        return redact_url(tok);
+    }
+    // Connection strings and query fragments carry several pairs: `Server=db;Password=X;`.
+    let mut out = String::with_capacity(tok.len());
+    let mut start = 0;
+    for (i, ch) in tok.char_indices() {
+        if ch == ';' || ch == '&' {
+            out.push_str(&redact_segment(&tok[start..i]));
+            out.push(ch);
+            start = i + 1;
+        }
+    }
+    out.push_str(&redact_segment(&tok[start..]));
+    out
 }
 
 /// Trait for all scanners.
@@ -358,8 +495,9 @@ pub fn split_url_authority(url: &str) -> (&str, &str) {
         Some(i) => (&url[..i], &url[i + 3..]),
         None => ("", url),
     };
+    // A backslash ends the authority (WHATWG special-scheme rule); see split_authority.
     let authority = after_scheme
-        .split(['/', '?', '#'])
+        .split(['/', '?', '#', '\\'])
         .next()
         .unwrap_or(after_scheme);
     let host_port = match authority.rsplit_once('@') {
@@ -517,6 +655,13 @@ pub fn read_head(path: &std::path::Path, max_bytes: usize) -> Option<String> {
 /// never reported. Compares the host exactly, or as a true parent domain.
 pub fn is_official_registry(value: &str, official: &[&str]) -> bool {
     let trimmed = value.trim().trim_matches(['"', '\'']);
+    // A registry URL with credentials in front of the host is never "just the official
+    // registry": npm's parser may read a different host than ours does, and the
+    // embedded credential is itself worth a finding.
+    let after_scheme = trimmed.find("://").map_or(trimmed, |i| &trimmed[i + 3..]);
+    if split_authority(after_scheme).0.contains('@') {
+        return false;
+    }
     let (_scheme, host_port) = split_url_authority(trimmed);
     let host = host_port
         .rsplit_once(':')
@@ -573,7 +718,8 @@ pub mod telemetry {
             FILES_MISSING.fetch_add(1, Ordering::Relaxed);
         }
         if trace_enabled() {
-            eprintln!("trace: read {} -> {outcome}", path.display());
+            let shown = super::redact_secrets_in_text(&path.display().to_string());
+            eprintln!("trace: read {shown} -> {outcome}");
         }
     }
 
@@ -585,11 +731,8 @@ pub mod telemetry {
             FILES_MISSING.fetch_add(1, Ordering::Relaxed);
         }
         if trace_enabled() {
-            eprintln!(
-                "trace: probe {} -> {}",
-                path.display(),
-                if present { "present" } else { "missing" }
-            );
+            let shown = super::redact_secrets_in_text(&path.display().to_string());
+            eprintln!("trace: probe {shown} -> {}", if present { "present" } else { "missing" });
         }
     }
 
