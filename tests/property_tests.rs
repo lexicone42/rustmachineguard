@@ -4647,8 +4647,10 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .filter_map(|d| d["scanner"].as_str())
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
-    assert_eq!(skipped.len(), 23, "every --skip label is recorded: {skipped:?}");
+    // 23 --skip labels plus the two opt-in phases that were not requested.
+    assert_eq!(skipped.len(), 25, "every --skip label and opt-in phase is recorded: {skipped:?}");
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));
+    assert!(skipped.contains(&"mcp-probe") && skipped.contains(&"registry"), "{skipped:?}");
     let mcp = diag.iter().find(|d| d["scanner"] == "mcp").unwrap();
     assert!(mcp["duration_ms"].is_u64() && mcp["files_read"].is_u64() && mcp["items"].is_u64());
     assert!(mcp["root"].is_string(), "home-rooted scanner records its root");
@@ -5220,4 +5222,31 @@ fn enumeration_cut_by_the_deadline_is_not_a_clean_success() {
     assert!(r.tools.is_empty());
     let e = r.error.as_deref().unwrap_or("");
     assert!(e.contains("tools/list") || e.contains("timeout") || e.contains("initialize rejected"), "{e:?}");
+}
+
+
+/// --no-builtin-catalog disables the package scanners; the table must say so instead of
+/// silently having no row for them, and RMGUARD_TRACE=0 must not enable tracing.
+#[test]
+fn diagnostics_cover_catalog_less_runs_and_trace_env_is_boolean() {
+    let home = std::env::temp_dir().join(format!("rmg-diag-nocat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(".claude.json"), "{}").unwrap();
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
+                transcripts,marketplaces,gitconfig,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--no-builtin-catalog", "--skip", skip])
+        .env("HOME", &home).env("RMGUARD_TRACE", "0")
+        .output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("trace:"), "RMGUARD_TRACE=0 enabled tracing:\n{stderr}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows: Vec<(&str, bool)> = v["diagnostics"].as_array().unwrap().iter()
+        .map(|d| (d["scanner"].as_str().unwrap(), d["skipped"].as_bool().unwrap())).collect();
+    assert!(rows.contains(&("pypkgs", true)) && rows.contains(&("npmpkgs", true)), "{rows:?}");
+    let labels: Vec<&str> = rows.iter().map(|(l, _)| *l).collect();
+    let mut dedup = labels.clone(); dedup.sort(); dedup.dedup();
+    assert_eq!(labels.len(), dedup.len(), "duplicate diagnostics rows: {labels:?}");
 }

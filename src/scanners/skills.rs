@@ -42,7 +42,7 @@ impl Scanner for SkillsScanner {
 
         // Codex hooks from ~/.codex/
         let codex_dir = home.join(".codex");
-        if codex_dir.is_dir() {
+        if crate::scanners::probe_dir(&codex_dir) {
             scan_skill_dir(&codex_dir, "codex", "global", &mut results);
         }
 
@@ -90,7 +90,7 @@ fn scan_skill_bundles(
     scope: &str,
     results: &mut Vec<AgentSkill>,
 ) {
-    if !root.is_dir() {
+    if !crate::scanners::probe_dir(&root) {
         return;
     }
     let mut budget = MAX_BUNDLE_FILES;
@@ -169,7 +169,7 @@ fn scan_skill_dir(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if !crate::scanners::probe_file(&path) {
             continue;
         }
 
@@ -221,7 +221,7 @@ fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
     let dirs: Vec<PathBuf> = projects
         .keys()
         .map(PathBuf::from)
-        .filter(|p| p.is_dir())
+        .filter(|p| crate::scanners::probe_dir(&p))
         .collect();
     if dirs.is_empty() {
         None

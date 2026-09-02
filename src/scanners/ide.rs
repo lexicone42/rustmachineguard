@@ -32,7 +32,7 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let plist = install_path.join("Contents/Info.plist");
-        if plist.exists() {
+        if crate::scanners::probe_exists(&plist) {
             if let Ok(output) = std::process::Command::new("defaults")
                 .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"])
                 .output()
@@ -55,7 +55,7 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     };
 
     // If install_path is a binary (Linux), use it directly
-    if install_path.is_file() {
+    if crate::scanners::probe_file(&install_path) {
         return get_binary_version(install_path.to_str().unwrap_or(bin_name));
     }
 

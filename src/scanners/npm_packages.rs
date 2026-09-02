@@ -87,7 +87,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     for proj in projects {
         roots.push(proj.join("node_modules"));
     }
-    roots.retain(|p| p.is_dir());
+    roots.retain(|p| crate::scanners::probe_dir(&p));
     roots
 }
 
@@ -100,7 +100,7 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
             .as_object()?
             .keys()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::scanners::probe_dir(&p))
             .collect(),
     )
 }
@@ -131,7 +131,7 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
             if let Ok(store) = std::fs::read_dir(&p) {
                 for s in store.flatten() {
                     let nm = s.path().join("node_modules");
-                    if nm.is_dir() {
+                    if crate::scanners::probe_dir(&nm) {
                         scan_root(&nm, out, budget);
                     }
                 }
@@ -210,7 +210,7 @@ fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, bud
     // npm/yarn nest a dependency under its parent when versions conflict:
     // node_modules/<parent>/node_modules/<child>. Same budget.
     let nested = dir.join("node_modules");
-    if nested.is_dir() {
+    if crate::scanners::probe_dir(&nested) {
         scan_root(&nested, out, budget);
     }
 }

@@ -248,7 +248,12 @@ fn main() {
         Format::Compliance => OutputFormat::Compliance,
     };
 
-    if cli.trace || std::env::var_os("RMGUARD_TRACE").is_some() {
+    // RMGUARD_TRACE is a boolean: "1"/"true"/"yes". An exported-but-disabled `=0` must
+    // not turn on a channel that prints every path the scanners touch.
+    let env_trace = std::env::var("RMGUARD_TRACE")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if cli.trace || env_trace {
         rustmachineguard::scanners::telemetry::enable_trace();
     }
 
@@ -408,6 +413,15 @@ fn main() {
         }
     }
 
+    // Without a catalog the package scanners never run; say so in the table rather
+    // than leaving two labels with no row at all, which reads as "never existed".
+    if catalog.is_none() {
+        for label in ["pypkgs", "npmpkgs"] {
+            if !skip.contains(&label) {
+                report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
+            }
+        }
+    }
     if let Some(ref catalog) = catalog {
         for mcp in &report.mcp_configs {
             for server in &mcp.servers {
@@ -489,15 +503,21 @@ fn main() {
     }
 
     // MCP live probing (opt-in)
+    // The two opt-in phases are the slowest and the only network-touching things this
+    // tool does; they belong in the table like any scanner, and appear as skipped when
+    // their flag is off.
     if cli.probe_mcp {
-        report.mcp_probes = scanners::mcp_probe::probe_mcp_servers(&report.mcp_configs);
+        report.mcp_probes = timed(&mut report.diagnostics, "mcp-probe", None, || {
+            scanners::mcp_probe::probe_mcp_servers(&report.mcp_configs)
+        });
     }
 
     // MCP registry verification (opt-in, network)
     if cli.verify_registry {
         eprintln!("info: verifying MCP servers against the official registry (network)");
-        report.mcp_registry_checks =
-            rustmachineguard::registry::verify_servers(&report.mcp_configs);
+        report.mcp_registry_checks = timed(&mut report.diagnostics, "registry", None, || {
+            rustmachineguard::registry::verify_servers(&report.mcp_configs)
+        });
     }
 
     // Agent identity posture (static keys vs OAuth vs SPIFFE) — derived from the scan.
@@ -533,7 +553,14 @@ fn main() {
 
     // Skipped scanners appear in diagnostics too, so the table answers "did it run?"
     // for every scanner, not just the ones that did.
-    for label in &skip {
+    let mut skipped: std::collections::BTreeSet<&str> = skip.iter().copied().collect();
+    if !cli.probe_mcp {
+        skipped.insert("mcp-probe");
+    }
+    if !cli.verify_registry {
+        skipped.insert("registry");
+    }
+    for label in skipped {
         report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
     }
 

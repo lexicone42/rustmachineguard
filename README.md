@@ -143,12 +143,15 @@ looked in the wrong place. `--verbose` appends a diagnostics table that tells th
 ```
   ── Scanner Diagnostics ──
   scanner            ms   read  missing  items  status
-  packages            0      1        3      0  ok          (/home/me)
-  gitconfig         210      1        0      0  ok          (/home/me)
+  packages            0      1        8      0  ok  (/home/me)
+  gitconfig         332     44        0      0  ok  (/home/me)
   notebooks           0      0        0      0  no inputs
+  mcp-probe           0      0        0      0  skipped
 ```
 
-`read` and `missing` count the files a scanner opened or looked for; `no inputs` means
+`read` and `missing` count the files and directories a scanner opened or looked for; the
+opt-in phases (`mcp-probe`, `registry`) show as `skipped` unless their flag was passed;
+`no inputs` means
 it opened nothing and produced nothing — either this machine has none of what it looks
 for, or it is looking in the wrong place. `--trace` (or `RMGUARD_TRACE=1`) then prints
 every path as it is tried. The same numbers are in `--format json` under `diagnostics`,
@@ -245,6 +248,7 @@ Options:
       --verify-registry              Verify MCP servers against the official MCP
                                      registry (opt-in; NETWORK — sends server
                                      package names to registry.modelcontextprotocol.io).
+      (abridged -- `rmguard --help` is authoritative)
       --verbose                      Append a per-scanner diagnostics table to the
                                      terminal report (duration, files read/missing,
                                      items). Always present in JSON as `diagnostics`.

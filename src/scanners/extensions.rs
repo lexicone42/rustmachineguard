@@ -41,7 +41,7 @@ fn scan_vscode_style_extensions(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        if !crate::scanners::probe_dir(&path) {
             continue;
         }
 
@@ -104,7 +104,7 @@ fn scan_zed_extensions(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        if !crate::scanners::probe_dir(&path) {
             continue;
         }
 

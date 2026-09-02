@@ -49,13 +49,13 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
             .as_object()?
             .keys()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::scanners::probe_dir(&p))
             .collect(),
     )
 }
 
 fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
-    if !path.is_file() {
+    if !crate::scanners::probe_file(&path) {
         return;
     }
     let Some(content) = read_bounded(path) else {

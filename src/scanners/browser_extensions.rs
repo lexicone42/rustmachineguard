@@ -13,21 +13,21 @@ impl Scanner for BrowserExtensionsScanner {
         let home = platform.home_dir();
 
         for (browser, profiles_dir) in chromium_profile_dirs(&home) {
-            if !profiles_dir.is_dir() {
+            if !crate::scanners::probe_dir(&profiles_dir) {
                 continue;
             }
             scan_chromium_profiles(&profiles_dir, &browser, &mut results);
         }
 
         let firefox_dir = home.join(".mozilla/firefox");
-        if firefox_dir.is_dir() {
+        if crate::scanners::probe_dir(&firefox_dir) {
             scan_firefox_profiles(&firefox_dir, &mut results);
         }
 
         #[cfg(target_os = "macos")]
         {
             let ff_mac = home.join("Library/Application Support/Firefox/Profiles");
-            if ff_mac.is_dir() {
+            if crate::scanners::probe_dir(&ff_mac) {
                 scan_firefox_profiles(&ff_mac, &mut results);
             }
         }
@@ -65,7 +65,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
         .filter(|e| {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            (name == "Default" || name.starts_with("Profile ")) && e.path().is_dir()
+            (name == "Default" || name.starts_with("Profile ")) && crate::scanners::probe_dir(&e.path())
         })
         .map(|e| e.path())
         .collect();
@@ -77,7 +77,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             .unwrap_or_else(|| "Default".to_string());
 
         let extensions_dir = profile_dir.join("Extensions");
-        if !extensions_dir.is_dir() {
+        if !crate::scanners::probe_dir(&extensions_dir) {
             continue;
         }
 
@@ -87,7 +87,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
 
         for ext_entry in ext_entries.flatten() {
             let ext_id = ext_entry.file_name().to_string_lossy().to_string();
-            if !ext_entry.path().is_dir() {
+            if !crate::scanners::probe_dir(&ext_entry.path()) {
                 continue;
             }
 
@@ -96,7 +96,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
                 .into_iter()
                 .flatten()
                 .flatten()
-                .filter(|e| e.path().is_dir())
+                .filter(|e| crate::scanners::probe_dir(&e.path()))
                 .collect();
 
             // Chrome names version dirs `<version>_<n>` and may hold two across an
@@ -109,7 +109,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             };
 
             let manifest_path = latest.path().join("manifest.json");
-            if !manifest_path.is_file() {
+            if !crate::scanners::probe_file(&manifest_path) {
                 continue;
             }
 
@@ -168,14 +168,14 @@ fn scan_firefox_profiles(profiles_dir: &PathBuf, results: &mut Vec<BrowserExtens
     };
 
     for entry in entries.flatten() {
-        if !entry.path().is_dir() {
+        if !crate::scanners::probe_dir(&entry.path()) {
             continue;
         }
 
         let profile_name = entry.file_name().to_string_lossy().to_string();
         let extensions_json = entry.path().join("extensions.json");
 
-        if !extensions_json.is_file() {
+        if !crate::scanners::probe_file(&extensions_json) {
             continue;
         }
 

@@ -70,7 +70,7 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
             .as_object()?
             .keys()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::scanners::probe_dir(&p))
             .collect(),
     )
 }
@@ -128,7 +128,7 @@ fn parse_z(text: &str) -> Vec<(String, String, String)> {
 
 fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
     let git_dir = dir.join(".git");
-    if !git_dir.exists() {
+    if !crate::scanners::probe_exists(&git_dir) {
         return;
     }
     if !config_needs_git(&git_dir.join("config")) {

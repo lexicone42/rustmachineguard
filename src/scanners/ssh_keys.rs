@@ -11,7 +11,7 @@ impl Scanner for SshKeysScanner {
         let mut results = Vec::new();
         let ssh_dir = platform.ssh_dir();
 
-        if !ssh_dir.is_dir() {
+        if !crate::scanners::probe_dir(&ssh_dir) {
             return results;
         }
 
@@ -21,7 +21,7 @@ impl Scanner for SshKeysScanner {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
+            if !crate::scanners::probe_file(&path) {
                 continue;
             }
 

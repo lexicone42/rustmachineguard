@@ -71,13 +71,13 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
         projects
             .keys()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::scanners::probe_dir(&p))
             .collect(),
     )
 }
 
 fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<AgentSettings>) {
-    if !path.is_file() {
+    if !crate::scanners::probe_file(&path) {
         return;
     }
     let Some(content) = read_bounded(path) else {
@@ -178,7 +178,7 @@ pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> V
 /// into the shared AgentSettings shape, so every downstream consumer — findings, --diff
 /// drift, Blueprint assets — covers Cursor without special-casing.
 fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>) {
-    if !path.is_file() {
+    if !crate::scanners::probe_file(&path) {
         return;
     }
     let Some(content) = read_bounded(path) else { return };

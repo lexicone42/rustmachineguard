@@ -785,6 +785,20 @@ pub fn probe_file(path: &std::path::Path) -> bool {
     present
 }
 
+/// `path.is_dir()` / `path.exists()` that the diagnostics can see: a `false` counts as a
+/// looked-for path that was not there. See [`probe_file`].
+pub fn probe_dir(path: &std::path::Path) -> bool {
+    let present = path.is_dir();
+    telemetry::note_probe(path, present);
+    present
+}
+
+pub fn probe_exists(path: &std::path::Path) -> bool {
+    let present = path.exists();
+    telemetry::note_probe(path, present);
+    present
+}
+
 /// Scan telemetry. Answers the one question a silent scanner never could: did it look?
 ///
 /// Counters are process-global because scanners run sequentially; [`timed`] snapshots

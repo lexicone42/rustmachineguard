@@ -12,7 +12,7 @@ impl Scanner for CloudCredentialsScanner {
 
         // AWS credentials
         let aws_creds = platform.aws_credentials_path();
-        if aws_creds.is_file() {
+        if crate::scanners::probe_file(&aws_creds) {
             let profiles = extract_ini_sections(&aws_creds);
             results.push(CloudCredential {
                 provider: "AWS".to_string(),
@@ -25,7 +25,7 @@ impl Scanner for CloudCredentialsScanner {
         // AWS config (may have SSO profiles)
         let aws_config = aws_creds.parent().map(|p| p.join("config"));
         if let Some(ref cfg) = aws_config {
-            if cfg.is_file() {
+            if crate::scanners::probe_file(&cfg) {
                 let profiles = extract_ini_sections(cfg)
                     .into_iter()
                     .map(|p| p.strip_prefix("profile ").unwrap_or(&p).to_string())
@@ -41,12 +41,12 @@ impl Scanner for CloudCredentialsScanner {
 
         // GCP
         let gcloud_dir = platform.gcloud_config_dir();
-        if gcloud_dir.is_dir() {
+        if crate::scanners::probe_dir(&gcloud_dir) {
             let mut gcp_cred_types = Vec::new();
 
             // Application default credentials
             let adc = gcloud_dir.join("application_default_credentials.json");
-            if adc.is_file() {
+            if crate::scanners::probe_file(&adc) {
                 gcp_cred_types.push("application default credentials".to_string());
             }
 
@@ -97,7 +97,7 @@ impl Scanner for CloudCredentialsScanner {
 
         // Azure
         let azure_dir = platform.azure_config_dir();
-        if azure_dir.is_dir() {
+        if crate::scanners::probe_dir(&azure_dir) {
             let az_profile = azure_dir.join("azureProfile.json");
             let profiles = if crate::scanners::probe_file(&az_profile) {
                 crate::scanners::read_bounded(&az_profile)

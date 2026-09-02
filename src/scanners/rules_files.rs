@@ -88,7 +88,7 @@ impl Scanner for RulesFilesScanner {
 fn scan_directory_for_rules(dir: &std::path::Path, results: &mut Vec<RulesFile>) {
     for name in RULES_FILE_NAMES {
         let path = dir.join(name);
-        if path.is_file() {
+        if crate::scanners::probe_file(&path) {
             if let Some(content) = read_bounded(&path) {
                 let hash = sha256_hex(&content);
                 let git_tracked = is_git_tracked(&path);
@@ -114,7 +114,7 @@ fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
     let dirs: Vec<PathBuf> = projects
         .keys()
         .map(PathBuf::from)
-        .filter(|p| p.is_dir())
+        .filter(|p| crate::scanners::probe_dir(&p))
         .collect();
     if dirs.is_empty() {
         None

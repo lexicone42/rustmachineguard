@@ -57,7 +57,7 @@ impl Scanner for AiCredentialsScanner {
 
         let mut results = Vec::new();
         for (provider, cred_type, path) in candidates {
-            if !path.exists() {
+            if !crate::scanners::probe_exists(&path) {
                 continue;
             }
             let (permissions, world_readable, group_readable) = match file_perms(&path) {

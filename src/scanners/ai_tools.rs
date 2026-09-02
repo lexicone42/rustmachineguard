@@ -252,7 +252,7 @@ impl Scanner for AiToolsScanner {
                 for (name, paths) in fallback_paths {
                     if *name == def.name {
                         for p in *paths {
-                            if p.is_file() {
+                            if crate::scanners::probe_file(&p) {
                                 found_binary = Some(p.clone());
                                 break;
                             }
@@ -288,7 +288,7 @@ impl Scanner for AiToolsScanner {
                 let config_dir = def
                     .config_dir_check
                     .map(|f| f(platform))
-                    .filter(|p| p.is_dir())
+                    .filter(|p| crate::scanners::probe_dir(&p))
                     .map(|p| p.display().to_string());
 
                 results.push(AiTool {
@@ -326,7 +326,7 @@ impl Scanner for AiToolsScanner {
         }
 
         for (name, vendor, path) in platform.ai_desktop_app_paths() {
-            if path.exists() {
+            if crate::scanners::probe_exists(&path) {
                 let is_running = is_process_running(
                     path.file_stem()
                         .and_then(|s| s.to_str())
@@ -353,7 +353,7 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let plist = app_path.join("Contents/Info.plist");
-        if plist.is_file() {
+        if crate::scanners::probe_file(&plist) {
             if let Ok(output) = std::process::Command::new("defaults")
                 .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"])
                 .output()
@@ -367,7 +367,7 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        if app_path.is_file() {
+        if crate::scanners::probe_file(&app_path) {
             return crate::scanners::get_binary_version(app_path.to_str().unwrap_or(""));
         }
     }

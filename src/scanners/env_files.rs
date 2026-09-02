@@ -46,7 +46,7 @@ impl Scanner for EnvFilesScanner {
         for dir in dirs {
             for name in ENV_FILENAMES {
                 let path = dir.join(name);
-                if !path.is_file() || !seen.insert(path.clone()) {
+                if !crate::scanners::probe_file(&path) || !seen.insert(path.clone()) {
                     continue;
                 }
                 results.push(scan_env_file(&path));
@@ -105,7 +105,7 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
         projects
             .keys()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::scanners::probe_dir(&p))
             .collect(),
     )
 }
