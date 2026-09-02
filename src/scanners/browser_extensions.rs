@@ -58,7 +58,7 @@ fn chromium_profile_dirs(home: &PathBuf) -> Vec<(String, PathBuf)> {
 }
 
 fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<BrowserExtension>) {
-    let profile_dirs: Vec<PathBuf> = std::fs::read_dir(base)
+    let profile_dirs: Vec<PathBuf> = crate::scanners::probe_read_dir(base)
         .into_iter()
         .flatten()
         .flatten()
@@ -81,7 +81,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             continue;
         }
 
-        let Ok(ext_entries) = std::fs::read_dir(&extensions_dir) else {
+        let Ok(ext_entries) = crate::scanners::probe_read_dir(&extensions_dir) else {
             continue;
         };
 
@@ -92,7 +92,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             }
 
             // Each extension ID dir contains version dirs; pick the latest
-            let version_dirs: Vec<_> = std::fs::read_dir(ext_entry.path())
+            let version_dirs: Vec<_> = crate::scanners::probe_read_dir(ext_entry.path())
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -163,7 +163,7 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
 }
 
 fn scan_firefox_profiles(profiles_dir: &PathBuf, results: &mut Vec<BrowserExtension>) {
-    let Ok(entries) = std::fs::read_dir(profiles_dir) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(profiles_dir) else {
         return;
     };
 

@@ -74,7 +74,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
         roots.push(home.join(rel));
     }
     // nvm keeps one global root per installed Node version.
-    if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+    if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".nvm/versions/node")) {
         for e in entries.flatten() {
             roots.push(e.path().join("lib/node_modules"));
         }
@@ -112,7 +112,7 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
 const IDENTITY_HEAD_BYTES: usize = 64 * 1024;
 
 fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
@@ -128,7 +128,7 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
         // direct dependencies as symlinks, so without this a pnpm project's transitive
         // dependencies (where an injected malicious dep lives) were never enumerated.
         if dir_name == ".pnpm" {
-            if let Ok(store) = std::fs::read_dir(&p) {
+            if let Ok(store) = crate::scanners::probe_read_dir(&p) {
                 for s in store.flatten() {
                     let nm = s.path().join("node_modules");
                     if crate::scanners::probe_dir(&nm) {
@@ -151,7 +151,7 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
         }
         // A scope directory holds packages one level down: @scope/name.
         if dir_name.starts_with('@') {
-            let Ok(scoped) = std::fs::read_dir(&p) else {
+            let Ok(scoped) = crate::scanners::probe_read_dir(&p) else {
                 continue;
             };
             for s in scoped.flatten() {

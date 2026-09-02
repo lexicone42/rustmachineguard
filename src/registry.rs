@@ -158,7 +158,8 @@ pub fn classify(server: &McpServerDetail, candidates: &[RegistryEntry]) -> Regis
     // Exact (ecosystem, identifier) match → registered, with verified provenance.
     for entry in candidates {
         for (rtype, ident) in &entry.packages {
-            if rtype.eq_ignore_ascii_case(eco) && ident.eq_ignore_ascii_case(pkg) {
+            // PEP 503 for pypi: `uvx mcp_server_git` IS the registered mcp-server-git.
+            if rtype.eq_ignore_ascii_case(eco) && crate::scanners::exposure::names_match(eco, ident, pkg) {
                 return RegistryVerdict::Registered {
                     publisher: publisher_from_name(&entry.name),
                     deprecated: entry.status.eq_ignore_ascii_case("deprecated"),
@@ -171,7 +172,12 @@ pub fn classify(server: &McpServerDetail, candidates: &[RegistryEntry]) -> Regis
     // real thing (conservative — different legit servers differ by many chars).
     for entry in candidates {
         for (rtype, ident) in &entry.packages {
-            if rtype.eq_ignore_ascii_case(eco) && edit_distance_le1(ident, pkg) {
+            if rtype.eq_ignore_ascii_case(eco)
+                && edit_distance_le1(
+                    &crate::scanners::exposure::pep503_normalize(ident),
+                    &crate::scanners::exposure::pep503_normalize(pkg),
+                )
+            {
                 return RegistryVerdict::PossibleTyposquat {
                     registered_as: format!("{}:{}", rtype, ident),
                 };

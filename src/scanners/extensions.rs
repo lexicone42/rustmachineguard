@@ -35,7 +35,7 @@ fn scan_vscode_style_extensions(
 ) -> Vec<IdeExtension> {
     let mut results = Vec::new();
 
-    let Ok(entries) = std::fs::read_dir(ext_dir) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
         return results;
     };
 
@@ -46,7 +46,7 @@ fn scan_vscode_style_extensions(
         }
 
         // Skip obsolete extensions
-        if path.join(".obsolete").exists() {
+        if crate::scanners::probe_exists(&path.join(".obsolete")) {
             continue;
         }
 
@@ -98,7 +98,7 @@ fn scan_zed_extensions(
 ) -> Vec<IdeExtension> {
     let mut results = Vec::new();
 
-    let Ok(entries) = std::fs::read_dir(ext_dir) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
         return results;
     };
 

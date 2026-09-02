@@ -272,7 +272,7 @@ impl Scanner for AiToolsScanner {
 
             let has_config = def
                 .config_dir_check
-                .map(|f| f(platform).is_dir())
+                .map(|f| crate::scanners::probe_dir(&f(platform)))
                 .unwrap_or(false);
 
             if found_binary.is_some() || has_config {

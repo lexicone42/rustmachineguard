@@ -54,7 +54,7 @@ fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
 
     // System interpreters.
     for base in ["/usr/lib", "/usr/local/lib", "/opt/homebrew/lib"] {
-        let Ok(entries) = std::fs::read_dir(base) else {
+        let Ok(entries) = crate::scanners::probe_read_dir(base) else {
             continue;
         };
         for e in entries.flatten() {
@@ -70,7 +70,7 @@ fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
         }
     }
     // User site-packages.
-    if let Ok(entries) = std::fs::read_dir(home.join(".local/lib")) {
+    if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".local/lib")) {
         for e in entries.flatten() {
             roots.push(e.path().join("site-packages"));
         }
@@ -83,7 +83,7 @@ fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     for proj in projects {
         for venv in [".venv", "venv", "env", ".env"] {
             let lib = proj.join(venv).join("lib");
-            let Ok(entries) = std::fs::read_dir(&lib) else {
+            let Ok(entries) = crate::scanners::probe_read_dir(&lib) else {
                 continue;
             };
             for e in entries.flatten() {
@@ -110,7 +110,7 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
 }
 
 fn scan_root(root: &Path, out: &mut Vec<PythonPackage>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(root) else {
         return;
     };
     let mut budget = MAX_DISTS_PER_ROOT;

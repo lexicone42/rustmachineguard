@@ -51,7 +51,7 @@ impl Scanner for CloudCredentialsScanner {
             }
 
             // Service account keys in the directory
-            let sa_keys: Vec<_> = std::fs::read_dir(&gcloud_dir)
+            let sa_keys: Vec<_> = crate::scanners::probe_read_dir(&gcloud_dir)
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -118,8 +118,8 @@ impl Scanner for CloudCredentialsScanner {
                 vec![]
             };
 
-            let has_tokens = azure_dir.join("msal_token_cache.json").is_file()
-                || azure_dir.join("accessTokens.json").is_file();
+            let has_tokens = crate::scanners::probe_file(&azure_dir.join("msal_token_cache.json"))
+                || crate::scanners::probe_file(&azure_dir.join("accessTokens.json"));
 
             if has_tokens || !profiles.is_empty() {
                 results.push(CloudCredential {

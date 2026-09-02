@@ -208,7 +208,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             return;
         }
         budget -= 1;
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
         };
         // One listing answers both questions -- "is this a git dir?" and "what do I

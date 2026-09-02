@@ -893,6 +893,20 @@ pub fn probe_dir(path: &std::path::Path) -> bool {
     present
 }
 
+/// `fs::read_dir` that the diagnostics can see: a directory that exists but cannot be
+/// listed (mode 0100, an I/O error) was a silent `return` and read as "no inputs"; it is
+/// a miss now, and traced.
+pub fn probe_read_dir<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<std::fs::ReadDir> {
+    let r = std::fs::read_dir(path.as_ref());
+    if let Err(e) = &r {
+        telemetry::note_probe(path.as_ref(), false);
+        if telemetry::trace_enabled() {
+            eprintln!("trace: read_dir {} -> {e}", path.as_ref().display());
+        }
+    }
+    r
+}
+
 pub fn probe_exists(path: &std::path::Path) -> bool {
     let present = path.exists();
     telemetry::note_probe(path, present);

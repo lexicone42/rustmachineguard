@@ -41,6 +41,9 @@ impl Scanner for TranscriptsScanner {
 }
 
 fn inspect_store(framework: &str, path: &Path, kind: &str) -> Option<AgentTranscriptStore> {
+    if !crate::scanners::probe_exists(path) {
+        return None;
+    }
     let meta = std::fs::symlink_metadata(path).ok()?;
     let (file_count, total_size_bytes) = if meta.is_dir() {
         walk_counts(path)
@@ -69,7 +72,7 @@ fn walk_counts(dir: &Path) -> (usize, u64) {
     let mut bytes = 0u64;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
+        let Ok(entries) = crate::scanners::probe_read_dir(&d) else {
             continue;
         };
         for entry in entries.flatten() {

@@ -96,7 +96,7 @@ fn scan_skill_bundles(
     let mut budget = MAX_BUNDLE_FILES;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -163,7 +163,7 @@ fn scan_skill_dir(
     scope: &str,
     results: &mut Vec<AgentSkill>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::scanners::probe_read_dir(dir) else {
         return;
     };
 

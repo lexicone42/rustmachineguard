@@ -15,7 +15,7 @@ impl Scanner for SshKeysScanner {
             return results;
         }
 
-        let Ok(entries) = std::fs::read_dir(&ssh_dir) else {
+        let Ok(entries) = crate::scanners::probe_read_dir(&ssh_dir) else {
             return results;
         };
 
