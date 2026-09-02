@@ -11,7 +11,7 @@ impl Scanner for McpScanner {
         let mut results = Vec::new();
 
         for (source, path, vendor) in platform.mcp_config_paths() {
-            if !path.is_file() {
+            if !crate::scanners::probe_file(&path) {
                 continue;
             }
 
@@ -56,13 +56,13 @@ impl Scanner for McpScanner {
         }
 
         let claude_json = platform.home_dir().join(".claude.json");
-        if claude_json.is_file() {
+        if crate::scanners::probe_file(&claude_json) {
             if let Some(content) = crate::scanners::read_bounded(&claude_json) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(projects) = v.get("projects").and_then(|v| v.as_object()) {
                         for (proj_path, _) in projects {
                             let mcp_json = std::path::PathBuf::from(proj_path).join(".mcp.json");
-                            if !mcp_json.is_file() {
+                            if !crate::scanners::probe_file(&mcp_json) {
                                 continue;
                             }
                             let proj_content = match crate::scanners::read_bounded(&mcp_json) {
