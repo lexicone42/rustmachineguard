@@ -74,7 +74,8 @@ pub fn parse_marketplaces(
         out.push(AgentMarketplace {
             name: name.clone(),
             source_type,
-            source_ref,
+            // A git URL with `oauth2:<token>@` is the standard way to hand git a token.
+            source_ref: crate::scanners::redact_secrets_in_text(&source_ref),
             auto_update,
             official,
             installed_plugin_count,

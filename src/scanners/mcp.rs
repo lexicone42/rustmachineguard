@@ -266,7 +266,9 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
     McpServerDetail {
         name: name.to_string(),
         transport,
-        command,
+        // Stored redacted: users routinely write the whole launch line into `command`,
+        // and this field ships in JSON, Blueprint and SBOM.
+        command: command.as_deref().map(crate::scanners::redact_secrets_in_text),
         args,
         package_ecosystem: ecosystem,
         package_name: pkg_name,

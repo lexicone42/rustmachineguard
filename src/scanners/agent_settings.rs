@@ -346,7 +346,11 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
         AGENT_CONFIG_DIRS.contains(&name).then(|| a.parent()).flatten()
     });
 
-    for token in referenced_paths(command) {
+    // Probe paths in the REDACTED command. A base64 blob or an AWS secret contains '/'
+    // about half the time, and probing it as a path wrote the credential to the trace
+    // log and the miss counters; after redaction it is `<redacted>`, which has no '/'.
+    let redacted_command = crate::scanners::redact_secrets_in_text(command);
+    for token in referenced_paths(&redacted_command) {
         let referenced_dir = token
             .split('/')
             .find(|seg| AGENT_CONFIG_DIRS.contains(seg));

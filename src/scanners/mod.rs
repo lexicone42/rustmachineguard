@@ -241,36 +241,66 @@ fn is_invisible(ch: char) -> bool {
 /// text is usually the finding itself — a git credential.helper command, a registry
 /// URL — and blanking it would destroy the signal.
 pub fn redact_secrets_in_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let (mut prev, mut prev2): (Option<&str>, Option<&str>) = (None, None);
+    // Tokenise on whitespace, keeping the spans so the original whitespace is copied
+    // back verbatim (splitting on ' ' alone once let a tab-separated secret through).
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut idx = 0;
     while idx < text.len() {
-        // Copy the run of whitespace verbatim so the value stays readable. Splitting on
-        // ' ' alone used to let a tab- or newline-separated secret through untouched.
-        let tok_start = text[idx..]
+        let start = text[idx..]
             .find(|c: char| !c.is_whitespace())
             .map_or(text.len(), |o| idx + o);
-        out.push_str(&text[idx..tok_start]);
-        if tok_start == text.len() {
+        if start == text.len() {
             break;
         }
-        let tok_end = text[tok_start..]
+        let end = text[start..]
             .find(char::is_whitespace)
-            .map_or(text.len(), |o| tok_start + o);
-        let tok = &text[tok_start..tok_end];
-        out.push_str(&redact_token(tok, prev, prev2));
-        prev2 = prev;
-        prev = Some(tok);
-        idx = tok_end;
+            .map_or(text.len(), |o| start + o);
+        spans.push((start, end));
+        idx = end;
     }
+    let tok = |i: usize| -> &str { &text[spans[i].0..spans[i].1] };
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut redact_next = false;
+    for i in 0..spans.len() {
+        out.push_str(&text[last..spans[i].0]);
+        let prev = i.checked_sub(1).map(tok);
+        let prev2 = i.checked_sub(2).map(tok);
+        let next = (i + 1 < spans.len()).then(|| tok(i + 1));
+        let (rendered, flag) = redact_token(tok(i), prev, prev2, next, redact_next);
+        redact_next = flag;
+        out.push_str(&rendered);
+        last = spans[i].1;
+    }
+    out.push_str(&text[last..]);
     out
 }
 
 /// Flags whose value is `user:password` (curl, wget, httpie). The user half is kept.
 const USER_FLAGS: &[&str] = &["-u", "--user", "--proxy-user", "-U", "--http-user"];
 
+/// HTTP Authorization schemes. In `Authorization: <scheme> <credential>` the scheme is
+/// kept -- it says HOW the server authenticates -- and the credential is redacted.
+/// Modelling only Bearer/Basic let `Authorization: token ghp_x` (GitHub's documented
+/// form) redact the word `token` and pass `ghp_x` through, looking sanitised.
+const AUTH_SCHEMES: &[&str] = &[
+    "bearer", "basic", "token", "oauth", "oauth2", "ssws", "apikey", "api-key", "negotiate",
+    "digest", "ntlm", "hawk", "dpop", "gnap", "hoba", "mutual", "vapid", "signature",
+    "privatetoken", "aws4-hmac-sha256", "goog", "splunk", "zoho-oauthtoken",
+];
+
 fn is_scheme_word(s: &str) -> bool {
-    s.eq_ignore_ascii_case("bearer") || s.eq_ignore_ascii_case("basic")
+    AUTH_SCHEMES.contains(&s.to_ascii_lowercase().as_str())
+}
+
+/// `Authorization:` / `Proxy-Authorization:` / `Authorization=` -- the one header whose
+/// value is `<scheme> <credential>` rather than just `<credential>`.
+fn is_authorization_marker(s: &str) -> bool {
+    (s.ends_with(':') || s.ends_with('='))
+        && matches!(
+            bare_key(s).to_ascii_lowercase().as_str(),
+            "authorization" | "proxy-authorization" | "www-authenticate"
+        )
 }
 
 fn bare_key(k: &str) -> &str {
@@ -283,19 +313,33 @@ fn is_secret_key(k: &str) -> bool {
     !b.is_empty() && crate::scanners::env_files::is_secret_key_name(b)
 }
 
-/// `key=value` if the token has an '=', else `key:value` if it has a ':'. The '=' wins
-/// so `//host/:_authToken=X` keys on `_authToken`, not on `//host/`.
+/// A key with its separator but no value yet: `password:`, `"X-Api-Key:`, `--token=`.
+fn is_open_marker(s: &str) -> bool {
+    (s.ends_with(':') || s.ends_with('=')) && is_secret_key(s)
+}
+
+/// Split a token into `key`, separator and `value`. Both `=` and `:` are tried, in the
+/// order they appear, and the first split whose KEY is secret-shaped wins; otherwise the
+/// earliest separator. So `//host/:_authToken=X` keys on `_authToken`,
+/// `X-Api-Key:abc==` keys on `X-Api-Key` (not on the base64 padding), and
+/// `--header=X-Api-Key:X` keys on `X-Api-Key`.
 fn split_pair(tok: &str) -> Option<(&str, char, &str)> {
-    if let Some(i) = tok.find('=') {
-        return Some((&tok[..i], '=', &tok[i + 1..]));
+    let mut seps: Vec<(usize, char)> = ['=', ':']
+        .iter()
+        .filter_map(|&c| tok.find(c).map(|i| (i, c)))
+        .collect();
+    seps.sort();
+    for &(i, c) in &seps {
+        if is_secret_key(&tok[..i]) {
+            return Some((&tok[..i], c, &tok[i + 1..]));
+        }
     }
-    let i = tok.find(':')?;
-    Some((&tok[..i], ':', &tok[i + 1..]))
+    seps.first().map(|&(i, c)| (&tok[..i], c, &tok[i + 1..]))
 }
 
 /// True when the PRECEDING token(s) mean this token is a secret's value:
 /// `Authorization: <tok>`, `Bearer <tok>`, `--token <tok>`, `password: <tok>`,
-/// `password = <tok>`, `Authorization=Bearer <tok>`.
+/// `password = <tok>`, `Authorization=Bearer <tok>`, `--header="X-Api-Key: <tok>`.
 ///
 /// A marker has to LOOK like a key: a flag (`--token`), a key with its separator
 /// (`password:`), a scheme word, or a bare key followed by a lone `=`/`:` token (INI
@@ -309,13 +353,17 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
     if p == "=" || p == ":" {
         return prev2.is_some_and(is_secret_key);
     }
-    if is_scheme_word(p) {
+    // A bare `Bearer`/`Basic` is followed by a credential wherever it appears. The other
+    // scheme words (`token`, `key`) are ordinary words -- `vault token lookup` -- and
+    // only mark a value when a real Authorization header precedes them, which
+    // redact_token handles with its lookahead flag.
+    if p.eq_ignore_ascii_case("bearer") || p.eq_ignore_ascii_case("basic") {
         return true;
     }
     if let Some((_, _, v)) = split_pair(p) {
-        // `Authorization=Bearer` / `Authorization:Bearer`: the pair's value is the scheme
-        // word, so the credential is the NEXT token.
-        if is_scheme_word(v) {
+        // `Authorization=Bearer`: the pair's value is the scheme word, so the credential
+        // is the NEXT token. `--header="X-Api-Key:`: the value is itself an open marker.
+        if is_scheme_word(v) || is_open_marker(v) {
             return true;
         }
         // Any other complete pair already carried its own value; the token after it is
@@ -405,7 +453,17 @@ fn redact_value_keeping_quotes(v: &str) -> String {
     }
 }
 
-/// One `;`- or `&`-free segment: a URL, a `user:pass@host`, or a `key=value` pair.
+/// Redact a whole token that sits in value position, keeping a leading quote pair or
+/// trailing closers (`X"`, `X"),`) so the surrounding syntax still reads.
+fn redact_bare_value(tok: &str) -> String {
+    if tok.starts_with(['"', '\'']) {
+        return redact_value_keeping_quotes(tok);
+    }
+    let core = tok.trim_end_matches(['"', '\'', ')', ']', '}', ',', ';']);
+    format!("<redacted>{}", &tok[core.len()..])
+}
+
+/// One separator-free segment: a URL, a `user:pass@host`, or a `key=value` pair.
 fn redact_segment(seg: &str) -> String {
     if let Some(sc) = seg.find("://")
         && !seg[..sc].contains(['=', ':'])
@@ -438,40 +496,55 @@ fn redact_segment(seg: &str) -> String {
     format!("{k}{sep}{}", redact_userinfo(v))
 }
 
-fn redact_token(tok: &str, prev: Option<&str>, prev2: Option<&str>) -> String {
-    // `Bearer` / `Basic` are scheme keywords, not the credential; keeping them visible
-    // shows WHICH auth scheme is in use, and the token after them is still redacted.
+/// Returns the rendered token and whether the NEXT token must be redacted (set after an
+/// `Authorization:` scheme word, whose credential follows).
+fn redact_token(
+    tok: &str,
+    prev: Option<&str>,
+    prev2: Option<&str>,
+    next: Option<&str>,
+    redact_this: bool,
+) -> (String, bool) {
+    if redact_this {
+        return (redact_bare_value(tok), false);
+    }
+    // `Authorization: token X`: the scheme word stays visible, the credential goes.
+    // Only when a real Authorization header precedes it and a value follows; the word
+    // `token` in `gh auth token` is just a word.
     if is_scheme_word(tok) {
-        return tok.to_string();
+        let after_auth = prev.is_some_and(is_authorization_marker);
+        let has_value = next.is_some_and(|n| !n.starts_with('-') && !n.contains("://"));
+        return (tok.to_string(), after_auth && has_value);
     }
     if is_secret_value_position(prev, prev2) {
-        return "<redacted>".to_string();
+        return (redact_bare_value(tok), false);
     }
     // curl-style basic auth: `-u admin:pw`. Keep the user, drop the password. The flag
     // alone is not a marker (`python -u script.py`), the `user:pass` shape is.
     if prev.is_some_and(|p| USER_FLAGS.contains(&p))
         && let Some((u, _)) = tok.split_once(':')
     {
-        return format!("{u}:<redacted>");
+        return (format!("{u}:<redacted>"), false);
     }
     // A URL is one unit and must not be split on its query string's '&' or '='.
     if let Some(sc) = tok.find("://")
         && !tok[..sc].contains(['=', ':'])
     {
-        return redact_url(tok);
+        return (redact_url(tok), false);
     }
-    // Connection strings and query fragments carry several pairs: `Server=db;Password=X;`.
+    // Connection strings, query fragments and compact JSON carry several pairs:
+    // `Server=db;Password=X;`, `a=1&token=X`, `{"user":"a","password":"X"}`.
     let mut out = String::with_capacity(tok.len());
     let mut start = 0;
     for (i, ch) in tok.char_indices() {
-        if ch == ';' || ch == '&' {
+        if ch == ';' || ch == '&' || ch == ',' {
             out.push_str(&redact_segment(&tok[start..i]));
             out.push(ch);
             start = i + 1;
         }
     }
     out.push_str(&redact_segment(&tok[start..]));
-    out
+    (out, false)
 }
 
 /// Trait for all scanners.

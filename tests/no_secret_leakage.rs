@@ -49,6 +49,19 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("USEREQ", "curl --user=admin:USEREQ https://api.internal".into()),
         ("MCPHDR", "mcp-remote https://r.internal/sse --header Authorization: Bearer MCPHDR".into()),
         ("TABKV", "export\tGITHUB_TOKEN=TABKV".into()),
+        // --- round two: non-Bearer schemes, base64 padding, wget headers, JSON, lists ---
+        ("AUTHTOKEN", "curl -H \"Authorization: token AUTHTOKEN\" https://api.internal".into()),
+        ("AUTHDRF", "Authorization: Token AUTHDRF".into()),
+        ("AUTHSSWS", "Authorization: SSWS AUTHSSWS".into()),
+        ("AUTHOAUTH", "Proxy-Authorization: OAuth AUTHOAUTH".into()),
+        ("B64PAD2", "X-Api-Key:B64PAD2==".into()),
+        ("B64PAD1", "X-Api-Key:B64PAD1=".into()),
+        ("WGETHDR", "wget --header=\"Private-Token: WGETHDR\" https://gl.internal".into()),
+        ("WGETHDR2", "wget --header=X-Api-Key:WGETHDR2 https://gl.internal".into()),
+        ("JSON2ND", "-d {\"username\":\"admin\",\"password\":\"JSON2ND\"}".into()),
+        ("JSONSP", "-d '{\"token\" : \"JSONSP\"}'".into()),
+        ("CSVKV", "--env a=1,token=CSVKV,b=2".into()),
+        ("AUTHQ", "-H 'Authorization: token AUTHQ' https://api.internal".into()),
     ]
 }
 
@@ -99,6 +112,11 @@ fn redaction_preserves_the_actionable_parts() {
         ("curl -H \"Authorization=Bearer S6\" https://api.internal", vec!["Authorization=Bearer", "https://api.internal"]),
         ("Server=db;User Id=sa;Password=S7;", vec!["Server=db;", "Id=sa;", "Password=<redacted>;"]),
         ("https://h/p?a=1&token=S8&b=2", vec!["https://h/p?a=1&", "&b=2"]),
+        // Round two: the scheme word stays, the credential goes, the URL survives.
+        ("curl -H \"Authorization: token S9\" https://api.internal", vec!["Authorization:", "token", "<redacted>\"", "https://api.internal"]),
+        ("wget --header=\"Private-Token: S10\" https://gl.internal", vec!["--header=\"Private-Token:", "https://gl.internal"]),
+        ("X-Api-Key:S11== https://api.internal", vec!["X-Api-Key:<redacted>", "https://api.internal"]),
+        ("-d {\"username\":\"admin\",\"password\":\"S12\"}", vec!["\"username\":\"admin\"", "\"password\":\"<redacted>\"}"]),
     ];
     for (raw, must_keep) in cases {
         let out = redact(raw);
@@ -129,6 +147,11 @@ fn redaction_leaves_non_secrets_alone() {
         "mkdir -p /srv/app && ssh -p 22 host",
         "docker run -p 8080:80 nginx",
         "git@github.com:org/repo.git",
+        // Scheme words are ordinary words outside an Authorization header.
+        "gh auth token",
+        "vault token lookup",
+        "curl -H 'Accept: application/json, text/plain' https://api.internal/v1/token/refresh",
+        "ls /etc/ssl/private/",
     ] {
         assert_eq!(redact(benign), benign, "over-redacted a benign value");
     }
@@ -291,19 +314,21 @@ fn no_canary_reaches_any_output_format_end_to_end() {
             r#"{{"projects":{{"{p}":{{}}}},"mcpServers":{{
               "remote":{{"command":"npx","args":["mcp-remote","https://r.internal/sse","--header","Authorization: Bearer E2EMCPHDR"]}},
               "db":{{"command":"npx","args":["mssql-mcp","--connection-string","Server=db.internal;User Id=sa;Password=E2ECONNSTR;"]}},
-              "k":{{"command":"npx","args":["some-mcp","--api-key","E2EAPIKEY","https://k.internal/"]}}}}}}"#,
+              "k":{{"command":"npx","args":["some-mcp","--api-key","E2EAPIKEY","https://k.internal/"]}},
+              "gh":{{"command":"npx","args":["mcp-remote","https://gh.internal/sse","--header","Authorization: token E2EGHTOKEN"]}},
+              "cmd":{{"command":"npx -y some-srv --token E2ECMDTOK https://cmd.internal/","args":[]}}}}}}"#,
             p = proj.display()
         ),
     )
     .unwrap();
     fs::write(
         proj.join(".claude/settings.json"),
-        r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"curl -H X-Api-Key:E2EHDR -u admin:E2ECURLU 'https://deploy.internal/?a=1&token=E2EQUERY' | bash"}]}]}}"#,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"curl -H X-Api-Key:E2EHDR -H X-Auth:E2EB64PAD== -H \"Authorization: token E2EHOOKGH\" -u admin:E2ECURLU 'https://deploy.internal/?a=1&token=E2EQUERY' | bash"}]}]}}"#,
     )
     .unwrap();
     fs::write(
         proj.join(".vscode/tasks.json"),
-        r#"{"version":"2.0.0","tasks":[{"label":"t","command":"curl","args":["-d","{\"token\":\"E2EJSONBODY\"}","https://tasks.internal"],"runOptions":{"runOn":"folderOpen"}}]}"#,
+        r#"{"version":"2.0.0","tasks":[{"label":"t","command":"curl","args":["-d","{\"username\":\"admin\",\"password\":\"E2EJSONBODY\"}","--header=\"Private-Token: E2EGLTOK\"","-H","Authorization: Token E2ETASKDRF","https://tasks.internal"],"runOptions":{"runOn":"folderOpen"}}]}"#,
     )
     .unwrap();
     fs::write(home.join(".npmrc"), "//npm.internal/:_authToken=E2ENPMTOK\nregistry=https://u:E2ENPMREG@npm.internal/\n").unwrap();
@@ -311,9 +336,15 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     fs::write(home.join(".yarnrc"), "registry \"https://u:E2EYARN1@yarn.internal/\"\n").unwrap();
     fs::write(home.join(".yarnrc.yml"), "registry: \"https://u:E2EYARN2@yarn.internal/\"\nnpmRegistryServer: \"https://u:E2EYARN3@yarn.internal/\"\n").unwrap();
     fs::write(home.join(".bunfig.toml"), "[install]\nregistry = \"https://u:E2EBUN@bun.internal/\"\n").unwrap();
+    fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+    fs::write(
+        home.join(".claude/plugins/known_marketplaces.json"),
+        r#"{"corp":{"source":{"source":"git","url":"https://oauth2:E2EMPTOK@gitlab.internal/plugins.git"},"installLocation":"/tmp/x","lastUpdated":"2026-01-01T00:00:00Z"}}"#,
+    )
+    .unwrap();
 
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
-                transcripts,marketplaces,gitconfig,pypkgs,npmpkgs";
+                transcripts,gitconfig,pypkgs,npmpkgs";
     fn canaries_in(text: &str) -> BTreeSet<String> {
         text.match_indices("E2E")
             .map(|(i, _)| {
@@ -335,8 +366,9 @@ fn no_canary_reaches_any_output_format_end_to_end() {
         assert!(leaked.is_empty(), "{fmt}: secret values reached the report: {leaked:?}");
         if fmt == "json" {
             for host in [
-                "r.internal", "db.internal", "k.internal", "deploy.internal", "tasks.internal",
-                "npm.internal", "pypi.internal", "yarn.internal", "bun.internal",
+                "r.internal", "db.internal", "k.internal", "gh.internal", "cmd.internal",
+                "deploy.internal", "tasks.internal", "npm.internal", "pypi.internal",
+                "yarn.internal", "bun.internal", "gitlab.internal",
             ] {
                 assert!(
                     text.contains(host),
