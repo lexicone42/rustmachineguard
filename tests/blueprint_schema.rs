@@ -422,6 +422,7 @@ fn make_report(
             scanner: "mcp".into(),
             message: "1 config unreadable (permission denied)".into(),
         }],
+        jetbrains_plugins: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
@@ -448,6 +449,7 @@ fn make_report(
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
     customize(&mut report);

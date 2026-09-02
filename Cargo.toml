@@ -27,6 +27,8 @@ sha2 = "0.11.0"
 libc = "0.2.186"
 semver = "1.0.28"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
+# JetBrains plugin descriptors live inside jars; only deflate is needed to read META-INF/plugin.xml.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 jsonschema = "0.46.7"

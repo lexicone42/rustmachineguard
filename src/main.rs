@@ -118,7 +118,7 @@ const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
     "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig", "pypkgs",
-    "npmpkgs",
+    "npmpkgs", "jbplugins",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -325,6 +325,7 @@ fn main() {
         marketplaces: Vec::new(),
         vscode_tasks: Vec::new(),
         git_autorun_configs: Vec::new(),
+        jetbrains_plugins: Vec::new(),
         warnings: Vec::new(),
         diagnostics: Vec::new(),
         summary: models::Summary {
@@ -356,6 +357,7 @@ fn main() {
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
 
@@ -416,7 +418,7 @@ fn main() {
     // Without a catalog the package scanners never run; say so in the table rather
     // than leaving two labels with no row at all, which reads as "never existed".
     if catalog.is_none() {
-        for label in ["pypkgs", "npmpkgs"] {
+        for label in ["pypkgs", "npmpkgs", "jbplugins"] {
             if !skip.contains(&label) {
                 report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
             }
@@ -479,6 +481,31 @@ fn main() {
                     &pkg.location,
                 ));
             }
+        }
+
+        // JetBrains IDE plugins. Fifteen Marketplace plugins posing as AI dev tools
+        // exfiltrated users' AI API keys in 2025-26; the catalog keys them by plugin ID.
+        if !skip.contains(&"jbplugins") {
+            let plugins = timed(&mut report.diagnostics, "jbplugins", Some(primary_plat.home_dir()), || {
+                scanners::jetbrains_plugins::JetBrainsPluginsScanner.scan(primary_plat.as_ref())
+            });
+            report.summary.jetbrains_plugins_count = plugins.len();
+            for p in &plugins {
+                report
+                    .exposure_findings
+                    .extend(catalog.check_extension("jetbrains", &p.id, &p.version, &p.location));
+            }
+            report.jetbrains_plugins = plugins
+                .into_iter()
+                .map(|p| rustmachineguard::models::JetBrainsPlugin {
+                    id: p.id,
+                    name: p.name,
+                    version: p.version,
+                    vendor: p.vendor,
+                    ide: p.ide,
+                    location: p.location,
+                })
+                .collect();
         }
 
         // Agent CLIs are CVE-bearing packages themselves. We already resolve each

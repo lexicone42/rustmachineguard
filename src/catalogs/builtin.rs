@@ -10,6 +10,6 @@
 ///   Cymulate, Koi Security, Datadog Security Labs, Kaspersky GERT, Wiz,
 ///   Endor Labs, Cloud Security Alliance, Trail of Bits, Cisco, OWASP,
 ///   Check Point, Cato Networks, ReverseC Labs, Anthropic Security,
-///   Guardio Labs, Sekoia.io TDR, eSentire TRU.
+///   Guardio Labs, Sekoia.io TDR, eSentire TRU, JetBrains Marketplace team, StepSecurity.
 
 pub const BUILTIN_CATALOG: &str = include_str!("builtin_catalog.json");

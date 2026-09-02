@@ -45,6 +45,9 @@ pub struct ScanReport {
     pub vscode_tasks: Vec<VsCodeTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub git_autorun_configs: Vec<GitAutorunConfig>,
+    /// User-installed JetBrains IDE plugins (identity only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jetbrains_plugins: Vec<JetBrainsPlugin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     /// Per-scanner telemetry: how long it ran, how many files it opened or found
@@ -549,6 +552,8 @@ pub struct Summary {
     pub python_packages_count: usize,
     #[serde(default)]
     pub npm_packages_count: usize,
+    #[serde(default)]
+    pub jetbrains_plugins_count: usize,
 }
 
 impl ScanReport {
@@ -582,6 +587,7 @@ impl ScanReport {
             git_autorun_configs_count: self.git_autorun_configs.len(),
             python_packages_count: self.summary.python_packages_count,
             npm_packages_count: self.summary.npm_packages_count,
+            jetbrains_plugins_count: self.summary.jetbrains_plugins_count,
         };
     }
 }
@@ -605,4 +611,17 @@ pub struct ScannerStat {
     pub items: usize,
     /// Excluded via --skip; the other counters are zero.
     pub skipped: bool,
+}
+
+/// A user-installed JetBrains IDE plugin. Identity only; the descriptor fields are
+/// attacker-authored and sanitized at capture.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JetBrainsPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    pub ide: String,
+    pub location: String,
 }

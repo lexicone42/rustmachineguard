@@ -74,7 +74,7 @@ cargo build --release
 
 MCP server and `settings.json` configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted), **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), **hardcoded credentials in an `env` block** (a secret-looking key set to a literal instead of `${VAR}` — reported by **name** only, never value; escalated to a **committed-secret Critical** when the config is git-tracked, mirroring a git-tracked `.env`), and **download-and-execute launch commands** (a server that boots via `curl … | bash`). AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
 
-A built-in **threat catalog** (84 entries) flags known-malicious or known-vulnerable
+A built-in **threat catalog** (99 entries) flags known-malicious or known-vulnerable
 packages, MCP servers, and IDE/browser extensions during the scan — and, via the
 `agent-runtime` ecosystem, checks the **agent CLI's own version** (Claude Code, Copilot
 CLI, Gemini CLI) against known-vulnerable ranges, since agent CLIs are now CVE-bearing
@@ -233,7 +233,7 @@ Options:
                                      browser, packages, rules, skills, settings,
                                      aicreds, envfiles, transcripts,
                                      marketplaces, vscodetasks, gitconfig,
-                                     pypkgs, npmpkgs
+                                     pypkgs, npmpkgs, jbplugins
       --search-dirs <SEARCH_DIRS>    Additional home roots (comma-separated).
                                      Home-rooted scanners run once per directory
                                      and merge results.

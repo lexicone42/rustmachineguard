@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 84 entries
+that is automatically checked during every scan. The catalog currently contains 99 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent CLIs themselves (Claude Code, Copilot CLI, Gemini CLI), matched against the
@@ -71,6 +71,8 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **Guardio Labs** | Discovered trojanized ChatGPT browser extensions stealing session cookies | Public blog posts |
 | **Sekoia.io TDR** | Enumerated the December 2024 Chrome extension supply-chain campaign, including the compromised Cyberhaven extension ID | Public blog posts |
 | **eSentire TRU** | Independent confirmation of the compromised Cyberhaven extension ID and affected versions | Public security advisories |
+| **JetBrains Marketplace team** | Identified and removed 15 malicious AI-themed plugins (2026-06) and published their IDs | Public security update |
+| **StepSecurity** | Independent analysis of the 15 malicious JetBrains plugins: vendors, install counts, exfiltration endpoint | Public blog posts |
 | **SafeDep** | Discovered the `durabletask` PyPI hijack (Microsoft SDK, multi-cloud cred stealer) | Public blog post |
 | **StepSecurity** | Discovered the `easy-day-js` typosquat across 140+ @mastra AI-framework packages | Public blog post |
 | **Datadog Security Labs** | Discovered the TeamPCP `litellm`/`telnyx` PyPI compromises | Public blog post |

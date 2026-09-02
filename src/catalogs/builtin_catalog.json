@@ -457,5 +457,80 @@
     "name": "ray-mcp-server",
     "version": "0.2.1",
     "advisory": "MAL-2026-5325 / PYSEC-2026-1074: malicious PyPI package impersonating an MCP/AI library (typosquat of the legitimate upstream). Exact compromised release. Source: OSV. Verified 2026-08-28."
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "org.sm.yms.toolkit",
+    "advisory": "'DeepSeek Junit Test' by vendor account 'CodePilot' (published 2025-10-31, 1,121 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.json.simple.kit",
+    "advisory": "'DeepSeek Git Commit' by vendor account 'StackSmith' (published 2025-11-01, 1,894 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "org.bug.find.tools",
+    "advisory": "'DeepSeek FindBugs' by vendor account 'CodeCrafter' (published 2025-11-09, 1,485 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "org.translate.ai.simple",
+    "advisory": "'DeepSeek AI Chat' by vendor account 'CodeWeaver' (published 2025-11-23, 1,317 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.yy.test.ai.simple",
+    "advisory": "'DeepSeek Dev AI' by vendor account 'JetCode' (published 2025-11-30, 740 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.dev.ai.toolkit",
+    "advisory": "'DeepSeek AI Coding' by vendor account 'DailyCode' (published 2025-12-06, 450 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.json.view.simple",
+    "advisory": "'AI FindBugs' by vendor account 'CodePilot' (published 2025-12-14, 623 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.my.git.ai.kit",
+    "advisory": "'AI Git Commitor' by vendor account 'StackSmith' (published 2026-01-10, 301 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "org.check.ai.ds",
+    "advisory": "'AI Coder Review' by vendor account 'ZenCoder' (published 2026-01-11, 735 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.review.tool.code",
+    "advisory": "'DeepSeek Coder AI' by vendor account 'CodeCrafter' (published 2026-01-15, 3,498 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "org.code.assist.dev.tool",
+    "advisory": "'AI Coder Assistant' by vendor account 'JetCode' (published 2026-02-01, 319 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.coder.ai.dpt",
+    "advisory": "'DeepSeek Code Review' by vendor account 'DailyCode' (published 2026-04-18, 278 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.my.code.tools",
+    "advisory": "'CodeGPT AI Assistant' by vendor account 'DailyCode' (published 2026-06-09, 25,571 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "ord.cp.code.ai.kit",
+    "advisory": "'DeepSeek AI Assist' by vendor account 'ZenCoder' (published 2026-06-10, 27,727 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "jetbrains",
+    "name": "com.dp.git.ai.tool",
+    "advisory": "'Coding Simple Tool' by vendor account 'CodePilot' (3,931 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
   }
 ]

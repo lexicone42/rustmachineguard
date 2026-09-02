@@ -333,6 +333,7 @@ fn summary_counts_match_vector_lengths() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        jetbrains_plugins: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -351,6 +352,7 @@ fn summary_counts_match_vector_lengths() {
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
 
@@ -405,6 +407,7 @@ fn json_output_is_valid_json() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
+        jetbrains_plugins: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -423,6 +426,7 @@ fn json_output_is_valid_json() {
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
     report.compute_summary();
@@ -474,6 +478,7 @@ fn html_output_no_script_injection() {
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        jetbrains_plugins: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -492,6 +497,7 @@ fn html_output_no_script_injection() {
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
     report.compute_summary();
@@ -2594,7 +2600,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        84,
+        99,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
@@ -3118,6 +3124,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         vscode_tasks: vec![],
         git_autorun_configs: vec![],
         warnings: vec![],
+        jetbrains_plugins: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -3135,6 +3142,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             git_autorun_configs_count: 0,
             python_packages_count: 0,
             npm_packages_count: 0,
+            jetbrains_plugins_count: 0,
         },
     };
     customize(&mut report);
@@ -4008,6 +4016,7 @@ fn every_catalog_ecosystem_is_reachable_from_a_call_site() {
         "npm".into(),           // MCP server package identity
         "pypi".into(),
         "docker".into(),
+        "jetbrains".into(),     // JetBrains plugin IDs from META-INF/plugin.xml
     ];
     for b in ["Chrome", "Chromium", "Brave", "Edge", "Firefox"] {
         reachable.push(browser_catalog_ecosystem(b).to_string());
@@ -4625,7 +4634,7 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     std::fs::write(home.join(".claude.json"), "{}").unwrap();
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
                 transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,\
-                settings,aicreds,envfiles,vscodetasks,shell";
+                settings,aicreds,envfiles,vscodetasks,shell,jbplugins";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
         .args(["--format", "json", "--skip", skip])
         .env("HOME", &home)
@@ -4647,8 +4656,8 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .filter_map(|d| d["scanner"].as_str())
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
-    // 23 --skip labels plus the two opt-in phases that were not requested.
-    assert_eq!(skipped.len(), 25, "every --skip label and opt-in phase is recorded: {skipped:?}");
+    // 24 --skip labels plus the two opt-in phases that were not requested.
+    assert_eq!(skipped.len(), 26, "every --skip label and opt-in phase is recorded: {skipped:?}");
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));
     assert!(skipped.contains(&"mcp-probe") && skipped.contains(&"registry"), "{skipped:?}");
     let mcp = diag.iter().find(|d| d["scanner"] == "mcp").unwrap();
@@ -5410,4 +5419,85 @@ fn tool_descriptions_are_stored_raw_for_the_scanner() {
 fn sanitize_display_neutralises_bidi_controls() {
     use rustmachineguard::scanners::sanitize_display;
     assert_eq!(sanitize_display("ok\u{202e}kcab\u{2066}x\u{200f}", 32), "ok?kcab?x?");
+}
+
+
+/// plugin.xml identity: `<id>` wins, a legacy descriptor falls back to `<name>`,
+/// `<idea-version since-build=…/>` is not `<version>`, and every field is sanitized.
+#[test]
+fn jetbrains_plugin_xml_identity() {
+    use rustmachineguard::scanners::jetbrains_plugins::{is_valid_plugin_id, parse_plugin_xml};
+    let p = std::path::Path::new("/x");
+    let xml = r#"<idea-plugin><id>org.sm.yms.toolkit</id><name>DeepSeek Junit Test</name>
+        <version>1.0.3</version><vendor email="a@b">CodePilot</vendor><idea-version since-build="231"/></idea-plugin>"#;
+    let r = parse_plugin_xml(xml, "IntelliJIdea2026.2", p).unwrap();
+    assert_eq!((r.id.as_str(), r.name.as_str(), r.version.as_str()), ("org.sm.yms.toolkit", "DeepSeek Junit Test", "1.0.3"));
+    assert_eq!(r.vendor.as_deref(), Some("CodePilot"));
+    let legacy = parse_plugin_xml("<idea-plugin><name>OldStyle</name><version>2</version></idea-plugin>", "PyCharm2026.1", p).unwrap();
+    assert_eq!(legacy.id, "OldStyle");
+    let hostile = parse_plugin_xml("<idea-plugin><id>com.evil</id><name>Ev\u{1b}[32mil</name><version>1.0\n[OK]</version></idea-plugin>", "X", p).unwrap();
+    assert_eq!(hostile.name, "Ev?[32mil");
+    assert_eq!(hostile.version, "unknown");
+    assert!(parse_plugin_xml("<idea-plugin><id>../../x</id></idea-plugin>", "X", p).is_none());
+    assert!(is_valid_plugin_id("org.sm.yms.toolkit") && !is_valid_plugin_id("a b") && !is_valid_plugin_id(""));
+}
+
+/// Every jetbrains catalog row must be reachable by the scanner's identity (an exact
+/// plugin ID), the same one-directional gap check the npm rows have.
+#[test]
+fn every_jetbrains_catalog_row_is_reachable() {
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let rows: serde_json::Value = serde_json::from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let mut n = 0;
+    for row in rows.as_array().unwrap().iter().filter(|r| r["ecosystem"] == "jetbrains") {
+        let id = row["name"].as_str().unwrap();
+        assert!(rustmachineguard::scanners::jetbrains_plugins::is_valid_plugin_id(id), "{id}");
+        assert!(!catalog.check_extension("jetbrains", id, "1.0.0", "/x").is_empty(), "{id} unreachable");
+        n += 1;
+    }
+    assert_eq!(n, 15);
+}
+
+/// End to end: a fixture jar with a malicious plugin ID under the Linux plugins path is
+/// inventoried and matched; a jar without a descriptor is ignored; the positive control
+/// (plugin name) proves the fixture was read.
+#[test]
+fn jetbrains_plugins_are_inventoried_and_matched_end_to_end() {
+    use std::io::Write;
+    let home = std::env::temp_dir().join(format!("rmg-jb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let plugin = home.join(".local/share/JetBrains/IntelliJIdea2026.2/DeepSeek Junit Test/lib");
+    std::fs::create_dir_all(&plugin).unwrap();
+    let mk_jar = |path: &std::path::Path, descriptor: Option<&str>| {
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("com/x/Main.class", opts).unwrap();
+        z.write_all(b"\xca\xfe\xba\xbe junk").unwrap();
+        if let Some(d) = descriptor {
+            z.start_file("META-INF/plugin.xml", opts).unwrap();
+            z.write_all(d.as_bytes()).unwrap();
+        }
+        z.finish().unwrap();
+    };
+    mk_jar(&plugin.join("helper.jar"), None);
+    mk_jar(&plugin.join("deepseek-junit.jar"), Some(
+        "<idea-plugin><id>org.sm.yms.toolkit</id><name>DeepSeek Junit Test</name><version>1.0.3</version><vendor>CodePilot</vendor></idea-plugin>"));
+    let benign = home.join(".local/share/JetBrains/IntelliJIdea2026.2/rainbow.jar");
+    mk_jar(&benign, Some("<idea-plugin><id>izhangzhihao.rainbow.brackets</id><name>Rainbow Brackets</name><version>2026.1.0</version></idea-plugin>"));
+    std::fs::write(home.join(".claude.json"), "{}").unwrap();
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,marketplaces,\
+                gitconfig,pypkgs,npmpkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["summary"]["jetbrains_plugins_count"], 2, "{}", v["summary"]);
+    assert!(text.contains("Rainbow Brackets"), "positive control: fixture was never read");
+    let flagged: Vec<&str> = v["exposure_findings"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert!(flagged.contains(&"org.sm.yms.toolkit"), "malicious plugin not matched: {flagged:?}");
+    assert!(!flagged.contains(&"izhangzhihao.rainbow.brackets"));
+    let row = v["diagnostics"].as_array().unwrap().iter().find(|d| d["scanner"] == "jbplugins").expect("diagnostics row");
+    assert_eq!(row["items"], 2);
 }
