@@ -62,6 +62,9 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("JSONSP", "-d '{\"token\" : \"JSONSP\"}'".into()),
         ("CSVKV", "--env a=1,token=CSVKV,b=2".into()),
         ("AUTHQ", "-H 'Authorization: token AUTHQ' https://api.internal".into()),
+        // A secret containing separators must vanish whole, not just its first piece.
+        ("SEPSECRET", "password=SEPSECRETa;SEPSECRETb,SEPSECRETc&SEPSECRETd".into()),
+        ("SEPCONN", "Server=db;Password=SEPCONNa;SEPCONNb;Trusted=true".into()),
     ]
 }
 
@@ -111,6 +114,7 @@ fn redaction_preserves_the_actionable_parts() {
         ("curl -u admin:S5 https://api.internal", vec!["admin:<redacted>", "https://api.internal"]),
         ("curl -H \"Authorization=Bearer S6\" https://api.internal", vec!["Authorization=Bearer", "https://api.internal"]),
         ("Server=db;User Id=sa;Password=S7;", vec!["Server=db;", "Id=sa;", "Password=<redacted>;"]),
+        ("Server=db;Password=a;b;Trusted=true", vec!["Server=db;", "Password=<redacted>;<redacted>;", "Trusted=true"]),
         ("https://h/p?a=1&token=S8&b=2", vec!["https://h/p?a=1&", "&b=2"]),
         // Round two: the scheme word stays, the credential goes, the URL survives.
         ("curl -H \"Authorization: token S9\" https://api.internal", vec!["Authorization:", "token", "<redacted>\"", "https://api.internal"]),

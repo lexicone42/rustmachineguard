@@ -534,16 +534,32 @@ fn redact_token(
     }
     // Connection strings, query fragments and compact JSON carry several pairs:
     // `Server=db;Password=X;`, `a=1&token=X`, `{"user":"a","password":"X"}`.
+    //
+    // A secret can itself contain a separator (`password=ab;cd`). After a segment whose
+    // KEY was secret-shaped, following segments that are not pairs themselves are part
+    // of that value and are absorbed into the redaction; `Trusted=true` after it is a
+    // new pair and is kept.
     let mut out = String::with_capacity(tok.len());
     let mut start = 0;
+    let mut absorb = false;
+    let mut emit = |seg: &str, out: &mut String, absorb: &mut bool| {
+        let pair = split_pair(seg);
+        // An empty segment (the tail after a trailing `;`) is not part of the secret.
+        if *absorb && pair.is_none() && !seg.is_empty() {
+            out.push_str("<redacted>");
+            return;
+        }
+        out.push_str(&redact_segment(seg));
+        *absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && is_secret_key(k));
+    };
     for (i, ch) in tok.char_indices() {
         if ch == ';' || ch == '&' || ch == ',' {
-            out.push_str(&redact_segment(&tok[start..i]));
+            emit(&tok[start..i], &mut out, &mut absorb);
             out.push(ch);
             start = i + 1;
         }
     }
-    out.push_str(&redact_segment(&tok[start..]));
+    emit(&tok[start..], &mut out, &mut absorb);
     (out, false)
 }
 
