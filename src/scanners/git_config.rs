@@ -90,14 +90,14 @@ fn run_git_config(top_args: &[String], config_args: &[String]) -> Option<String>
     // `config`, whereas `--local` / `--file` are `git config` options and must follow
     // it. Passing them in the wrong position makes git error out and the scanner
     // silently report nothing.
-    let out = std::process::Command::new("git")
-        .arg("--no-pager")
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("--no-pager")
         .args(top_args)
         .arg("config")
         .args(config_args)
-        .args(["--list", "--show-origin", "--includes", "-z"])
-        .output()
-        .ok()?;
+        .args(["--list", "--show-origin", "--includes", "-z"]);
+    // Attacker-authored: `[include] path = /dev/tty` or a FIFO blocks git forever.
+    let out = crate::scanners::output_with_timeout(&mut cmd, std::time::Duration::from_secs(5))?;
     if !out.status.success() {
         return None;
     }
@@ -129,6 +129,17 @@ fn parse_z(text: &str) -> Vec<(String, String, String)> {
 fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
     let git_dir = dir.join(".git");
     if !crate::scanners::probe_exists(&git_dir) {
+        // A project that IS a bare gitdir: an agent launched inside a payload directory
+        // (`cd vendor/evil && claude`) registers that directory as a project, and git
+        // treats the cwd as the repo -- CVE-2026-45033's own shape, and the one place
+        // git is guaranteed to look. Neither path checked it before.
+        let cfg = dir.join("config");
+        if is_bare_gitdir(dir)
+            && config_needs_git(&cfg)
+            && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
+        {
+            collect(&text, dir, "bare-root", true, out);
+        }
         return;
     }
     if !config_needs_git(&git_dir.join("config")) {
@@ -227,11 +238,13 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             } else {
                 (kind.is_file(), kind.is_dir())
             };
-            if is_file {
+            // A symlink named HEAD counts here whatever its target: git never opens the
+            // target, it reads the link text, and head_is_valid() decides below.
+            if name == "HEAD" && (is_file || kind.is_symlink()) {
+                has_head = true;
+            } else if is_file {
                 if name == "config" {
                     has_config = true;
-                } else if name == "HEAD" {
-                    has_head = true;
                 } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
                     generated = true;
                 }
@@ -300,13 +313,15 @@ fn collect(text: &str, location: &Path, scope: &str, nested: bool, out: &mut Vec
             attack_shape(&value)
         };
         let Some(reason) = shape else { continue };
+        // Key, value, origin and path are attacker-authored (a quoted subsection name may
+        // hold ESC) and are printed on the Critical line: sanitize them all.
         out.push(GitAutorunConfig {
-            path: location.to_string_lossy().to_string(),
-            origin,
-            key,
+            path: crate::scanners::sanitize_display(&location.to_string_lossy(), 512),
+            origin: crate::scanners::sanitize_display(&origin, 512),
+            key: crate::scanners::sanitize_display(&key, 128),
             // A credential.helper can embed a live password; the command SHAPE is the
             // finding, the credential is not.
-            value: crate::scanners::redact_secrets_in_text(&value),
+            value: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(&value), 512),
             scope: scope.to_string(),
             nested,
             reason,
@@ -408,15 +423,33 @@ mod needs_git_tests {
     }
 }
 
-/// Mirror git's validate_headref: `ref: refs/...` or a 40/64-hex object id.
+/// Mirror git's validate_headref. A symlink HEAD is lstat()ed and readlink()ed: the
+/// link text must start with "refs/", and the target is never opened (a dangling link
+/// is fine). A regular HEAD is `ref: refs/...` or an object id: git parses the FIRST 40
+/// (or 64) hex characters and ignores whatever follows, so `<40 hex> junk` and 41 hex
+/// characters are valid -- requiring the whole line to be hex let those hide a gitdir.
 fn head_is_valid(head: &Path) -> bool {
+    if let Ok(m) = std::fs::symlink_metadata(head)
+        && m.file_type().is_symlink()
+    {
+        return std::fs::read_link(head)
+            .ok()
+            .is_some_and(|t| t.to_string_lossy().starts_with("refs/"));
+    }
     let Some(bytes) = crate::scanners::read_head_bytes(head, 256) else {
         return false;
     };
     let text = String::from_utf8_lossy(&bytes);
-    let line = text.lines().next().unwrap_or("").trim_end();
-    if let Some(target) = line.strip_prefix("ref:") {
-        return target.trim().starts_with("refs/");
+    if let Some(target) = text.strip_prefix("ref:") {
+        return target.trim_start().starts_with("refs/");
     }
-    (line.len() == 40 || line.len() == 64) && line.chars().all(|c| c.is_ascii_hexdigit())
+    text.chars().take_while(|c| c.is_ascii_hexdigit()).count() >= 40
+}
+
+/// git's is_git_directory for a directory that is itself the repo: valid HEAD plus
+/// objects/ and refs/ (symlinks followed, as stat() does).
+fn is_bare_gitdir(dir: &Path) -> bool {
+    head_is_valid(&dir.join("HEAD"))
+        && crate::scanners::probe_dir(&dir.join("objects"))
+        && crate::scanners::probe_dir(&dir.join("refs"))
 }

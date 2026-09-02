@@ -4745,6 +4745,14 @@ fn nested_repo_walk_uses_gits_criterion_and_is_not_fooled_by_decoys() {
     gitdir(&root.join("junkhead"), Some(HOT));
     std::fs::write(root.join("junkhead/HEAD"), "not a ref at all\n").unwrap();
 
+    // (g) HEAD is 40 hex plus trailing junk, and (h) HEAD is a dangling symlink whose
+    //     link text starts with refs/: both are git dirs to git.
+    gitdir(&root.join("hexjunk"), Some(HOT));
+    std::fs::write(root.join("hexjunk/HEAD"), "0123456789abcdef0123456789abcdef01234567 junk\n").unwrap();
+    gitdir(&root.join("symhead"), Some(HOT));
+    std::fs::remove_file(root.join("symhead/HEAD")).unwrap();
+    std::os::unix::fs::symlink("refs/heads/main", root.join("symhead/HEAD")).unwrap();
+
     // (d) config + HEAD but no objects/refs is not a git dir: not reported (git would
     //     not run it) but still descended.
     std::fs::create_dir_all(root.join("fake")).unwrap();
@@ -4766,6 +4774,8 @@ fn nested_repo_walk_uses_gits_criterion_and_is_not_fooled_by_decoys() {
     assert!(has("linked/config"), "symlinked objects/refs must satisfy git's criterion: {origins:?}");
     assert!(!origins.iter().any(|o| o.ends_with("junkhead/config")),
         "a junk HEAD is not a git dir to git and must not be reported: {origins:?}");
+    assert!(has("hexjunk/config"), "40 hex + trailing junk IS a git dir to git: {origins:?}");
+    assert!(has("symhead/config"), "a dangling symlink HEAD to refs/ IS a git dir to git: {origins:?}");
 }
 
 /// The installed identity of an npm package is its DIRECTORY name; package.json only
@@ -5249,4 +5259,54 @@ fn diagnostics_cover_catalog_less_runs_and_trace_env_is_boolean() {
     let labels: Vec<&str> = rows.iter().map(|(l, _)| *l).collect();
     let mut dedup = labels.clone(); dedup.sort(); dedup.dedup();
     assert_eq!(labels.len(), dedup.len(), "duplicate diagnostics rows: {labels:?}");
+}
+
+
+/// A project directory that is itself a bare gitdir (an agent launched inside a payload
+/// directory registers it as a project) is the one place git is guaranteed to look, and
+/// neither walk checked it.
+#[test]
+fn bare_project_root_is_scanned() {
+    let home = std::env::temp_dir().join(format!("rmg-bare-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let proj = home.join("proj");
+    std::fs::create_dir_all(proj.join("objects")).unwrap();
+    std::fs::create_dir_all(proj.join("refs")).unwrap();
+    std::fs::write(proj.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(proj.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n").unwrap();
+    std::fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,\
+                marketplaces,pypkgs,npmpkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let scopes: Vec<&str> = v["git_autorun_configs"].as_array().unwrap().iter().filter_map(|c| c["scope"].as_str()).collect();
+    assert!(scopes.contains(&"bare-root"), "bare project root not scanned: {}", v["git_autorun_configs"]);
+}
+
+/// `[include] path = <FIFO>` in an attacker-authored nested config made `git config`
+/// block forever; the whole scan stalled. It now runs under a timeout.
+#[cfg(unix)]
+#[test]
+fn git_config_include_of_a_fifo_cannot_stall_the_scan() {
+    let root = std::env::temp_dir().join(format!("rmg-git-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let g = root.join("vendor/payload");
+    std::fs::create_dir_all(g.join("objects")).unwrap();
+    std::fs::create_dir_all(g.join("refs")).unwrap();
+    std::fs::write(g.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let fifo = root.join("pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    std::fs::write(g.join("config"), format!("[include]\n\tpath = {}\n[core]\n\tfsmonitor = ./x\n", fifo.display())).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let r2 = root.clone();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        rustmachineguard::scanners::git_config::scan_nested_repos_for_test(&r2, &mut out);
+        let _ = tx.send(out.len());
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(9));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(got.is_ok(), "scan stalled on a FIFO include");
 }

@@ -1036,3 +1036,34 @@ pub fn sanitize_display_multiline(s: &str, max: usize) -> String {
     }
     out
 }
+
+/// Run a command with a wall-clock cap, stdin closed. `Command::output()` has no timeout,
+/// and git will happily open an `[include] path = /dev/tty` (or a FIFO) from an
+/// attacker-authored config and block forever, stalling the whole scan. Returns None on
+/// timeout or spawn failure. Callers whose child may write more than the pipe buffer
+/// before exiting would see a timeout instead; `git config --list` output is small.
+pub fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(_) => return None,
+        }
+    }
+}
