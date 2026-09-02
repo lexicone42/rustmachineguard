@@ -4728,6 +4728,21 @@ fn nested_repo_walk_uses_gits_criterion_and_is_not_fooled_by_decoys() {
     gitdir(&root.join("decoy"), Some("[core]\n\tbare = false\n"));
     gitdir(&root.join("decoy/inner/payload2"), Some(HOT));
 
+    // (e) objects/ and refs/ are SYMLINKS to real directories: git's stat() follows
+    //     them, so this IS a git dir to git and must be to us.
+    let store = root.join("store");
+    std::fs::create_dir_all(store.join("objects")).unwrap();
+    std::fs::create_dir_all(store.join("refs")).unwrap();
+    std::fs::create_dir_all(root.join("linked")).unwrap();
+    std::os::unix::fs::symlink(store.join("objects"), root.join("linked/objects")).unwrap();
+    std::os::unix::fs::symlink(store.join("refs"), root.join("linked/refs")).unwrap();
+    std::fs::write(root.join("linked/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(root.join("linked/config"), HOT).unwrap();
+
+    // (f) objects/, refs/ and a config, but HEAD is junk: git rejects it, so must we.
+    gitdir(&root.join("junkhead"), Some(HOT));
+    std::fs::write(root.join("junkhead/HEAD"), "not a ref at all\n").unwrap();
+
     // (d) config + HEAD but no objects/refs is not a git dir: not reported (git would
     //     not run it) but still descended.
     std::fs::create_dir_all(root.join("fake")).unwrap();
@@ -4744,8 +4759,11 @@ fn nested_repo_walk_uses_gits_criterion_and_is_not_fooled_by_decoys() {
     assert!(has("lib/sym/config"), "symlinked config evaded detection: {origins:?}");
     assert!(has("decoy/inner/payload2/config"), "decoy git dir hid the deeper payload: {origins:?}");
     assert!(has("fake/deeper/payload3/config"), "non-git config+HEAD dir stopped the descent: {origins:?}");
-    assert!(!has("fake/config\u{0}") && !origins.iter().any(|o| o.ends_with("fake/config")),
+    assert!(!origins.iter().any(|o| o.ends_with("fake/config")),
         "a dir without objects/refs is not a git dir and must not be reported: {origins:?}");
+    assert!(has("linked/config"), "symlinked objects/refs must satisfy git's criterion: {origins:?}");
+    assert!(!origins.iter().any(|o| o.ends_with("junkhead/config")),
+        "a junk HEAD is not a git dir to git and must not be reported: {origins:?}");
 }
 
 /// The installed identity of an npm package is its DIRECTORY name; package.json only
@@ -4981,4 +4999,131 @@ fn grandchild_servers_die_with_the_probe() {
         let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
     }
     assert!(!alive, "grandchild sleeper {pid} survived the probe");
+}
+
+
+/// A FIFO named like an identity file used to block the whole scan: File::open on a
+/// FIFO with no writer never returns. The readers now refuse anything that is not a
+/// regular file. The watchdog thread turns a regression into a 5s failure, not a hang.
+#[cfg(unix)]
+#[test]
+fn readers_refuse_fifos_instead_of_hanging() {
+    let dir = std::env::temp_dir().join(format!("rmg-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("package.json");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let f2 = fifo.clone();
+    std::thread::spawn(move || {
+        let a = rustmachineguard::scanners::read_head_bytes(&f2, 16).is_none();
+        let b = rustmachineguard::scanners::read_head(&f2, 16).is_none();
+        let c = rustmachineguard::scanners::npm_packages::parse_package_json_name_version(&f2).is_none();
+        let _ = tx.send((a, b, c));
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(5));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(got, Ok((true, true, true)), "reader blocked on a FIFO or returned data");
+}
+
+/// `npm i harmless@npm:claud-code` installs the known-bad tarball under a harmless
+/// directory name. Both names are identities; the catalog must see both.
+#[test]
+fn npm_alias_install_still_matches_the_catalog() {
+    let home = std::env::temp_dir().join(format!("rmg-npm-alias-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let d = home.join("proj/node_modules/harmless");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("package.json"), r#"{"name":"claud-code","version":"1.0.0"}"#).unwrap();
+    std::fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, home.join("proj").display())).unwrap();
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,\
+                marketplaces,gitconfig,pypkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names: Vec<&str> = v["exposure_findings"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert!(names.contains(&"claud-code"), "alias install hid the package: {names:?}");
+}
+
+/// PyPI treats `mcp_runcommand_server`, `Mcp.Runcommand.Server` and
+/// `mcp-runcommand-server` as one project (PEP 503); so must the catalog match.
+#[test]
+fn pypi_names_are_pep503_normalised_on_both_sides() {
+    use rustmachineguard::scanners::exposure::{names_match, pep503_normalize};
+    assert_eq!(pep503_normalize("Mcp.Runcommand__Server"), "mcp-runcommand-server");
+    assert!(names_match("pypi", "mcp-runcommand-server", "MCP_RUNCOMMAND.SERVER"));
+    assert!(!names_match("npm", "mcp-runcommand-server", "MCP_RUNCOMMAND.SERVER"));
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let rows: serde_json::Value = serde_json::from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let row = rows.as_array().unwrap().iter()
+        .find(|r| r["ecosystem"] == "pypi" && r.get("version").is_none() && r.get("version_range").is_none())
+        .expect("an unbounded pypi row");
+    let name = row["name"].as_str().unwrap();
+    let variant = name.replace('-', "_").to_uppercase();
+    assert!(!catalog.check_extension("pypi", &variant, "1.0.0", "/x").is_empty(), "{variant} must match {name}");
+}
+
+/// Manifest fields are attacker-authored: a control character in the version or the
+/// resolved name must never reach the terminal, `_1` beats `_0` for the same version,
+/// and `default_locale` cannot escape `_locales/`.
+#[test]
+fn browser_fields_are_sanitized_and_version_dirs_tie_break_on_install_counter() {
+    let home = std::env::temp_dir().join(format!("rmg-ext-san-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let exts = home.join(".config/chromium/Default/Extensions");
+    let a = exts.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    for (dir, ver) in [("1.2.3_0", "1.2.3"), ("1.2.3_1", "1.2.3\n\u{1b}[32m[OK] clean\u{1b}[0m")] {
+        std::fs::create_dir_all(a.join(dir)).unwrap();
+        std::fs::write(a.join(dir).join("manifest.json"),
+            serde_json::json!({"name": "Ev\u{1b}[31mil\nName", "version": ver}).to_string()).unwrap();
+    }
+    let b = exts.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/1.0_0");
+    std::fs::create_dir_all(b.join("_locales/en")).unwrap();
+    std::fs::create_dir_all(exts.join("evil")).unwrap();
+    std::fs::write(exts.join("evil/messages.json"), r#"{"n":{"message":"PWNED"}}"#).unwrap();
+    std::fs::write(b.join("manifest.json"), r#"{"name":"__MSG_n__","version":"1.0","default_locale":"../../../evil"}"#).unwrap();
+    std::fs::write(home.join(".claude.json"), "{}").unwrap();
+    let skip = "ssh,cloud,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,marketplaces,\
+                gitconfig,pypkgs,npmpkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(!text.contains('\u{1b}'), "ESC reached the report");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let list = v["browser_extensions"].as_array().unwrap();
+    let ea = list.iter().find(|e| e["id"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    assert_eq!(ea["version"], "unknown", "junk version must be dropped (and _1 must win over _0): {ea}");
+    assert_eq!(ea["name"], "Ev?[31mil?Name");
+    let eb = list.iter().find(|e| e["id"] == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+    assert_eq!(eb["name"], "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "traversal locale must not resolve: {eb}");
+}
+
+/// `~/.claude/hooks/x` and `$HOME/...` are the idiomatic user-global hook forms and must
+/// reach the binary check; a text script starting with "MZ" is not a PE.
+#[test]
+fn hook_home_expansion_and_mz_text_guard() {
+    use rustmachineguard::scanners::agent_settings::classify_hook_command_with_home;
+    let home = std::env::temp_dir().join(format!("rmg-hookhome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".claude/hooks")).unwrap();
+    std::fs::write(home.join(".claude/hooks/payload"), b"\x7fELF\x02\x01\x01\x00\x00\x00padding").unwrap();
+    std::fs::write(home.join(".claude/hooks/mz.sh"), "MZ_HOME=/opt/mz\nexec \"$MZ_HOME/bin/run\"\n").unwrap();
+    let settings = home.join(".claude/settings.json");
+    for cmd in ["~/.claude/hooks/payload", "$HOME/.claude/hooks/payload", "\"${HOME}\"/.claude/hooks/payload"] {
+        let risks = classify_hook_command_with_home(cmd, &settings, Some(&home));
+        assert!(risks.iter().any(|r| r.contains("native binary")), "{cmd}: {risks:?}");
+    }
+    let risks = classify_hook_command_with_home("~/.claude/hooks/mz.sh", &settings, Some(&home));
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(!risks.iter().any(|r| r.contains("native binary")), "text script flagged as PE: {risks:?}");
+}
+
+#[test]
+fn sanitize_display_strips_controls_and_caps() {
+    use rustmachineguard::scanners::sanitize_display;
+    assert_eq!(sanitize_display("ok-1.2.3", 64), "ok-1.2.3");
+    assert_eq!(sanitize_display("a\u{1b}[2K\rb\nc\u{85}d\u{2028}e", 64), "a?[2K?b?c?d?e");
+    assert_eq!(sanitize_display("abcdef", 3), "abc…");
 }

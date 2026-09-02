@@ -339,6 +339,16 @@ fn is_native_binary(path: &std::path::Path) -> bool {
 /// Graded to avoid crying wolf: a script in the agent's own config directory is common
 /// and frequently legitimate; a cross-directory reference is not.
 pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    classify_hook_command_with_home(command, settings_path, home.as_deref())
+}
+
+/// [`classify_hook_command`] with an explicit home, so `~/` expansion is testable.
+pub fn classify_hook_command_with_home(
+    command: &str,
+    settings_path: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut risks = Vec::new();
     // Which agent-config dir does this settings file itself live under?
     let own_dir = settings_path
@@ -390,7 +400,7 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
         };
         // Hooks run under `sh -c`, so `~/.claude/hooks/x` and `$HOME/...` execute fine
         // and are the idiomatic form in a user-global settings file.
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = home {
             let home = home.to_string_lossy();
             for prefix in ["~/", "$HOME/", "${HOME}/"] {
                 if let Some(rest) = expanded.strip_prefix(prefix) {
