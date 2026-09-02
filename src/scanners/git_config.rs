@@ -204,14 +204,26 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
         // descend into?" -- using the entry type the listing already carries. The
         // previous version stat'ed every entry and then stat'ed config and HEAD again
         // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
-        let (mut has_config, mut has_head, mut generated) = (false, false, false);
+        let (mut has_config, mut has_head, mut has_objects, mut has_refs, mut generated) =
+            (false, false, false, false, false);
         let mut children = Vec::new();
         for entry in entries.flatten() {
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
             let name = entry.file_name();
-            if kind.is_file() {
+            // A symlink reports itself here, not its target. Resolve it for the FILE
+            // checks -- `config -> ../real-config` is how a payload hid from the first
+            // version of this walk -- but never descend through a symlinked directory.
+            let (is_file, is_dir) = if kind.is_symlink() {
+                match std::fs::metadata(entry.path()) {
+                    Ok(m) => (m.is_file(), false),
+                    Err(_) => (false, false),
+                }
+            } else {
+                (kind.is_file(), kind.is_dir())
+            };
+            if is_file {
                 if name == "config" {
                     has_config = true;
                 } else if name == "HEAD" {
@@ -219,31 +231,47 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
                 } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
                     generated = true;
                 }
-            } else if kind.is_dir() && !PRUNE_BY_NAME.iter().any(|p| name == *p) {
-                // Symlinks report their own type here, so a symlinked dir is not
-                // followed -- same as the old symlink_metadata() check.
-                children.push(entry.path());
-            }
-        }
-        // A git dir has a config file plus HEAD; that pair is the cheap signal.
-        if has_config && has_head {
-            // The project's own .git is handled by scan_repo_local; the project root
-            // itself is never a nested repo.
-            if dir != own_git && dir != root {
-                let cfg = dir.join("config");
-                if config_needs_git(&cfg)
-                    && let Some(text) =
-                        run_git_config(&[], &[format!("--file={}", cfg.display())])
-                {
-                    collect(&text, &dir, "nested-repo", true, out);
+            } else if is_dir {
+                if name == "objects" {
+                    has_objects = true;
+                } else if name == "refs" {
+                    has_refs = true;
+                }
+                if !PRUNE_BY_NAME.iter().any(|p| name == *p) {
+                    children.push((name, entry.path()));
                 }
             }
-            continue; // don't descend into a git dir's internals
         }
-        if generated {
+        // git's own test (setup.c is_git_directory): HEAD plus objects/ and refs/
+        // directories. That is what makes git treat a cwd as a bare repo and read its
+        // config -- the CVE-2026-45033 shape. Two plain files named config and HEAD are
+        // NOT a git dir, and the first version of this walk treated them as one and
+        // stopped descending: an attacker could hide a whole subtree, or the whole
+        // project, behind two empty files.
+        let is_git_dir = has_head && has_objects && has_refs && dir != root;
+        if dir == own_git {
+            continue; // the project's own .git is handled by scan_repo_local
+        }
+        if is_git_dir && has_config {
+            let cfg = dir.join("config");
+            if config_needs_git(&cfg)
+                && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
+            {
+                collect(&text, &dir, "nested-repo", true, out);
+            }
+        }
+        if generated && !is_git_dir {
             continue; // a virtualenv or build cache: nothing in it was shipped by the repo
         }
-        stack.extend(children);
+        // Keep descending through a nested git dir too -- a decoy with a boring config
+        // must not hide a real payload underneath it -- but not into its object store,
+        // which fans out 256 ways and is not somewhere an agent cds into.
+        for (name, path) in children {
+            if is_git_dir && name == "objects" {
+                continue;
+            }
+            stack.push(path);
+        }
     }
 }
 

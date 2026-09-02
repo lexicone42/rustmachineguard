@@ -367,6 +367,18 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
         // proj/.claude/settings.json means proj/payload. Resolving only against the
         // settings dir meant this check could never fire for the relative form -- the
         // one a repo-shipped payload actually uses. Try both.
+        // Claude Code's documented form for a repo-shipped hook is
+        // "$CLAUDE_PROJECT_DIR"/.claude/hooks/<script>: embedded quotes, and a variable
+        // that only the hook runner expands. Expand it ourselves or the binary check
+        // never runs for the one form the docs recommend.
+        let cleaned = token.replace(['"', '\''], "");
+        let expanded = match project_root {
+            Some(root) => cleaned
+                .replace("${CLAUDE_PROJECT_DIR}", &root.to_string_lossy())
+                .replace("$CLAUDE_PROJECT_DIR", &root.to_string_lossy()),
+            None => cleaned,
+        };
+        let token: &str = &expanded;
         let candidates: Vec<std::path::PathBuf> = if token.starts_with('/') {
             vec![std::path::PathBuf::from(token)]
         } else {

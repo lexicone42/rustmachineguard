@@ -171,10 +171,11 @@ mod redaction_properties {
     use proptest::prelude::*;
     use rustmachineguard::scanners::redact_secrets_in_text as redact;
 
-    // A secret shape that cannot occur inside the [a-z./-] filler tokens, so a
-    // `contains` check can never be fooled by coincidence.
+    // A secret shape that cannot occur inside the filler tokens, so a `contains` check
+    // can never be fooled by coincidence. Filler never starts with '-': `-key` IS a
+    // flag-shaped secret marker, and redacting the token after it is correct.
     const SECRET: &str = "[0-9]{4}[A-Z]{4}[a-z0-9]{4,20}";
-    const FILLER: &str = "[a-z./-]{0,12}";
+    const FILLER: &str = "([a-z./][a-z./-]{0,11})?";
 
     fn key() -> impl Strategy<Value = &'static str> {
         prop::sample::select(vec![

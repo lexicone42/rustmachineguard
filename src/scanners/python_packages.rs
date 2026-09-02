@@ -131,7 +131,17 @@ fn scan_root(root: &Path, out: &mut Vec<PythonPackage>) {
             continue;
         };
         budget -= 1;
-        if let Some((name, version)) = parse_metadata_name_version(&meta) {
+        // METADATA is authoritative, but the directory name (`Name-Version.dist-info`)
+        // is the installed identity and survives a padded or garbled METADATA file.
+        let from_dir = dir_name
+            .rsplit_once('.')
+            .and_then(|(stem, _)| stem.rsplit_once('-'))
+            .map(|(n, v)| (n.replace('_', "-"), v.to_string()));
+        let ident = parse_metadata_name_version(&meta).or(from_dir);
+        if let Some((name, version)) = ident
+            && crate::scanners::npm_packages::is_valid_npm_name(&name)
+            && crate::scanners::npm_packages::is_valid_version(&version)
+        {
             out.push(PythonPackage {
                 name,
                 version,
@@ -147,7 +157,10 @@ fn scan_root(root: &Path, out: &mut Vec<PythonPackage>) {
 /// long description — so a package's README, which can be large and can contain
 /// anything, is never pulled into the report.
 pub fn parse_metadata_name_version(path: &Path) -> Option<(String, String)> {
-    let content = read_bounded(path)?;
+    // A bounded head, never a size refusal: a METADATA padded past 1 MiB used to make
+    // the distribution vanish from the inventory. The headers are at the top.
+    let head = crate::scanners::read_head_bytes(path, 64 * 1024)?;
+    let content = String::from_utf8_lossy(&head).into_owned();
     let mut name = None;
     let mut version = None;
     for line in content.lines() {

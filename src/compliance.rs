@@ -113,7 +113,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Least-privilege / scoped tokens for agents",
         coverage: Coverage::Partial,
         how: "Flags bypassPermissions and blanket MCP auto-approval; surfaces at-rest credentials. Full agent-identity/scope modeling is not yet implemented.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret", "Secret exposure", "Secret leak", "SSH key"],
+        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret"],
     },
     // ── OWASP Agentic Applications Top 10 (ASI) ──
     Control {
@@ -129,7 +129,7 @@ pub const CONTROLS: &[Control] = &[
         id: "ASI04",
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
-        how: "Threat catalog (82 entries, exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
+        how: "Threat catalog (exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
         finding_categories: &["Exposure", "Registry", "Git autorun"],
     },
     Control {

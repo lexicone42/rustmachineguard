@@ -38,7 +38,8 @@ impl Scanner for NpmPackagesScanner {
             if !seen.insert(root.clone()) {
                 continue;
             }
-            scan_root(&root, &mut out);
+            let mut budget = MAX_PACKAGES_PER_ROOT;
+            scan_root(&root, &mut out, &mut budget);
         }
         // The same package appears in many trees; keep one per (name, version).
         let mut uniq = std::collections::HashSet::new();
@@ -104,19 +105,39 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
     )
 }
 
-fn scan_root(root: &Path, out: &mut Vec<NpmPackage>) {
+/// Bytes of package.json / METADATA to read for an identity. Not `read_bounded`: that
+/// refuses files over 1 MiB, so padding package.json with a 1 MiB description made a
+/// typosquat disappear from the inventory -- a deterministic evasion. The identity
+/// fields sit at the top of these files; a bounded head is enough.
+const IDENTITY_HEAD_BYTES: usize = 64 * 1024;
+
+fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
-    let mut budget = MAX_PACKAGES_PER_ROOT;
     for entry in entries.flatten() {
-        if budget == 0 {
+        if *budget == 0 {
             return;
         }
         let p = entry.path();
         let Some(dir_name) = p.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        // pnpm keeps every package -- including all transitive ones -- under the virtual
+        // store node_modules/.pnpm/<pkg>@<ver>/node_modules/. The top level holds only
+        // direct dependencies as symlinks, so without this a pnpm project's transitive
+        // dependencies (where an injected malicious dep lives) were never enumerated.
+        if dir_name == ".pnpm" {
+            if let Ok(store) = std::fs::read_dir(&p) {
+                for s in store.flatten() {
+                    let nm = s.path().join("node_modules");
+                    if nm.is_dir() {
+                        scan_root(&nm, out, budget);
+                    }
+                }
+            }
+            continue;
+        }
         // `.bin`, `.package-lock.json` and friends are not packages.
         if dir_name.starts_with('.') {
             continue;
@@ -127,41 +148,133 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>) {
                 continue;
             };
             for s in scoped.flatten() {
-                if budget == 0 {
+                if *budget == 0 {
                     return;
                 }
-                budget -= 1;
-                push_package(&s.path(), out);
+                *budget -= 1;
+                let sp = s.path();
+                let Some(leaf) = sp.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                push_package(&sp, &format!("{dir_name}/{leaf}"), out, budget);
             }
             continue;
         }
-        budget -= 1;
-        push_package(&p, out);
+        *budget -= 1;
+        push_package(&p, dir_name, out, budget);
     }
 }
 
-fn push_package(dir: &Path, out: &mut Vec<NpmPackage>) {
-    if let Some((name, version)) = parse_package_json_name_version(&dir.join("package.json")) {
-        out.push(NpmPackage {
-            name,
-            version,
-            location: dir.to_string_lossy().to_string(),
-        });
+fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, budget: &mut usize) {
+    // The DIRECTORY name is the installed identity: npm resolves `require("x")` by
+    // directory, and that is what a typosquat is installed as. Taking the name from
+    // package.json let an attacker garble or pad the file and vanish from the catalog
+    // check; now only the version comes from the file, and it is validated.
+    if !is_valid_npm_name(installed_name) {
+        return;
     }
+    let version = parse_package_json_name_version(&dir.join("package.json"))
+        .map(|(_, v)| v)
+        .filter(|v| is_valid_version(v))
+        .unwrap_or_else(|| "unknown".to_string());
+    out.push(NpmPackage {
+        name: installed_name.to_string(),
+        version,
+        location: dir.to_string_lossy().to_string(),
+    });
+    // npm/yarn nest a dependency under its parent when versions conflict:
+    // node_modules/<parent>/node_modules/<child>. Same budget.
+    let nested = dir.join("node_modules");
+    if nested.is_dir() {
+        scan_root(&nested, out, budget);
+    }
+}
+
+/// npm's package-name grammar, tightened: lowercase or legacy mixed case, digits,
+/// `._-`, an optional `@scope/`, at most 214 bytes, no path tricks.
+pub fn is_valid_npm_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 214 || name.contains("..") {
+        return false;
+    }
+    let body = match name.strip_prefix('@') {
+        Some(rest) => {
+            let Some((scope, leaf)) = rest.split_once('/') else {
+                return false;
+            };
+            if scope.is_empty() || leaf.is_empty() || leaf.contains('/') {
+                return false;
+            }
+            rest
+        }
+        None => {
+            if name.contains('/') {
+                return false;
+            }
+            name
+        }
+    };
+    body.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
+/// A version string a catalog can compare: semver / PEP 440 characters only, bounded.
+/// Anything else -- newlines, ANSI escapes, prose -- is attacker text and is dropped.
+pub fn is_valid_version(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '!'))
 }
 
 /// Read `name` and `version` from a package.json.
 ///
+/// Reads only a bounded HEAD of the file and never refuses on size (see
+/// IDENTITY_HEAD_BYTES). Falls back to a field scan when the head is not complete JSON.
 /// Only those two fields are taken. A package.json also carries `description`,
 /// `scripts` and `readme`, which are attacker-controlled free text; pulling them into
 /// the report would hand a malicious package a channel into the operator's console.
 pub fn parse_package_json_name_version(path: &Path) -> Option<(String, String)> {
-    let content = read_bounded(path)?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let name = parsed.get("name")?.as_str()?.trim();
-    let version = parsed.get("version")?.as_str()?.trim();
-    if name.is_empty() || version.is_empty() {
-        return None;
+    let head = crate::scanners::read_head_bytes(path, IDENTITY_HEAD_BYTES)?;
+    let head = String::from_utf8_lossy(&head);
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&head) {
+        let name = parsed.get("name")?.as_str()?.trim();
+        let version = parsed.get("version")?.as_str()?.trim();
+        if name.is_empty() || version.is_empty() {
+            return None;
+        }
+        return Some((name.to_string(), version.to_string()));
     }
-    Some((name.to_string(), version.to_string()))
+    // Truncated (the file was larger than the head): take the two top-level string
+    // fields by scanning. Good enough for an identity; a garbled file yields None and
+    // the caller falls back to the directory name.
+    let name = json_string_field(&head, "name")?;
+    let version = json_string_field(&head, "version")?;
+    Some((name, version))
+}
+
+/// Find `"key": "value"` in (possibly truncated) JSON text and return the value.
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&needle) {
+        let after = &text[from + i + needle.len()..];
+        let after = after.trim_start();
+        if let Some(rest) = after.strip_prefix(':') {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('"') {
+                let mut val = String::new();
+                let mut chars = rest.chars();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            if let Some(n) = chars.next() {
+                                val.push(n);
+                            }
+                        }
+                        '"' => return Some(val).filter(|v| !v.is_empty()),
+                        _ => val.push(c),
+                    }
+                }
+                return None;
+            }
+        }
+        from += i + needle.len();
+    }
+    None
 }

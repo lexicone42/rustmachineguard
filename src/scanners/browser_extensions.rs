@@ -99,8 +99,11 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
                 .filter(|e| e.path().is_dir())
                 .collect();
 
+            // Chrome names version dirs `<version>_<n>` and may hold two across an
+            // update. Compare numerically: as strings, "24.10.4_0" sorts above
+            // "24.10.10_0", which mis-reported the live version and broke range rows.
             let Some(latest) = version_dirs.into_iter().max_by_key(|e| {
-                e.file_name().to_string_lossy().to_string()
+                version_dir_key(&e.file_name().to_string_lossy())
             }) else {
                 continue;
             };
@@ -119,11 +122,14 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
                 continue;
             };
 
-            let name = manifest
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&ext_id)
-                .to_string();
+            // A localized manifest has "name": "__MSG_appName__". That is not a built-in
+            // marker -- most store extensions localize -- and skipping on it dropped every
+            // such extension from the inventory, so no catalog row could ever match it.
+            // Resolve the key from _locales/, and fall back to the ID rather than drop.
+            let raw_name = manifest.get("name").and_then(|v| v.as_str()).unwrap_or(&ext_id);
+            let name = resolve_i18n_name(raw_name, &latest.path(), &manifest).unwrap_or_else(|| {
+                if raw_name.starts_with("__MSG_") { ext_id.clone() } else { raw_name.to_string() }
+            });
             let version = manifest
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -134,8 +140,8 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            // Skip Chrome built-in extensions
-            if name.starts_with("__MSG_") || ext_id == "nmmhkkegccagdldgiimedpiccmgmieda" {
+            // Skip Chrome's own built-in component extension (Chrome Web Store), by ID.
+            if ext_id == "nmmhkkegccagdldgiimedpiccmgmieda" {
                 continue;
             }
 
@@ -225,4 +231,44 @@ fn scan_firefox_profiles(profiles_dir: &PathBuf, results: &mut Vec<BrowserExtens
             });
         }
     }
+}
+
+/// Numeric sort key for a Chrome extension version directory (`24.10.4_0`).
+fn version_dir_key(dir_name: &str) -> Vec<u64> {
+    dir_name
+        .split('_')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+/// Resolve a `__MSG_key__` manifest name via `_locales/<default_locale>/messages.json`.
+fn resolve_i18n_name(raw: &str, ext_dir: &std::path::Path, manifest: &serde_json::Value) -> Option<String> {
+    let key = raw.strip_prefix("__MSG_")?.strip_suffix("__")?;
+    let mut locales: Vec<String> = Vec::new();
+    if let Some(d) = manifest.get("default_locale").and_then(|v| v.as_str()) {
+        locales.push(d.to_string());
+    }
+    locales.extend(["en", "en_US", "en_GB"].map(String::from));
+    for locale in locales {
+        let path = ext_dir.join("_locales").join(&locale).join("messages.json");
+        let Some(text) = crate::scanners::read_bounded(&path) else {
+            continue;
+        };
+        let Ok(messages) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        // Keys are case-insensitive in Chrome's i18n.
+        let found = messages.as_object().and_then(|m| {
+            m.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .and_then(|(_, v)| v.get("message").and_then(|s| s.as_str()))
+        });
+        if let Some(name) = found.map(str::trim).filter(|n| !n.is_empty()) {
+            return Some(name.to_string());
+        }
+    }
+    None
 }

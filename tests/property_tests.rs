@@ -4429,7 +4429,8 @@ fn nested_repo_found_despite_thousands_of_junk_files() {
         std::fs::write(noise.join(format!("f{i}.txt")), "x").unwrap();
     }
     let buried = root.join("vendor").join("payload");
-    std::fs::create_dir_all(&buried).unwrap();
+    std::fs::create_dir_all(buried.join("objects")).unwrap();
+    std::fs::create_dir_all(buried.join("refs")).unwrap();
     std::fs::write(buried.join("HEAD"), "ref: refs/heads/main\n").unwrap();
     std::fs::write(
         buried.join("config"),
@@ -4662,7 +4663,8 @@ fn nested_repo_pruning_is_by_marker_not_by_name() {
     fn plant(root: &std::path::Path, rel: &str, marker: Option<&str>) {
         let parent = root.join(rel);
         let git = parent.join("payload");
-        std::fs::create_dir_all(&git).unwrap();
+        std::fs::create_dir_all(git.join("objects")).unwrap();
+        std::fs::create_dir_all(git.join("refs")).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(git.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n").unwrap();
         if let Some(m) = marker {
@@ -4687,4 +4689,185 @@ fn nested_repo_pruning_is_by_marker_not_by_name() {
     assert!(!has("/build/target/payload"), "CACHEDIR.TAG tree must be skipped: {found:?}");
     assert!(!has("/venv/payload"), "pyvenv.cfg tree must be skipped: {found:?}");
     assert!(!has("node_modules"), "node_modules must be skipped: {found:?}");
+}
+
+
+/// A git dir is what GIT says it is -- HEAD plus objects/ and refs/ -- and nothing an
+/// attacker plants around it may stop the walk short. Each case here was a working
+/// evasion of the previous walk, found by the adversarial review.
+#[test]
+fn nested_repo_walk_uses_gits_criterion_and_is_not_fooled_by_decoys() {
+    fn gitdir(dir: &std::path::Path, config: Option<&str>) {
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        if let Some(c) = config {
+            std::fs::write(dir.join("config"), c).unwrap();
+        }
+    }
+    const HOT: &str = "[core]\n\tfsmonitor = \"./x.sh\"\n";
+    let root = &std::env::temp_dir().join(format!("rmg-decoy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(root);
+    std::fs::create_dir_all(root).unwrap();
+
+    // (a) Two plain files named config and HEAD at the project ROOT and in an ancestor.
+    //     These are not a git dir; they must not prune anything.
+    std::fs::write(root.join("config"), "junk").unwrap();
+    std::fs::write(root.join("HEAD"), "junk").unwrap();
+    std::fs::create_dir_all(root.join("vendor")).unwrap();
+    std::fs::write(root.join("vendor/config"), "junk").unwrap();
+    std::fs::write(root.join("vendor/HEAD"), "junk").unwrap();
+    gitdir(&root.join("vendor/thing/payload"), Some(HOT));
+
+    // (b) The config inside the git dir is a symlink to a file elsewhere.
+    gitdir(&root.join("lib/sym"), None);
+    std::fs::write(root.join("lib/real-config"), HOT).unwrap();
+    std::os::unix::fs::symlink(root.join("lib/real-config"), root.join("lib/sym/config")).unwrap();
+
+    // (c) A decoy git dir with a boring config, and the real payload underneath it.
+    gitdir(&root.join("decoy"), Some("[core]\n\tbare = false\n"));
+    gitdir(&root.join("decoy/inner/payload2"), Some(HOT));
+
+    // (d) config + HEAD but no objects/refs is not a git dir: not reported (git would
+    //     not run it) but still descended.
+    std::fs::create_dir_all(root.join("fake")).unwrap();
+    std::fs::write(root.join("fake/config"), HOT).unwrap();
+    std::fs::write(root.join("fake/HEAD"), "ref: refs/heads/main\n").unwrap();
+    gitdir(&root.join("fake/deeper/payload3"), Some(HOT));
+
+    let mut out = Vec::new();
+    rustmachineguard::scanners::git_config::scan_nested_repos_for_test(root, &mut out);
+    let origins: Vec<String> = out.iter().map(|c| c.origin.clone()).collect();
+    let _ = std::fs::remove_dir_all(root);
+    let has = |s: &str| origins.iter().any(|o| o.contains(s));
+    assert!(has("vendor/thing/payload/config"), "shadow config+HEAD files hid the payload: {origins:?}");
+    assert!(has("lib/sym/config"), "symlinked config evaded detection: {origins:?}");
+    assert!(has("decoy/inner/payload2/config"), "decoy git dir hid the deeper payload: {origins:?}");
+    assert!(has("fake/deeper/payload3/config"), "non-git config+HEAD dir stopped the descent: {origins:?}");
+    assert!(!has("fake/config\u{0}") && !origins.iter().any(|o| o.ends_with("fake/config")),
+        "a dir without objects/refs is not a git dir and must not be reported: {origins:?}");
+}
+
+/// The installed identity of an npm package is its DIRECTORY name; package.json only
+/// supplies the version, and only if it is version-shaped. Each fixture here was a
+/// working way to vanish from, or inject text into, the report.
+#[test]
+fn npm_identity_survives_padding_junk_versions_pnpm_and_nesting() {
+    let home = std::env::temp_dir().join(format!("rmg-npm-evade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let nm = home.join("proj/node_modules");
+    let mk = |rel: &str, json: &str| {
+        let d = nm.join(rel);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("package.json"), json).unwrap();
+    };
+    // 1.2 MiB package.json: bigger than the bounded reader's refusal limit.
+    let padded = format!(r#"{{"name":"cloude-code","version":"1.0.0","description":"{}"}}"#, "A".repeat(1_200_000));
+    mk("cloude-code", &padded);
+    // Version carrying a newline and an ANSI sequence that would forge a clean line.
+    mk("opencraw", "{\"name\":\"opencraw\",\"version\":\"1.0.0\\n\\u001b[32m  [OK] No security findings\\u001b[0m\"}");
+    // package.json name garbled; the directory name is what npm installed it as.
+    mk("claud-code", r#"{"name":"totally-benign","version":"2.0.0"}"#);
+    // pnpm virtual store, where transitive dependencies actually live.
+    mk(".pnpm/cloude@1.0.0/node_modules/cloude", r#"{"name":"cloude","version":"1.0.0"}"#);
+    // npm/yarn nested conflict install.
+    mk("some-lib", r#"{"name":"some-lib","version":"1.0.0"}"#);
+    mk("some-lib/node_modules/opencraw", r#"{"name":"opencraw","version":"3.3.3"}"#);
+    std::fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, home.join("proj").display())).unwrap();
+
+    let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,\
+                marketplaces,gitconfig,pypkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let findings: Vec<(String, String)> = v["exposure_findings"].as_array().unwrap().iter()
+        .map(|f| (f["name"].as_str().unwrap().to_string(), f["version"].as_str().unwrap().to_string())).collect();
+    let names: Vec<&str> = findings.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.contains(&"cloude-code"), "1.2 MiB package.json hid the package: {findings:?}");
+    assert!(names.contains(&"claud-code"), "garbled package.json name hid the package: {findings:?}");
+    assert!(names.contains(&"cloude"), "pnpm store not enumerated: {findings:?}");
+    assert_eq!(names.iter().filter(|n| **n == "opencraw").count(), 2, "nested install not enumerated: {findings:?}");
+    let opencraw_versions: Vec<&str> = findings.iter().filter(|(n, _)| n == "opencraw").map(|(_, v)| v.as_str()).collect();
+    assert!(opencraw_versions.contains(&"unknown"), "junk version must be dropped, not echoed: {findings:?}");
+    assert!(!text.contains('\u{1b}') && !text.contains("No security findings"), "attacker text reached the report");
+    assert_eq!(v["summary"]["npm_packages_count"], 6, "{}", v["summary"]);
+}
+
+#[test]
+fn npm_name_and_version_validation() {
+    use rustmachineguard::scanners::npm_packages::{is_valid_npm_name, is_valid_version};
+    for ok in ["lodash", "@scope/pkg", "JSONStream", "a.b-c_d", "claud-code"] {
+        assert!(is_valid_npm_name(ok), "{ok}");
+    }
+    for bad in ["", "../x", "a/b", "@scope", "@/x", "a b", "@s/a/b", &"a".repeat(215)] {
+        assert!(!is_valid_npm_name(bad), "{bad:?}");
+    }
+    for ok in ["1.0.0", "1.0.0-beta.1+build.7", "1!2.0", "24.10.4"] {
+        assert!(is_valid_version(ok), "{ok}");
+    }
+    for bad in ["", "1.0\n", "1.0\u{1b}[32m", "1.0 clean", &"9".repeat(65)] {
+        assert!(!is_valid_version(bad), "{bad:?}");
+    }
+}
+
+/// A localized manifest name (`__MSG_appName__`) must not drop the extension from the
+/// inventory, and the live version dir is the numerically greatest, not the
+/// lexically greatest.
+#[test]
+fn browser_extensions_keep_i18n_names_and_pick_the_numeric_latest_version() {
+    let home = std::env::temp_dir().join(format!("rmg-ext-i18n-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let exts = home.join(".config/chromium/Default/Extensions");
+    let cyber = exts.join("pajkjnmeojmbapicmbpliphjmcekeaac");
+    for (dir, ver) in [("24.10.4_0", "24.10.4"), ("24.10.10_0", "24.10.10")] {
+        let d = cyber.join(dir);
+        std::fs::create_dir_all(d.join("_locales/en")).unwrap();
+        std::fs::write(d.join("manifest.json"), format!(r#"{{"name":"__MSG_appName__","version":"{ver}","default_locale":"en"}}"#)).unwrap();
+        std::fs::write(d.join("_locales/en/messages.json"), r#"{"appName":{"message":"Cyberhaven Security Extension"}}"#).unwrap();
+    }
+    let fake = exts.join("kgnddmccicfibljeodejjmekeiilkfhk/1.0_0");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(fake.join("manifest.json"), r#"{"name":"__MSG_extName__","version":"1.0"}"#).unwrap();
+    std::fs::write(home.join(".claude.json"), "{}").unwrap();
+
+    let skip = "ssh,cloud,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,marketplaces,\
+                gitconfig,pypkgs,npmpkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).output().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let exts = v["browser_extensions"].as_array().unwrap();
+    let cyber = exts.iter().find(|e| e["id"] == "pajkjnmeojmbapicmbpliphjmcekeaac")
+        .unwrap_or_else(|| panic!("i18n-named extension dropped from inventory: {exts:?}"));
+    assert_eq!(cyber["version"], "24.10.10", "lexical max picked the wrong version dir");
+    assert_eq!(cyber["name"], "Cyberhaven Security Extension");
+    let fake = exts.iter().find(|e| e["id"] == "kgnddmccicfibljeodejjmekeiilkfhk")
+        .unwrap_or_else(|| panic!("unresolvable i18n name must fall back, not drop: {exts:?}"));
+    assert_eq!(fake["name"], "kgnddmccicfibljeodejjmekeiilkfhk");
+    let flagged: Vec<&str> = v["exposure_findings"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert!(flagged.contains(&"kgnddmccicfibljeodejjmekeiilkfhk"), "store-removed FakeGPT row must fire: {flagged:?}");
+    assert!(!flagged.contains(&"pajkjnmeojmbapicmbpliphjmcekeaac"), "24.10.10 is a clean release and must not be flagged: {flagged:?}");
+}
+
+/// Claude Code documents repo-shipped hooks as "$CLAUDE_PROJECT_DIR"/.claude/hooks/<x>.
+/// The native-binary check has to see through the quotes and the variable.
+#[test]
+fn native_binary_check_expands_claude_project_dir() {
+    let proj = std::env::temp_dir().join(format!("rmg-hookvar-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&proj);
+    std::fs::create_dir_all(proj.join(".claude/hooks")).unwrap();
+    std::fs::write(proj.join(".claude/hooks/payload"), b"\x7fELF\x02\x01\x01\x00padding").unwrap();
+    let risks = rustmachineguard::scanners::agent_settings::classify_hook_command(
+        "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/payload --flag",
+        &proj.join(".claude/settings.json"),
+    );
+    let risks2 = rustmachineguard::scanners::agent_settings::classify_hook_command(
+        "${CLAUDE_PROJECT_DIR}/.claude/hooks/payload",
+        &proj.join(".claude/settings.json"),
+    );
+    let _ = std::fs::remove_dir_all(&proj);
+    assert!(risks.iter().any(|r| r.contains("native binary")), "{risks:?}");
+    assert!(risks2.iter().any(|r| r.contains("native binary")), "{risks2:?}");
 }
