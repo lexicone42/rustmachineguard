@@ -65,6 +65,15 @@ fn surfaces() -> Vec<(&'static str, String)> {
         // A secret containing separators must vanish whole, not just its first piece.
         ("SEPSECRET", "password=SEPSECRETa;SEPSECRETb,SEPSECRETc&SEPSECRETd".into()),
         ("SEPCONN", "Server=db;Password=SEPCONNa;SEPCONNb;Trusted=true".into()),
+        // --- round three: header name as the tail of a k=v / glued / quoted token ---
+        ("WGETAUTH", "wget --header=\"Authorization: token WGETAUTH\" https://api.gh.internal".into()),
+        ("WGETAUTHSQ", "wget --header='Authorization: Token WGETAUTHSQ' https://api.gh.internal".into()),
+        ("GLUEDH", "curl -H\"Authorization: SSWS GLUEDH\" https://okta.internal".into()),
+        ("HTTPIE", "http POST https://h Authorization:\"Bearer HTTPIE\"".into()),
+        ("JSONAUTH", "-d {\"Authorization\":\"Bearer JSONAUTH\"}".into()),
+        ("QSPACE", "mysql --password \"first QSPACE\" -e select".into()),
+        ("QSPACE2", "export TOKEN=\"a QSPACE2 c\"".into()),
+        ("QSPACE3", "-d 'password=my QSPACE3'".into()),
     ]
 }
 
@@ -115,6 +124,13 @@ fn redaction_preserves_the_actionable_parts() {
         ("curl -H \"Authorization=Bearer S6\" https://api.internal", vec!["Authorization=Bearer", "https://api.internal"]),
         ("Server=db;User Id=sa;Password=S7;", vec!["Server=db;", "Id=sa;", "Password=<redacted>;"]),
         ("Server=db;Password=a;b;Trusted=true", vec!["Server=db;", "Password=<redacted>;<redacted>;", "Trusted=true"]),
+        // Round three: a scheme word as an ordinary value must not eat the next token,
+        // and the command after ';' in a shell one-liner is the finding.
+        ("A_KEY=basic .vscode/setup.mjs", vec!["A_KEY=<redacted>", ".vscode/setup.mjs"]),
+        ("X_TOKEN=1;.vscode/setup.mjs", vec!["X_TOKEN=<redacted>;.vscode/setup.mjs"]),
+        ("wget --header=\"Authorization: token S13\" https://api.gh.internal", vec!["--header=\"Authorization:", "token", "https://api.gh.internal"]),
+        ("http POST https://h Authorization:\"Bearer S14\"", vec!["https://h", "Authorization:\"Bearer", "<redacted>\""]),
+        ("mysql --password \"first S15\" -e select", vec!["--password", "-e select"]),
         ("https://h/p?a=1&token=S8&b=2", vec!["https://h/p?a=1&", "&b=2"]),
         // Round two: the scheme word stays, the credential goes, the URL survives.
         ("curl -H \"Authorization: token S9\" https://api.internal", vec!["Authorization:", "token", "<redacted>\"", "https://api.internal"]),
@@ -155,6 +171,8 @@ fn redaction_leaves_non_secrets_alone() {
         "gh auth token",
         "vault token lookup",
         "curl -H 'Accept: application/json, text/plain' https://api.internal/v1/token/refresh",
+        "curl -H Accept:\"application/json\" https://api.internal",
+        "MODE=basic ./run.sh",
         "ls /etc/ssl/private/",
     ] {
         assert_eq!(redact(benign), benign, "over-redacted a benign value");

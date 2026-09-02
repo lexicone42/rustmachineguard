@@ -107,7 +107,7 @@ fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
             !crate::scanners::rules_files::check_dangerous_patterns(&command).is_empty();
         out.push(VsCodeTask {
             path: path.to_string_lossy().to_string(),
-            label,
+            label: crate::scanners::sanitize_display(&label, 128),
             // Redacted for storage; `dangerous` and `risks` above were computed from
             // the raw command, so detection is unaffected.
             command: crate::scanners::redact_secrets_in_text(&command),

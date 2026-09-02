@@ -141,7 +141,7 @@ fn scan_skill_bundles(
                     .unwrap_or_else(|| file_name.to_string())
             };
             results.push(AgentSkill {
-                name,
+                name: crate::scanners::sanitize_display(&name, 128),
                 path: path.to_string_lossy().to_string(),
                 framework: framework.to_string(),
                 scope: scope.to_string(),
@@ -202,7 +202,7 @@ fn scan_skill_dir(
             .unwrap_or_default();
 
         results.push(AgentSkill {
-            name,
+            name: crate::scanners::sanitize_display(&name, 128),
             path: path.to_string_lossy().to_string(),
             framework: framework.to_string(),
             scope: scope.to_string(),

@@ -72,7 +72,7 @@ pub fn parse_marketplaces(
         let official = is_official(&source_type, &source_ref);
         let installed_plugin_count = counts.get(name).copied().unwrap_or(0);
         out.push(AgentMarketplace {
-            name: name.clone(),
+            name: crate::scanners::sanitize_display(&name, 128),
             source_type,
             // A git URL with `oauth2:<token>@` is the standard way to hand git a token.
             source_ref: crate::scanners::redact_secrets_in_text(&source_ref),

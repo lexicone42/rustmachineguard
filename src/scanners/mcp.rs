@@ -264,7 +264,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
     let inline_secret_env_keys = extract_inline_secret_env_keys(cfg.get("env"));
 
     McpServerDetail {
-        name: name.to_string(),
+        name: crate::scanners::sanitize_display(name, 128),
         transport,
         // Stored redacted: users routinely write the whole launch line into `command`,
         // and this field ships in JSON, Blueprint and SBOM.

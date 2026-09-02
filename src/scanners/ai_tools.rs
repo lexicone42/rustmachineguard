@@ -315,7 +315,7 @@ impl Scanner for AiToolsScanner {
                         name: "Claude Cowork".to_string(),
                         vendor: "Anthropic".to_string(),
                         tool_type: AiToolType::Agent,
-                        version: Some(version),
+                        version: Some(crate::scanners::sanitize_display(&version, 64)),
                         binary_path: None,
                         config_dir: None,
                         install_path: Some(app_path.display().to_string()),

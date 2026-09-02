@@ -261,19 +261,35 @@ pub fn redact_secrets_in_text(text: &str) -> String {
     let tok = |i: usize| -> &str { &text[spans[i].0..spans[i].1] };
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    let mut redact_next = false;
+    let mut pending = Pending::None;
     for i in 0..spans.len() {
         out.push_str(&text[last..spans[i].0]);
         let prev = i.checked_sub(1).map(tok);
         let prev2 = i.checked_sub(2).map(tok);
         let next = (i + 1 < spans.len()).then(|| tok(i + 1));
-        let (rendered, flag) = redact_token(tok(i), prev, prev2, next, redact_next);
-        redact_next = flag;
+        let (rendered, next_state) = redact_token(tok(i), prev, prev2, next, pending);
+        pending = next_state;
         out.push_str(&rendered);
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
     out
+}
+
+/// What the tokenizer owes the NEXT token(s): nothing, one redaction (the credential
+/// after an Authorization scheme word), or redaction until the quote that opened a
+/// value is closed (`--password "first SECOND"` is two tokens; both are the secret).
+#[derive(Clone, Copy, PartialEq)]
+enum Pending {
+    None,
+    One,
+    Quote(char),
+}
+
+/// If `v` opens a quote it does not close, that quote character.
+fn unclosed_quote(v: &str) -> Option<char> {
+    let q = v.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    (v.len() == 1 || !v[1..].contains(q)).then_some(q)
 }
 
 /// Flags whose value is `user:password` (curl, wget, httpie). The user half is kept.
@@ -295,12 +311,25 @@ fn is_scheme_word(s: &str) -> bool {
 
 /// `Authorization:` / `Proxy-Authorization:` / `Authorization=` -- the one header whose
 /// value is `<scheme> <credential>` rather than just `<credential>`.
+fn is_authorization_key(k: &str) -> bool {
+    matches!(
+        bare_key(k).to_ascii_lowercase().as_str(),
+        "authorization" | "proxy-authorization" | "www-authenticate"
+    )
+}
+
 fn is_authorization_marker(s: &str) -> bool {
-    (s.ends_with(':') || s.ends_with('='))
-        && matches!(
-            bare_key(s).to_ascii_lowercase().as_str(),
-            "authorization" | "proxy-authorization" | "www-authenticate"
-        )
+    if (s.ends_with(':') || s.ends_with('=')) && is_authorization_key(s) {
+        return true;
+    }
+    // wget's `--header="Authorization:`, a glued `-H"Authorization:`, HTTPie's quoting:
+    // the header name is the TAIL of a k=v or quoted token. bare_key() alone saw
+    // `header="Authorization` and never set the scheme lookahead, so the credential
+    // after `token`/`SSWS` walked through untouched.
+    s.ends_with(':')
+        && s.rsplit(['=', '"', '\''])
+            .next()
+            .is_some_and(is_authorization_key)
 }
 
 fn bare_key(k: &str) -> &str {
@@ -360,10 +389,13 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
     if p.eq_ignore_ascii_case("bearer") || p.eq_ignore_ascii_case("basic") {
         return true;
     }
-    if let Some((_, _, v)) = split_pair(p) {
-        // `Authorization=Bearer`: the pair's value is the scheme word, so the credential
-        // is the NEXT token. `--header="X-Api-Key:`: the value is itself an open marker.
-        if is_scheme_word(v) || is_open_marker(v) {
+    if let Some((k, _, v)) = split_pair(p) {
+        // `Authorization=Bearer` / `Authorization:"Bearer`: the pair's value is the scheme
+        // word, so the credential is the NEXT token -- but only for an Authorization
+        // header. For `A_KEY=basic` the word is just the value. `--header="X-Api-Key:`:
+        // the value is itself an open marker.
+        let v0 = v.trim_start_matches(['"', '\'']);
+        if (is_scheme_word(v0) && is_authorization_key(k)) || is_open_marker(v0) {
             return true;
         }
         // Any other complete pair already carried its own value; the token after it is
@@ -464,49 +496,59 @@ fn redact_bare_value(tok: &str) -> String {
 }
 
 /// One separator-free segment: a URL, a `user:pass@host`, or a `key=value` pair.
-fn redact_segment(seg: &str) -> String {
+/// Returns the rendering and, if a secret value opened a quote it did not close, that
+/// quote (the tokens up to the closing quote are the rest of the secret).
+fn redact_segment(seg: &str) -> (String, Option<char>) {
     if let Some(sc) = seg.find("://")
         && !seg[..sc].contains(['=', ':'])
     {
-        return redact_url(seg);
+        return (redact_url(seg), None);
     }
     let userinfo = redact_userinfo(seg);
     if userinfo != seg {
-        return userinfo;
+        return (userinfo, None);
     }
     let Some((k, sep, v)) = split_pair(seg) else {
-        return seg.to_string();
+        return (seg.to_string(), None);
     };
     if v.is_empty() {
-        return seg.to_string();
+        return (seg.to_string(), None);
     }
     if is_secret_key(k) {
         // `Authorization=Bearer`: keep the scheme word so the NEXT token is redacted.
-        if is_scheme_word(v) {
-            return seg.to_string();
+        // Only for an Authorization header: `A_KEY=basic` is a value like any other.
+        if is_authorization_key(k) && is_scheme_word(v.trim_start_matches(['"', '\''])) {
+            return (seg.to_string(), None);
         }
-        return format!("{k}{sep}{}", redact_value_keeping_quotes(v));
+        return (format!("{k}{sep}{}", redact_value_keeping_quotes(v)), unclosed_quote(v));
     }
     // `--user=admin:pw`: keep the user, drop the password.
     if USER_FLAGS.iter().any(|f| f.trim_start_matches('-') == bare_key(k))
         && let Some((u, _)) = v.split_once(':')
     {
-        return format!("{k}{sep}{u}:<redacted>");
+        return (format!("{k}{sep}{u}:<redacted>"), None);
     }
-    format!("{k}{sep}{}", redact_userinfo(v))
+    (format!("{k}{sep}{}", redact_userinfo(v)), None)
 }
 
-/// Returns the rendered token and whether the NEXT token must be redacted (set after an
-/// `Authorization:` scheme word, whose credential follows).
+/// Returns the rendered token and what the tokenizer owes the next token(s).
 fn redact_token(
     tok: &str,
     prev: Option<&str>,
     prev2: Option<&str>,
     next: Option<&str>,
-    redact_this: bool,
-) -> (String, bool) {
-    if redact_this {
-        return (redact_bare_value(tok), false);
+    pending: Pending,
+) -> (String, Pending) {
+    match pending {
+        Pending::One => return (redact_bare_value(tok), Pending::None),
+        // Inside a quoted secret: this token is more of it, until the quote closes.
+        Pending::Quote(q) => {
+            return match tok.find(q) {
+                Some(close) => (format!("<redacted>{}", &tok[close..]), Pending::None),
+                None => ("<redacted>".to_string(), Pending::Quote(q)),
+            };
+        }
+        Pending::None => {}
     }
     // `Authorization: token X`: the scheme word stays visible, the credential goes.
     // Only when a real Authorization header precedes it and a value follows; the word
@@ -514,53 +556,95 @@ fn redact_token(
     if is_scheme_word(tok) {
         let after_auth = prev.is_some_and(is_authorization_marker);
         let has_value = next.is_some_and(|n| !n.starts_with('-') && !n.contains("://"));
-        return (tok.to_string(), after_auth && has_value);
+        return (tok.to_string(), if after_auth && has_value { Pending::One } else { Pending::None });
+    }
+    // HTTPie / compact JSON: `Authorization:"Bearer X"`, `{"Authorization":"Bearer X"}` --
+    // the scheme word is the (quoted) value; keep the token, redact the next.
+    if let Some((k, _, v)) = split_pair(tok)
+        && is_authorization_key(k)
+        && is_scheme_word(v.trim_start_matches(['"', '\'']))
+    {
+        return (tok.to_string(), Pending::One);
     }
     if is_secret_value_position(prev, prev2) {
-        return (redact_bare_value(tok), false);
+        let q = unclosed_quote(tok);
+        return (redact_bare_value(tok), q.map_or(Pending::None, Pending::Quote));
     }
     // curl-style basic auth: `-u admin:pw`. Keep the user, drop the password. The flag
     // alone is not a marker (`python -u script.py`), the `user:pass` shape is.
     if prev.is_some_and(|p| USER_FLAGS.contains(&p))
         && let Some((u, _)) = tok.split_once(':')
     {
-        return (format!("{u}:<redacted>"), false);
+        return (format!("{u}:<redacted>"), Pending::None);
     }
     // A URL is one unit and must not be split on its query string's '&' or '='.
     if let Some(sc) = tok.find("://")
         && !tok[..sc].contains(['=', ':'])
     {
-        return (redact_url(tok), false);
+        return (redact_url(tok), Pending::None);
     }
     // Connection strings, query fragments and compact JSON carry several pairs:
     // `Server=db;Password=X;`, `a=1&token=X`, `{"user":"a","password":"X"}`.
     //
     // A secret can itself contain a separator (`password=ab;cd`). After a segment whose
-    // KEY was secret-shaped, following segments that are not pairs themselves are part
-    // of that value and are absorbed into the redaction; `Trusted=true` after it is a
-    // new pair and is kept.
-    let mut out = String::with_capacity(tok.len());
+    // KEY was secret-shaped, following non-empty segments that are not pairs are part of
+    // that value and are absorbed -- for ',' and '&' always, for ';' only when the token
+    // has two or more pairs (a connection string). In a shell one-liner `TOKEN=x;cmd`
+    // the segment after ';' is the COMMAND, and hiding it hid the script a hook runs;
+    // an unquoted single-pair password containing ';' keeps its tail (documented floor).
+    let mut segs: Vec<(&str, Option<char>)> = Vec::new();
     let mut start = 0;
-    let mut absorb = false;
-    let mut emit = |seg: &str, out: &mut String, absorb: &mut bool| {
-        let pair = split_pair(seg);
-        // An empty segment (the tail after a trailing `;`) is not part of the secret.
-        if *absorb && pair.is_none() && !seg.is_empty() {
-            out.push_str("<redacted>");
-            return;
-        }
-        out.push_str(&redact_segment(seg));
-        *absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && is_secret_key(k));
-    };
     for (i, ch) in tok.char_indices() {
         if ch == ';' || ch == '&' || ch == ',' {
-            emit(&tok[start..i], &mut out, &mut absorb);
-            out.push(ch);
+            segs.push((&tok[start..i], Some(ch)));
             start = i + 1;
         }
     }
-    emit(&tok[start..], &mut out, &mut absorb);
-    (out, false)
+    segs.push((&tok[start..], None));
+    let pairs = segs
+        .iter()
+        .filter(|(sg, _)| split_pair(sg).is_some_and(|(_, _, v)| !v.is_empty()))
+        .count();
+    let mut out = String::with_capacity(tok.len());
+    let mut absorb = false;
+    let mut prev_sep: Option<char> = None;
+    let mut opened: Option<char> = None;
+    for (seg, sep_after) in segs {
+        let pair = split_pair(seg);
+        // After ';' in a single-pair token, a path-like or command-like segment is the
+        // next shell command, not more of the secret.
+        let shell_command_position = prev_sep == Some(';') && pairs < 2 && looks_like_command(seg);
+        if absorb && pair.is_none() && !seg.is_empty() && !shell_command_position {
+            out.push_str("<redacted>");
+        } else {
+            let (rendered, q) = redact_segment(seg);
+            out.push_str(&rendered);
+            opened = q;
+            absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && is_secret_key(k));
+        }
+        if let Some(c) = sep_after {
+            out.push(c);
+        }
+        prev_sep = sep_after;
+    }
+    // `'password=my secret'`: the quote opened BEFORE the key, so the value's own check
+    // never saw it. If this token redacted anything and opens an unclosed quote, the
+    // tokens up to the closing quote are the rest of the value.
+    if opened.is_none() && out != tok {
+        opened = unclosed_quote(tok);
+    }
+    (out, opened.map_or(Pending::None, Pending::Quote))
+}
+
+/// A segment that is plausibly the next command in a shell one-liner: a path, a
+/// dot-relative script, or a common command word.
+fn looks_like_command(seg: &str) -> bool {
+    const COMMANDS: &[&str] = &[
+        "echo", "curl", "wget", "sh", "bash", "zsh", "node", "python", "python3", "npm", "npx",
+        "uv", "uvx", "pip", "git", "rm", "cd", "ls", "cat", "eval", "exec", "source", "export",
+        "chmod", "mkdir", "touch", "nohup", "sudo", "env", "printf", "tee", "true", "false",
+    ];
+    seg.contains('/') || seg.starts_with(['.', '~']) || COMMANDS.contains(&seg)
 }
 
 /// Trait for all scanners.
