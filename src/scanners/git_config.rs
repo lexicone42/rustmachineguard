@@ -215,9 +215,13 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             // A symlink reports itself here, not its target. Resolve it for the FILE
             // checks -- `config -> ../real-config` is how a payload hid from the first
             // version of this walk -- but never descend through a symlinked directory.
+            // git's is_git_directory uses stat(), which follows symlinks, so a symlinked
+            // objects/ or refs/ satisfies it -- and therefore must satisfy us. Resolve the
+            // target type for the CRITERION; the descent decision below is separate and
+            // never follows a symlinked directory.
             let (is_file, is_dir) = if kind.is_symlink() {
                 match std::fs::metadata(entry.path()) {
-                    Ok(m) => (m.is_file(), false),
+                    Ok(m) => (m.is_file(), m.is_dir()),
                     Err(_) => (false, false),
                 }
             } else {
@@ -237,7 +241,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
                 } else if name == "refs" {
                     has_refs = true;
                 }
-                if !PRUNE_BY_NAME.iter().any(|p| name == *p) {
+                if !kind.is_symlink() && !PRUNE_BY_NAME.iter().any(|p| name == *p) {
                     children.push((name, entry.path()));
                 }
             }
@@ -248,7 +252,11 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
         // NOT a git dir, and the first version of this walk treated them as one and
         // stopped descending: an attacker could hide a whole subtree, or the whole
         // project, behind two empty files.
-        let is_git_dir = has_head && has_objects && has_refs && dir != root;
+        // git also validates HEAD's CONTENT (validate_headref): a symref or an object
+        // id. A junk HEAD is not a git dir to git, so reporting it would be a false
+        // positive from a scanner whose whole design is to not cry wolf.
+        let is_git_dir =
+            has_head && has_objects && has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
         if dir == own_git {
             continue; // the project's own .git is handled by scan_repo_local
         }
@@ -398,4 +406,17 @@ mod needs_git_tests {
         // the real gitdir itself, and we must not skip it.
         assert!(config_needs_git(std::path::Path::new("/nonexistent/.git/config")));
     }
+}
+
+/// Mirror git's validate_headref: `ref: refs/...` or a 40/64-hex object id.
+fn head_is_valid(head: &Path) -> bool {
+    let Some(bytes) = crate::scanners::read_head_bytes(head, 256) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let line = text.lines().next().unwrap_or("").trim_end();
+    if let Some(target) = line.strip_prefix("ref:") {
+        return target.trim().starts_with("refs/");
+    }
+    (line.len() == 40 || line.len() == 64) && line.chars().all(|c| c.is_ascii_hexdigit())
 }

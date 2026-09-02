@@ -113,7 +113,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Least-privilege / scoped tokens for agents",
         coverage: Coverage::Partial,
         how: "Flags bypassPermissions and blanket MCP auto-approval; surfaces at-rest credentials. Full agent-identity/scope modeling is not yet implemented.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret"],
+        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret", "Secret leak"],
     },
     // ── OWASP Agentic Applications Top 10 (ASI) ──
     Control {
@@ -255,7 +255,7 @@ pub const CONTROLS: &[Control] = &[
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
         how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks.",
-        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret"],
+        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret", "Secret leak"],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",

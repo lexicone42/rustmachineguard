@@ -48,7 +48,7 @@ impl ExposureCatalog {
             if !eq_case_insensitive(&entry.ecosystem, ecosystem) {
                 continue;
             }
-            if !eq_case_insensitive(&entry.name, pkg_name) {
+            if !names_match(ecosystem, &entry.name, pkg_name) {
                 continue;
             }
             if !version_matches(entry, server.package_version.as_deref()) {
@@ -82,7 +82,7 @@ impl ExposureCatalog {
             if !eq_case_insensitive(&entry.ecosystem, ecosystem) {
                 continue;
             }
-            if !eq_case_insensitive(&entry.name, name) {
+            if !names_match(ecosystem, &entry.name, name) {
                 continue;
             }
             if !version_matches(entry, Some(version)) {
@@ -182,4 +182,33 @@ fn lenient_version(v: &str) -> Option<semver::Version> {
         parts.push("0");
     }
     semver::Version::parse(&parts[..3].join(".")).ok()
+}
+
+/// PEP 503 name normalisation: lowercase, runs of `-`, `_` and `.` collapse to `-`.
+/// PyPI treats `mcp_runcommand_server`, `Mcp.Runcommand.Server` and
+/// `mcp-runcommand-server` as the same project, so the catalog must too.
+pub fn pep503_normalize(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut dash = false;
+    for c in name.chars() {
+        if matches!(c, '-' | '_' | '.') {
+            if !dash {
+                out.push('-');
+                dash = true;
+            }
+        } else {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        }
+    }
+    out
+}
+
+/// Ecosystem-aware name equality: PEP 503 for pypi, case-insensitive elsewhere.
+pub fn names_match(ecosystem: &str, a: &str, b: &str) -> bool {
+    if ecosystem.eq_ignore_ascii_case("pypi") {
+        pep503_normalize(a) == pep503_normalize(b)
+    } else {
+        eq_case_insensitive(a, b)
+    }
 }

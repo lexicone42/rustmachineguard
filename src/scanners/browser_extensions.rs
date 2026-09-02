@@ -127,18 +127,23 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             // such extension from the inventory, so no catalog row could ever match it.
             // Resolve the key from _locales/, and fall back to the ID rather than drop.
             let raw_name = manifest.get("name").and_then(|v| v.as_str()).unwrap_or(&ext_id);
+            // Name, version and description are attacker-authored (the manifest and the
+            // locale file are the extension's own). Sanitize and validate them here so
+            // no control character or forged "clean" line can reach the terminal.
             let name = resolve_i18n_name(raw_name, &latest.path(), &manifest).unwrap_or_else(|| {
                 if raw_name.starts_with("__MSG_") { ext_id.clone() } else { raw_name.to_string() }
             });
+            let name = crate::scanners::sanitize_display(&name, 128);
             let version = manifest
                 .get("version")
                 .and_then(|v| v.as_str())
+                .filter(|v| crate::scanners::npm_packages::is_valid_version(v))
                 .unwrap_or("unknown")
                 .to_string();
             let description = manifest
                 .get("description")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(|s| crate::scanners::sanitize_display(s, 256));
 
             // Skip Chrome's own built-in component extension (Chrome Web Store), by ID.
             if ext_id == "nmmhkkegccagdldgiimedpiccmgmieda" {
@@ -234,24 +239,33 @@ fn scan_firefox_profiles(profiles_dir: &PathBuf, results: &mut Vec<BrowserExtens
 }
 
 /// Numeric sort key for a Chrome extension version directory (`24.10.4_0`).
-fn version_dir_key(dir_name: &str) -> Vec<u64> {
-    dir_name
-        .split('_')
-        .next()
-        .unwrap_or("")
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect()
+fn version_dir_key(dir_name: &str) -> (Vec<u64>, u64) {
+    let (version, counter) = dir_name.split_once('_').unwrap_or((dir_name, "0"));
+    // The `_N` install counter breaks ties between two dirs of the same version: `_1`
+    // is the reinstall, `_0` the stale copy. Without it max_by_key fell back to
+    // read_dir order, which is filesystem-dependent.
+    (
+        version.split('.').map(|part| part.parse::<u64>().unwrap_or(0)).collect(),
+        counter.parse::<u64>().unwrap_or(0),
+    )
 }
 
 /// Resolve a `__MSG_key__` manifest name via `_locales/<default_locale>/messages.json`.
 fn resolve_i18n_name(raw: &str, ext_dir: &std::path::Path, manifest: &serde_json::Value) -> Option<String> {
     let key = raw.strip_prefix("__MSG_")?.strip_suffix("__")?;
     let mut locales: Vec<String> = Vec::new();
-    if let Some(d) = manifest.get("default_locale").and_then(|v| v.as_str()) {
+    // `default_locale` is attacker-controlled and is joined into a path: only a Chrome
+    // locale code may pass, never `..` or an absolute path.
+    if let Some(d) = manifest.get("default_locale").and_then(|v| v.as_str())
+        && is_locale_code(d)
+    {
         locales.push(d.to_string());
     }
-    locales.extend(["en", "en_US", "en_GB"].map(String::from));
+    for fallback in ["en", "en_US", "en_GB"] {
+        if !locales.iter().any(|l| l == fallback) {
+            locales.push(fallback.to_string());
+        }
+    }
     for locale in locales {
         let path = ext_dir.join("_locales").join(&locale).join("messages.json");
         let Some(text) = crate::scanners::read_bounded(&path) else {
@@ -271,4 +285,13 @@ fn resolve_i18n_name(raw: &str, ext_dir: &std::path::Path, manifest: &serde_json
         }
     }
     None
+}
+
+/// `en`, `pt_BR`, `zh_CN`, `es_419`: letters, optionally `_` and 2-8 alphanumerics.
+fn is_locale_code(s: &str) -> bool {
+    let (lang, region) = s.split_once('_').unwrap_or((s, ""));
+    (2..=3).contains(&lang.len())
+        && lang.chars().all(|c| c.is_ascii_alphabetic())
+        && (region.is_empty()
+            || ((2..=8).contains(&region.len()) && region.chars().all(|c| c.is_ascii_alphanumeric())))
 }

@@ -311,10 +311,16 @@ fn referenced_paths(command: &str) -> Vec<&str> {
 fn is_native_binary(path: &std::path::Path) -> bool {
     // Raw bytes: a binary is not valid UTF-8, so the String-returning read_head()
     // would silently return None here and the check would never fire.
-    let Some(b) = crate::scanners::read_head_bytes(path, 4) else {
+    let Some(b) = crate::scanners::read_head_bytes(path, 64) else {
         return false;
     };
     let b = b.as_slice();
+    // A text script whose first line happens to start with "MZ" (`MZ_HOME=/opt/mz`) is
+    // not a PE. A real binary has non-text bytes within its first 64.
+    let looks_like_text = b.iter().all(|&c| c == b'\n' || c == b'\r' || c == b'\t' || (0x20..0x7f).contains(&c));
+    if looks_like_text {
+        return false;
+    }
     b.starts_with(b"\x7fELF")                       // Linux/BSD
         || b.starts_with(b"MZ")                     // Windows PE
         || b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) // Mach-O 64 LE
@@ -376,12 +382,23 @@ pub fn classify_hook_command(command: &str, settings_path: &std::path::Path) -> 
         // that only the hook runner expands. Expand it ourselves or the binary check
         // never runs for the one form the docs recommend.
         let cleaned = token.replace(['"', '\''], "");
-        let expanded = match project_root {
+        let mut expanded = match project_root {
             Some(root) => cleaned
                 .replace("${CLAUDE_PROJECT_DIR}", &root.to_string_lossy())
                 .replace("$CLAUDE_PROJECT_DIR", &root.to_string_lossy()),
             None => cleaned,
         };
+        // Hooks run under `sh -c`, so `~/.claude/hooks/x` and `$HOME/...` execute fine
+        // and are the idiomatic form in a user-global settings file.
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy();
+            for prefix in ["~/", "$HOME/", "${HOME}/"] {
+                if let Some(rest) = expanded.strip_prefix(prefix) {
+                    expanded = format!("{home}/{rest}");
+                    break;
+                }
+            }
+        }
         let token: &str = &expanded;
         let candidates: Vec<std::path::PathBuf> = if token.starts_with('/') {
             vec![std::path::PathBuf::from(token)]

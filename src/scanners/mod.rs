@@ -694,8 +694,22 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
 /// valid UTF-8, so it works for magic-byte checks on binaries.
 pub fn read_head_bytes(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u8>> {
     use std::io::Read;
+    // Regular files only. File::open on a FIFO with no writer blocks forever -- one
+    // `mkfifo package.json` in any node_modules stalled the whole scan -- and opening a
+    // directory succeeds on Linux/macOS, which counted it as a successful read.
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => {
+            telemetry::note_read(path, "not a regular file");
+            return None;
+        }
+        Err(_) => {
+            telemetry::note_read(path, "missing");
+            return None;
+        }
+    }
     let Ok(mut file) = std::fs::File::open(path) else {
-        telemetry::note_read(path, "missing");
+        telemetry::note_read(path, "unreadable");
         return None;
     };
     telemetry::note_read(path, "ok");
@@ -708,8 +722,22 @@ pub fn read_head_bytes(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u
 /// Read only the first N bytes of a file (for key header detection).
 pub fn read_head(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     use std::io::Read;
+    // Regular files only. File::open on a FIFO with no writer blocks forever -- one
+    // `mkfifo package.json` in any node_modules stalled the whole scan -- and opening a
+    // directory succeeds on Linux/macOS, which counted it as a successful read.
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => {
+            telemetry::note_read(path, "not a regular file");
+            return None;
+        }
+        Err(_) => {
+            telemetry::note_read(path, "missing");
+            return None;
+        }
+    }
     let Ok(mut file) = std::fs::File::open(path) else {
-        telemetry::note_read(path, "missing");
+        telemetry::note_read(path, "unreadable");
         return None;
     };
     telemetry::note_read(path, "ok");
@@ -860,4 +888,21 @@ pub mod telemetry {
             skipped: true,
         }
     }
+}
+
+/// Make attacker-controlled free text safe to print: control characters (including ESC,
+/// so no ANSI sequence can forge a green "clean" line), C1 controls and line breaks are
+/// replaced, and the result is capped. For names, versions, error messages and paths
+/// that a manifest, a package or a probed server gets to choose.
+pub fn sanitize_display(s: &str, max: usize) -> String {
+    let mut out = String::with_capacity(s.len().min(max));
+    for c in s.chars() {
+        if out.chars().count() >= max {
+            out.push('…');
+            break;
+        }
+        let bad = c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{2028}' || c == '\u{2029}';
+        out.push(if bad { '?' } else { c });
+    }
+    out
 }

@@ -138,6 +138,13 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
             }
             continue;
         }
+        // Inside the pnpm store every dependency edge is a symlink back into the store.
+        // Each target is enumerated as its own store entry, so following the symlink
+        // would double-count it AND charge budget per edge -- which exhausted the
+        // budget at ~1,300 packages and silently truncated the inventory.
+        if entry.file_type().is_ok_and(|k| k.is_symlink()) && root.to_string_lossy().contains("/.pnpm/") {
+            continue;
+        }
         // `.bin`, `.package-lock.json` and friends are not packages.
         if dir_name.starts_with('.') {
             continue;
@@ -173,15 +180,33 @@ fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, bud
     if !is_valid_npm_name(installed_name) {
         return;
     }
-    let version = parse_package_json_name_version(&dir.join("package.json"))
-        .map(|(_, v)| v)
+    let parsed = parse_package_json_name_version(&dir.join("package.json"));
+    let version = parsed
+        .as_ref()
+        .map(|(_, v)| v.clone())
         .filter(|v| is_valid_version(v))
         .unwrap_or_else(|| "unknown".to_string());
+    // The location is printed in the terminal; a store-entry directory name is
+    // attacker-controlled, so it is sanitized like any other free text.
+    let location = crate::scanners::sanitize_display(&dir.to_string_lossy(), 512);
     out.push(NpmPackage {
         name: installed_name.to_string(),
-        version,
-        location: dir.to_string_lossy().to_string(),
+        version: version.clone(),
+        location: location.clone(),
     });
+    // npm aliases: `npm i harmless@npm:claud-code` installs claud-code's tarball under
+    // node_modules/harmless. The directory says one thing and package.json another;
+    // both are identities the catalog must see, or an alias hides a known-bad package.
+    if let Some((declared, _)) = parsed
+        && declared != installed_name
+        && is_valid_npm_name(&declared)
+    {
+        out.push(NpmPackage {
+            name: declared,
+            version,
+            location,
+        });
+    }
     // npm/yarn nest a dependency under its parent when versions conflict:
     // node_modules/<parent>/node_modules/<child>. Same budget.
     let nested = dir.join("node_modules");

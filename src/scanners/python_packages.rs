@@ -131,21 +131,25 @@ fn scan_root(root: &Path, out: &mut Vec<PythonPackage>) {
             continue;
         };
         budget -= 1;
-        // METADATA is authoritative, but the directory name (`Name-Version.dist-info`)
-        // is the installed identity and survives a padded or garbled METADATA file.
+        // The directory name (`Name-Version.dist-info`) is the installed identity: the
+        // installer wrote it, and it survives a padded or lying METADATA. METADATA is
+        // the fallback (bare egg-info dirs carry no version). Names are PEP 503
+        // normalised on both sides of the catalog match, so `mcp_runcommand_server`,
+        // `Mcp.Runcommand.Server` and `mcp-runcommand-server` are one project.
         let from_dir = dir_name
             .rsplit_once('.')
             .and_then(|(stem, _)| stem.rsplit_once('-'))
-            .map(|(n, v)| (n.replace('_', "-"), v.to_string()));
-        let ident = parse_metadata_name_version(&meta).or(from_dir);
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .filter(|(_, v)| v.chars().next().is_some_and(|c| c.is_ascii_digit()));
+        let ident = from_dir.or_else(|| parse_metadata_name_version(&meta));
         if let Some((name, version)) = ident
             && crate::scanners::npm_packages::is_valid_npm_name(&name)
             && crate::scanners::npm_packages::is_valid_version(&version)
         {
             out.push(PythonPackage {
-                name,
+                name: crate::scanners::exposure::pep503_normalize(&name),
                 version,
-                location: p.to_string_lossy().to_string(),
+                location: crate::scanners::sanitize_display(&p.to_string_lossy(), 512),
             });
         }
     }
