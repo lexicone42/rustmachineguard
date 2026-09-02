@@ -143,9 +143,9 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "EAA-007 · CVE-2026-21852",
         },
         "Credential" => Guidance {
-            what: "An at-rest AI-service credential file is world-readable (rmguard checks permissions only, never the contents).",
-            why: "Any local user or process can read the token and impersonate you to the service.",
-            fix: "Tighten permissions to owner-only (chmod 600). Rotate the token if the machine is shared or the file may already have been read.",
+            what: "An at-rest AI-service credential file is world-readable, or an agent config file stores an API key inline (rmguard checks names and permissions only, never the values).",
+            why: "Any local user or process can read a world-readable token; an inline key travels with the config into backups, sync and version control.",
+            fix: "Tighten permissions to owner-only (chmod 600). Move inline keys to the tool's secrets mechanism (Continue: ${{ secrets.NAME }}; Aider: environment variables or .env) and rotate them.",
             reference: "least privilege",
         },
         "Secret exposure" => Guidance {
@@ -494,13 +494,23 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         });
     }
 
-    // At-rest AI tokens with loose permissions.
+    // At-rest AI tokens with loose permissions, and API keys written into configs.
     for c in &report.ai_credentials {
         if c.world_readable {
             f.push(Finding {
                 severity: Severity::High,
                 category: "Credential".into(),
                 title: format!("{} {} is world-readable", c.provider, c.credential_type),
+                location: c.path.clone(),
+                evidence: None,
+            });
+        } else if c.credential_type.starts_with("inline ") {
+            // A key in a config file gets synced, backed up and committed with it; the
+            // tools' own docs say to use their secrets mechanism instead.
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Credential".into(),
+                title: format!("{} config stores an API key inline ({})", c.provider, c.credential_type),
                 location: c.path.clone(),
                 evidence: None,
             });

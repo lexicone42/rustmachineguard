@@ -5525,3 +5525,21 @@ fn jetbrains_plugins_are_inventoried_and_matched_end_to_end() {
     let row = v["diagnostics"].as_array().unwrap().iter().find(|d| d["scanner"] == "jbplugins").expect("diagnostics row");
     assert_eq!(row["items"], 4);
 }
+
+
+/// Inline-key detectors report key NAMES only, and only for literal values: the
+/// documented reference forms are not flagged.
+#[test]
+fn inline_api_key_detectors_flag_literals_not_references() {
+    use rustmachineguard::scanners::ai_credentials::{aider_inline_api_keys, continue_inline_api_keys};
+    let cont = "models:\n  - provider: openai\n    apiKey: sk-live-LITERAL\n  - provider: anthropic\n    apiKey: ${{ secrets.ANTHROPIC }}\n  - provider: x\n    apiKey: $OPENAI_API_KEY\n";
+    assert_eq!(continue_inline_api_keys(cont), vec!["apiKey"]);
+    assert!(continue_inline_api_keys("models:\n  - apiKey: ${{ secrets.K }}\n").is_empty());
+    assert_eq!(continue_inline_api_keys("{\"models\":[{\"apiKey\": \"sk-x\"}]}\n"), Vec::<String>::new(), "compact JSON on one line is not line-shaped; the yaml form is the documented one");
+    assert_eq!(continue_inline_api_keys("{\n  \"models\": [{\n    \"apiKey\": \"sk-x\",\n  }]\n}\n"), vec!["apiKey"]);
+    let aider = "# comment\nmodel: gpt-4o\nopenai-api-key: sk-LITERAL\nanthropic-api-key: $ANTHROPIC_API_KEY\napi-key:\n  - deepseek=LITERAL2\n";
+    let keys = aider_inline_api_keys(aider);
+    assert!(keys.contains(&"openai-api-key".to_string()) && keys.contains(&"api-key".to_string()), "{keys:?}");
+    assert!(!keys.contains(&"anthropic-api-key".to_string()));
+    for k in &keys { assert!(!k.contains("LITERAL")); }
+}

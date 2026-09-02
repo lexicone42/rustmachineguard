@@ -358,6 +358,12 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     fs::write(home.join(".yarnrc"), "registry \"https://u:E2EYARN1@yarn.internal/\"\n").unwrap();
     fs::write(home.join(".yarnrc.yml"), "registry: \"https://u:E2EYARN2@yarn.internal/\"\nnpmRegistryServer: \"https://u:E2EYARN3@yarn.internal/\"\n").unwrap();
     fs::write(home.join(".bunfig.toml"), "[install]\nregistry = \"https://u:E2EBUN@bun.internal/\"\n").unwrap();
+    // Inline API keys in agent configs and a bare Hugging Face token: names only.
+    fs::create_dir_all(home.join(".continue")).unwrap();
+    fs::write(home.join(".continue/config.yaml"), "models:\n  - provider: openai\n    apiKey: E2ECONTINUEKEY\n  - provider: a\n    apiKey: ${{ secrets.ANTHROPIC }}\n").unwrap();
+    fs::write(home.join(".aider.conf.yml"), "model: gpt-4o\nopenai-api-key: E2EAIDERKEY\n").unwrap();
+    fs::create_dir_all(home.join(".cache/huggingface")).unwrap();
+    fs::write(home.join(".cache/huggingface/token"), "E2EHFTOKEN").unwrap();
     fs::create_dir_all(home.join(".claude/plugins")).unwrap();
     fs::write(
         home.join(".claude/plugins/known_marketplaces.json"),
@@ -380,6 +386,9 @@ fn no_canary_reaches_any_output_format_end_to_end() {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
             .args(["--format", fmt, "--skip", skip])
             .env("HOME", &home)
+            .env_remove("HF_HOME")
+            .env_remove("HF_TOKEN_PATH")
+            .env_remove("XDG_CACHE_HOME")
             .output()
             .expect("run rmguard");
         assert!(out.status.success(), "{fmt}: {}", String::from_utf8_lossy(&out.stderr));
@@ -391,6 +400,7 @@ fn no_canary_reaches_any_output_format_end_to_end() {
                 "r.internal", "db.internal", "k.internal", "gh.internal", "cmd.internal",
                 "deploy.internal", "tasks.internal", "npm.internal", "pypi.internal",
                 "yarn.internal", "bun.internal", "gitlab.internal",
+                "Hugging Face", "Continue", "Aider",
             ] {
                 assert!(
                     text.contains(host),
