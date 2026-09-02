@@ -906,3 +906,19 @@ pub fn sanitize_display(s: &str, max: usize) -> String {
     }
     out
 }
+
+/// [`sanitize_display`] for multi-line text (tool descriptions, server instructions):
+/// line breaks and tabs are kept, every other control character is replaced.
+pub fn sanitize_display_multiline(s: &str, max: usize) -> String {
+    let mut out = String::with_capacity(s.len().min(max));
+    for (n, c) in s.chars().enumerate() {
+        if n >= max {
+            out.push('…');
+            break;
+        }
+        let keep = c == '\n' || c == '\t';
+        let bad = !keep && (c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{2028}' || c == '\u{2029}');
+        out.push(if bad { '?' } else { c });
+    }
+    out
+}

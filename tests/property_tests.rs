@@ -4963,7 +4963,7 @@ for line in sys.stdin:
     except Exception: continue
     m = msg.get("method"); i = msg.get("id")
     if i is None or m == "server/discover": continue
-    sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"error":{"code":-32600,"message":"nope"}}) + "\n"); sys.stdout.flush()
+    sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"error":{"code":-32600,"message":"nope\u001b[2K\r\u001b[32m[OK] clean\u001b[0m"}}) + "\n"); sys.stdout.flush()
 "#).unwrap();
     let mut argv = pre;
     argv.push(stub.to_string_lossy().to_string());
@@ -4971,6 +4971,8 @@ for line in sys.stdin:
     let _ = std::fs::remove_dir_all(&dir);
     assert!(!r.success, "a rejected handshake must not be a success: {r:?}");
     assert!(r.error.as_deref().unwrap_or("").contains("initialize rejected"), "{:?}", r.error);
+    // The server's own message is printed in the terminal: no ESC, no line breaks.
+    assert!(!r.error.as_deref().unwrap_or("").contains(['\u{1b}', '\n', '\r']), "{:?}", r.error);
     assert!(r.tools.is_empty());
 }
 
@@ -5126,4 +5128,96 @@ fn sanitize_display_strips_controls_and_caps() {
     assert_eq!(sanitize_display("ok-1.2.3", 64), "ok-1.2.3");
     assert_eq!(sanitize_display("a\u{1b}[2K\rb\nc\u{85}d\u{2028}e", 64), "a?[2K?b?c?d?e");
     assert_eq!(sanitize_display("abcdef", 3), "abc…");
+}
+
+
+/// `{"error": null, "result": {...}}` is the JSON-RPC 1.0 habit of hand-rolled legacy
+/// servers. The round-one rejection gate read it as a rejected handshake and failed the
+/// probe after the full deadline.
+#[test]
+fn error_null_beside_result_is_a_successful_handshake() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("error-null");
+    let stub = dir.join("legacy_null.py");
+    std::fs::write(&stub, r#"
+import sys, json
+for line in sys.stdin:
+    try: msg = json.loads(line)
+    except Exception: continue
+    m = msg.get("method"); i = msg.get("id")
+    if i is None or m == "server/discover": continue
+    if m == "initialize":
+        out = {"jsonrpc":"2.0","id":i,"error":None,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"legacy-null","version":"1"}}}
+    elif m == "tools/list":
+        out = {"jsonrpc":"2.0","id":i,"error":None,"result":{"tools":[{"name":"read_file","description":"Reads"}]}}
+    else:
+        out = {"jsonrpc":"2.0","id":i,"error":None,"result":{"resources":[]}}
+    sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+"#).unwrap();
+    let mut argv = pre;
+    argv.push(stub.to_string_lossy().to_string());
+    let start = std::time::Instant::now();
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test("legacy-null", "test", &py, &argv);
+    let took = start.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(r.success, "error:null must not read as a rejection: {:?}", r.error);
+    assert_eq!(r.protocol_era.as_deref(), Some("legacy"));
+    assert_eq!(r.tools.len(), 1);
+    assert!(took < std::time::Duration::from_secs(6), "took {took:?}");
+}
+
+/// A server that ignores the first server/discover, rejects initialize, and answers the
+/// discover RETRY with a spec-reserved error code has rejected everything. A reserved
+/// code classifies as modern, but without a result there is nothing enumerated: failed
+/// probe, never a tool-less success.
+#[test]
+fn discover_retry_error_is_not_a_modern_success() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("retry-err");
+    let stub = dir.join("all_errors.py");
+    std::fs::write(&stub, r#"
+import sys, json
+seen = 0
+for line in sys.stdin:
+    try: msg = json.loads(line)
+    except Exception: continue
+    m = msg.get("method"); i = msg.get("id")
+    if i is None: continue
+    if m == "server/discover":
+        seen += 1
+        if seen == 1: continue   # silent the first time
+        out = {"jsonrpc":"2.0","id":i,"error":{"code":-32020,"message":"reserved"}}
+    else:
+        out = {"jsonrpc":"2.0","id":i,"error":{"code":-32601,"message":"no"}}
+    sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+"#).unwrap();
+    let mut argv = pre;
+    argv.push(stub.to_string_lossy().to_string());
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test("all-errors", "test", &py, &argv);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!r.success, "nothing was enumerated; must not be a success: {r:?}");
+    assert!(r.error.as_deref().unwrap_or("").contains("initialize rejected"), "{:?}", r.error);
+}
+
+/// Cold start plus slow answers: the retry succeeds but tools/list crosses PROBE_TIMEOUT.
+/// That is a failed enumeration, not a clean server with no tools.
+#[test]
+fn enumeration_cut_by_the_deadline_is_not_a_clean_success() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("slow-slow");
+    let stub = dir.join("slow_modern.py");
+    // 3.3s cold start, then 1.9s per answer: discover (ignored, past its 3s window),
+    // initialize rejected at ~7.1s, retry discover answered at ~9.0s -- modern -- and
+    // tools/list lands after the 10s ceiling.
+    std::fs::write(&stub, MODERN_STRICT_STUB.replace("    sys.stdout.write(", "    time.sleep(1.9); sys.stdout.write(").replace("import sys, json", "import sys, json, time")).unwrap();
+    let launch = format!("sleep 3.3; exec {py} {} {}", pre.join(" "), stub.display());
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test(
+        "slow-slow", "test", "sh", &["-c".to_string(), launch]);
+    let _ = std::fs::remove_dir_all(&dir);
+    // Whether the deadline cuts the retry or tools/list depends on scheduling jitter;
+    // the property is that a server that was never enumerated is never a clean success.
+    assert!(!r.success, "a deadline-cut enumeration must not be success=true with no tools: {r:?}");
+    assert!(r.tools.is_empty());
+    let e = r.error.as_deref().unwrap_or("");
+    assert!(e.contains("tools/list") || e.contains("timeout") || e.contains("initialize rejected"), "{e:?}");
 }

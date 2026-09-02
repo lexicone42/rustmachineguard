@@ -88,6 +88,10 @@ const MAX_INTERLEAVED: usize = 64;
 /// RAII: Drop cancels and joins, so every early-return path cleans up.
 /// SIGKILL the child's whole process group, then the child itself. The group is what
 /// closes the stdout pipe when a wrapper's grandchild inherited it.
+///
+/// Known limit: a server that calls setsid() (daemonising Python, `setsid cmd`, node
+/// `detached: true`) leaves the group and is not reached; its stdout stays open and the
+/// reader thread parks until it exits. Reaching it would need a poll(2)-based reader.
 fn kill_tree(pid: u32) {
     #[cfg(unix)]
     unsafe {
@@ -96,6 +100,37 @@ fn kill_tree(pid: u32) {
     }
     #[cfg(not(unix))]
     let _ = pid;
+}
+
+/// Process group of the server currently being probed, for the signal forwarder.
+static ACTIVE_PGID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Ctrl-C reaches the terminal's foreground group. Putting each server in its own group
+/// (so kill_tree can reach grandchildren) also took it OUT of that group, so Ctrl-C on
+/// rmguard left the server running with no one to kill it. Forward the kill, then die.
+#[cfg(unix)]
+extern "C" fn forward_signal_to_server(sig: libc::c_int) {
+    let pg = ACTIVE_PGID.load(std::sync::atomic::Ordering::Relaxed);
+    if pg > 0 {
+        unsafe {
+            libc::kill(-pg, libc::SIGKILL);
+        }
+    }
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+fn install_signal_forwarder() {
+    #[cfg(unix)]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe {
+            libc::signal(libc::SIGINT, forward_signal_to_server as libc::sighandler_t);
+            libc::signal(libc::SIGTERM, forward_signal_to_server as libc::sighandler_t);
+        });
+    }
 }
 
 struct Watchdog {
@@ -237,6 +272,8 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
     };
 
     // Watchdog kills the child if the protocol exchange exceeds PROBE_TIMEOUT.
+    install_signal_forwarder();
+    ACTIVE_PGID.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
     let mut watchdog = Watchdog::spawn(&child);
 
     // Run the protocol exchange; cleanup happens exactly once below regardless of outcome.
@@ -248,6 +285,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
+    ACTIVE_PGID.store(0, std::sync::atomic::Ordering::Relaxed);
 
     match outcome {
         Ok(data) => {
@@ -332,7 +370,9 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
         send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
         let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
             .map_err(|e| format!("init response: {}", e))?;
-        if let Some(err) = init_response.get("error") {
+        // `"error": null` beside a result is the JSON-RPC 1.0 habit of hand-rolled
+        // servers; it is a success, not a rejection.
+        if let Some(err) = init_response.get("error").filter(|e| !e.is_null()) {
             // A rejected `initialize` is not a completed handshake. Two servers land
             // here: a legacy one that is broken, and a MODERN one that was merely slow
             // to answer server/discover (an npx or uvx cold start easily exceeds the
@@ -351,7 +391,10 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
             send_message(&mut stdin, &retry)
                 .map_err(|e| format!("send server/discover retry failed: {}", e))?;
             match await_response(&mut reader, ID_DISCOVER_RETRY, deadline) {
-                Ok(resp) if classify_discover_response(&resp) == ServerEra::Modern => {
+                // Only a RESULT counts as a modern answer. A spec-reserved error code also
+                // classifies as modern, but a server that rejected every request has
+                // not been enumerated and must not end as a tool-less success.
+                Ok(resp) if resp.get("result").is_some() && classify_discover_response(&resp) == ServerEra::Modern => {
                     era = ServerEra::Modern;
                     server_info = extract_server_info(&resp);
                     instructions = extract_instructions(&resp);
@@ -395,7 +438,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     // without `_meta` is modern. Retry once with `_meta` rather than turning the
     // rejection into an empty tool list.
     if era == ServerEra::Legacy
-        && tools_resp.as_ref().is_ok_and(|r| r.get("error").is_some())
+        && tools_resp.as_ref().is_ok_and(|r| r.get("error").is_some_and(|e| !e.is_null()))
     {
         let retry = serde_json::json!({
             "jsonrpc": "2.0", "id": ID_TOOLS_RETRY, "method": "tools/list",
@@ -409,7 +452,13 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
             tools_resp = Ok(r);
         }
     }
-    let tools = tools_resp.map(|r| extract_tools(&r)).unwrap_or_default();
+    // An error REPLY is best-effort (the server has no tools, or declined); a transport
+    // failure -- timeout, EOF -- mid-enumeration is not "no tools". A slow server that
+    // crossed PROBE_TIMEOUT here was reported success=true with an empty list.
+    let tools = match tools_resp {
+        Ok(r) => extract_tools(&r),
+        Err(e) => return Err(format!("tools/list: {e}")),
+    };
 
     // Phase 3: resources/list (best-effort).
     let resources_req = serde_json::json!({
@@ -569,15 +618,18 @@ fn extract_instructions(response: &serde_json::Value) -> Option<String> {
         .get("instructions")?
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .map(String::from)
+        .map(|s| crate::scanners::sanitize_display_multiline(s, 8000))
 }
 
 fn extract_server_info(response: &serde_json::Value) -> Option<McpServerInfo> {
     let result = response.get("result")?;
     let info = result.get("serverInfo")?;
     Some(McpServerInfo {
-        name: info.get("name")?.as_str()?.to_string(),
-        version: info.get("version").and_then(|v| v.as_str()).map(String::from),
+        name: crate::scanners::sanitize_display(info.get("name")?.as_str()?, 128),
+        version: info
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(|v| crate::scanners::sanitize_display(v, 64)),
     })
 }
 
@@ -592,11 +644,11 @@ fn extract_tools(response: &serde_json::Value) -> Vec<McpToolInfo> {
             .iter()
             .filter_map(|t| {
                 Some(McpToolInfo {
-                    name: t.get("name")?.as_str()?.to_string(),
+                    name: crate::scanners::sanitize_display(t.get("name")?.as_str()?, 128),
                     description: t
                         .get("description")
                         .and_then(|d| d.as_str())
-                        .map(String::from),
+                        .map(|d| crate::scanners::sanitize_display_multiline(d, 4000)),
                     // Capture the parameter schema so rug-pull diffing can detect
                     // mutated parameters and injection hidden in param descriptions.
                     input_schema: t.get("inputSchema").cloned(),
@@ -735,7 +787,8 @@ fn error_result(name: &str, config_source: &str, error: &str) -> McpProbeResult 
         server_info: None,
         tools: Vec::new(),
         resources: Vec::new(),
-        error: Some(error.to_string()),
+        // The message may be the server's own text; it is printed in the terminal.
+        error: Some(crate::scanners::sanitize_display(error, 300)),
         observed_capabilities: Vec::new(),
         instructions: None,
         protocol_era: None,
