@@ -1015,27 +1015,18 @@ pub fn sanitize_display(s: &str, max: usize) -> String {
             out.push('…');
             break;
         }
-        let bad = c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{2028}' || c == '\u{2029}';
+        // Bidi overrides and isolates (Cf, not is_control) can reverse the visible text
+        // of a status line without adding one; they go too.
+        let bad = c.is_control()
+            || ('\u{80}'..='\u{9f}').contains(&c)
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c);
         out.push(if bad { '?' } else { c });
     }
     out
 }
 
-/// [`sanitize_display`] for multi-line text (tool descriptions, server instructions):
-/// line breaks and tabs are kept, every other control character is replaced.
-pub fn sanitize_display_multiline(s: &str, max: usize) -> String {
-    let mut out = String::with_capacity(s.len().min(max));
-    for (n, c) in s.chars().enumerate() {
-        if n >= max {
-            out.push('…');
-            break;
-        }
-        let keep = c == '\n' || c == '\t';
-        let bad = !keep && (c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{2028}' || c == '\u{2029}');
-        out.push(if bad { '?' } else { c });
-    }
-    out
-}
 
 /// Run a command with a wall-clock cap, stdin closed. `Command::output()` has no timeout,
 /// and git will happily open an `[include] path = /dev/tty` (or a FIFO) from an

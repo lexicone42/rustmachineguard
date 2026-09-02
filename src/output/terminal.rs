@@ -961,6 +961,9 @@ pub fn render_diagnostics(report: &ScanReport) -> String {
     for d in &report.diagnostics {
         let status = if d.skipped {
             "skipped"
+        } else if matches!(d.scanner.as_str(), "mcp-probe" | "registry") {
+            // Process/network phases open no files; "no inputs" would mislead.
+            "ran"
         } else if d.files_read == 0 && d.items == 0 {
             "no inputs"
         } else {

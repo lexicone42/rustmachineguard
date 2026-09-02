@@ -127,8 +127,15 @@ fn install_signal_forwarder() {
     {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| unsafe {
-            libc::signal(libc::SIGINT, forward_signal_to_server as libc::sighandler_t);
-            libc::signal(libc::SIGTERM, forward_signal_to_server as libc::sighandler_t);
+            // Only take signals nobody else handles: this crate is also a library, and
+            // a host with its own graceful-shutdown handler must keep it.
+            let ours = forward_signal_to_server as *const () as libc::sighandler_t;
+            for sig in [libc::SIGINT, libc::SIGTERM] {
+                let prev = libc::signal(sig, ours);
+                if prev != libc::SIG_DFL {
+                    libc::signal(sig, prev);
+                }
+            }
         });
     }
 }
@@ -217,6 +224,33 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
 }
 
 /// Successful probe payload (server info + enumerated tools/resources).
+/// A failed probe still knows things: a server that answered server/discover with poisoned
+/// `instructions` and then stalled on tools/list must not have those instructions thrown
+/// away with the error -- they were spliced into a system prompt either way.
+struct ProbeFailure {
+    error: String,
+    server_info: Option<McpServerInfo>,
+    instructions: Option<String>,
+}
+
+impl From<String> for ProbeFailure {
+    fn from(error: String) -> Self {
+        ProbeFailure { error, server_info: None, instructions: None }
+    }
+}
+
+impl From<&str> for ProbeFailure {
+    fn from(error: &str) -> Self {
+        error.to_string().into()
+    }
+}
+
+impl ProbeFailure {
+    fn with(error: String, server_info: &Option<McpServerInfo>, instructions: &Option<String>) -> Self {
+        ProbeFailure { error, server_info: server_info.clone(), instructions: instructions.clone() }
+    }
+}
+
 struct ProbeData {
     server_info: Option<McpServerInfo>,
     tools: Vec<McpToolInfo>,
@@ -310,14 +344,19 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
                 ),
             }
         }
-        Err(e) => error_result(name, config_source, &e),
+        Err(f) => {
+            let mut r = error_result(name, config_source, &f.error);
+            r.server_info = f.server_info;
+            r.instructions = f.instructions;
+            r
+        }
     }
 }
 
 /// Perform the MCP JSON-RPC handshake and enumerate tools/resources.
 /// Returns an error string if the handshake fails; tools/resources are
 /// best-effort (an empty list on per-request failure, not a hard error).
-fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
+fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut reader = TimedLineSource::spawn(stdout);
@@ -394,16 +433,22 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
                 // Only a RESULT counts as a modern answer. A spec-reserved error code also
                 // classifies as modern, but a server that rejected every request has
                 // not been enumerated and must not end as a tool-less success.
-                Ok(resp) if resp.get("result").is_some() && classify_discover_response(&resp) == ServerEra::Modern => {
+                // `"result": null` is Some(Value::Null) -- the same trap as `error: null`,
+                // on the other side. A real result is a non-null value.
+                Ok(resp) if resp.get("result").is_some_and(|r| !r.is_null()) && classify_discover_response(&resp) == ServerEra::Modern => {
                     era = ServerEra::Modern;
                     server_info = extract_server_info(&resp);
                     instructions = extract_instructions(&resp);
                 }
                 _ => {
-                    return Err(format!(
-                        "initialize rejected: {} {}",
-                        err.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
-                        err.get("message").and_then(|m| m.as_str()).unwrap_or("")
+                    return Err(ProbeFailure::with(
+                        format!(
+                            "initialize rejected: {} {}",
+                            err.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
+                            err.get("message").and_then(|m| m.as_str()).unwrap_or("")
+                        ),
+                        &server_info,
+                        &instructions,
                     ));
                 }
             }
@@ -445,11 +490,18 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
             "params": params(ServerEra::Modern)
         });
         let _ = send_message(&mut stdin, &retry);
-        if let Ok(r) = await_response(&mut reader, ID_TOOLS_RETRY, deadline)
-            && r.get("result").is_some()
-        {
-            era = ServerEra::Modern;
-            tools_resp = Ok(r);
+        match await_response(&mut reader, ID_TOOLS_RETRY, deadline) {
+            Ok(r) if r.get("result").is_some_and(|v| !v.is_null()) => {
+                era = ServerEra::Modern;
+                tools_resp = Ok(r);
+            }
+            // An error reply: keep the original error reply, best-effort.
+            Ok(_) => {}
+            // A timeout or EOF on the retry is the same deadline-cut the first attempt
+            // reports; swallowing it here was success=true with zero tools again.
+            Err(e) => {
+                return Err(ProbeFailure::with(format!("tools/list retry: {e}"), &server_info, &instructions));
+            }
         }
     }
     // An error REPLY is best-effort (the server has no tools, or declined); a transport
@@ -457,7 +509,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     // crossed PROBE_TIMEOUT here was reported success=true with an empty list.
     let tools = match tools_resp {
         Ok(r) => extract_tools(&r),
-        Err(e) => return Err(format!("tools/list: {e}")),
+        Err(e) => return Err(ProbeFailure::with(format!("tools/list: {e}"), &server_info, &instructions)),
     };
 
     // Phase 3: resources/list (best-effort).
@@ -618,7 +670,8 @@ fn extract_instructions(response: &serde_json::Value) -> Option<String> {
         .get("instructions")?
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .map(|s| crate::scanners::sanitize_display_multiline(s, 8000))
+        // Raw, for the same reason as tool descriptions: this text is scanned, not shown.
+        .map(String::from)
 }
 
 fn extract_server_info(response: &serde_json::Value) -> Option<McpServerInfo> {
@@ -648,7 +701,11 @@ fn extract_tools(response: &serde_json::Value) -> Vec<McpToolInfo> {
                     description: t
                         .get("description")
                         .and_then(|d| d.as_str())
-                        .map(|d| crate::scanners::sanitize_display_multiline(d, 4000)),
+                        // Stored RAW: the blueprint scans descriptions for injection and
+                        // invisible Unicode, and sanitizing at capture replaced the very
+                        // control characters it looks for (and truncation hid payloads
+                        // placed after the cap). Descriptions are never printed raw.
+                        .map(String::from),
                     // Capture the parameter schema so rug-pull diffing can detect
                     // mutated parameters and injection hidden in param descriptions.
                     input_schema: t.get("inputSchema").cloned(),

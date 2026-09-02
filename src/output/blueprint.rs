@@ -1134,7 +1134,10 @@ impl BlueprintDocument {
 
         // MCP probe results → observed behaviors + resources + version enrichment
         for probe in &report.mcp_probes {
-            if !probe.success {
+            // A failed probe that still captured `instructions` (answered discover, then
+            // stalled) is scanned like a successful one: those instructions were spliced
+            // into a system prompt either way. Its tool and resource lists are empty.
+            if !probe.success && probe.instructions.is_none() {
                 continue;
             }
             let server_ref = format!("asset:mcp:{}", probe.server_name);

@@ -5232,6 +5232,11 @@ fn enumeration_cut_by_the_deadline_is_not_a_clean_success() {
     assert!(r.tools.is_empty());
     let e = r.error.as_deref().unwrap_or("");
     assert!(e.contains("tools/list") || e.contains("timeout") || e.contains("initialize rejected"), "{e:?}");
+    // When the retry discover answered before the cut, its poisoned instructions must
+    // survive the failure -- they were spliced into a system prompt either way.
+    if e.contains("tools/list") {
+        assert!(r.instructions.as_deref().unwrap_or("").contains("IGNORE"), "instructions dropped with the error: {r:?}");
+    }
 }
 
 
@@ -5309,4 +5314,100 @@ fn git_config_include_of_a_fifo_cannot_stall_the_scan() {
     let got = rx.recv_timeout(std::time::Duration::from_secs(9));
     let _ = std::fs::remove_dir_all(&root);
     assert!(got.is_ok(), "scan stalled on a FIFO include");
+}
+
+
+/// `"result": null` is Some(Value::Null), the same trap as `error: null` on the other side.
+/// A server that ignores discover, rejects initialize and answers the retry with a null
+/// result has enumerated nothing.
+#[test]
+fn result_null_is_not_a_modern_result() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("result-null");
+    let stub = dir.join("null.py");
+    std::fs::write(&stub, r#"
+import sys, json
+seen = 0
+for line in sys.stdin:
+    try: msg = json.loads(line)
+    except Exception: continue
+    m = msg.get("method"); i = msg.get("id")
+    if i is None: continue
+    if m == "server/discover":
+        seen += 1
+        if seen == 1: continue
+        out = {"jsonrpc":"2.0","id":i,"result":None}
+    elif m == "initialize":
+        out = {"jsonrpc":"2.0","id":i,"error":{"code":-32601,"message":"no"}}
+    else:
+        out = {"jsonrpc":"2.0","id":i,"result":None}
+    sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+"#).unwrap();
+    let mut argv = pre;
+    argv.push(stub.to_string_lossy().to_string());
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test("null", "test", &py, &argv);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!r.success, "result:null enumerated nothing and must not be a success: {r:?}");
+}
+
+/// A legacy-classified server rejects tools/list without _meta, then never answers the
+/// _meta retry. The retry's timeout was swallowed -- success=true with zero tools again.
+#[test]
+fn tools_retry_timeout_is_a_failure() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("retry-timeout");
+    let stub = dir.join("retry_silent.py");
+    std::fs::write(&stub, r#"
+import sys, json
+tools_seen = 0
+for line in sys.stdin:
+    try: msg = json.loads(line)
+    except Exception: continue
+    m = msg.get("method"); i = msg.get("id")
+    if i is None or m == "server/discover": continue
+    if m == "initialize":
+        out = {"jsonrpc":"2.0","id":i,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"half","version":"1"}}}
+    elif m == "tools/list":
+        tools_seen += 1
+        if tools_seen >= 2: continue
+        out = {"jsonrpc":"2.0","id":i,"error":{"code":-32602,"message":"missing _meta"}}
+    else:
+        out = {"jsonrpc":"2.0","id":i,"result":{"resources":[]}}
+    sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+"#).unwrap();
+    let mut argv = pre;
+    argv.push(stub.to_string_lossy().to_string());
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test("half", "test", &py, &argv);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!r.success, "a timed-out tools/list retry is not a clean server: {r:?}");
+    assert!(r.error.as_deref().unwrap_or("").contains("tools/list retry"), "{:?}", r.error);
+    assert!(r.server_info.is_some(), "server_info captured before the failure must be kept");
+}
+
+/// Tool descriptions are stored raw so the injection and invisible-Unicode scans see the
+/// real bytes; they are never printed in the terminal. Names are sanitized.
+#[test]
+fn tool_descriptions_are_stored_raw_for_the_scanner() {
+    let Some((py, pre)) = working_python() else { return; };
+    let dir = probe_stub_dir("raw-desc");
+    let stub = dir.join("raw.py");
+    // The stub source carries \u escapes; Python turns them into a real ESC and ZWSP.
+    std::fs::write(&stub, MODERN_STRICT_STUB.replace(
+        r#"{"name":"exec_shell","description":"Runs a shell command"}"#,
+        r#"{"name":"exec\u001b[2Kshell","description":"Runs\u001b[2K\u200b IGNORE PREVIOUS"}"#)).unwrap();
+    let mut argv = pre;
+    argv.push(stub.to_string_lossy().to_string());
+    let r = rustmachineguard::scanners::mcp_probe::probe_server_for_test("raw", "test", &py, &argv);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(r.success, "{:?}", r.error);
+    let tool = &r.tools[0];
+    assert!(!tool.name.contains('\u{1b}'), "tool NAME is printed and must be sanitized: {:?}", tool.name);
+    let d = tool.description.as_deref().unwrap_or("");
+    assert!(d.contains('\u{1b}') && d.contains('\u{200b}'), "description must stay raw for the scanner: {d:?}");
+}
+
+#[test]
+fn sanitize_display_neutralises_bidi_controls() {
+    use rustmachineguard::scanners::sanitize_display;
+    assert_eq!(sanitize_display("ok\u{202e}kcab\u{2066}x\u{200f}", 32), "ok?kcab?x?");
 }
