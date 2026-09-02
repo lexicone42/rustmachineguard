@@ -12,6 +12,8 @@ const ID_DISCOVER: u64 = 0;
 const ID_INITIALIZE: u64 = 1;
 const ID_TOOLS: u64 = 2;
 const ID_RESOURCES: u64 = 3;
+const ID_DISCOVER_RETRY: u64 = 4;
+const ID_TOOLS_RETRY: u64 = 5;
 
 /// The modern protocol revision we announce. MCP revision 2026-07-28 removed the
 /// `initialize` handshake: version, identity and capabilities are now per-request
@@ -84,6 +86,18 @@ const MAX_INTERLEAVED: usize = 64;
 /// PROBE_TIMEOUT. Cancellation is signalled via a Condvar so the watchdog thread
 /// wakes immediately on the success path instead of sleeping the full timeout.
 /// RAII: Drop cancels and joins, so every early-return path cleans up.
+/// SIGKILL the child's whole process group, then the child itself. The group is what
+/// closes the stdout pipe when a wrapper's grandchild inherited it.
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 struct Watchdog {
     // (cancelled, child-already-reaped) guarded together; Condvar wakes the thread.
     state: Arc<(Mutex<bool>, Condvar)>,
@@ -106,10 +120,7 @@ impl Watchdog {
             // held across the kill so the reaper cannot mark-reaped concurrently —
             // this serializes the check-and-kill against the cancel path.
             if timed_out.timed_out() && !*guard {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(child_id as i32, libc::SIGKILL);
-                }
+                kill_tree(child_id);
             }
         });
         Watchdog {
@@ -206,13 +217,21 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         args.join(" ")
     );
 
-    let mut child = match Command::new(command)
-        .args(args)
+    let mut cmd = Command::new(command);
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    // Own process group, so the kill below reaches a wrapper's grandchildren too
+    // (`npx`, `uvx` and `sh -c` all fork or exec the real server). Killing only the
+    // direct child left the grandchild holding our stdout pipe -- one parked reader
+    // thread and one fd per such server -- and the server itself orphaned after exit.
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return error_result(name, config_source, &format!("spawn failed: {}", e)),
     };
@@ -226,6 +245,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
     // Cancel the watchdog (sets flag + joins) BEFORE reaping the child, so the
     // watchdog can never signal a PID that has been reaped and possibly reused.
     watchdog.cancel();
+    kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 
@@ -289,7 +309,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
     let discover_deadline = Instant::now() + DISCOVER_TIMEOUT.min(PROBE_TIMEOUT);
     let discover = await_response(&mut reader, ID_DISCOVER, discover_deadline);
     // No response at all (or a read error) means legacy, per the spec's timeout rule.
-    let era = discover
+    let mut era = discover
         .as_ref()
         .map(classify_discover_response)
         .unwrap_or(ServerEra::Legacy);
@@ -312,15 +332,48 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
         send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
         let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
             .map_err(|e| format!("init response: {}", e))?;
-        server_info = extract_server_info(&init_response);
-        instructions = extract_instructions(&init_response);
-
-        // The client must acknowledge initialization before issuing requests.
-        let initialized = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        });
-        let _ = send_message(&mut stdin, &initialized);
+        if let Some(err) = init_response.get("error") {
+            // A rejected `initialize` is not a completed handshake. Two servers land
+            // here: a legacy one that is broken, and a MODERN one that was merely slow
+            // to answer server/discover (an npx or uvx cold start easily exceeds the
+            // 3s window) and now, per spec, refuses initialize. The old code accepted
+            // the error as a handshake, sent tools/list without _meta, turned its
+            // rejection into an empty list, and reported success with no tools and no
+            // instructions -- a clean bill for a server it never enumerated. Ask
+            // server/discover once more now that the server is warm; if it answers as
+            // modern, continue as modern; otherwise this is a failed probe.
+            let retry = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": ID_DISCOVER_RETRY,
+                "method": "server/discover",
+                "params": { "_meta": modern_meta() }
+            });
+            send_message(&mut stdin, &retry)
+                .map_err(|e| format!("send server/discover retry failed: {}", e))?;
+            match await_response(&mut reader, ID_DISCOVER_RETRY, deadline) {
+                Ok(resp) if classify_discover_response(&resp) == ServerEra::Modern => {
+                    era = ServerEra::Modern;
+                    server_info = extract_server_info(&resp);
+                    instructions = extract_instructions(&resp);
+                }
+                _ => {
+                    return Err(format!(
+                        "initialize rejected: {} {}",
+                        err.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
+                        err.get("message").and_then(|m| m.as_str()).unwrap_or("")
+                    ));
+                }
+            }
+        } else {
+            server_info = extract_server_info(&init_response);
+            instructions = extract_instructions(&init_response);
+            // The client must acknowledge initialization before issuing requests.
+            let initialized = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            });
+            let _ = send_message(&mut stdin, &initialized);
+        }
     }
 
     // Modern requests must carry `_meta`; legacy ones must not (it would be ignored,
@@ -337,9 +390,26 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, String> {
         "jsonrpc": "2.0", "id": ID_TOOLS, "method": "tools/list", "params": params(era)
     });
     let _ = send_message(&mut stdin, &tools_req);
-    let tools = await_response(&mut reader, ID_TOOLS, deadline)
-        .map(|r| extract_tools(&r))
-        .unwrap_or_default();
+    let mut tools_resp = await_response(&mut reader, ID_TOOLS, deadline);
+    // A server that accepted `initialize` for compatibility but rejects a request
+    // without `_meta` is modern. Retry once with `_meta` rather than turning the
+    // rejection into an empty tool list.
+    if era == ServerEra::Legacy
+        && tools_resp.as_ref().is_ok_and(|r| r.get("error").is_some())
+    {
+        let retry = serde_json::json!({
+            "jsonrpc": "2.0", "id": ID_TOOLS_RETRY, "method": "tools/list",
+            "params": params(ServerEra::Modern)
+        });
+        let _ = send_message(&mut stdin, &retry);
+        if let Ok(r) = await_response(&mut reader, ID_TOOLS_RETRY, deadline)
+            && r.get("result").is_some()
+        {
+            era = ServerEra::Modern;
+            tools_resp = Ok(r);
+        }
+    }
+    let tools = tools_resp.map(|r| extract_tools(&r)).unwrap_or_default();
 
     // Phase 3: resources/list (best-effort).
     let resources_req = serde_json::json!({
