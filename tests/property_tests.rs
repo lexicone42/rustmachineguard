@@ -5439,7 +5439,17 @@ fn jetbrains_plugin_xml_identity() {
     assert_eq!(hostile.name, "Ev?[32mil");
     assert_eq!(hostile.version, "unknown");
     assert!(parse_plugin_xml("<idea-plugin><id>../../x</id></idea-plugin>", "X", p).is_none());
-    assert!(is_valid_plugin_id("org.sm.yms.toolkit") && !is_valid_plugin_id("a b") && !is_valid_plugin_id(""));
+    // IDs are opaque strings: real Marketplace IDs contain spaces.
+    assert!(is_valid_plugin_id("org.sm.yms.toolkit") && is_valid_plugin_id("Key Promoter X") && is_valid_plugin_id("Lombook Plugin"));
+    assert!(!is_valid_plugin_id("") && !is_valid_plugin_id("a\u{1b}b") && !is_valid_plugin_id("a/b") && !is_valid_plugin_id(" a"));
+    let spaced = parse_plugin_xml("<idea-plugin><id>Lombook Plugin</id><name>Lombok</name><version>261.1</version></idea-plugin>", "X", p).unwrap();
+    assert_eq!(spaced.id, "Lombook Plugin");
+    let legacy_spaced = parse_plugin_xml("<idea-plugin><name>Old Style Plugin</name><version>2.0</version></idea-plugin>", "X", p).unwrap();
+    assert_eq!(legacy_spaced.id, "Old Style Plugin");
+    // A comment or a CDATA description cannot steer the id; entities are decoded.
+    let steered = parse_plugin_xml(
+        "<idea-plugin><!-- <id>com.benign</id> --><description><![CDATA[<id>com.benign2</id>]]></description><id>org&#46;sm&#x2e;yms.toolkit</id></idea-plugin>", "X", p).unwrap();
+    assert_eq!(steered.id, "org.sm.yms.toolkit");
 }
 
 /// Every jetbrains catalog row must be reachable by the scanner's identity (an exact
@@ -5485,6 +5495,16 @@ fn jetbrains_plugins_are_inventoried_and_matched_end_to_end() {
         "<idea-plugin><id>org.sm.yms.toolkit</id><name>DeepSeek Junit Test</name><version>1.0.3</version><vendor>CodePilot</vendor></idea-plugin>"));
     let benign = home.join(".local/share/JetBrains/IntelliJIdea2026.2/rainbow.jar");
     mk_jar(&benign, Some("<idea-plugin><id>izhangzhihao.rainbow.brackets</id><name>Rainbow Brackets</name><version>2026.1.0</version></idea-plugin>"));
+    // A plugin folder literally named `plugins` must not hide its siblings on Linux.
+    let decoy = home.join(".local/share/JetBrains/IntelliJIdea2026.2/plugins/lib");
+    std::fs::create_dir_all(&decoy).unwrap();
+    mk_jar(&decoy.join("decoy.jar"), Some("<idea-plugin><id>com.decoy</id><name>Decoy</name><version>1</version></idea-plugin>"));
+    // A catalogued plugin whose descriptor jar sorts LAST among 60 jars, and a symlinked jar.
+    let big = home.join(".local/share/JetBrains/IntelliJIdea2026.2/DeepSeek AI Assist/lib");
+    std::fs::create_dir_all(&big).unwrap();
+    for i in 0..60 { mk_jar(&big.join(format!("a{i:02}.jar")), None); }
+    mk_jar(&big.join("zz-last.jar"), Some("<idea-plugin><id>ord.cp.code.ai.kit</id><name>DeepSeek AI Assist</name><version>1.0</version></idea-plugin>"));
+    std::os::unix::fs::symlink(&benign, home.join(".local/share/JetBrains/IntelliJIdea2026.2/linked.jar")).unwrap();
     std::fs::write(home.join(".claude.json"), "{}").unwrap();
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,transcripts,marketplaces,\
                 gitconfig,pypkgs,npmpkgs,packages,rules,skills,settings,aicreds,envfiles,vscodetasks,shell,mcp";
@@ -5493,11 +5513,15 @@ fn jetbrains_plugins_are_inventoried_and_matched_end_to_end() {
     let _ = std::fs::remove_dir_all(&home);
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["summary"]["jetbrains_plugins_count"], 2, "{}", v["summary"]);
+    // deepseek-junit, rainbow (once: the symlink is the same id+version), decoy, DeepSeek AI Assist
+    assert_eq!(v["summary"]["jetbrains_plugins_count"], 4, "{}", v["jetbrains_plugins"]);
     assert!(text.contains("Rainbow Brackets"), "positive control: fixture was never read");
     let flagged: Vec<&str> = v["exposure_findings"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
     assert!(flagged.contains(&"org.sm.yms.toolkit"), "malicious plugin not matched: {flagged:?}");
+    assert!(flagged.contains(&"ord.cp.code.ai.kit"), "descriptor jar sorting last among 60 must still be found: {flagged:?}");
     assert!(!flagged.contains(&"izhangzhihao.rainbow.brackets"));
+    let ids: Vec<&str> = v["jetbrains_plugins"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str()).collect();
+    assert!(ids.contains(&"com.decoy") && ids.contains(&"izhangzhihao.rainbow.brackets"), "{ids:?}");
     let row = v["diagnostics"].as_array().unwrap().iter().find(|d| d["scanner"] == "jbplugins").expect("diagnostics row");
-    assert_eq!(row["items"], 2);
+    assert_eq!(row["items"], 4);
 }

@@ -902,7 +902,7 @@ pub fn probe_read_dir<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<std
     if let Err(e) = &r {
         telemetry::note_probe(path.as_ref(), false);
         if telemetry::trace_enabled() {
-            eprintln!("trace: read_dir {} -> {e}", path.as_ref().display());
+            eprintln!("trace: read_dir {} -> {e}", sanitize_display(&path.as_ref().display().to_string(), 512));
         }
     }
     r
@@ -948,7 +948,9 @@ pub mod telemetry {
             FILES_MISSING.fetch_add(1, Ordering::Relaxed);
         }
         if trace_enabled() {
-            let shown = super::redact_secrets_in_text(&path.display().to_string());
+            // Paths inside a scanned tree are attacker-chosen (a plugin's lib/*.jar name):
+            // redact secrets AND neutralise control characters before they hit the terminal.
+            let shown = super::sanitize_display(&super::redact_secrets_in_text(&path.display().to_string()), 512);
             eprintln!("trace: read {shown} -> {outcome}");
         }
     }
@@ -961,7 +963,7 @@ pub mod telemetry {
             FILES_MISSING.fetch_add(1, Ordering::Relaxed);
         }
         if trace_enabled() {
-            let shown = super::redact_secrets_in_text(&path.display().to_string());
+            let shown = super::sanitize_display(&super::redact_secrets_in_text(&path.display().to_string()), 512);
             eprintln!("trace: probe {shown} -> {}", if present { "present" } else { "missing" });
         }
     }

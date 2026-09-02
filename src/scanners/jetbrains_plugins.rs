@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 pub struct JetBrainsPluginsScanner;
 
 const MAX_PLUGINS_PER_ROOT: usize = 500;
-const MAX_JARS_PER_PLUGIN: usize = 40;
+/// Jars considered per plugin folder. Bounded by count only as a runtime guard; every
+/// jar's central directory is cheap to read, and the folder-named jar is tried first, so
+/// a legitimately large plugin is found and padding lib/ with dummy jars does not hide it.
+const MAX_JARS_PER_PLUGIN: usize = 500;
 const MAX_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,12 +48,13 @@ impl Scanner for JetBrainsPluginsScanner {
             for product in products.flatten() {
                 let ide = product.file_name().to_string_lossy().to_string();
                 // Linux keeps plugins directly under the product dir; macOS under plugins/.
+                // Both candidates are scanned: stopping at the first meant a plugin folder
+                // literally named `plugins` hid every sibling on Linux. Duplicates are
+                // removed below.
                 for plugins_dir in [product.path().join("plugins"), product.path()] {
-                    if !crate::scanners::probe_dir(&plugins_dir) {
-                        continue;
+                    if crate::scanners::probe_dir(&plugins_dir) {
+                        scan_plugins_dir(&plugins_dir, &ide, &mut out);
                     }
-                    scan_plugins_dir(&plugins_dir, &ide, &mut out);
-                    break;
                 }
             }
         }
@@ -81,37 +85,15 @@ fn scan_plugins_dir(dir: &Path, ide: &str, out: &mut Vec<JetBrainsPluginRecord>)
         }
         budget -= 1;
         let p = entry.path();
-        let Ok(kind) = entry.file_type() else {
+        // Follow symlinks for the dir-vs-jar decision (a plugin installed as a symlink is
+        // still installed); read_descriptor re-checks for a regular file at open time.
+        let Ok(meta) = std::fs::metadata(&p) else {
             continue;
         };
-        let descriptor = if kind.is_file() && has_ext(&p, "jar") {
+        let descriptor = if meta.is_file() && has_ext(&p, "jar") {
             read_descriptor(&p)
-        } else if kind.is_dir() {
-            // A plugin folder: the descriptor is in one of lib/*.jar (or *.jar).
-            let mut found = None;
-            let mut jars = 0;
-            for jar_dir in [p.join("lib"), p.clone()] {
-                let Ok(jars_iter) = crate::scanners::probe_read_dir(&jar_dir) else {
-                    continue;
-                };
-                for j in jars_iter.flatten() {
-                    if jars >= MAX_JARS_PER_PLUGIN {
-                        break;
-                    }
-                    let jp = j.path();
-                    if has_ext(&jp, "jar") && j.file_type().is_ok_and(|k| k.is_file()) {
-                        jars += 1;
-                        if let Some(d) = read_descriptor(&jp) {
-                            found = Some(d);
-                            break;
-                        }
-                    }
-                }
-                if found.is_some() {
-                    break;
-                }
-            }
-            found
+        } else if meta.is_dir() {
+            plugin_folder_descriptor(&p)
         } else {
             None
         };
@@ -121,6 +103,35 @@ fn scan_plugins_dir(dir: &Path, ide: &str, out: &mut Vec<JetBrainsPluginRecord>)
             out.push(rec);
         }
     }
+}
+
+/// The descriptor of a plugin FOLDER: in one of lib/*.jar (or *.jar). Jars are sorted,
+/// the one named after the folder is tried first, and all are tried up to the cap --
+/// readdir order is filesystem-dependent, and a first-N cut made a catalogued plugin
+/// visible on one filesystem and invisible on another.
+fn plugin_folder_descriptor(folder: &Path) -> Option<String> {
+    let folder_name = folder.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let mut jars: Vec<PathBuf> = Vec::new();
+    for jar_dir in [folder.join("lib"), folder.to_path_buf()] {
+        let Ok(it) = crate::scanners::probe_read_dir(&jar_dir) else {
+            continue;
+        };
+        for j in it.flatten() {
+            let jp = j.path();
+            if has_ext(&jp, "jar") && std::fs::metadata(&jp).is_ok_and(|m| m.is_file()) {
+                jars.push(jp);
+            }
+            if jars.len() >= MAX_JARS_PER_PLUGIN {
+                break;
+            }
+        }
+    }
+    jars.sort();
+    jars.sort_by_key(|j| {
+        let stem = j.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        !(stem == folder_name || folder_name.starts_with(&stem) || stem.starts_with(&folder_name))
+    });
+    jars.iter().find_map(|j| read_descriptor(j))
 }
 
 fn has_ext(p: &Path, ext: &str) -> bool {
@@ -140,6 +151,90 @@ fn read_descriptor(jar: &Path) -> Option<String> {
     let mut text = String::new();
     entry.take(MAX_DESCRIPTOR_BYTES).read_to_string(&mut text).ok()?;
     Some(text)
+}
+
+/// Remove XML comments and neutralise CDATA sections (their `<` becomes `&lt;`) so a
+/// `<id>` inside a comment or a CDATA description cannot be mistaken for the real one.
+fn neutralise_markup(xml: &str) -> String {
+    enum Next {
+        Comment(usize),
+        Cdata(usize),
+    }
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    loop {
+        let next = match (rest.find("<!--"), rest.find("<![CDATA[")) {
+            (None, None) => {
+                out.push_str(rest);
+                return out;
+            }
+            (Some(ci), None) => Next::Comment(ci),
+            (None, Some(di)) => Next::Cdata(di),
+            (Some(ci), Some(di)) => {
+                if ci < di {
+                    Next::Comment(ci)
+                } else {
+                    Next::Cdata(di)
+                }
+            }
+        };
+        match next {
+            Next::Comment(ci) => {
+                out.push_str(&rest[..ci]);
+                rest = match rest[ci..].find("-->") {
+                    Some(e) => &rest[ci + e + 3..],
+                    None => "",
+                };
+            }
+            Next::Cdata(di) => {
+                out.push_str(&rest[..di]);
+                let body = &rest[di + 9..];
+                let (inner, after) = match body.find("]]>") {
+                    Some(e) => (&body[..e], &body[e + 3..]),
+                    None => (body, ""),
+                };
+                out.push_str(&inner.replace('<', "&lt;"));
+                rest = after;
+            }
+        }
+    }
+}
+
+/// Decode the five predefined entities and numeric character references.
+fn decode_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let Some(semi) = tail.find(';').filter(|&n| n <= 10) else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let ent = &tail[1..semi];
+        let decoded = match ent {
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "amp" => Some('&'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ => ent
+                .strip_prefix('#')
+                .and_then(|n| match n.strip_prefix(['x', 'X']) {
+                    Some(h) => u32::from_str_radix(h, 16).ok(),
+                    None => n.parse::<u32>().ok(),
+                })
+                .and_then(char::from_u32),
+        };
+        match decoded {
+            Some(c) => out.push(c),
+            None => out.push_str(&tail[..=semi]),
+        }
+        rest = &tail[semi + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Text of the FIRST `<tag>…</tag>` at any depth. `<idea-version since-build=…/>` has
@@ -168,18 +263,27 @@ fn xml_text<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     Some(inner.trim())
 }
 
-/// Plugin IDs are Java-package-like: letters, digits, `.`, `_`, `-`; bounded.
+/// A plugin ID is an opaque string to the platform: JetBrains only RECOMMENDS the
+/// Java-package charset, and widely installed plugins use `Key Promoter X` (8M installs)
+/// and `Lombook Plugin` (27M). Restricting to `[A-Za-z0-9._-]` silently dropped them from
+/// the inventory. Reject only what cannot be an ID or is unsafe to print: empty,
+/// oversized, control characters, path separators. Catalog matching is exact.
 pub fn is_valid_plugin_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 200
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !id.chars().any(|c| c.is_control() || matches!(c, '/' | '\\'))
+        && id.trim() == id
 }
 
 /// Identity from a plugin.xml. A legacy descriptor without `<id>` is identified by its
 /// `<name>`, as the platform does. Every field is attacker-authored and sanitized.
 pub fn parse_plugin_xml(xml: &str, ide: &str, location: &Path) -> Option<JetBrainsPluginRecord> {
-    let name_raw = xml_text(xml, "name").unwrap_or("");
-    let id_raw = xml_text(xml, "id").unwrap_or(name_raw).trim();
+    let xml = neutralise_markup(xml);
+    let xml = xml.as_str();
+    let name_raw = xml_text(xml, "name").map(decode_entities).unwrap_or_default();
+    let id_owned = xml_text(xml, "id").map(decode_entities).unwrap_or_else(|| name_raw.clone());
+    let id_raw = id_owned.trim();
+    let name_raw = name_raw.as_str();
     if !is_valid_plugin_id(id_raw) {
         return None;
     }
