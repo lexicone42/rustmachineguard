@@ -6,11 +6,14 @@ use rustmachineguard::platform::{self, PlatformInfo};
 use rustmachineguard::scanners::{self, Scanner};
 use std::path::PathBuf;
 
-/// Scan your dev machine for AI agents, MCP servers, IDE extensions, and more.
+/// AI-agent posture scanner for developer machines.
 ///
-/// Rust rewrite of https://github.com/step-security/dev-machine-guard (Apache-2.0).
-/// Extended with Linux support, cloud credential detection, container tools,
-/// SSH key auditing, shell config scanning, and notebook server detection.
+/// Inventories coding agents, MCP servers, IDE/browser extensions, agent skills and
+/// hooks, at-rest credentials, registry configs and git auto-execution settings; matches
+/// them against a sourced threat catalog; probes MCP servers live; diffs scans over time;
+/// emits a CycloneDX 2.0 Blueprint and compliance evidence. Runs locally, sends nothing.
+///
+/// Began as a Rust rewrite of step-security/dev-machine-guard (Apache-2.0); see NOTICE.
 #[derive(Parser)]
 #[command(name = "rmguard", version, about)]
 struct Cli {
