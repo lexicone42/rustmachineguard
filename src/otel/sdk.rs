@@ -50,6 +50,8 @@ const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 const BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0];
 
 struct State {
+    /// One wall-clock reading, paired with its monotonic twin, taken once in init().
+    clock: Anchor,
     tracer: Option<SdkTracer>,
     tp: Option<SdkTracerProvider>,
     mp: Option<SdkMeterProvider>,
@@ -208,6 +210,29 @@ impl HttpClient for UreqClient {
             }
         };
         Ok(Response::builder().status(status).body(Bytes::from(body))?)
+    }
+}
+
+/// Span timestamps on one monotonic timeline: the wall clock is read once, at init, and
+/// every later timestamp is that reading plus `Instant` time since. A wall-clock step
+/// mid-scan (NTP, a manual change) then shifts nothing: a child span always starts and
+/// ends inside its parent, and every duration is a monotonic one. The cost is that
+/// span times drift from the wall clock by however much the clock was stepped during
+/// the run, which for a scan of seconds is the right trade.
+#[derive(Clone, Copy, Debug)]
+struct Anchor {
+    sys: SystemTime,
+    inst: Instant,
+}
+
+impl Anchor {
+    fn now() -> Anchor {
+        Anchor { sys: SystemTime::now(), inst: Instant::now() }
+    }
+
+    /// The wall time of `at` on this timeline. Never reads the system clock.
+    fn wall(&self, at: Instant) -> SystemTime {
+        self.sys + at.saturating_duration_since(self.inst)
     }
 }
 
@@ -390,7 +415,7 @@ pub(super) fn init() -> Result<(), InitError> {
         }
     });
 
-    if STATE.set(State { tracer, tp, mp, inst }).is_err() {
+    if STATE.set(State { clock: Anchor::now(), tracer, tp, mp, inst }).is_err() {
         return Ok(());
     }
     ENABLED.store(true, Ordering::SeqCst);
@@ -414,9 +439,10 @@ pub(super) struct Live {
     cx: Context,
     // Dropped after `Drop::drop` ends the span: restores the parent context.
     _attach: ContextGuard,
+    /// `Anchor::wall(t0)`: derived from the init-time anchor, not a fresh clock read.
     start: SystemTime,
-    /// Monotonic twin of `start`. Every end time is `start + <Instant elapsed>`, so a wall
-    /// clock step mid-scan cannot put a child span outside its parent.
+    /// Monotonic twin of `start`. Start and end are both on the anchor's monotonic
+    /// timeline, so a wall clock step mid-scan cannot put a child outside its parent.
     t0: Instant,
     finished: bool,
 }
@@ -445,9 +471,10 @@ impl Drop for Live {
 }
 
 pub(super) fn start(name: Cow<'static, str>, client: bool, attrs: Vec<Attr>) -> Option<Live> {
-    let tracer = STATE.get()?.tracer.as_ref()?;
-    let start = SystemTime::now();
+    let state = STATE.get()?;
+    let tracer = state.tracer.as_ref()?;
     let t0 = Instant::now();
+    let start = state.clock.wall(t0);
     let span = tracer
         .span_builder(name)
         .with_kind(if client { SpanKind::Client } else { SpanKind::Internal })
@@ -558,6 +585,30 @@ pub(super) fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Span times come from the anchor and Instant only. A fake anchor whose wall time is
+    /// far from now (as if the clock had been stepped 100 s back after init) still yields
+    /// strictly ordered, nested times: start(parent) <= start(child) <= end(child) <=
+    /// end(parent), each equal to anchor + monotonic offset.
+    #[test]
+    fn span_times_ignore_wall_clock_steps() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let inst = Instant::now();
+        let a = Anchor { sys: base, inst };
+        let p0 = inst + Duration::from_millis(5);
+        let c0 = inst + Duration::from_millis(7);
+        let parent_start = a.wall(p0);
+        let child_start = a.wall(c0);
+        let child_end = child_start + Duration::from_millis(3);
+        let parent_end = parent_start + Duration::from_millis(10);
+        assert_eq!(parent_start, base + Duration::from_millis(5));
+        assert_eq!(child_start, base + Duration::from_millis(7));
+        assert!(parent_start <= child_start && child_end <= parent_end);
+        // An Instant before the anchor clamps to the anchor instead of panicking.
+        if let Some(before) = inst.checked_sub(Duration::from_millis(1)) {
+            assert_eq!(a.wall(before), base);
+        }
+    }
 
     #[test]
     fn os_type_and_arch_mapping() {

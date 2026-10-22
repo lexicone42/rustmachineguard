@@ -98,13 +98,27 @@ pub fn child_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
 }
 
 /// Remove every `OTEL_*` variable (any case) present in this process's environment from
-/// `cmd`'s. Only names are compared; no value is read.
+/// `cmd`'s.
+///
+/// The names are collected once per process and reused for every spawn. std has no
+/// names-only environment iterator, so that one pass over `vars_os()` does copy each
+/// value into a temporary, which is dropped unused on the spot; only the matching names
+/// are kept. rmguard never sets an `OTEL_*` variable itself, so a once-only snapshot
+/// cannot go stale. With no `OTEL_*` set the cached list is empty and a spawn does no
+/// work and no allocation here.
 pub fn scrub_otel_env(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    for (name, _) in std::env::vars_os() {
-        let b = name.as_encoded_bytes();
-        if b.len() >= 5 && b[..5].eq_ignore_ascii_case(b"OTEL_") {
-            cmd.env_remove(&name);
-        }
+    static NAMES: std::sync::OnceLock<Vec<std::ffi::OsString>> = std::sync::OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        std::env::vars_os()
+            .map(|(name, _)| name)
+            .filter(|name| {
+                let b = name.as_encoded_bytes();
+                b.len() >= 5 && b[..5].eq_ignore_ascii_case(b"OTEL_")
+            })
+            .collect()
+    });
+    for name in names {
+        cmd.env_remove(name);
     }
     cmd
 }
@@ -1074,7 +1088,7 @@ pub mod telemetry {
         let (r0, m0) = snapshot();
         // The span's start time is taken inside span_with, immediately before `start`,
         // and it is ended at exactly start + elapsed: its duration is the table's.
-        let mut span = crate::otel::span_with(|| format!("scanner.{scanner}"), || vec![Attr::scanner(scanner)]);
+        let mut span = crate::otel::span_with("scanner.", scanner, || vec![Attr::scanner(scanner)]);
         let start = Instant::now();
         if trace_enabled() {
             eprintln!("trace: scanner {scanner} start");

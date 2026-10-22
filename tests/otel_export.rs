@@ -666,6 +666,69 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The report is complete on stdout before the OpenTelemetry shutdown starts, not when
+    /// the process exits. JSON ends without a newline, so without an explicit flush its
+    /// last line sat in std's line buffer for the whole (black-holed: ~1 s) shutdown, and
+    /// a pipeline that killed rmguard in that window got a truncated document. Here the
+    /// test waits until stdout goes quiet while rmguard is still running (stuck on the
+    /// collector), kills it, and requires what it already wrote to be the whole report.
+    #[test]
+    fn report_is_flushed_before_otel_shutdown() {
+        use std::process::Stdio;
+        use std::sync::mpsc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let home = temp_home("flush");
+        let mut cmd = rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
+        let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn rmguard");
+        let mut stdout = child.stdout.take().unwrap();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut got = Vec::new();
+        let mut killed_while_running = false;
+        let give_up = Instant::now() + Duration::from_secs(60);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(300)) {
+                Ok(chunk) => got.extend_from_slice(&chunk),
+                // Output has started and then stopped while the process lives on: it is
+                // in the export shutdown (the collector never answers). Kill it now.
+                Err(mpsc::RecvTimeoutError::Timeout) if !got.is_empty() => {
+                    if child.try_wait().unwrap().is_none() {
+                        child.kill().unwrap();
+                        killed_while_running = true;
+                    }
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(Instant::now() < give_up, "no report within 60 s");
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        let _ = child.wait();
+        let _ = reader.join();
+        // Bytes still in the pipe when the kill landed were written before it.
+        while let Ok(chunk) = rx.try_recv() {
+            got.extend_from_slice(&chunk);
+        }
+        drop(listener);
+        assert!(
+            killed_while_running,
+            "rmguard exited before stdout went quiet, so this run did not exercise the shutdown window"
+        );
+        serde_json::from_slice::<serde_json::Value>(&got).unwrap_or_else(|e| {
+            panic!("report on stdout was incomplete when the OpenTelemetry shutdown began ({e}); {} bytes", got.len())
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn otel_sdk_disabled_env_wins() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -756,6 +819,13 @@ mod enabled {
                 match listener.accept() {
                     Ok((mut s, _)) => {
                         let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
+                        // Hold the socket briefly, as the unit-test twin does, so the
+                        // client reads the plaintext reply (a TLS error) rather than
+                        // racing an RST (which would categorize as "could not connect").
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(200));
+                            drop(s);
+                        });
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }

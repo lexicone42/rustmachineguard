@@ -33,6 +33,10 @@ jobs:
       # (tests/blueprint_schema.rs) and the vulnerable-range end-to-end test,
       # which builds a compromised machine and runs the real binary against it.
       - run: cargo test --all-targets
+      # --all-targets skips doc tests, and two of them are load-bearing: the
+      # compile_fail checks in src/otel/mod.rs that runtime text cannot become an
+      # OpenTelemetry attribute value or span name.
+      - run: cargo test --doc
 
   no-default-features:
     name: build + test without the otel feature
@@ -44,6 +48,7 @@ jobs:
       # OpenTelemetry export is a default-on cargo feature; the no-op build must keep
       # compiling and passing (including the e2e test that --otel then only warns).
       - run: cargo test --all-targets --no-default-features
+      - run: cargo test --doc --no-default-features
 
   clippy:
     name: clippy (deny correctness)

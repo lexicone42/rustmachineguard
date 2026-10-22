@@ -15,7 +15,8 @@ default = ["otel"]
 # OpenTelemetry export (opt-in at runtime with --otel). See docs/OPENTELEMETRY.md.
 # Every otel crate is default-features = false: that keeps `internal-logs` (and with it
 # `tracing`) off so the SDK can never print, and keeps reqwest/hyper/tokio out -- export
-# goes through our own ureq client (src/otel/sdk.rs).
+# goes through our own ureq client (src/otel/sdk.rs). Cost of default-on: about +1.6 MB
+# (21%) on the release binary; no measurable run time with export off.
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-http", "dep:async-trait"]
 
 [dependencies]

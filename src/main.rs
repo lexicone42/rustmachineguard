@@ -692,7 +692,7 @@ fn main() {
                     std::process::exit(1);
                 });
             } else {
-                print!("{diff_output}");
+                write_report_to_stdout(&diff_output);
             }
         }
         finish_scan(root, scan_start, &report);
@@ -733,12 +733,12 @@ fn main() {
                 eprintln!("Report written to {path}");
             }
         } else {
-            print!("{rendered}");
+            write_report_to_stdout(&rendered);
         }
     }
 
-    // The report is out; end the root span and flush telemetry (bounded at 2 s) before
-    // the fail-on gate can exit the process.
+    // The report is out (and flushed); end the root span and flush telemetry (bounded at
+    // 2 s) before the fail-on gate can exit the process.
     finish_scan(root, scan_start, &report);
 
     // CI / fleet-onboarding gate: fail the process when findings breach the threshold.
@@ -760,6 +760,22 @@ fn main() {
             );
             std::process::exit(2);
         }
+    }
+}
+
+/// Write the report to stdout and flush it before returning. std's stdout is
+/// line-buffered, and the json/sbom/blueprint/html outputs end without a newline, so
+/// without the flush their last line would sit in the buffer until process exit, i.e.
+/// for the whole (up to 2 s) OpenTelemetry shutdown that follows: a pipeline that read
+/// or killed rmguard in that window would see a truncated document.
+fn write_report_to_stdout(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        drop(out);
+        eprintln!("Error writing report to stdout: {e}");
+        otel::shutdown();
+        std::process::exit(1);
     }
 }
 

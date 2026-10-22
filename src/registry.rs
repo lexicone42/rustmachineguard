@@ -455,6 +455,9 @@ mod tests {
         let url = format!("http://{}/", l.local_addr().unwrap());
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_millis(200)))
+            // Direct: an HTTP(S)_PROXY in the developer's shell must not turn this
+            // into a proxy connect error.
+            .proxy(None)
             .build()
             .into();
         let e = agent.get(&url).call().unwrap_err();

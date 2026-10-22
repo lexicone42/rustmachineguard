@@ -14,8 +14,19 @@
 //! let label = String::from("read from disk");
 //! let _ = rustmachineguard::otel::Attr::scanner(&label);
 //! ```
-//! * Span names are `&'static str`, or `scanner.<label>` / `exec.<site>` built from the
-//!   same static strings.
+//! * Span names are `&'static str`, or a static prefix joined to a static label
+//!   (`scanner.<label>`, `exec.<site>`) by [`span_with`] itself, which accepts no
+//!   runtime text either:
+//!
+//! ```compile_fail
+//! let root = String::from("/home/u/.cursor/mcp.json");
+//! let _g = rustmachineguard::otel::span_with("scanner.", &root, Vec::new);
+//! ```
+//!
+//! (The same call with two literals compiles; see [`span_with`].) The one way around
+//! both checks is to leak a `String` into a `&'static str` (`String::leak`,
+//! `Box::leak`); `src/otel/` and the call sites contain none, and a reviewer should
+//! treat one near an `Attr` or span name as a finding.
 //!
 //! Nothing here reads paths, server or package names, commands, program names,
 //! arguments, environment values, URLs or error text into telemetry. See
@@ -292,13 +303,18 @@ pub fn span(name: &'static str, attrs: impl FnOnce() -> Vec<Attr>) -> SpanGuard 
     SpanGuard(sdk::start(name.into(), false, attrs()))
 }
 
-/// Like [`span`], with a name computed only when export is on.
+/// Like [`span`], named `<prefix><label>`. Both parts are `&'static str`, so a name can
+/// only be assembled from compile-time text; it is formatted only when export is on.
+///
+/// ```
+/// let _g = rustmachineguard::otel::span_with("scanner.", "mcp", Vec::new);
+/// ```
 #[inline]
-pub fn span_with(name: impl FnOnce() -> String, attrs: impl FnOnce() -> Vec<Attr>) -> SpanGuard {
+pub fn span_with(prefix: &'static str, label: &'static str, attrs: impl FnOnce() -> Vec<Attr>) -> SpanGuard {
     if !enabled() {
         return SpanGuard(None);
     }
-    SpanGuard(sdk::start(name().into(), false, attrs()))
+    SpanGuard(sdk::start(format!("{prefix}{label}").into(), false, attrs()))
 }
 
 /// Like [`span`], with SpanKind::Client: an outbound call (MCP probe, registry lookup).
@@ -344,7 +360,7 @@ pub fn exec_span(site: &'static str) -> ExecSpan {
     if !enabled() {
         return ExecSpan(None);
     }
-    let guard = span_with(|| format!("exec.{site}"), || vec![Attr::str(Key::ExecSite, site)]);
+    let guard = span_with("exec.", site, || vec![Attr::str(Key::ExecSite, site)]);
     ExecSpan(Some(ExecInner { guard, start: Instant::now(), site, outcome: None }))
 }
 
@@ -426,7 +442,7 @@ mod tests {
         s.set(|| panic!("set evaluated while disabled"));
         s.error("timeout");
         drop(s);
-        let s = span_with(|| panic!("name evaluated while disabled"), || panic!("attrs evaluated"));
+        let s = span_with("scanner.", "mcp", || panic!("attrs evaluated while disabled"));
         s.finish_after(Duration::from_millis(1));
         let c = client_span("x", || panic!("client attrs evaluated while disabled"));
         drop(c);

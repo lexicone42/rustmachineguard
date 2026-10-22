@@ -9,7 +9,7 @@ counts and durations only**, and never anything the scan found.
 
 | Condition | Export? |
 |---|---|
-| no `--otel` (whatever `OTEL_*` variables are set) | **no**: no `OTEL_*` value is read, nothing is built, rmguard opens no socket |
+| no `--otel` (whatever `OTEL_*` variables are set) | **no**: no `OTEL_*` value is used, nothing is built, rmguard opens no socket |
 | `--otel` | yes |
 | `--otel` + `OTEL_SDK_DISABLED=true` (any case) | no (`info:` line) |
 | `--otel` + `OTEL_TRACES_EXPORTER=none` | metrics only |
@@ -179,12 +179,25 @@ so none of that map goes out:
 - `--trace` / `RMGUARD_TRACE` lines. They are per-path and are fine on your own terminal,
   but they are not shipped. Per-scanner counts already answer the performance question.
 
+Some exported **integers** are chosen by programs rmguard runs, not by rmguard:
+`process.exit.code` on `exec.*` spans is whatever the child returned (a binary planted on
+`PATH` under a known tool name controls about 8 bits per run), and
+`rmguard.mcp.tools` / `rmguard.mcp.resources` are whatever a probed MCP server listed
+(`--probe-mcp` only). They are not secrets, and a program able to choose them already
+runs with your privileges and network access, so this opens no new channel; it does
+mean those numbers are untrusted input to your backend, not facts about rmguard.
+
 This is enforced by construction rather than by review. In `src/otel/mod.rs`, attribute
 keys are a closed enum. Attribute values can be built only from `&'static str`,
 integers and booleans; there is no constructor that takes runtime text, so nothing a
 scan read can be passed in (a `compile_fail` doc test in that module checks that a
-`String` label does not compile). Span names are static or `scanner.<label>` /
-`exec.<site>` built from the same static strings. No context is propagated: there is no
+`String` label does not compile). Span names are static, or a static prefix and a static
+label (`scanner.<label>`, `exec.<site>`) that `otel::span_with` joins itself; it takes
+two `&'static str` and nothing else, and a second `compile_fail` doc test checks that a
+runtime path cannot be passed. CI runs these doc tests (`cargo test --doc`; `cargo test
+--all-targets` alone skips them). The one hole the type system leaves is deliberately
+leaking a `String` into a `&'static str` (`String::leak`, `Box::leak`); nothing in
+rmguard does, and one near an `Attr` or a span name is a review finding. No context is propagated: there is no
 `traceparent` on the registry request, nothing is injected into spawned processes, and
 `OTEL_*` variables are removed from them.
 `tests/otel_export.rs::otel_never_exports_secrets_paths_or_names` plants canaries in a
@@ -206,11 +219,21 @@ anywhere in the raw OTLP bodies.
 - Each export request times out after 1 s, with retries off. Trace and metric shutdown
   run side by side under a 2 s overall deadline (the span processor's own cap is 1.5 s,
   so a request timeout is reported as `timeout`). Whatever is still pending at the
-  deadline is abandoned. The report has already been written by then, and the exit code
-  (including `--fail-on`'s 2) is unchanged. Measured costs: a refused port adds under
-  1 ms, and a collector that accepts connections but never answers adds about 1.0 s.
+  deadline is abandoned. The report is written and flushed to stdout (or written to
+  `-o`) before shutdown starts, so a consumer that reads or kills rmguard during the
+  shutdown already has the whole document
+  (`tests/otel_export.rs::report_is_flushed_before_otel_shutdown`); the exit code
+  (including `--fail-on`'s 2) is unchanged. Measured costs: a refused port adds a few
+  ms (about 2.5 ms, including start-up of the exporter threads). A collector that
+  accepts connections but never answers adds about 1.0 s, and up to 1.5 s (the span
+  processor's cap) when a scheduled export (every 5 s, so in any scan longer than that)
+  is still in flight at shutdown; 2 s is the hard cap either way.
 - When export is off, every instrumentation point is one relaxed atomic load and a
-  branch. No closure runs, nothing is allocated, and no thread or socket exists. The
+  branch. No closure runs, nothing is allocated, and no thread or socket exists. (The
+  one exception is the child-environment scrub, which is on whether or not export is:
+  the names of any `OTEL_*` variables are collected once per run, on the first spawn,
+  and reused. std has no names-only iterator, so that single pass copies each
+  environment value into a temporary that is dropped unused.) The
   call sites that time something for telemetry (the scan, each MCP probe, each registry
   lookup) read `Instant::now()` only when export is on. The per-scanner diagnostics
   table reads the clock either way; it is part of the report.
@@ -232,6 +255,10 @@ anywhere in the raw OTLP bodies.
   server on 127.0.0.1:11434. That predates `--otel` and is unrelated to it.
 - Spans opened on another thread would start a new trace. All instrumented work runs on
   the main thread today.
+- Span timestamps come from one wall-clock reading taken when export starts, plus
+  monotonic time since. A clock step during the run (NTP, a manual change) cannot put
+  a child span outside its parent or change any duration; the price is that every span
+  is off from the wall clock by however far it was stepped during the run.
 
 ## Implementation and credits
 
