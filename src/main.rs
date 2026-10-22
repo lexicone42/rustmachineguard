@@ -86,7 +86,7 @@ struct Cli {
     trace: bool,
 
     /// Export OpenTelemetry traces and metrics for this scan (time per scanner, MCP probe,
-    /// registry lookup and subprocess) over OTLP http/protobuf. NETWORK, off by default:
+    /// registry lookup and instrumented subprocess) over OTLP http/protobuf. NETWORK, off by default:
     /// setting OTEL_EXPORTER_OTLP_ENDPOINT alone never enables export; it only picks where
     /// --otel sends (default http://localhost:4318; OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT
     /// and OTEL_EXPORTER_OTLP_HEADERS honored). Exports labels, counts and durations only —

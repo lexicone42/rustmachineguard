@@ -44,9 +44,10 @@ The variables only choose **where** `--otel` sends:
 - The protocol is always http/protobuf. A different `OTEL_EXPORTER_OTLP_PROTOCOL` gets
   one start-up `warning:` line and is ignored. For `OTEL_TRACES_EXPORTER` /
   `OTEL_METRICS_EXPORTER`, only `none` (turn that signal off) and `otlp` are recognized;
-  any other value (`console`, `zipkin`, ...) gets one start-up `warning:` line and OTLP
-  export proceeds. Timeouts are fixed in code (below), and env values do not lengthen
-  them.
+  any other value (`console`, `zipkin`, ...) gets one start-up `warning:` line and turns
+  that signal off, the same as `none`: a value rmguard cannot honour never falls back to
+  an OTLP push you did not ask for. Timeouts are fixed in code (below), and env values
+  do not lengthen them.
 
 ## Quickstart
 
@@ -163,6 +164,11 @@ Exported once, as a cumulative snapshot when the scan ends.
 | `rmguard.registry.lookup.duration` | histogram | s | `rmguard.registry.verdict` |
 
 Histogram buckets (s): 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30.
+
+Counts are posture metadata. `rmguard.scanner.items` labelled `aicreds` or `ssh`, and
+`rmguard.exposure_findings` on the root span, tell a collector how many credentials or
+exposure findings a machine has, never which ones or where. Choose the collector with
+that in mind.
 
 ## What is never exported, and why
 

@@ -54,6 +54,46 @@ fn run(mut cmd: Command) -> (Output, Duration) {
     (out, t.elapsed())
 }
 
+/// Run rmguard and measure the gap between its last stdout byte and process exit. The
+/// report is flushed before the OpenTelemetry shutdown begins, so this gap is the export
+/// cost alone, independent of how long the scan itself took on this machine. (Comparing
+/// two whole runs instead put run-to-run scan noise, about the size of the bound, into
+/// the measurement.)
+fn run_measuring_tail(mut cmd: Command) -> (Output, Duration) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn rmguard");
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr_pipe = child.stderr.take().unwrap();
+    let err_reader = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut v);
+        v
+    });
+    let (tx, rx) = mpsc::channel::<(Vec<u8>, Instant)>();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send((buf[..n].to_vec(), Instant::now())).is_err() {
+                break;
+            }
+        }
+    });
+    let status = child.wait().expect("wait rmguard");
+    let exited = Instant::now();
+    out_reader.join().unwrap();
+    let mut out_bytes = Vec::new();
+    let mut last_chunk = None;
+    while let Ok((chunk, at)) = rx.try_recv() {
+        out_bytes.extend_from_slice(&chunk);
+        last_chunk = Some(at);
+    }
+    let tail = last_chunk.map_or(Duration::ZERO, |at| exited.saturating_duration_since(at));
+    let stderr_bytes = err_reader.join().unwrap();
+    (Output { status, stdout: out_bytes, stderr: stderr_bytes }, tail)
+}
+
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
@@ -529,6 +569,27 @@ mod enabled {
             checked += 1;
         }
         assert!(checked >= 10, "only {checked} scanner rows checked");
+
+        // The documented guarantee: a child starts and ends inside its parent. Scanner
+        // spans used to open a few microseconds before the Instant their duration was
+        // measured from, so a child ending in that last sliver escaped its parent.
+        for s in &all {
+            if s.parent_span_id.is_empty() {
+                continue;
+            }
+            let p = by_id.get(s.parent_span_id.as_slice()).expect("parent exported");
+            assert!(
+                p.start_time_unix_nano <= s.start_time_unix_nano
+                    && s.end_time_unix_nano <= p.end_time_unix_nano,
+                "{} [{}..{}] escapes its parent {} [{}..{}]",
+                s.name,
+                s.start_time_unix_nano,
+                s.end_time_unix_nano,
+                p.name,
+                p.start_time_unix_nano,
+                p.end_time_unix_nano
+            );
+        }
         assert!(all.iter().any(|s| s.name == "phase.home_pass"));
         assert!(all.iter().all(reaches_root), "a span is detached from the root");
 
@@ -619,23 +680,20 @@ mod enabled {
             l.local_addr().unwrap().port()
         };
         let home = temp_home("dead");
-        let args = ["--format", "json", "--skip", SLOW_SKIP];
-        let (base, base_wall) = run(rmguard(&home, Some(port), &args));
-        assert!(base.status.success());
-        let mut with = args.to_vec();
-        with.insert(0, "--otel");
-        let (out, wall) = run(rmguard(&home, Some(port), &with));
+        let (out, tail) =
+            run_measuring_tail(rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]));
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
         assert!(stderr(&out).contains("export failed (could not connect)"), "{}", stderr(&out));
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
         assert!(!stderr(&out).contains(&format!(":{port}")), "the endpoint was echoed: {}", stderr(&out));
-        // A refused port costs about a millisecond; 2.5 s still catches a deadline loop
-        // that stopped working (the sequential-shutdown regression cost 3.03 s).
+        // A refused port costs about a millisecond after the report is out; the in-code
+        // shutdown deadline is 2 s, and 2.3 s still catches a deadline loop that stopped
+        // working (the sequential-shutdown regression cost 3.03 s).
         assert!(
-            wall.saturating_sub(base_wall) < Duration::from_millis(2500),
-            "dead collector cost {wall:?} vs {base_wall:?}"
+            tail < Duration::from_millis(2300),
+            "report-to-exit took {tail:?} against a refused collector"
         );
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -647,21 +705,18 @@ mod enabled {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let home = temp_home("blackhole");
-        let args = ["--format", "json", "--skip", SLOW_SKIP];
-        let (base, base_wall) = run(rmguard(&home, None, &args));
-        assert!(base.status.success());
-        let mut with = args.to_vec();
-        with.insert(0, "--otel");
-        let (out, wall) = run(rmguard(&home, Some(port), &with));
+        let (out, tail) =
+            run_measuring_tail(rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]));
         drop(listener);
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
-        // Measured ~1.03 s; the hard bound in code is 2 s; 0.5 s of slack for loaded CI.
+        // Measured 1.0-1.5 s from the last report byte to exit; the hard bound in code is
+        // 2 s; 0.3 s of slack for process teardown on a loaded CI runner.
         assert!(
-            wall.saturating_sub(base_wall) < Duration::from_millis(2500),
-            "black-holed collector cost {wall:?} vs {base_wall:?}"
+            tail < Duration::from_millis(2300),
+            "report-to-exit took {tail:?} against a black-holed collector"
         );
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -726,6 +781,24 @@ mod enabled {
         serde_json::from_slice::<serde_json::Value>(&got).unwrap_or_else(|e| {
             panic!("report on stdout was incomplete when the OpenTelemetry shutdown began ({e}); {} bytes", got.len())
         });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An exporter value rmguard cannot honour (`console`, `zipkin`, ...) turns that
+    /// signal off rather than falling back to an OTLP push the user did not ask for.
+    #[test]
+    fn otel_unknown_exporter_value_turns_signal_off() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let home = temp_home("unknownexp");
+        let mut cmd = rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
+        cmd.env("OTEL_TRACES_EXPORTER", "console").env("OTEL_METRICS_EXPORTER", "zipkin");
+        let (out, _) = run(cmd);
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        json(&out);
+        assert!(stderr(&out).contains("OTEL_TRACES_EXPORTER supports only"), "{}", stderr(&out));
+        assert!(stderr(&out).contains("OpenTelemetry export off"), "{}", stderr(&out));
+        assert_never_connected(&listener);
         let _ = std::fs::remove_dir_all(&home);
     }
 

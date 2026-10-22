@@ -178,8 +178,9 @@ silently stopped working across machines.
 
 `--otel` exports the same timing as OpenTelemetry traces and metrics over OTLP
 http/protobuf: one `rmguard.scan` trace with a span per phase, per scanner, per
-subprocess (`--version` probes, `git ls-files`, `ssh-keygen`), per MCP probe and per
-registry lookup, plus duration histograms and files-read/missing/items counters.
+instrumented subprocess (`--version` probes, `git ls-files`, `ssh-keygen`; the device-info
+lookups are not), per MCP probe and per registry lookup, plus duration histograms and
+files-read/missing/items counters.
 
 ```bash
 docker run --rm -p 4318:4318 otel/opentelemetry-collector   # or Jaeger all-in-one
@@ -339,7 +340,7 @@ Options:
                                      the local machine).
       --otel                         Export OpenTelemetry traces and metrics for
                                      this scan (time per scanner, MCP probe,
-                                     registry lookup and subprocess) over OTLP
+                                     registry lookup and instrumented subprocess) over OTLP
                                      http/protobuf. NETWORK, off by default:
                                      setting OTEL_EXPORTER_OTLP_ENDPOINT alone
                                      never enables export; it only picks where

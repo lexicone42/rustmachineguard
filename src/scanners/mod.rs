@@ -105,7 +105,11 @@ pub fn child_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
 /// value into a temporary, which is dropped unused on the spot; only the matching names
 /// are kept. rmguard never sets an `OTEL_*` variable itself, so a once-only snapshot
 /// cannot go stale. With no `OTEL_*` set the cached list is empty and a spawn does no
-/// work and no allocation here.
+/// work and no allocation here. With `OTEL_*` set, each spawn pays one `env_remove` per
+/// cached name (a few small allocations and an explicit envp); over 1000 spawns of
+/// `/bin/true` the difference was inside the noise. That is the price of keeping a
+/// collector credential out of every child, paid per spawn (about 120 per scan), never
+/// per file probe.
 pub fn scrub_otel_env(cmd: &mut std::process::Command) -> &mut std::process::Command {
     static NAMES: std::sync::OnceLock<Vec<std::ffi::OsString>> = std::sync::OnceLock::new();
     let names = NAMES.get_or_init(|| {
@@ -1086,10 +1090,12 @@ pub mod telemetry {
     ) -> Vec<T> {
         use crate::otel::{Attr, Key};
         let (r0, m0) = snapshot();
-        // The span's start time is taken inside span_with, immediately before `start`,
-        // and it is ended at exactly start + elapsed: its duration is the table's.
-        let mut span = crate::otel::span_with("scanner.", scanner, || vec![Attr::scanner(scanner)]);
+        // The span starts at the same instant `elapsed` is measured from and is ended at
+        // exactly start + elapsed: its duration is the table's, and every child span the
+        // scanner opens ends inside it.
         let start = Instant::now();
+        let mut span =
+            crate::otel::span_with_at("scanner.", scanner, start, || vec![Attr::scanner(scanner)]);
         if trace_enabled() {
             eprintln!("trace: scanner {scanner} start");
         }

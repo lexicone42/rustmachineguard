@@ -275,15 +275,24 @@ pub(super) fn init() -> Result<(), InitError> {
     {
         eprintln!("warning: OTEL_EXPORTER_OTLP_PROTOCOL is ignored; rmguard exports OTLP over http/protobuf only");
     }
-    for var in ["OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"] {
-        if let Ok(v) = std::env::var(var)
-            && !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "otlp" | "none")
-        {
-            eprintln!("warning: {var} supports only `otlp` and `none` here; exporting OTLP");
+    // A value rmguard cannot honour (`console`, `zipkin`, ...) turns that signal off, the
+    // same as `none`. Falling back to OTLP would push to the default or ambient endpoint,
+    // headers included, which the user did not ask for.
+    let want = |var: &str| -> bool {
+        match std::env::var(var) {
+            Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+                "" | "otlp" => true,
+                "none" => false,
+                _ => {
+                    eprintln!("warning: {var} supports only `otlp` and `none` here; that signal is off");
+                    false
+                }
+            },
+            Err(_) => true,
         }
-    }
-    let want_traces = !env_is("OTEL_TRACES_EXPORTER", "none");
-    let want_metrics = !env_is("OTEL_METRICS_EXPORTER", "none");
+    };
+    let want_traces = want("OTEL_TRACES_EXPORTER");
+    let want_metrics = want("OTEL_METRICS_EXPORTER");
     if !want_traces && !want_metrics {
         return Err(InitError::Disabled);
     }
@@ -470,10 +479,17 @@ impl Drop for Live {
     }
 }
 
-pub(super) fn start(name: Cow<'static, str>, client: bool, attrs: Vec<Attr>) -> Option<Live> {
+/// `at` is a start instant the caller already read to time the same work; `None` starts
+/// the span now.
+pub(super) fn start(
+    name: Cow<'static, str>,
+    client: bool,
+    attrs: Vec<Attr>,
+    at: Option<Instant>,
+) -> Option<Live> {
     let state = STATE.get()?;
     let tracer = state.tracer.as_ref()?;
-    let t0 = Instant::now();
+    let t0 = at.unwrap_or_else(Instant::now);
     let start = state.clock.wall(t0);
     let span = tracer
         .span_builder(name)

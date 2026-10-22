@@ -10,7 +10,7 @@
 //!   sanitize because nothing a scan read can be passed in; a `String` does not
 //!   compile:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0597
 //! let label = String::from("read from disk");
 //! let _ = rustmachineguard::otel::Attr::scanner(&label);
 //! ```
@@ -18,7 +18,7 @@
 //!   (`scanner.<label>`, `exec.<site>`) by [`span_with`] itself, which accepts no
 //!   runtime text either:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0597
 //! let root = String::from("/home/u/.cursor/mcp.json");
 //! let _g = rustmachineguard::otel::span_with("scanner.", &root, Vec::new);
 //! ```
@@ -70,7 +70,12 @@ mod sdk {
         false
     }
     #[inline(always)]
-    pub fn start(_: std::borrow::Cow<'static, str>, _: bool, _: Vec<Attr>) -> Option<Live> {
+    pub fn start(
+        _: std::borrow::Cow<'static, str>,
+        _: bool,
+        _: Vec<Attr>,
+        _: Option<std::time::Instant>,
+    ) -> Option<Live> {
         None
     }
     #[inline(always)]
@@ -300,7 +305,7 @@ pub fn span(name: &'static str, attrs: impl FnOnce() -> Vec<Attr>) -> SpanGuard 
     if !enabled() {
         return SpanGuard(None);
     }
-    SpanGuard(sdk::start(name.into(), false, attrs()))
+    SpanGuard(sdk::start(name.into(), false, attrs(), None))
 }
 
 /// Like [`span`], named `<prefix><label>`. Both parts are `&'static str`, so a name can
@@ -314,7 +319,25 @@ pub fn span_with(prefix: &'static str, label: &'static str, attrs: impl FnOnce()
     if !enabled() {
         return SpanGuard(None);
     }
-    SpanGuard(sdk::start(format!("{prefix}{label}").into(), false, attrs()))
+    SpanGuard(sdk::start(format!("{prefix}{label}").into(), false, attrs(), None))
+}
+
+/// Like [`span_with`], but the span starts at `at`, an `Instant` the caller already read
+/// to time the same work. Ended with [`SpanGuard::finish_after`] and the elapsed time
+/// measured from that same instant, the span is exactly the measured interval, so every
+/// child opened during the work ends inside it. (Opening the span first and reading the
+/// clock second left the parent ending a few microseconds before its last child.)
+#[inline]
+pub fn span_with_at(
+    prefix: &'static str,
+    label: &'static str,
+    at: Instant,
+    attrs: impl FnOnce() -> Vec<Attr>,
+) -> SpanGuard {
+    if !enabled() {
+        return SpanGuard(None);
+    }
+    SpanGuard(sdk::start(format!("{prefix}{label}").into(), false, attrs(), Some(at)))
 }
 
 /// Like [`span`], with SpanKind::Client: an outbound call (MCP probe, registry lookup).
@@ -323,7 +346,7 @@ pub fn client_span(name: &'static str, attrs: impl FnOnce() -> Vec<Attr>) -> Spa
     if !enabled() {
         return SpanGuard(None);
     }
-    SpanGuard(sdk::start(name.into(), true, attrs()))
+    SpanGuard(sdk::start(name.into(), true, attrs(), None))
 }
 
 /// Add attributes to whatever span is current (used where the span is opened by a caller).
