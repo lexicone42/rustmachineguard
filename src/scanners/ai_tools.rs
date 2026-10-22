@@ -69,13 +69,27 @@ const TOOLS: &[ToolDef] = &[
         config_dir_check: None,
         verify_binary: false,
     },
+    // Kiro is two products with two version lines: the CLI (`kiro-cli`, formerly
+    // Amazon Q Developer CLI, 1.x/2.x) and the VS Code-based IDE (`kiro` launcher,
+    // 0.x/1.x). CVE-2026-89332 is scoped to the IDE, so they must not share a row:
+    // keyed together, a machine with both installed would report the CLI's version
+    // against the IDE's advisory range.
     ToolDef {
-        name: "Kiro",
+        name: "Kiro CLI",
         vendor: "Amazon",
         tool_type: AiToolType::CliTool,
-        binary_names: &["kiro-cli", "kiro"],
+        binary_names: &["kiro-cli"],
         process_name: None,
         config_dir_check: Some(|p| p.kiro_config_dir()),
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Kiro IDE",
+        vendor: "Amazon",
+        tool_type: AiToolType::DesktopApp,
+        binary_names: &["kiro"],
+        process_name: None,
+        config_dir_check: None,
         verify_binary: false,
     },
     ToolDef {

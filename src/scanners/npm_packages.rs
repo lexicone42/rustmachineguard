@@ -73,6 +73,14 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     ] {
         roots.push(home.join(rel));
     }
+    // `npx <pkg>` without a local install lands in the npx cache, one hashed dir per
+    // package set, which is where a documented `npx @deepseek-ai/dsh web` or an
+    // `npx -y some-mcp` actually puts the code.
+    if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".npm/_npx")) {
+        for e in entries.flatten() {
+            roots.push(e.path().join("node_modules"));
+        }
+    }
     // nvm keeps one global root per installed Node version.
     if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".nvm/versions/node")) {
         for e in entries.flatten() {

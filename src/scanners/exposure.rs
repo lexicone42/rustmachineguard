@@ -121,14 +121,29 @@ pub fn browser_catalog_ecosystem(browser: &str) -> &'static str {
 /// Returns `None` for tools we have no stable versioned identity for. Deliberately
 /// conservative: a wrong mapping would match one product's CVE ranges against another
 /// product's version numbering, which either cries wolf or silently never fires.
-/// In particular Claude Code (a CLI, versions 2.x) and Claude Desktop (an app,
-/// versions 1.2xxx-1.4xxx) share a GHSA package name but NOT a version line, so
-/// desktop CVEs must never be keyed to the CLI.
+/// Every key names exactly one version line:
+///
+/// - `claude-code` is the CLI (2.x). `claude-desktop` is the desktop app, whose version
+///   the scanner reads from the app bundle and reports as "Claude Cowork" (1.x → 3.x,
+///   e.g. 1.15962.0, 2.110.0, 3.6556.1). They share a vendor, not a version line, so
+///   desktop advisories are keyed to `claude-desktop` and never to the CLI. The bare
+///   "Claude Desktop" desktop-app row carries no version and stays unmapped.
+/// - `codex` is the Codex CLI (`codex --version` prints `codex-cli X.Y.Z`); Codex
+///   Desktop uses 26.5xx.x numbering and is not inventoried.
+/// - `kiro-ide` is the Kiro IDE (`kiro` launcher, 0.x/1.x); the Kiro CLI (`kiro-cli`,
+///   1.x/2.x) is a different product line and stays unmapped until it has advisories.
+/// - `goose` and `ollama` are their CLIs; `ollama` is reached from the frameworks
+///   inventory rather than the agents list.
 pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
     Some(match tool_name.trim().to_ascii_lowercase().as_str() {
         "claude code" => "claude-code",
+        "claude cowork" => "claude-desktop",
         "gemini cli" => "gemini-cli",
         "github copilot cli" | "copilot cli" | "copilot" => "copilot-cli",
+        "openai codex cli" | "codex cli" | "codex" => "codex",
+        "goose" => "goose",
+        "kiro ide" => "kiro-ide",
+        "ollama" => "ollama",
         _ => return None,
     })
 }
@@ -155,7 +170,17 @@ pub fn version_matches(entry: &crate::models::ExposureEntry, candidate: Option<&
         ) else {
             return false;
         };
-        return req.matches(&ver);
+        // Compare the numeric core only. The semver crate applies Cargo's rule that a
+        // pre-release candidate matches a comparator only when it shares the same
+        // major.minor.patch, so `<0.1.2` would never match `0.1.1-rc.2` and a row for a
+        // package that ships only pre-releases (the @deepseek-ai/dsh line, every
+        // `2.0.0a1`-style Python pre-release) would silently never fire. Dropping the
+        // pre-release tag gives node-semver's includePrerelease behaviour, with one
+        // documented edge: `X.Y.Z-pre` is treated as `X.Y.Z`, so `<X.Y.Z` does not match
+        // the pre-release of the fix version itself — a conservative miss, never a
+        // false positive.
+        let core = semver::Version::new(ver.major, ver.minor, ver.patch);
+        return req.matches(&core);
     }
     // No version constraint → applies to all versions.
     true

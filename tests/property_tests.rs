@@ -2585,10 +2585,15 @@ fn builtin_catalog_version_ranges_flag_only_vulnerable() {
     assert!(flagged("mcp-remote", "0.1.10"), "a vulnerable mcp-remote must flag");
     assert!(!flagged("mcp-remote", "0.1.16"), "the patched mcp-remote must NOT flag");
     assert!(!flagged("mcp-remote", "0.0.3"), "a below-affected mcp-remote must NOT flag");
-    // inspector: fixed 0.14.1.
+    // inspector: two release lines. 0.x/1.x fixed 1.0.3 (the 2026-10-21 advisories
+    // subsumed the old <0.14.1 bound), 2.x fixed 2.12.0.
     let insp = "@modelcontextprotocol/inspector";
     assert!(flagged(insp, "0.14.0"), "a vulnerable inspector must flag");
-    assert!(!flagged(insp, "0.14.1"), "the patched inspector must NOT flag");
+    assert!(flagged(insp, "0.14.1"), "0.14.1 still has the 1.0.3-fixed advisories");
+    assert!(flagged(insp, "1.0.2"), "1.0.2 is the last vulnerable 1.x");
+    assert!(!flagged(insp, "1.0.3"), "the patched 1.x inspector must NOT flag");
+    assert!(flagged(insp, "2.11.0"), "a vulnerable 2.x inspector must flag");
+    assert!(!flagged(insp, "2.12.0"), "the patched 2.x inspector must NOT flag");
 }
 
 // ─── 2026-06 catalog refresh ──────────────────────────────────
@@ -2600,7 +2605,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        99,
+        228,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
@@ -3382,19 +3387,26 @@ fn newly_bounded_entries_stop_flagging_patched_installs() {
         let s = mcp_server_with_pkg(eco, name, ver);
         !catalog.check_mcp_server(&s, "/t").is_empty()
     };
-    // MCP Python SDK — the worst offender: every install was flagged. Fixed 1.23.0.
+    // MCP Python SDK — the worst offender: every install was flagged. The 1.x bound
+    // moved from 1.23.0 to 1.30.0 (2026-10 OAuth misdirection wave) and 2.x has its own
+    // row fixed 2.2.0; the patched release of each line must stay clean.
     assert!(flagged("pypi", "mcp", "1.22.0"), "a vulnerable mcp must still flag");
-    assert!(!flagged("pypi", "mcp", "1.23.0"), "the patched mcp must NOT flag");
-    assert!(!flagged("pypi", "mcp", "2.1.1"), "a current mcp must NOT flag");
-    // MCP TypeScript SDK — range covers both CVEs (fixed 1.24.0 / 1.26.0).
+    assert!(flagged("pypi", "mcp", "1.29.1"), "1.29.1 still has the 1.30.0-fixed advisories");
+    assert!(!flagged("pypi", "mcp", "1.30.0"), "the patched 1.x mcp must NOT flag");
+    assert!(flagged("pypi", "mcp", "2.1.1"), "2.1.1 is in the 2.x vulnerable range");
+    assert!(flagged("pypi", "mcp", "2.0.0a1"), "the 2.0.0a1 pre-release is in range (core compared)");
+    assert!(!flagged("pypi", "mcp", "2.2.0"), "the patched 2.x mcp must NOT flag");
+    // MCP TypeScript SDK — one 1.x row whose bound moved 1.26.0 -> 1.32.0.
     assert!(flagged("npm", "@modelcontextprotocol/sdk", "1.25.0"), "1.25.0 still has CVE-2026-25536");
-    assert!(!flagged("npm", "@modelcontextprotocol/sdk", "1.26.0"), "1.26.0 is patched");
+    assert!(flagged("npm", "@modelcontextprotocol/sdk", "1.31.0"), "1.31.0 still has the 1.32.0-fixed advisories");
+    assert!(!flagged("npm", "@modelcontextprotocol/sdk", "1.32.0"), "1.32.0 is patched");
     // mcp-server-git — CalVer, fixed 2025.9.25.
     assert!(flagged("pypi", "mcp-server-git", "2025.9.1"), "pre-fix mcp-server-git flags");
     assert!(!flagged("pypi", "mcp-server-git", "2025.9.25"), "patched mcp-server-git must NOT flag");
-    // Third-party git MCP server — fixed 2.1.5.
+    // Third-party git MCP server — CVE-2025-53107 fixed 2.1.5, CVE-2026-85626 fixed 2.15.2.
     assert!(flagged("npm", "@cyanheads/git-mcp-server", "2.1.4"), "pre-fix flags");
-    assert!(!flagged("npm", "@cyanheads/git-mcp-server", "2.1.5"), "patched must NOT flag");
+    assert!(flagged("npm", "@cyanheads/git-mcp-server", "2.1.5"), "2.1.5 still has CVE-2026-85626");
+    assert!(!flagged("npm", "@cyanheads/git-mcp-server", "2.15.2"), "patched must NOT flag");
 }
 
 #[test]
@@ -3459,8 +3471,10 @@ fn agent_runtime_cves_match_installed_cli_versions() {
 
     // A version inside several overlapping ranges reports each applicable CVE.
     assert!(hits("claude-code", "2.1.100") >= 2, "an old 2.1.x must match several CVEs");
-    // A version at/after the highest fix is clean.
-    assert_eq!(hits("claude-code", "2.1.163"), 0, "the fixed version must be clean");
+    // A version at/after the highest fix is clean. 2.1.163 closed the August wave;
+    // the October rows run up to 2.1.260 (CVE-2026-103012).
+    assert!(hits("claude-code", "2.1.163") >= 1, "2.1.163 still sits inside the 2026-10 ranges");
+    assert_eq!(hits("claude-code", "2.1.260"), 0, "the highest fixed version must be clean");
     assert_eq!(hits("claude-code", "2.2.0"), 0, "a newer version must be clean");
     // Range floors are respected: 2.1.84 is past CVE-2026-40068's ceiling.
     let at_84: Vec<_> = catalog
@@ -3480,12 +3494,119 @@ fn agent_runtime_key_maps_only_known_tools() {
     assert_eq!(agent_runtime_key("Claude Code"), Some("claude-code"));
     assert_eq!(agent_runtime_key("Gemini CLI"), Some("gemini-cli"));
     assert_eq!(agent_runtime_key("GitHub Copilot CLI"), Some("copilot-cli"));
-    // Claude Desktop shares a GHSA package name with the CLI but NOT a version line
-    // (1.2xxx-1.4xxx vs 2.x). Mapping it to claude-code would match desktop CVE ranges
-    // against CLI versions and silently never fire — so it must stay unmapped.
+    assert_eq!(agent_runtime_key("OpenAI Codex CLI"), Some("codex"));
+    assert_eq!(agent_runtime_key("Goose"), Some("goose"));
+    assert_eq!(agent_runtime_key("Ollama"), Some("ollama"));
+    // The desktop app's own version line (read from the bundle, reported as
+    // "Claude Cowork") gets its own key. It must never alias the CLI: Desktop CVE
+    // ranges (1.15962.0) against CLI versions (2.1.x) would match the wrong product.
+    assert_eq!(agent_runtime_key("Claude Cowork"), Some("claude-desktop"));
+    assert_ne!(agent_runtime_key("Claude Cowork"), agent_runtime_key("Claude Code"));
+    // The bare desktop-app inventory row carries no version and stays unmapped.
     assert_eq!(agent_runtime_key("Claude Desktop"), None);
+    // Kiro is two version lines; only the IDE has advisories today.
+    assert_eq!(agent_runtime_key("Kiro IDE"), Some("kiro-ide"));
+    assert_eq!(agent_runtime_key("Kiro CLI"), None);
     assert_eq!(agent_runtime_key("Aider"), None);
     assert_eq!(agent_runtime_key(""), None);
+}
+
+#[test]
+fn version_range_compares_prerelease_core() {
+    // Cargo-style semver only lets a pre-release match a comparator with the same
+    // major.minor.patch, so `<0.1.2` would never match `0.1.1-rc.2` and a row for a
+    // package that ships only pre-releases (the @deepseek-ai/dsh line) would never fire.
+    use rustmachineguard::models::ExposureEntry;
+    use rustmachineguard::scanners::exposure::version_matches;
+    let entry = ExposureEntry {
+        ecosystem: "npm".into(), name: "p".into(), version: None,
+        version_range: Some("<0.1.2".into()), advisory: None,
+    };
+    assert!(version_matches(&entry, Some("0.1.1-rc.2")), "pre-release below the bound matches");
+    assert!(version_matches(&entry, Some("0.0.1-rc.1")), "earliest pre-release matches");
+    assert!(!version_matches(&entry, Some("0.1.2-alpha.2")), "pre-release of the fix version is a conservative non-match");
+    assert!(!version_matches(&entry, Some("0.2.1-rc.2")), "later pre-release does not match");
+    let py = ExposureEntry {
+        ecosystem: "pypi".into(), name: "p".into(), version: None,
+        version_range: Some(">=4.0.0, <4.1.2".into()), advisory: None,
+    };
+    assert!(version_matches(&py, Some("4.0.0a1")), "PEP 440 alpha is read as its core");
+    assert!(version_matches(&py, Some("4.1.1")));
+    assert!(!version_matches(&py, Some("4.1.2")));
+    // Exact-version rows are string equality and unaffected.
+    let exact = ExposureEntry {
+        ecosystem: "npm".into(), name: "p".into(), version: Some("1.0.0-beta.1".into()),
+        version_range: None, advisory: None,
+    };
+    assert!(version_matches(&exact, Some("1.0.0-beta.1")));
+    assert!(!version_matches(&exact, Some("1.0.0")));
+}
+
+#[test]
+fn october_2026_catalog_rows_match_only_affected_versions() {
+    // One probe per shape added in the 2026-10-22 refresh: hijacked release (exact
+    // pin), agent-runtime CVE bound, two-line package, bounded extension hijack,
+    // pre-release-only npm line, store-ID browser extension, PEP 503 pypi name.
+    let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
+    let pkg = |eco: &str, name: &str, ver: &str| {
+        let s = mcp_server_with_pkg(eco, name, ver);
+        catalog.check_mcp_server(&s, "/t").len()
+    };
+    let ext = |eco: &str, name: &str, ver: &str| catalog.check_extension(eco, name, ver, "/t").len();
+    // Hijacked releases pin the one bad version; neighbours stay clean.
+    assert_eq!(pkg("npm", "tensorlake", "0.5.144"), 1);
+    assert_eq!(pkg("npm", "tensorlake", "0.5.143"), 0);
+    assert_eq!(pkg("npm", "tensorlake", "0.5.145"), 0);
+    assert_eq!(pkg("npm", "keyv", "6.0.0"), 1);
+    assert_eq!(pkg("npm", "keyv", "5.5.3"), 0);
+    assert_eq!(pkg("npm", "@memtensor/memos-cloud-openclaw-plugin", "0.1.23"), 1);
+    assert_eq!(pkg("npm", "@memtensor/memos-cloud-openclaw-plugin", "0.1.22"), 0);
+    assert_eq!(pkg("pypi", "litellm", "1.107.0"), 1);
+    assert_eq!(pkg("pypi", "litellm", "1.107.1"), 0);
+    // Never-legitimate names flag every version; PEP 503 folding applies.
+    assert!(pkg("pypi", "py_wormgpt", "1.0.0") >= 1, "pip's dist-info spelling must still match");
+    assert!(pkg("npm", "@apexacc/cli", "1.6.2") >= 1);
+    // Agent runtimes: Plugin4Shell bound on the CLI, the desktop app on its own key.
+    assert!(ext("agent-runtime", "claude-code", "2.1.178") >= 1);
+    assert!(
+        catalog.check_extension("agent-runtime", "claude-code", "2.1.178", "/t").iter().any(|f| f.advisory.contains("CVE-2026-86063")),
+        "2.1.178 must name the Plugin4Shell CVE"
+    );
+    assert!(
+        !catalog.check_extension("agent-runtime", "claude-code", "2.1.179", "/t").iter().any(|f| f.advisory.contains("CVE-2026-86063")),
+        "2.1.179 is patched for Plugin4Shell"
+    );
+    assert_eq!(ext("agent-runtime", "claude-desktop", "1.15000.0"), 1);
+    assert_eq!(ext("agent-runtime", "claude-desktop", "1.15962.0"), 0);
+    assert_eq!(ext("agent-runtime", "claude-desktop", "3.6556.1"), 0, "today's desktop build is clean");
+    assert_eq!(ext("agent-runtime", "codex", "0.130.0"), 3, "both Codex CLI CVEs plus Plugin4Shell cover 0.130.0");
+    assert_eq!(ext("agent-runtime", "codex", "0.145.0"), 1, "only Plugin4Shell remains at 0.145.0");
+    assert_eq!(ext("agent-runtime", "codex", "0.146.0"), 0);
+    assert_eq!(ext("agent-runtime", "goose", "1.43.0"), 1);
+    assert_eq!(ext("agent-runtime", "goose", "1.44.0"), 0);
+    assert_eq!(ext("agent-runtime", "ollama", "0.31.1"), 1);
+    assert_eq!(ext("agent-runtime", "ollama", "0.31.2"), 0);
+    assert_eq!(ext("agent-runtime", "ollama", "0.13.0"), 0, "before the agent mode existed");
+    // Two-line packages: each line's patched release is clean.
+    assert_eq!(pkg("pypi", "fastmcp", "3.4.9"), 1);
+    assert_eq!(pkg("pypi", "fastmcp", "3.4.10"), 0);
+    assert_eq!(pkg("pypi", "fastmcp", "4.1.1"), 1);
+    assert_eq!(pkg("pypi", "fastmcp", "4.1.2"), 0);
+    assert_eq!(pkg("pypi", "fastmcp", "2.9.0"), 0, "older 2.x is outside the covering bound");
+    // Hijacked extension: only the two bad Open VSX releases.
+    assert_eq!(ext("vscode", "aquasecurityofficial.trivy-vulnerability-scanner", "1.8.11"), 0);
+    assert_eq!(ext("vscode", "AquaSecurityOfficial.trivy-vulnerability-scanner", "1.8.12"), 1, "case-insensitive id");
+    assert_eq!(ext("vscode", "aquasecurityofficial.trivy-vulnerability-scanner", "1.8.13"), 1);
+    assert_eq!(ext("vscode", "aquasecurityofficial.trivy-vulnerability-scanner", "1.8.14"), 0);
+    // Pre-release-only npm line.
+    assert_eq!(pkg("npm", "@deepseek-ai/dsh", "0.1.1-rc.2"), 1);
+    assert_eq!(pkg("npm", "@deepseek-ai/dsh", "0.1.2-alpha.2"), 0);
+    // mcp-remote: the second range must not touch the first row's clean release.
+    assert_eq!(pkg("npm", "mcp-remote", "0.1.16"), 0);
+    assert_eq!(pkg("npm", "mcp-remote", "0.1.35"), 1);
+    // AiFrame store IDs.
+    assert_eq!(ext("chrome", "nlhpidbjmmffhoogcennoiopekbiglbp", "1.0.0"), 1);
+    assert_eq!(ext("chrome", "gghdfkafnhfpaooiolhncejnlgglhkhe", "2.3.1"), 1);
 }
 
 #[test]

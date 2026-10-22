@@ -13,7 +13,10 @@ use crate::models::McpServerDetail;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+// `/v0.1` is the documented stable surface (additive-only); `/v0` is the registry's
+// "development" path and may change shape. Both return the same envelope today
+// (verified 2026-10-22): `servers[].server` + `servers[]._meta`.
+const REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The subset of a registry entry we use.
@@ -98,7 +101,7 @@ pub fn fetch_candidates(package_name: &str) -> Result<Vec<RegistryEntry>, String
     parse_entries(&body)
 }
 
-/// Parse the registry `/v0/servers` response into entries.
+/// Parse the registry `/v0.1/servers` response into entries.
 pub fn parse_entries(body: &str) -> Result<Vec<RegistryEntry>, String> {
     let doc: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("registry parse: {}", e))?;

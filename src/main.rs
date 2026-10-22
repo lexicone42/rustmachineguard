@@ -530,6 +530,23 @@ fn main() {
                 found_in,
             ));
         }
+        // Local inference servers grew agent modes of their own (Ollama's Bash tool,
+        // CVE-2026-102697), so the frameworks inventory feeds the same ecosystem.
+        for fw in &report.ai_frameworks {
+            let (Some(key), Some(version)) = (
+                scanners::exposure::agent_runtime_key(&fw.name),
+                fw.version.as_deref(),
+            ) else {
+                continue;
+            };
+            let found_in = fw.binary_path.as_deref().unwrap_or(fw.name.as_str());
+            report.exposure_findings.extend(catalog.check_extension(
+                "agent-runtime",
+                key,
+                version,
+                found_in,
+            ));
+        }
     }
 
     // MCP live probing (opt-in)

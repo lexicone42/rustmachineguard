@@ -55,7 +55,7 @@ cargo build --release
 
 | Category | What's Detected | Examples |
 |---|---|---|
-| **AI Agents & Tools** | CLI tools and desktop apps | Claude Code, Claude Cowork, GitHub Copilot (`copilot`, `gh-copilot`), Codex, Gemini, Amazon Q, Kiro, Microsoft AI Shell (`aish`), OpenCode, Aider, Goose, Open Interpreter, Tabby, and agents (ClawdBot, MoltBot, MoldBot, OpenClaw, GPT-Engineer) |
+| **AI Agents & Tools** | CLI tools and desktop apps | Claude Code, Claude Cowork, GitHub Copilot (`copilot`, `gh-copilot`), Codex, Gemini, Amazon Q, Kiro CLI, Kiro IDE, Microsoft AI Shell (`aish`), OpenCode, Aider, Goose, Open Interpreter, Tabby, and agents (ClawdBot, MoltBot, MoldBot, OpenClaw, GPT-Engineer) |
 | **AI Frameworks** | Local inference servers | Ollama, LocalAI, LM Studio, llama.cpp, vLLM, HuggingFace TGI, oobabooga text-generation-webui |
 | **IDE Installations** | Developer editors | VS Code, Cursor, Windsurf, Zed, Antigravity |
 | **IDE Extensions** | Installed extensions | VS Code-style and Zed format parsing with version info |
@@ -83,11 +83,13 @@ cargo build --release
 
 MCP server and `settings.json` configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted), **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), **hardcoded credentials in an `env` block** (a secret-looking key set to a literal instead of `${VAR}` — reported by **name** only, never value; escalated to a **committed-secret Critical** when the config is git-tracked, mirroring a git-tracked `.env`), and **download-and-execute launch commands** (a server that boots via `curl … | bash`). AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
 
-A built-in **threat catalog** (99 entries) flags known-malicious or known-vulnerable
+A built-in **threat catalog** (228 entries) flags known-malicious or known-vulnerable
 packages, MCP servers, IDE plugins and browser extensions during the scan — and, via the
-`agent-runtime` ecosystem, checks the **agent CLI's own version** (Claude Code, Copilot
-CLI, Gemini CLI) against known-vulnerable ranges, since agent CLIs are now CVE-bearing
-packages in their own right. Every entry cites its source; every ecosystem in the catalog
+`agent-runtime` ecosystem, checks the **agent's own version** (Claude Code, Claude
+Desktop/Cowork, Codex CLI, Copilot CLI, Gemini CLI, Goose, Kiro IDE, Ollama) against
+known-vulnerable ranges, since agent runtimes are now CVE-bearing packages in their own
+right. Each key names exactly one product version line, so a desktop advisory can never
+match a CLI version. Every entry cites its source; every ecosystem in the catalog
 is guaranteed by test to be reachable from a scanner, so a row can never sit unmatchable
 while reading as coverage. See [docs/THREAT-CATALOG.md](docs/THREAT-CATALOG.md) for
 sources and attribution.
