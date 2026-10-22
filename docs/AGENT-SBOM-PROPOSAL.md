@@ -213,10 +213,11 @@ they attach to the Blueprint, not the 1.6 inventory.
     "timestamp": "2026-06-30T18:14:27Z",
     "tools": { "components": [
       { "type": "application", "group": "rustmachineguard", "name": "rmguard", "version": "0.1.0" }
-    ]},
-    "component": { "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" }
+    ]}
   },
-  "components": [
+  "inventories": [ {
+    "subject": { "bom-ref": "host:bertie", "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" },
+    "components": [
     {
       "type": "application",
       "bom-ref": "ai-tool:claude-code",
@@ -242,7 +243,8 @@ they attach to the Blueprint, not the 1.6 inventory.
       "name": "CLAUDE.md",
       "group": "agent-rules"
     }
-  ],
+    ]
+  } ],
   "blueprints": [
     {
       "bom-ref": "blueprint:agent-posture",
@@ -314,15 +316,19 @@ they attach to the Blueprint, not the 1.6 inventory.
 ```
 
 **Schema conformance (enforced).** The Blueprint output is validated against the
-vendored CycloneDX 2.0 draft schema (branch `2.0-dev`, head `72b37340`)
+vendored CycloneDX 2.0 draft schema (branch `2.0-dev`, head `100b0bb6`, 2026-10-22)
 by `tests/blueprint_schema.rs`, using the `jsonschema` crate. This is a real gate:
 drift in either the generator or a re-vendored schema fails the build. Highlights of
 the draft we conform to:
 
 - root envelope is `specFormat` (renamed from `bomFormat`), `specVersion` `"2.0"`,
   `additionalProperties: false`
+- the inventory is an `inventories[]` statement whose `subject` is the scanned machine;
+  the root `components` array and `metadata.component` are gone (upstream PR #1075)
 - `metadata.tools` is an object `{ components, services }`, not an array
 - components carry no top-level `purl` (we emit it as an `rmg:purl` property)
+- `threat.affects` (renamed from `affectedAssets`); `components`, `assets`, `flows` and
+  `dependsOn` are `uniqueItems`, so every bom-ref is allocated document-unique
 - `behaviors` is an object with an `instances` array (not a bare array)
 - each `behaviorInstance` requires a `bom-ref`, forbids `properties`, and its
   `behavior` must be a value from the **closed 740-value behavior taxonomy** (e.g.
@@ -407,7 +413,7 @@ CycloneDX 2.0 (milestone due 2026-08-31, 27/89 issues closed) introduces **Bluep
 - Agent-to-MCP, agent-to-skill, and rules-to-agent connections become typed flows
 - Local vs remote MCP servers are placed in trust zones
 - Probed tool/resource poisoning, cross-server shadowing, exposure matches, blast-radius (SSH/cloud), and the toxic-flow surface all surface as assets + behaviors
-- Still includes `components[]` (PURLs carried as `rmg:purl` properties) for inventory compatibility
+- Still carries the component list (as `inventories[0].components`, PURLs as `rmg:purl` properties) for inventory compatibility
 
 ### CycloneDX Agent BOM History
 

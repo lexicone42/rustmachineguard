@@ -13,29 +13,34 @@
           "version": "0.1.0"
         }
       ]
-    },
-    "component": {
-      "type": "device",
-      "name": "orion",
-      "version": "macOS 15.5"
     }
   },
-  "components": [
+  "inventories": [
     {
-      "type": "application",
-      "bom-ref": "ai-tool:claude-code",
-      "name": "Claude Code",
-      "version": "2.1.196"
-    },
-    {
-      "type": "application",
-      "bom-ref": "mcp:filesystem",
-      "name": "@modelcontextprotocol/server-filesystem",
-      "version": "1.0.0",
-      "properties": [
+      "subject": {
+        "bom-ref": "host:orion",
+        "type": "device",
+        "name": "orion",
+        "version": "macOS 15.5"
+      },
+      "components": [
         {
-          "name": "rmg:purl",
-          "value": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0"
+          "type": "application",
+          "bom-ref": "ai-tool:claude-code",
+          "name": "Claude Code",
+          "version": "2.1.196"
+        },
+        {
+          "type": "application",
+          "bom-ref": "mcp:filesystem",
+          "name": "@modelcontextprotocol/server-filesystem",
+          "version": "1.0.0",
+          "properties": [
+            {
+              "name": "rmg:purl",
+              "value": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0"
+            }
+          ]
         }
       ]
     }
@@ -257,7 +262,7 @@
         "bom-ref": "threat:eaa-007",
         "name": "Hostile model/API gateway routing",
         "description": "A non-official AI base URL captures every prompt and the API key (CVE-2026-21852).",
-        "affectedAssets": [
+        "affects": [
           "asset:gateway:base-url",
           "asset:agent:claude-code"
         ]
@@ -266,7 +271,7 @@
         "bom-ref": "threat:plaintext",
         "name": "Unencrypted MCP transport",
         "description": "Tokens and tool traffic to the analytics MCP server travel in cleartext over http://.",
-        "affectedAssets": [
+        "affects": [
           "asset:endpoint:analytics"
         ]
       },
@@ -274,7 +279,7 @@
         "bom-ref": "threat:transcript-exposure",
         "name": "Conversation-history disclosure",
         "description": "The world-readable transcript store lets any local user read code, prompts, and secrets (EAA-005).",
-        "affectedAssets": [
+        "affects": [
           "asset:data-store:transcripts"
         ]
       }

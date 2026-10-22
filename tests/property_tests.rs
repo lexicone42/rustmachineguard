@@ -1682,9 +1682,9 @@ fn blueprint_emits_the_risk_layer() {
         .find(|t| t["name"].as_str().unwrap().contains("dangerous pattern"))
         .expect("rules-file threat present");
     assert!(
-        rules_threat["affectedAssets"][0].as_str().unwrap().starts_with("asset:rules:"),
+        rules_threat["affects"][0].as_str().unwrap().starts_with("asset:rules:"),
         "rules threat should link to the rules asset, got {}",
-        rules_threat["affectedAssets"][0]
+        rules_threat["affects"][0]
     );
 
     // The toxic-flow surface becomes a scored risk.
@@ -1735,7 +1735,7 @@ fn blueprint_links_mcp_threat_and_marks_plaintext_flow() {
         .iter()
         .find(|t| t["name"].as_str().unwrap().contains("plaintext HTTP"))
         .expect("plaintext transport threat present");
-    assert_eq!(mcp_threat["affectedAssets"][0], "asset:mcp:analytics");
+    assert_eq!(mcp_threat["affects"][0], "asset:mcp:analytics");
 
     // The agent → server flow is marked as an unencrypted hop.
     let flows = doc["blueprints"][0]["flows"].as_array().unwrap();
@@ -2809,7 +2809,7 @@ fn assert_no_dangling_refs(output: &str) {
             }
         }
     };
-    check_asset_links(doc["threats"]["threats"].as_array(), "affectedAssets", "threat");
+    check_asset_links(doc["threats"]["threats"].as_array(), "affects", "threat");
     check_asset_links(doc["risks"]["risks"].as_array(), "affects", "risk");
     check_asset_links(doc["controls"].as_array(), "appliesTo", "control");
 
@@ -3024,7 +3024,12 @@ fn blueprint_version_enrichment_never_overwrites() {
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     let doc: serde_json::Value = serde_json::from_str(&output).unwrap();
-    let comp = doc["components"].as_array().unwrap().iter().find(|c| c["bom-ref"] == "mcp:fs").unwrap();
+    let comp = doc["inventories"][0]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["bom-ref"] == "mcp:fs")
+        .unwrap();
     assert_eq!(comp["version"], "1.0", "pinned version must not be overwritten by probe");
 }
 

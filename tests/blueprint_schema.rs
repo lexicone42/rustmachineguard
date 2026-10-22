@@ -1,5 +1,5 @@
 //! Validates `--format blueprint` output against the vendored CycloneDX 2.0 draft
-//! threat-modeling schema (branch 2.0-dev, head 72b37340).
+//! threat-modeling schema (branch 2.0-dev, head 100b0bb6, fetched 2026-10-22).
 //!
 //! This is the conformance gate: if our generator drifts from the schema, or the
 //! vendored schema is refreshed and changes shape, this test fails. The draft is
@@ -24,8 +24,11 @@ fn inline_external_refs(v: &mut Value, taxonomy_enum: &Value) {
                     *v = taxonomy_enum.clone();
                     return;
                 }
-                if r.ends_with("spdx.schema.json") || r.ends_with("cryptography-defs.schema.json")
-                {
+                // `contains`, not `ends_with`: the cryptography refs carry fragments
+                // (`...cryptography-defs.schema.json#/definitions/protocolFamiliesEnum`),
+                // and a ref left un-inlined makes the validator fetch it over the network
+                // (or fail to compile offline). `no_external_refs_survive_inlining` pins this.
+                if r.contains("spdx.schema.json") || r.contains("cryptography-defs.schema.json") {
                     *v = serde_json::json!({});
                     return;
                 }
@@ -73,6 +76,37 @@ fn assert_blueprint_valid(report: &rustmachineguard::models::ScanReport) {
         "blueprint does not conform to CycloneDX 2.0 schema:\n{}",
         errors.join("\n")
     );
+    assert_bom_refs_unique(&instance);
+}
+
+/// Every `bom-ref` in the document, in document order.
+fn collect_bom_refs(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(map) => {
+            if let Some(Value::String(r)) = map.get("bom-ref") {
+                out.push(r.clone());
+            }
+            for val in map.values() {
+                collect_bom_refs(val, out);
+            }
+        }
+        Value::Array(arr) => {
+            for val in arr {
+                collect_bom_refs(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A bom-ref is a document-wide identifier. The schema only checks `uniqueItems` per
+/// array, so this is the stronger invariant: no id is declared twice anywhere.
+fn assert_bom_refs_unique(instance: &Value) {
+    let mut refs = Vec::new();
+    collect_bom_refs(instance, &mut refs);
+    let mut seen = std::collections::HashSet::new();
+    let dups: Vec<&String> = refs.iter().filter(|r| !seen.insert(r.as_str())).collect();
+    assert!(dups.is_empty(), "duplicate bom-refs in blueprint: {dups:?}");
 }
 
 #[test]
@@ -109,10 +143,9 @@ fn schema_rejects_exploitability_overclaim() {
             "specFormat": "CycloneDX", "specVersion": "2.0", "version": 1,
             "metadata": {
                 "timestamp": "2026-08-26T00:00:00Z",
-                "tools": {"components": [{"type": "application", "name": "rmguard", "version": "0.1.0"}]},
-                "component": {"type": "device", "name": "h"}
+                "tools": {"components": [{"type": "application", "name": "rmguard", "version": "0.1.0"}]}
             },
-            "components": [],
+            "inventories": [{"subject": {"type": "device", "name": "h"}, "components": []}],
             "blueprints": [{"bom-ref": "bp", "name": "b", "modelTypes": ["behavioral"], "assets": []}],
             "vulnerabilities": [{
                 "bom-ref": "vuln:x", "id": "CVE-2025-6514",
@@ -469,6 +502,175 @@ fn validator_rejects_old_envelope() {
     });
     let validator = build_validator();
     assert!(validator.validate(&bad).is_err(), "old bomFormat envelope must be rejected");
+}
+
+/// The pre-#1075 shape — root `components` plus `metadata.component` — and the pre-ISO
+/// 31000 `threat.affectedAssets` are each rejected by the current draft. If a future
+/// re-vendor silently re-admitted them, this is what would notice.
+#[test]
+fn validator_rejects_pre_inventory_shapes() {
+    let validator = build_validator();
+    let base = serde_json::json!({
+        "specFormat": "CycloneDX", "specVersion": "2.0", "version": 1,
+        "metadata": {"timestamp": "2026-10-22T00:00:00Z"},
+        "inventories": [{"subject": {"type": "device", "name": "h"}, "components": []}]
+    });
+    assert!(validator.validate(&base).is_ok(), "baseline inventory document must validate");
+
+    let mut root_components = base.clone();
+    root_components["components"] = serde_json::json!([]);
+    assert!(
+        validator.validate(&root_components).is_err(),
+        "root `components` was replaced by `inventories[]` and must be rejected"
+    );
+
+    let mut metadata_component = base.clone();
+    metadata_component["metadata"]["component"] = serde_json::json!({"type": "device", "name": "h"});
+    assert!(
+        validator.validate(&metadata_component).is_err(),
+        "`metadata.component` was dropped and must be rejected"
+    );
+
+    let mut affected_assets = base.clone();
+    affected_assets["threats"] = serde_json::json!({"threats": [
+        {"bom-ref": "t0", "name": "x", "affectedAssets": ["a0"]}
+    ]});
+    assert!(
+        validator.validate(&affected_assets).is_err(),
+        "`threat.affectedAssets` was renamed to `affects` and must be rejected"
+    );
+    let mut affects = base.clone();
+    affects["threats"] = serde_json::json!({"threats": [
+        {"bom-ref": "t0", "name": "x", "affects": ["a0"]}
+    ]});
+    assert!(validator.validate(&affects).is_ok(), "`threat.affects` is the current spelling");
+}
+
+/// The stubbing in `inline_external_refs` must cover every external `$ref`, including
+/// the fragment-bearing cryptography refs the current draft added. One left behind means
+/// the validator resolves it at compile time — over the network when it can — so the
+/// gate would silently depend on cyclonedx.org being reachable.
+#[test]
+fn no_external_refs_survive_inlining() {
+    let mut schema: Value = serde_json::from_str(BUNDLED_SCHEMA).unwrap();
+    let taxonomy_enum = serde_json::json!({"type": "string", "enum": ["x"]});
+    inline_external_refs(&mut schema, &taxonomy_enum);
+    fn external_refs(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::String(r)) = map.get("$ref")
+                    && !r.starts_with('#')
+                {
+                    out.push(r.clone());
+                }
+                map.values().for_each(|val| external_refs(val, out));
+            }
+            Value::Array(arr) => arr.iter().for_each(|val| external_refs(val, out)),
+            _ => {}
+        }
+    }
+    let mut leftover = Vec::new();
+    external_refs(&schema, &mut leftover);
+    assert!(leftover.is_empty(), "external $refs survived inlining: {leftover:?}");
+}
+
+/// Two installs of the same skill (plugin cache + a marketplace checkout) and the same
+/// MCP server name in two config files used to yield duplicate component, asset and flow
+/// entries and duplicate `dependsOn` refs. The current draft's `uniqueItems` rejects
+/// that outright, so ids are allocated document-unique; the first keeps the plain id.
+#[test]
+fn colliding_ids_get_distinct_bom_refs_and_still_validate() {
+    use rustmachineguard::models::*;
+    let report = make_report(|r| {
+        r.ai_agents_and_tools = vec![AiTool {
+            name: "Claude Code".into(),
+            vendor: "Anthropic".into(),
+            tool_type: AiToolType::CliTool,
+            version: Some("2.1.0".into()),
+            binary_path: None,
+            config_dir: None,
+            install_path: None,
+            is_running: true,
+        }];
+        let skill = |path: &str| AgentSkill {
+            name: "writing-rules".into(),
+            path: path.into(),
+            framework: "claude-code".into(),
+            scope: "global".into(),
+            file_type: "SKILL.md".into(),
+            size_bytes: 10,
+            sha256: "ab".repeat(32),
+            capabilities: vec!["skill_invoke".into()],
+        };
+        r.agent_skills = vec![
+            skill("/h/.claude/plugins/cache/x/1.0/skills/writing-rules/SKILL.md"),
+            skill("/h/.claude/plugins/marketplaces/m/plugins/x/skills/writing-rules/SKILL.md"),
+        ];
+        let cfg = |path: &str, source: &str| McpConfig {
+            config_source: source.into(),
+            config_path: path.into(),
+            vendor: "claude-code".into(),
+            server_names: vec!["fs".into()],
+            server_count: 1,
+            git_tracked: false,
+            servers: vec![McpServerDetail {
+                name: "fs".into(),
+                transport: "stdio".into(),
+                command: Some("npx".into()),
+                args: vec![],
+                package_ecosystem: None,
+                package_name: None,
+                package_version: None,
+                url: None,
+                inline_secret_env_keys: vec![],
+            }],
+        };
+        r.mcp_configs = vec![cfg("/p/.mcp.json", "project"), cfg("/h/.claude.json", "global")];
+    });
+    // Schema conformance (uniqueItems) plus document-wide bom-ref uniqueness.
+    assert_blueprint_valid(&report);
+
+    let rendered =
+        rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: Value = serde_json::from_str(&rendered).unwrap();
+    let comps = doc["inventories"][0]["components"].as_array().unwrap();
+    let refs_named = |name: &str| -> Vec<&str> {
+        comps
+            .iter()
+            .filter(|c| c["name"] == name)
+            .map(|c| c["bom-ref"].as_str().unwrap())
+            .collect()
+    };
+    assert_eq!(
+        refs_named("writing-rules"),
+        ["skill:claude-code:writing-rules", "skill:claude-code:writing-rules~2"]
+    );
+    assert_eq!(refs_named("fs"), ["mcp:fs", "mcp:fs~2"]);
+
+    // Both installs keep their own asset and their own agent -> skill flow.
+    let assets = doc["blueprints"][0]["assets"].as_array().unwrap();
+    let skill_assets = assets
+        .iter()
+        .filter(|a| a["componentRef"].as_str().is_some_and(|r| r.starts_with("skill:")))
+        .count();
+    assert_eq!(skill_assets, 2);
+    let flows = doc["blueprints"][0]["flows"].as_array().unwrap();
+    let agent_to_skill = flows
+        .iter()
+        .filter(|f| f["destination"].as_str().is_some_and(|d| d.starts_with("asset:skill:")))
+        .count();
+    assert_eq!(agent_to_skill, 2);
+
+    // The host depends on each install once, and the dependency ref resolves to the
+    // inventory subject.
+    let dep = &doc["dependencies"][0];
+    assert_eq!(dep["ref"], doc["inventories"][0]["subject"]["bom-ref"]);
+    let deps: Vec<&str> = dep["dependsOn"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let unique: std::collections::HashSet<&str> = deps.iter().copied().collect();
+    assert_eq!(deps.len(), unique.len(), "dependsOn must be unique: {deps:?}");
+    for r in ["skill:claude-code:writing-rules", "skill:claude-code:writing-rules~2", "mcp:fs", "mcp:fs~2"] {
+        assert!(unique.contains(r), "missing dependsOn {r}");
+    }
 }
 
 #[test]

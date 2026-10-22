@@ -4,14 +4,23 @@ use serde::Serialize;
 /// Generate a CycloneDX 2.0 Blueprint document from scan results.
 ///
 /// Conforms to the draft CycloneDX 2.0 threat-modeling schema (branch
-/// `2.0-dev`, head 72b37340 as of 2026-08-26). The 2.0 milestone was due 2026-08-31 but
-/// has slipped — upstream now targets a fall 2026 release. Schema source:
-/// github.com/CycloneDX/specification (Apache-2.0).
+/// `2.0-dev`, head 100b0bb6 as of 2026-10-22). The 2.0 milestone was due 2026-08-31 but
+/// has slipped — upstream now targets a fall 2026 release with Ecma ratification expected
+/// around December 2026. Schema source: github.com/CycloneDX/specification (Apache-2.0).
 ///
 /// Output is validated against the vendored schema by `tests/blueprint_schema.rs`,
 /// which is the conformance gate — drift in either the generator or a re-vendored
 /// schema fails the build. Notable structural requirements of this draft:
 /// - root envelope is `specFormat` (renamed from `bomFormat`), `specVersion` "2.0"
+/// - the inventory is an `inventories[]` statement (upstream PR #1075, 2026-10-15): each
+///   entry names its `subject` (here the scanned machine, a `device`) and lists the
+///   components it contains. This replaced the root `components` array and
+///   `metadata.component`, which the schema now rejects.
+/// - `threat.affects` (renamed from `affectedAssets` in the ISO 31000 alignment)
+/// - `inventories[].components`, `assets`, `flows` and `dependsOn` are `uniqueItems`, so
+///   every id goes through `RefAllocator`: a collision (the same skill installed under
+///   two plugin roots, the same MCP server name in two config files) gets a `~2` suffix
+///   instead of producing a duplicate entry the validator would reject
 /// - `metadata.tools` is an object `{ components, services }`, not an array
 /// - components have no top-level `purl` (we carry it as an `rmg:purl` property)
 /// - `behaviors` is an object `{ instances: [...] }`, not a bare array
@@ -51,7 +60,7 @@ struct BlueprintDocument {
     spec_version: &'static str,
     version: u32,
     metadata: DocMetadata,
-    components: Vec<Component>,
+    inventories: Vec<Inventory>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dependencies: Vec<Dependency>,
     blueprints: Vec<Blueprint>,
@@ -71,7 +80,6 @@ struct DocMetadata {
     timestamp: String,
     // CycloneDX 2.0: `tools` is an object { components, services }, not an array.
     tools: DocTools,
-    component: DocComponent,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     properties: Vec<Property>,
 }
@@ -92,9 +100,20 @@ struct DocToolComponent {
     version: String,
 }
 
+/// One `inventories[]` statement (CycloneDX 2.0, upstream PR #1075): "this subject
+/// contains these components". rmguard emits exactly one, whose subject is the scanned
+/// machine; the host's `dependencies[]` entry points at the subject's bom-ref.
 #[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct DocComponent {
+struct Inventory {
+    subject: InventorySubject,
+    components: Vec<Component>,
+}
+
+/// The inventory subject, declared inline: a `device` component for the host.
+#[derive(Serialize)]
+struct InventorySubject {
+    #[serde(rename = "bom-ref")]
+    bom_ref: String,
     #[serde(rename = "type")]
     component_type: &'static str,
     name: String,
@@ -280,9 +299,10 @@ struct Threat {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    /// bom-refs of assets this threat acts on. Kept to emitted refs (no dangling links).
+    /// bom-refs of assets this threat acts on (`affects`, renamed upstream from
+    /// `affectedAssets`). Kept to emitted refs (no dangling links).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    affected_assets: Vec<String>,
+    affects: Vec<String>,
     /// bom-refs of top-level `vulnerabilities[]` entries (CVEs).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     related_vulnerabilities: Vec<String>,
@@ -757,6 +777,7 @@ impl BlueprintDocument {
         let mut behaviors = BehaviorBuilder::new();
         let mut flows = Vec::new();
         let mut host_deps = Vec::new();
+        let mut refs = RefAllocator::default();
 
         let host_ref = format!(
             "host:{}",
@@ -807,7 +828,8 @@ impl BlueprintDocument {
 
         // AI tools → agent assets
         for tool in &report.ai_agents_and_tools {
-            let comp_ref = format!("ai-tool:{}", tool.name.replace(' ', "-").to_lowercase());
+            let comp_ref =
+                refs.unique(format!("ai-tool:{}", tool.name.replace(' ', "-").to_lowercase()));
 
             components.push(Component {
                 component_type: "application".into(),
@@ -839,7 +861,10 @@ impl BlueprintDocument {
         // MCP servers → tool assets + flows
         for mcp in &report.mcp_configs {
             for server in &mcp.servers {
-                let comp_ref = format!("mcp:{}", server.name);
+                // The same server name can appear in several config files (project and
+                // global); the second gets a `~2` id, the first keeps the plain one so
+                // probe results (keyed by name) still attach to it.
+                let comp_ref = refs.unique(format!("mcp:{}", server.name));
 
                 let mut props = vec![
                     Property {
@@ -928,11 +953,11 @@ impl BlueprintDocument {
                         tool.name.replace(' ', "-").to_lowercase()
                     );
                     flows.push(Flow {
-                        bom_ref: format!(
+                        bom_ref: refs.unique(format!(
                             "flow:{}->{}",
                             tool.name.replace(' ', "-").to_lowercase(),
                             server.name
-                        ),
+                        )),
                         name: format!("{} → {}", tool.name, server.name),
                         flow_type: "control".into(),
                         source: agent_ref,
@@ -955,7 +980,9 @@ impl BlueprintDocument {
 
         // Agent skills → tool assets with capability behaviors
         for skill in &report.agent_skills {
-            let comp_ref = format!("skill:{}:{}", skill.framework, skill.name);
+            // Plugin skills are routinely present under several roots (the plugin cache
+            // and each marketplace checkout), so the same framework:name recurs.
+            let comp_ref = refs.unique(format!("skill:{}:{}", skill.framework, skill.name));
 
             components.push(Component {
                 component_type: "application".into(),
@@ -1007,11 +1034,11 @@ impl BlueprintDocument {
                     tool.name.replace(' ', "-").to_lowercase()
                 );
                 flows.push(Flow {
-                    bom_ref: format!(
+                    bom_ref: refs.unique(format!(
                         "flow:{}->{}",
                         tool.name.replace(' ', "-").to_lowercase(),
                         sanitize_ref(&skill.name)
-                    ),
+                    )),
                     name: format!("{} → {}", tool.name, skill.name),
                     flow_type: "control".into(),
                     source: agent_ref,
@@ -1026,11 +1053,11 @@ impl BlueprintDocument {
                 for mcp in &report.mcp_configs {
                     for server in &mcp.servers {
                         flows.push(Flow {
-                            bom_ref: format!(
+                            bom_ref: refs.unique(format!(
                                 "flow:{}->mcp:{}",
                                 sanitize_ref(&skill.name),
                                 server.name
-                            ),
+                            )),
                             name: format!("{} → {}", skill.name, server.name),
                             flow_type: "control".into(),
                             source: format!("asset:{}", comp_ref),
@@ -1047,7 +1074,7 @@ impl BlueprintDocument {
 
         // Rules files → data assets with dangerous-pattern behaviors
         for rf in &report.rules_files {
-            let comp_ref = format!("rules:{}", sanitize_ref(&rf.path));
+            let comp_ref = refs.unique(format!("rules:{}", sanitize_ref(&rf.path)));
 
             components.push(Component {
                 component_type: "data".into(),
@@ -1115,11 +1142,11 @@ impl BlueprintDocument {
                     tool.name.replace(' ', "-").to_lowercase()
                 );
                 flows.push(Flow {
-                    bom_ref: format!(
+                    bom_ref: refs.unique(format!(
                         "flow:{}->{}",
                         sanitize_ref(&rf.file_name),
                         tool.name.replace(' ', "-").to_lowercase()
-                    ),
+                    )),
                     name: format!("{} → {}", rf.file_name, tool.name),
                     flow_type: "control".into(),
                     source: format!("asset:{}", comp_ref),
@@ -1236,7 +1263,13 @@ impl BlueprintDocument {
             // behavior referencing it.
             for tool in &probe.tools {
                 let desc = tool.description.as_deref().unwrap_or("");
-                let tool_ref = format!("mcp-tool:{}:{}", probe.server_name, sanitize_ref(&tool.name));
+                // A probed server is untrusted input: one listing the same tool name twice
+                // must not be able to make the document fail its own schema gate.
+                let tool_ref = refs.unique(format!(
+                    "mcp-tool:{}:{}",
+                    probe.server_name,
+                    sanitize_ref(&tool.name)
+                ));
 
                 let mut tool_props = Vec::new();
                 if !desc.is_empty() {
@@ -1293,11 +1326,11 @@ impl BlueprintDocument {
 
             // Map MCP probe resources to data assets + flows (data edge)
             for resource in &probe.resources {
-                let res_ref = format!(
+                let res_ref = refs.unique(format!(
                     "mcp-resource:{}:{}",
                     probe.server_name,
                     sanitize_ref(&resource.uri)
-                );
+                ));
                 let zone = if resource.uri.starts_with("file://") {
                     "zone:local"
                 } else {
@@ -1735,7 +1768,7 @@ impl BlueprintDocument {
         let mut dependencies = Vec::new();
         if !host_deps.is_empty() {
             dependencies.push(Dependency {
-                dep_ref: host_ref,
+                dep_ref: host_ref.clone(),
                 depends_on: host_deps,
             });
         }
@@ -1911,7 +1944,7 @@ impl BlueprintDocument {
                         f.category,
                         f.location
                     )),
-                    affected_assets: vec![resolve_asset(f)],
+                    affects: vec![resolve_asset(f)],
                     related_vulnerabilities,
                     attack_patterns,
                 }
@@ -2048,7 +2081,12 @@ impl BlueprintDocument {
                         version: report.agent_version.clone(),
                     }],
                 },
-                component: DocComponent {
+                properties: warning_props,
+            },
+            // One inventory statement: "this machine contains these components".
+            inventories: vec![Inventory {
+                subject: InventorySubject {
+                    bom_ref: host_ref,
                     component_type: "device",
                     name: report.device.hostname.clone(),
                     version: Some(format!(
@@ -2056,11 +2094,34 @@ impl BlueprintDocument {
                         report.device.os_name, report.device.os_version
                     )),
                 },
-                properties: warning_props,
-            },
-            components,
+                components,
+            }],
             dependencies,
             blueprints: vec![blueprint],
+        }
+    }
+}
+
+/// Allocates document-unique bom-refs. CycloneDX 2.0 declares `inventories[].components`,
+/// `assets`, `flows` and `dependsOn` as `uniqueItems`, and a bom-ref is a document-wide
+/// identifier regardless, so two records that would naturally share an id get `~2`,
+/// `~3`, ... suffixes. The first occurrence keeps the plain id, so references other
+/// code derives from a name (probe results, the finding link index) still resolve.
+#[derive(Default)]
+struct RefAllocator(std::collections::HashSet<String>);
+
+impl RefAllocator {
+    fn unique(&mut self, base: String) -> String {
+        if self.0.insert(base.clone()) {
+            return base;
+        }
+        let mut n = 2;
+        loop {
+            let candidate = format!("{base}~{n}");
+            if self.0.insert(candidate.clone()) {
+                return candidate;
+            }
+            n += 1;
         }
     }
 }

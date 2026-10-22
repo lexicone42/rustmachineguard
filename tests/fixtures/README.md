@@ -8,7 +8,17 @@ used only by `tests/blueprint_schema.rs` to validate our `--format blueprint` ou
 | `cyclonedx-2.0-bundled.schema.json` | [CycloneDX/specification](https://github.com/CycloneDX/specification) `schema/2.0/cyclonedx-2.0-bundled.schema.json` | Apache-2.0 |
 | `behavior-taxonomy.schema.json` | [CycloneDX/specification](https://github.com/CycloneDX/specification) `schema/behavior-taxonomy.schema.json` | Apache-2.0 |
 
-**Pinned to:** branch `2.0-dev`, commit `72b37340404d` (fetched 2026-08-26).
+**Pinned to:** branch `2.0-dev`, commit `100b0bb6d54a` (fetched 2026-10-22).
+
+> **2026-10-22 re-pin.** Upstream PR #1075 (merged 2026-10-15) replaced the root
+> `components` array and `metadata.component` with explicit `inventories[]` statements
+> (each names its `subject` and lists what it contains), and the ISO 31000 alignment
+> renamed `threat.affectedAssets` to `affects`. `inventories[].components`, `assets`,
+> `flows` and `dependsOn` are now `uniqueItems`. The bundled schema also started
+> referencing `cryptography-defs.schema.json` **with fragments**
+> (`#/definitions/protocolFamiliesEnum`), which the test's ref stub must match with
+> `contains`, not `ends_with`, or validator construction fails offline with
+> `PointerToNowhere` (and would reach for the network where it can).
 
 > **Pin history / gotcha.** We originally pinned branch `2.0-dev-threatmodeling`
 > (commit `03a8eaa78147`). That branch was merged into `2.0-dev` by upstream PR #678 on

@@ -227,14 +227,6 @@ pub const CONTROLS: &[Control] = &[
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
-        id: "EAA-003",
-        title: "Lifecycle hook persistence",
-        coverage: Coverage::Covered,
-        how: "Parses settings hooks (shell commands run on agent events) and flags dangerous patterns.",
-        finding_categories: &["Hook", "Auto-run task", "Git autorun"],
-    },
-    Control {
-        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
         id: "EAA-004",
         title: "Persistent instruction or memory poisoning",
         coverage: Coverage::Covered,
@@ -247,7 +239,14 @@ pub const CONTROLS: &[Control] = &[
         title: "Lifecycle hook / startup persistence",
         coverage: Coverage::Covered,
         how: "Flags agent hooks and VS Code folder-open tasks (and the cross-directory pair), writable agent configs, Python startup hooks (.pth import lines, sitecustomize.py), loaders staged in agent directories, tool-shadowing binaries in project roots, and the persistence paths of the 2026 agent-targeting worms.",
-        finding_categories: &["Hook", "Auto-run task", "Config integrity", "Persistence", "Binary planting"],
+        finding_categories: &[
+            "Hook",
+            "Auto-run task",
+            "Git autorun",
+            "Config integrity",
+            "Persistence",
+            "Binary planting",
+        ],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -460,6 +459,18 @@ mod tests {
     /// every git autorun config, every leaked .env, every passphrase-less SSH key --
     /// used to contribute to NO control, so the compliance report silently understated
     /// coverage for exactly the findings a reviewer would ask about.
+    /// A control id is the key every output uses (the compliance table, the Blueprint
+    /// `controls[].bom-ref`), so one id must mean one control. The persistence scanner
+    /// shipped a second EAA-003 beside the original on 2026-10-22; the Blueprint's
+    /// document-wide bom-ref check was what caught it.
+    #[test]
+    fn control_ids_are_unique_within_a_framework() {
+        let mut seen = std::collections::HashSet::new();
+        for c in CONTROLS {
+            assert!(seen.insert((c.framework, c.id)), "duplicate control id {} / {}", c.framework, c.id);
+        }
+    }
+
     #[test]
     fn every_finding_category_is_mapped_to_some_control() {
         for cat in KNOWN_CATEGORIES {

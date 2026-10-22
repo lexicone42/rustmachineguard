@@ -34,19 +34,31 @@ skill, and a known-vulnerable package.
 ```json
 "metadata": {
   "timestamp": "2026-07-02T23:22:37Z",
-  "tools": { "components": [ { "type": "application", "name": "rmguard", "group": "rustmachineguard", "version": "0.1.0" } ] },
-  "component": { "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" }
+  "tools": { "components": [ { "type": "application", "name": "rmguard", "group": "rustmachineguard", "version": "0.1.0" } ] }
 }
 ```
 
 - **`tools`** — who generated this. Note it's an **object** `{ components, services }` in
   2.0, not an array like 1.6. (Another common validation trip-up.)
-- **`component`** — the *subject* of the BOM: here, the scanned machine (a `device`).
+- The *subject* of the document (the scanned machine) no longer lives here: the 2.0 draft
+  moved it into the inventory statement below (upstream PR #1075, October 2026).
 
-## 3. `components` — the flat inventory
+## 3. `inventories` — "this subject contains these components"
 
-The same "what's installed" list the SBOM carries: MCP servers, tools, extensions, rules
-files. In 2.0 a component has **no top-level `purl`**, so we carry it as a property:
+2.0 replaced the old root `components` array and `metadata.component` pair with explicit
+**inventory statements**: each entry names its **`subject`** and lists what it contains.
+rmguard emits one, whose subject is the scanned machine (a `device`):
+
+```json
+"inventories": [ {
+  "subject": { "bom-ref": "host:bertie", "type": "device", "name": "bertie", "version": "Gentoo Linux 2.18" },
+  "components": [ … ]
+} ]
+```
+
+The `components` inside it are the same "what's installed" list the SBOM carries: MCP
+servers, tools, extensions, rules files. In 2.0 a component has **no top-level `purl`**,
+so we carry it as a property:
 
 ```json
 { "type": "application", "bom-ref": "mcp:filesystem",
@@ -54,7 +66,10 @@ files. In 2.0 a component has **no top-level `purl`**, so we carry it as a prope
   "properties": [ { "name": "rmg:purl", "value": "pkg:npm/@modelcontextprotocol/server-filesystem@1.0.0" } ] }
 ```
 
-`bom-ref` is an **id** other parts of the document point at. Think of it as a primary key.
+`bom-ref` is an **id** other parts of the document point at. Think of it as a primary key,
+and like one it is unique document-wide: the same skill installed under two plugin roots
+gets `~2` on its second id rather than a duplicate entry (the schema's `uniqueItems` on
+`components`, `assets` and `flows` would reject one).
 
 ---
 
@@ -72,7 +87,7 @@ it uses:
 An asset is a *typed* thing. The AI-specific types (`agent`, `tool`) were added to the
 spec for exactly this use case. Two ways to write one:
 
-**Component-backed** (points at a `components[]` entry, inherits its name/version):
+**Component-backed** (points at an `inventories[].components[]` entry, inherits its name/version):
 
 ```json
 { "bom-ref": "asset:ai-tool:claude-code", "type": "agent",
@@ -169,7 +184,7 @@ all three outputs.
     { "bom-ref": "threat:0",
       "name": "Known-bad npm package: mcp-remote 0.1.10",
       "description": "critical severity · Exposure · at …/.mcp.json",
-      "affectedAssets": ["asset:mcp:proxy"],
+      "affects": ["asset:mcp:proxy"],
       "relatedVulnerabilities": ["vuln:cve-2025-6514"],
       "attackPatterns": ["attack:capec-437"] }
   ],
@@ -183,7 +198,7 @@ all three outputs.
 `threats` is an **object** (`{ threats, attackPatterns }`), not a bare array. Each rmguard
 finding becomes one threat:
 
-- **`affectedAssets`** points at the **specific asset it concerns** — a plaintext-transport
+- **`affects`** points at the **specific asset it concerns** — a plaintext-transport
   threat links to that MCP server (`asset:mcp:…`), a rules-file finding to `asset:rules:…`,
   a hostile-gateway finding to `asset:gateway:…`; findings without a precise target fall back
   to the machine `system` asset.
