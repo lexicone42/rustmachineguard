@@ -3653,19 +3653,26 @@ fn working_python() -> Option<(String, Vec<String>)> {
         ("python", &[]),
         ("uv", &["run", "python"]),
     ];
+    // Probe with a SCRIPT FILE, the shape the stub servers use. A wrapper shim on this
+    // machine lets `python3 -c` through and refuses `python3 <file>`, so probing with
+    // -c picked an interpreter that then killed every stub with "Broken pipe".
+    let probe = std::env::temp_dir().join(format!("rmg-pyprobe-{}.py", std::process::id()));
+    std::fs::write(&probe, "print(42)\n").ok()?;
     for (prog, pre) in candidates {
         let mut cmd = std::process::Command::new(prog);
-        cmd.args(pre).args(["-c", "print(42)"]);
+        cmd.args(pre).arg(&probe);
         if let Ok(out) = cmd.output()
             && out.status.success()
             && String::from_utf8_lossy(&out.stdout).trim() == "42"
         {
+            let _ = std::fs::remove_file(&probe);
             return Some((
                 prog.to_string(),
                 pre.iter().map(|s| s.to_string()).collect(),
             ));
         }
     }
+    let _ = std::fs::remove_file(&probe);
     None
 }
 
