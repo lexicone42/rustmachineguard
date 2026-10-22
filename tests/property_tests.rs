@@ -5822,3 +5822,52 @@ fn persistence_scanner_reports_hooks_plantings_symlinks_and_iocs_end_to_end() {
         assert!(cats.contains(c), "category {c} present: {cats:?}");
     }
 }
+
+/// The scanner runs git inside repositories it does not trust. A repo that sets
+/// core.fsmonitor to a command must not get that command executed by the scan — the
+/// GitSpawn shape rmguard itself catalogues. The canary is a file the hook would create.
+#[cfg(unix)]
+#[test]
+fn scanner_git_calls_do_not_execute_repo_controlled_hooks() {
+    use std::fs;
+    use std::process::Command;
+    let home = std::env::temp_dir().join(format!("rmg-gitspawn-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let proj = home.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let git = |args: &[&str]| Command::new("git").args(args).current_dir(&proj)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_SYSTEM", "/dev/null").env("HOME", &home)
+        .output().map(|o| o.status.success()).unwrap_or(false);
+    if !git(&["init", "-q"]) {
+        return;
+    }
+    let canary = home.join("CANARY");
+    // fsmonitor hook protocol: git runs the command with a version and a token and
+    // reads its stdout; a shell command that touches the canary is enough to prove exec.
+    git(&["config", "core.fsmonitor", &format!("touch {}; printf '/'", canary.display())]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(proj.join("git.exe"), "MZ").unwrap();
+    std::os::unix::fs::symlink("../.ssh/x", proj.join("link")).unwrap();
+    // Commit with the hook neutralised so the setup itself cannot trip the canary.
+    assert!(git(&["-c", "core.fsmonitor=false", "add", "-A"]) && git(&["-c", "core.fsmonitor=false", "commit", "-q", "-m", "x"]));
+    assert!(!canary.exists(), "test setup must not have fired the hook");
+    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,\
+                skills,settings,aicreds,transcripts,marketplaces,pypkgs,npmpkgs,jbplugins";
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).current_dir(&home).output().unwrap();
+    let fired = canary.exists();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = fs::remove_dir_all(&home);
+    assert!(out.status.success());
+    assert!(!fired, "a repo-controlled core.fsmonitor command ran during the scan (GitSpawn)");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // The scanners still did their job through the hardened git: the tracked git.exe
+    // and the escaping symlink were both seen.
+    let kinds: Vec<&str> = v["persistence_artifacts"].as_array().unwrap().iter().map(|a| a["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"planted-binary") && kinds.contains(&"escaping-symlink"), "{kinds:?}");
+    // And the git autorun scanner reports the hostile value itself.
+    assert!(!v["git_autorun_configs"].as_array().unwrap().is_empty(), "the fsmonitor value is itself a finding");
+}

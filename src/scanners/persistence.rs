@@ -431,7 +431,7 @@ fn scan_committed_symlinks(proj: &Path, home: &Path, out: &mut Vec<PersistenceAr
     if !crate::scanners::probe_dir(&proj.join(".git")) {
         return;
     }
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::scanners::hardened_git();
     cmd.args(["ls-files", "-s", "-z"]).current_dir(proj);
     let Some(output) = crate::scanners::output_with_timeout(&mut cmd, GIT_TIMEOUT) else {
         return;

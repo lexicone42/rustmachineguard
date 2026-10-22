@@ -723,10 +723,35 @@ pub fn is_world_or_group_writable(path: &std::path::Path) -> bool {
     }
 }
 
+/// A `git` command that cannot be turned against the scanner by the repository it runs
+/// in. rmguard runs git inside project directories it does not trust — that is the
+/// GitSpawn shape it catalogues (Codex CVE-2026-19592, goose CVE-2026-72718, Claude Code
+/// <2.1.196): a repo-local `core.fsmonitor`, `core.hooksPath` or a nested bare repo turns
+/// the scan's own git call into code execution. Every working-tree git invocation goes
+/// through here. `-c` overrides repository config; the environment scrub stops an
+/// inherited GIT_DIR/GIT_WORK_TREE from redirecting the command elsewhere. Reading
+/// config (`git config --list`) does not go through this, since the `-c` values would
+/// appear in its own output.
+pub fn hardened_git() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args([
+        "-c", "core.fsmonitor=false",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "safe.bareRepository=explicit",
+        "--no-optional-locks",
+    ])
+    .env_remove("GIT_DIR")
+    .env_remove("GIT_WORK_TREE")
+    .env_remove("GIT_INDEX_FILE")
+    .env_remove("GIT_OBJECT_DIRECTORY")
+    .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+    cmd
+}
+
 /// Check whether a file is tracked by git (shells out to `git ls-files`).
 pub fn is_git_tracked(path: &std::path::Path) -> bool {
     let parent = path.parent().unwrap_or(path);
-    std::process::Command::new("git")
+    hardened_git()
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .current_dir(parent)
