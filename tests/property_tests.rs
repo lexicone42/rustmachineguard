@@ -334,6 +334,7 @@ fn summary_counts_match_vector_lengths() {
         git_autorun_configs: vec![],
         warnings: vec![],
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -353,6 +354,7 @@ fn summary_counts_match_vector_lengths() {
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
 
@@ -408,6 +410,7 @@ fn json_output_is_valid_json() {
         git_autorun_configs: vec![],
         warnings: vec![ScanWarning { scanner: "test".into(), message: "a warning".into() }],
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -427,6 +430,7 @@ fn json_output_is_valid_json() {
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
     report.compute_summary();
@@ -479,6 +483,7 @@ fn html_output_no_script_injection() {
         git_autorun_configs: vec![],
         warnings: vec![],
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -498,6 +503,7 @@ fn html_output_no_script_injection() {
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
     report.compute_summary();
@@ -3130,6 +3136,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
         git_autorun_configs: vec![],
         warnings: vec![],
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0, ai_frameworks_count: 0,
@@ -3148,6 +3155,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
     customize(&mut report);
@@ -4761,7 +4769,7 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join(".claude.json"), "{}").unwrap();
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
-                transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,\
+                transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,persistence,\
                 settings,aicreds,envfiles,vscodetasks,shell,jbplugins";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
         .args(["--format", "json", "--skip", skip])
@@ -4785,7 +4793,7 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
     // 24 --skip labels plus the two opt-in phases that were not requested.
-    assert_eq!(skipped.len(), 26, "every --skip label and opt-in phase is recorded: {skipped:?}");
+    assert_eq!(skipped.len(), 27, "every --skip label and opt-in phase is recorded: {skipped:?}");
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));
     assert!(skipped.contains(&"mcp-probe") && skipped.contains(&"registry"), "{skipped:?}");
     let mcp = diag.iter().find(|d| d["scanner"] == "mcp").unwrap();
@@ -5670,4 +5678,147 @@ fn inline_api_key_detectors_flag_literals_not_references() {
     assert!(keys.contains(&"openai-api-key".to_string()) && keys.contains(&"api-key".to_string()), "{keys:?}");
     assert!(!keys.contains(&"anthropic-api-key".to_string()));
     for k in &keys { assert!(!k.contains("LITERAL")); }
+}
+
+// ─── Persistence artifacts (2026-10) ──────────────────────────
+
+/// Builds the on-disk shapes the persistence scanner exists for, in a throwaway HOME,
+/// and asserts each is reported with the right kind, while the legitimate look-alikes
+/// stay silent: setuptools' own import `.pth`, a RECORD-claimed hook, a non-executable
+/// file named `git`, an in-repo symlink, a shell script in `.claude/`.
+#[cfg(unix)]
+#[test]
+fn persistence_scanner_reports_hooks_plantings_symlinks_and_iocs_end_to_end() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    let home = std::env::temp_dir().join(format!("rmg-persist-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let proj = home.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let git = |args: &[&str], dir: &std::path::Path| {
+        Command::new("git").args(args).current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("HOME", &home)
+            .output().map(|o| o.status.success()).unwrap_or(false)
+    };
+    if !git(&["init", "-q"], &proj) {
+        return; // git unavailable
+    }
+    git(&["config", "user.email", "t@example.com"], &proj);
+    git(&["config", "user.name", "t"], &proj);
+
+    // Planted binaries: a tracked git.exe (Windows shape, committed), an executable
+    // `npx` in .vscode/, and a NON-executable file named `git` (must stay silent).
+    fs::write(proj.join("git.exe"), "MZ").unwrap();
+    fs::create_dir_all(proj.join(".vscode")).unwrap();
+    fs::write(proj.join("git"), "not a binary").unwrap();
+    // Loader staging: the ChainDrop name in .vscode/, and a shell script in .claude/
+    // (ordinary, must stay silent).
+    fs::write(proj.join(".vscode/setup.mjs"), "// loader\n").unwrap();
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    fs::write(proj.join(".claude/statusline.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    // Committed symlinks: one into ~/.ssh (sensitive), one to a sibling dir outside
+    // the repo (escaping, not sensitive), one inside the repo (silent).
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/authorized_keys"), "").unwrap();
+    fs::create_dir_all(proj.join("config")).unwrap();
+    std::os::unix::fs::symlink("../../.ssh/authorized_keys", proj.join("config/project_settings.json")).unwrap();
+    std::os::unix::fs::symlink("../../elsewhere/notes.md", proj.join("config/notes.md")).unwrap();
+    fs::write(proj.join("README.md"), "x").unwrap();
+    std::os::unix::fs::symlink("../README.md", proj.join("config/readme-link")).unwrap();
+    // Worm IOC in the project.
+    fs::create_dir_all(proj.join(".github/workflows")).unwrap();
+    fs::write(proj.join(".github/workflows/runtime-update.yml"), "name: x\n").unwrap();
+    assert!(git(&["add", "-A"], &proj) && git(&["commit", "-q", "-m", "init"], &proj));
+    // Added after the commit so it is the UNTRACKED planted-binary case.
+    fs::write(proj.join(".vscode/npx"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(proj.join(".vscode/npx"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Python startup hooks in a project venv's site-packages.
+    let sp = proj.join(".venv/lib/python3.13/site-packages");
+    fs::create_dir_all(&sp).unwrap();
+    fs::write(sp.join("distutils-precedence.pth"), "import _distutils_hack\n").unwrap(); // allowlisted
+    fs::write(sp.join("some-paths.pth"), "/opt/lib\n/opt/other\n").unwrap();            // path lines only
+    fs::write(sp.join("cook.pth"), "import cook\n").unwrap();                            // the litellm IOC
+    fs::write(sp.join("cook.py"), "pass\n").unwrap();
+    fs::write(sp.join("sitecustomize.py"), "pass\n").unwrap();                           // unclaimed
+    fs::write(sp.join("helper-hook.pth"), "import helper_hook; helper_hook.install()\n").unwrap(); // claimed
+    let di = sp.join("helper_hook-1.0.dist-info");
+    fs::create_dir_all(&di).unwrap();
+    fs::write(di.join("METADATA"), "Name: helper-hook\nVersion: 1.0\n").unwrap();
+    fs::write(di.join("RECORD"), "helper_hook.py,sha256=x,1\nhelper-hook.pth,sha256=y,2\nhelper_hook-1.0.dist-info/RECORD,,\n").unwrap();
+
+    // Home-level IOC.
+    fs::create_dir_all(home.join(".config/gh-token-monitor")).unwrap();
+    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,\
+                skills,settings,aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins";
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", skip]).env("HOME", &home).env("PATH", "/usr/bin:/bin")
+        .current_dir(&home).output().unwrap();
+    let _ = fs::remove_dir_all(&home);
+    assert!(out.status.success(), "rmguard failed: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    let arts: Vec<(String, String, String, bool, bool, bool)> = v["persistence_artifacts"].as_array().unwrap().iter()
+        .map(|a| (
+            a["kind"].as_str().unwrap().to_string(),
+            a["path"].as_str().unwrap().rsplit('/').next().unwrap().to_string(),
+            a["detail"].as_str().unwrap().to_string(),
+            a["git_tracked"].as_bool().unwrap(),
+            a["claimed"].as_bool().unwrap(),
+            a["sensitive_target"].as_bool().unwrap(),
+        )).collect();
+    let find = |kind: &str, file: &str| arts.iter().find(|a| a.0 == kind && a.1 == file);
+    let names: Vec<(&str, &str)> = arts.iter().map(|a| (a.0.as_str(), a.1.as_str())).collect();
+
+    // Startup hooks.
+    let cook = find("python-startup-hook", "cook.pth").unwrap_or_else(|| panic!("cook.pth missing: {names:?}"));
+    assert!(cook.5 && !cook.4, "cook.pth is the published IOC and unclaimed: {cook:?}");
+    assert!(cook.2.contains("import cook"), "the import line is the evidence: {cook:?}");
+    let sc = find("python-startup-hook", "sitecustomize.py").expect("sitecustomize.py");
+    assert!(!sc.4, "sitecustomize.py claimed by nothing");
+    let helper = find("python-startup-hook", "helper-hook.pth").expect("helper-hook.pth");
+    assert!(helper.4 && !helper.5, "a RECORD-listed hook is claimed, not an IOC: {helper:?}");
+    assert!(find("python-startup-hook", "distutils-precedence.pth").is_none(), "setuptools' own .pth is allowlisted");
+    assert!(find("python-startup-hook", "some-paths.pth").is_none(), "a path-only .pth is not a hook");
+    assert!(find("python-startup-hook", "cook.py").is_none(), "only the hook file itself is reported, not sibling code");
+    // Planted binaries.
+    let gitexe = find("planted-binary", "git.exe").expect("git.exe");
+    assert!(gitexe.3 && gitexe.2.contains("`git`"), "committed git.exe is git-tracked and names the tool: {gitexe:?}");
+    assert!(!gitexe.5, "PATH did not search cwd in this run");
+    let npx = find("planted-binary", "npx").expect("executable npx in .vscode/");
+    assert!(!npx.3, "untracked npx is not git-tracked");
+    assert!(find("planted-binary", "git").is_none(), "a non-executable file named git is not a trap");
+    // Symlinks.
+    let ssh = find("escaping-symlink", "project_settings.json").expect("symlink into ~/.ssh");
+    assert!(ssh.5 && ssh.3 && ssh.2.contains("authorized_keys"), "{ssh:?}");
+    let notes = find("escaping-symlink", "notes.md").expect("symlink out of repo");
+    assert!(!notes.5, "a non-credential target escapes but is not sensitive: {notes:?}");
+    assert!(find("escaping-symlink", "readme-link").is_none(), "an in-repo symlink is silent");
+    // Loader staging and IOCs.
+    let loader = find("loader-script", "setup.mjs").expect("setup.mjs");
+    assert!(loader.5 && loader.3, "known loader name, committed: {loader:?}");
+    assert!(find("loader-script", "statusline.sh").is_none(), "a shell script in .claude/ is ordinary");
+    assert!(find("worm-ioc", "runtime-update.yml").is_some(), "project IOC: {names:?}");
+    assert!(find("worm-ioc", "gh-token-monitor").is_some(), "home IOC: {names:?}");
+
+    // Findings: severities follow the shapes, and every category maps to guidance.
+    let report: rustmachineguard::models::ScanReport = serde_json::from_value(v.clone()).expect("report round-trips");
+    let findings = rustmachineguard::analysis::collect_findings(&report);
+    let sev = |needle: &str| findings.iter().find(|f| f.location.ends_with(needle))
+        .map(|f| f.severity.label().to_ascii_lowercase()).unwrap_or_default();
+    assert_eq!(sev("cook.pth"), "critical", "IOC hook");
+    assert_eq!(sev("sitecustomize.py"), "high", "unclaimed hook");
+    assert_eq!(sev("helper-hook.pth"), "medium", "claimed hook");
+    assert_eq!(sev("git.exe"), "high", "tracked planted binary without cwd-PATH");
+    assert_eq!(sev(".vscode/npx"), "medium", "untracked planted binary");
+    assert_eq!(sev("project_settings.json"), "critical", "symlink into ~/.ssh");
+    assert_eq!(sev("config/notes.md"), "high", "escaping symlink");
+    assert_eq!(sev("gh-token-monitor"), "critical", "worm IOC");
+    let cats: std::collections::BTreeSet<&str> = findings.iter().map(|f| f.category.as_str()).collect();
+    for c in ["Persistence", "Binary planting", "Repo symlink"] {
+        assert!(cats.contains(c), "category {c} present: {cats:?}");
+    }
 }

@@ -190,6 +190,24 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Move toward OAuth (refreshable/scoped) or SPIFFE workload identity (short-lived SVIDs) where the tooling supports it; at minimum rotate keys regularly and scope them tightly.",
             reference: "OWASP ASI03 (identity & authentication)",
         },
+        "Persistence" => Guidance {
+            what: "A file that runs code without being invoked: a Python `.pth` whose line begins with `import` or a `sitecustomize.py` in site-packages (executed on every interpreter start), a JavaScript loader staged inside a project's .vscode/ or .claude/ directory, or a path a known worm leaves behind (the tensorlake hostage-token monitor, the EtherDuck launch agents).",
+            why: "This is how the 2026 package compromises survive remediation: litellm 1.107.0's implant kept running after `pip uninstall` and inside every MCP server launched with that interpreter, and the ChainDrop loader is re-planted by the hook/task pair whenever one half is removed. The tensorlake monitor wipes the home directory if the stolen GitHub token is revoked, so order of cleanup matters.",
+            fix: "Read the file shown below before touching anything. A startup hook no installed distribution claims should be removed along with whatever dropped it; for the gh-token-monitor artifacts, remove the monitor service BEFORE rotating the GitHub token. Reinstall the interpreter environment if an unclaimed hook ran.",
+            reference: "EAA-003 (lifecycle persistence) · litellm 1.107.0 · tensorlake 0.5.144",
+        },
+        "Binary planting" => Guidance {
+            what: "A regular executable named like a tool agents spawn by bare name (git, npx, node, python, ...) sits in a project root or an IDE/agent directory.",
+            why: "Agents and IDEs resolve such tools through the search path; on Windows the working directory comes first, and on POSIX a PATH containing `.` does the same. A git.exe committed into a repository ran on project open in Claude Desktop (CVE-2026-88066), Cursor (CVE-2026-63093) and Kiro — no prompt injection or model involved. No legitimate repository ships git.exe at its root.",
+            fix: "Inspect and remove the file. If the repository is shared, treat the commit that added it as hostile. Keep `.` out of PATH.",
+            reference: "CVE-2026-88066 · CVE-2026-63093 · uncontrolled search path",
+        },
+        "Repo symlink" => Guidance {
+            what: "A git-tracked symbolic link in a project resolves to a path outside that repository (a shell rc file, ~/.ssh, an agent config directory, /etc).",
+            why: "An agent asked to write a project file follows the link, so an approval that looked like an in-project edit lands in authorized_keys or a shell profile instead. Wiz's GhostApproval showed the shape across six agents; Claude Code's write-time re-resolution gap is CVE-2026-103435.",
+            fix: "Replace the symlink with a real file or remove it, and review who committed it. Do not let an agent write through it in the meantime.",
+            reference: "CVE-2026-103435 · GhostApproval · write-time symlink following",
+        },
         "Toxic Flow" => Guidance {
             what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time.",
             why: "Each capability is individually authorized and benign, but together they complete the \"lethal trifecta\": one prompt injection can read private data and send it out. No single MCP client sees this composition.",
@@ -468,6 +486,56 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             ),
             location: t.path.clone(),
             evidence: Some(t.command.clone()),
+        });
+    }
+
+    // Persistence and planting artifacts: Python startup hooks, tool-shadowing
+    // binaries, committed symlinks that escape the repo, staged loaders, worm IOCs.
+    for a in &report.persistence_artifacts {
+        let (severity, category, title) = match a.kind.as_str() {
+            "python-startup-hook" => {
+                let sev = if a.sensitive_target {
+                    Severity::Critical
+                } else if !a.claimed {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
+                let claim = if a.sensitive_target {
+                    "published indicator of the litellm 1.107.0 implant"
+                } else if a.claimed {
+                    "listed by an installed distribution's RECORD"
+                } else {
+                    "claimed by no installed distribution"
+                };
+                (sev, "Persistence", format!("Python startup hook runs on every interpreter start — {claim}"))
+            }
+            "planted-binary" => {
+                let sev = match (a.git_tracked, a.sensitive_target) {
+                    (true, true) => Severity::Critical,
+                    (true, false) | (false, true) => Severity::High,
+                    (false, false) => Severity::Medium,
+                };
+                let carrier = if a.git_tracked { " — git-tracked, so every clone carries it" } else { "" };
+                (sev, "Binary planting", format!("Executable in a project root {}{carrier}", a.detail))
+            }
+            "escaping-symlink" => {
+                let sev = if a.sensitive_target { Severity::Critical } else { Severity::High };
+                let target = if a.sensitive_target { "a credential, shell-rc or agent-config path" } else { "outside the repository" };
+                (sev, "Repo symlink", format!("Committed symlink resolves {target}; an approved in-project write lands there"))
+            }
+            "loader-script" => {
+                let sev = if a.sensitive_target || a.git_tracked { Severity::High } else { Severity::Medium };
+                (sev, "Persistence", format!("Loader staged in an agent directory: {}", a.detail))
+            }
+            _ => (Severity::Critical, "Persistence", format!("Known worm persistence artifact: {}", a.detail)),
+        };
+        f.push(Finding {
+            severity,
+            category: category.into(),
+            title,
+            location: a.path.clone(),
+            evidence: Some(a.detail.clone()),
         });
     }
 

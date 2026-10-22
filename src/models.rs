@@ -48,6 +48,8 @@ pub struct ScanReport {
     /// User-installed JetBrains IDE plugins (identity only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jetbrains_plugins: Vec<JetBrainsPlugin>,
+    #[serde(default)]
+    pub persistence_artifacts: Vec<PersistenceArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ScanWarning>,
     /// Per-scanner telemetry: how long it ran, how many files it opened or found
@@ -494,6 +496,30 @@ pub struct EnvFile {
     pub secret_keys: Vec<String>,
 }
 
+/// A persistence or planting artifact: a Python startup hook, a tool-shadowing binary in
+/// a project root, a committed symlink that escapes its repository, a JavaScript loader
+/// staged in an agent directory, or a known worm persistence path. See
+/// `scanners::persistence`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PersistenceArtifact {
+    /// "python-startup-hook" | "planted-binary" | "escaping-symlink" | "loader-script" | "worm-ioc"
+    pub kind: String,
+    pub path: String,
+    /// The site-packages root, project root, or home the artifact was found under.
+    pub scope: String,
+    /// Shape detail: the `.pth` import line, the shadowed tool, the symlink target, or
+    /// the campaign name. Sanitised; never a secret value.
+    pub detail: String,
+    pub git_tracked: bool,
+    /// Startup hooks: true if an installed distribution's RECORD lists the file (or the
+    /// manifests could not all be read, so "unclaimed" cannot be asserted).
+    pub claimed: bool,
+    /// The high-confidence variant of each kind: a published IOC file name, a symlink
+    /// into a credential/agent-config path, a PATH that searches the working directory,
+    /// or a known loader name.
+    pub sensitive_target: bool,
+}
+
 /// Exposure catalog entry for known-bad packages.
 #[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct ExposureEntry {
@@ -554,6 +580,8 @@ pub struct Summary {
     pub npm_packages_count: usize,
     #[serde(default)]
     pub jetbrains_plugins_count: usize,
+    #[serde(default)]
+    pub persistence_artifacts_count: usize,
 }
 
 impl ScanReport {
@@ -588,6 +616,7 @@ impl ScanReport {
             python_packages_count: self.summary.python_packages_count,
             npm_packages_count: self.summary.npm_packages_count,
             jetbrains_plugins_count: self.summary.jetbrains_plugins_count,
+            persistence_artifacts_count: self.persistence_artifacts.len(),
         };
     }
 }

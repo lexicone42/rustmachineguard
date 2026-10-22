@@ -130,7 +130,7 @@ pub const CONTROLS: &[Control] = &[
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
         how: "Threat catalog (exact + version-range), registry provenance verification, exposure matching across MCP/extensions.",
-        finding_categories: &["Exposure", "Registry", "Git autorun"],
+        finding_categories: &["Exposure", "Registry", "Git autorun", "Binary planting", "Repo symlink"],
     },
     Control {
         framework: "OWASP Agentic Applications Top 10 (2026)",
@@ -240,6 +240,14 @@ pub const CONTROLS: &[Control] = &[
         coverage: Coverage::Covered,
         how: "Inventories + hashes rules/memory files; flags dangerous patterns; --diff catches cross-session tampering.",
         finding_categories: &["Rules file"],
+    },
+    Control {
+        framework: "Endpoint AI Agent Abuse (EAA, CC0)",
+        id: "EAA-003",
+        title: "Lifecycle hook / startup persistence",
+        coverage: Coverage::Covered,
+        how: "Flags agent hooks and VS Code folder-open tasks (and the cross-directory pair), writable agent configs, Python startup hooks (.pth import lines, sitecustomize.py), loaders staged in agent directories, tool-shadowing binaries in project roots, and the persistence paths of the 2026 agent-targeting worms.",
+        finding_categories: &["Hook", "Auto-run task", "Config integrity", "Persistence", "Binary planting"],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -402,6 +410,7 @@ mod tests {
         "Registry", "Agent identity", "Gateway routing", "MCP transport",
         "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
         "Plugin marketplace", "Settings secret", "Auto-run task", "Config integrity", "Git autorun",
+        "Persistence", "Binary planting", "Repo symlink",
     ];
 
     fn empty_report() -> ScanReport {

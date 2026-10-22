@@ -121,7 +121,7 @@ const VALID_SKIP: &[&str] = &[
     "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
     "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
     "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig", "pypkgs",
-    "npmpkgs", "jbplugins",
+    "npmpkgs", "jbplugins", "persistence",
 ];
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
@@ -185,6 +185,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut
         report
             .env_files
             .extend(timed(&mut report.diagnostics, "envfiles", Some(plat.home_dir()), || scanners::env_files::EnvFilesScanner.scan(plat)));
+    }
+    if !skip.contains(&"persistence") {
+        report
+            .persistence_artifacts
+            .extend(timed(&mut report.diagnostics, "persistence", Some(plat.home_dir()), || scanners::persistence::PersistenceScanner.scan(plat)));
     }
     if !skip.contains(&"transcripts") {
         report
@@ -329,6 +334,7 @@ fn main() {
         vscode_tasks: Vec::new(),
         git_autorun_configs: Vec::new(),
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         warnings: Vec::new(),
         diagnostics: Vec::new(),
         summary: models::Summary {
@@ -361,6 +367,7 @@ fn main() {
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
 

@@ -16,6 +16,7 @@ pub mod mcp_probe;
 pub mod node_packages;
 pub mod notebook_servers;
 pub mod package_configs;
+pub mod persistence;
 pub mod jetbrains_plugins;
 pub mod npm_packages;
 pub mod python_packages;
@@ -1048,12 +1049,17 @@ pub fn sanitize_display(s: &str, max: usize) -> String {
 /// Run a command with a wall-clock cap, stdin closed. `Command::output()` has no timeout,
 /// and git will happily open an `[include] path = /dev/tty` (or a FIFO) from an
 /// attacker-authored config and block forever, stalling the whole scan. Returns None on
-/// timeout or spawn failure. Callers whose child may write more than the pipe buffer
-/// before exiting would see a timeout instead; `git config --list` output is small.
+/// timeout or spawn failure.
+///
+/// stdout is drained on a reader thread while the parent polls, so a child that writes
+/// more than the pipe buffer (a `git ls-files` of a large repository) is not deadlocked
+/// into the timeout. Output is capped at `MAX_CHILD_OUTPUT` bytes; a child still writing
+/// past the cap is killed like a timeout, since nothing is reading any more.
 pub fn output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> Option<std::process::Output> {
+    use std::io::Read;
     use std::process::Stdio;
     let mut child = cmd
         .stdin(Stdio::null())
@@ -1061,10 +1067,19 @@ pub fn output_with_timeout(
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut stdout).take(MAX_CHILD_OUTPUT as u64).read_to_end(&mut buf);
+        buf
+    });
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(Some(status)) => {
+                let stdout = reader.join().unwrap_or_default();
+                return Some(std::process::Output { status, stdout, stderr: Vec::new() });
+            }
             Ok(None) if start.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -1075,3 +1090,7 @@ pub fn output_with_timeout(
         }
     }
 }
+
+/// Upper bound on bytes kept from a child's stdout. 8 MiB is a very large repository's
+/// `git ls-files -s`; the callers only ever need a bounded prefix.
+pub const MAX_CHILD_OUTPUT: usize = 8 * 1024 * 1024;

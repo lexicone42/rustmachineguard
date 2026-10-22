@@ -423,6 +423,7 @@ fn make_report(
             message: "1 config unreadable (permission denied)".into(),
         }],
         jetbrains_plugins: Vec::new(),
+        persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
@@ -450,6 +451,7 @@ fn make_report(
             python_packages_count: 0,
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
+            persistence_artifacts_count: 0,
         },
     };
     customize(&mut report);

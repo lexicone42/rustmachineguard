@@ -48,7 +48,7 @@ impl Scanner for PythonPackagesScanner {
 /// Where Python distributions live. Deliberately bounded: system and user site-packages,
 /// plus virtualenvs sitting in the agent's registered project roots — which is where an
 /// agent actually installs things. We do not sweep the whole filesystem.
-fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
+pub(crate) fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     let home = platform.home_dir();
     let mut roots = Vec::new();
 
@@ -95,7 +95,7 @@ fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     roots
 }
 
-fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
+pub(crate) fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
     let content = read_bounded(claude_json)?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     Some(
