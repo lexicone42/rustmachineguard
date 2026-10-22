@@ -36,13 +36,15 @@ pub fn is_process_running(name: &str) -> bool {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // Try pgrep first
-        if let Ok(output) = std::process::Command::new("pgrep")
-            .arg("-x")
-            .arg(name)
-            .output()
-        {
-            return output.status.success();
+        let mut x = crate::otel::exec_span("pgrep", std::ffi::OsStr::new("pgrep"));
+        match std::process::Command::new("pgrep").arg("-x").arg(name).output() {
+            Ok(output) => {
+                note_exit(&mut x, &output.status);
+                return output.status.success();
+            }
+            Err(_) => x.outcome("spawn_failed"),
         }
+        drop(x);
 
         // Fallback: scan /proc on Linux
         #[cfg(target_os = "linux")]
@@ -81,30 +83,45 @@ fn proc_has_process(name: &str) -> bool {
 
 /// Get version from a binary by running `binary --version` with a 5-second timeout.
 pub fn get_binary_version(binary: &str) -> Option<String> {
-    let mut child = std::process::Command::new(binary)
+    let mut x = crate::otel::exec_span("version_probe", std::ffi::OsStr::new(binary));
+    let mut child = match std::process::Command::new(binary)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .ok()?;
+    {
+        Ok(c) => c,
+        Err(_) => {
+            x.outcome("spawn_failed");
+            return None;
+        }
+    };
 
     let timeout = Duration::from_secs(5);
     let start = std::time::Instant::now();
 
     loop {
         match child.try_wait() {
-            Ok(Some(_status)) => break,
+            Ok(Some(status)) => {
+                note_exit(&mut x, &status);
+                break;
+            }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    x.outcome("timeout");
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(_) => return None,
+            Err(_) => {
+                x.outcome("wait_failed");
+                return None;
+            }
         }
     }
+    drop(x);
 
     let output = child.wait_with_output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -114,6 +131,14 @@ pub fn get_binary_version(binary: &str) -> Option<String> {
         text
     };
     extract_version(&text)
+}
+
+/// Record a finished child's exit on its exec span: ok/nonzero plus the code if any.
+pub(crate) fn note_exit(x: &mut crate::otel::ExecSpan, status: &std::process::ExitStatus) {
+    x.outcome(if status.success() { "ok" } else { "nonzero" });
+    if let Some(code) = status.code() {
+        x.exit_code(code);
+    }
 }
 
 /// Extract a semver-like version from text.
@@ -751,15 +776,24 @@ pub fn hardened_git() -> std::process::Command {
 /// Check whether a file is tracked by git (shells out to `git ls-files`).
 pub fn is_git_tracked(path: &std::path::Path) -> bool {
     let parent = path.parent().unwrap_or(path);
-    hardened_git()
+    let mut x = crate::otel::exec_span("git_tracked", std::ffi::OsStr::new("git"));
+    let status = hardened_git()
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .current_dir(parent)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .status();
+    match status {
+        Ok(s) => {
+            note_exit(&mut x, &s);
+            s.success()
+        }
+        Err(_) => {
+            x.outcome("spawn_failed");
+            false
+        }
+    }
 }
 
 /// Compute SHA-256 hash of content, returning hex string.
@@ -1008,22 +1042,38 @@ pub mod telemetry {
         root: Option<PathBuf>,
         f: impl FnOnce() -> Vec<T>,
     ) -> Vec<T> {
+        use crate::otel::{Attr, Key};
         let (r0, m0) = snapshot();
+        // The span's start time is taken inside span_with, immediately before `start`,
+        // and it is ended at exactly start + elapsed: its duration is the table's.
+        let mut span = crate::otel::span_with(|| format!("scanner.{scanner}"), || vec![Attr::scanner(scanner)]);
         let start = Instant::now();
         if trace_enabled() {
             eprintln!("trace: scanner {scanner} start");
         }
         let out = f();
+        let elapsed = start.elapsed();
         let (r1, m1) = snapshot();
         let stat = ScannerStat {
             scanner: scanner.to_string(),
             root: root.map(|p| p.display().to_string()),
-            duration_ms: start.elapsed().as_millis() as u64,
+            duration_ms: elapsed.as_millis() as u64,
             files_read: r1 - r0,
             files_missing: m1 - m0,
             items: out.len(),
             skipped: false,
         };
+        // Counts and duration only; `root` (a path) is never exported.
+        span.set(|| {
+            vec![
+                Attr::int(Key::DurationMs, stat.duration_ms as i64),
+                Attr::int(Key::FilesRead, stat.files_read as i64),
+                Attr::int(Key::FilesMissing, stat.files_missing as i64),
+                Attr::int(Key::Items, stat.items as i64),
+            ]
+        });
+        span.finish_after(elapsed);
+        crate::otel::record_scanner(&stat, elapsed);
         if trace_enabled() {
             eprintln!(
                 "trace: scanner {scanner} done: {}ms, {} read, {} missing, {} items",
@@ -1035,6 +1085,7 @@ pub mod telemetry {
     }
 
     pub fn skipped(scanner: &str) -> ScannerStat {
+        crate::otel::record(crate::otel::Metric::Skipped, 1.0, || vec![crate::otel::Attr::scanner(scanner)]);
         ScannerStat {
             scanner: scanner.to_string(),
             root: None,
@@ -1086,13 +1137,18 @@ pub fn output_with_timeout(
 ) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
+    let mut x = crate::otel::exec_span("output_with_timeout", cmd.get_program());
+    let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        Ok(c) => c,
+        Err(_) => {
+            x.outcome("spawn_failed");
+            return None;
+        }
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        x.outcome("spawn_failed");
+        return None;
+    };
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = (&mut stdout).take(MAX_CHILD_OUTPUT as u64).read_to_end(&mut buf);
@@ -1103,15 +1159,20 @@ pub fn output_with_timeout(
         match child.try_wait() {
             Ok(Some(status)) => {
                 let stdout = reader.join().unwrap_or_default();
+                note_exit(&mut x, &status);
                 return Some(std::process::Output { status, stdout, stderr: Vec::new() });
             }
             Ok(None) if start.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                x.outcome("timeout");
                 return None;
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(_) => return None,
+            Err(_) => {
+                x.outcome("wait_failed");
+                return None;
+            }
         }
     }
 }

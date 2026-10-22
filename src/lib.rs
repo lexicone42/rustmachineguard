@@ -8,3 +8,4 @@ pub mod output;
 pub mod platform;
 pub mod registry;
 pub mod scanners;
+pub mod otel;

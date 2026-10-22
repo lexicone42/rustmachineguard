@@ -3,15 +3,18 @@ use rustmachineguard::scanners::telemetry::timed;
 use rustmachineguard::models::{self, ScanReport};
 use rustmachineguard::output::{self, OutputFormat};
 use rustmachineguard::platform::{self, PlatformInfo};
+use rustmachineguard::otel::{self, Attr, Key, Metric};
 use rustmachineguard::scanners::{self, Scanner};
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// AI-agent posture scanner for developer machines.
 ///
 /// Inventories coding agents, MCP servers, IDE/browser extensions, agent skills and
 /// hooks, at-rest credentials, registry configs and git auto-execution settings; matches
 /// them against a sourced threat catalog; probes MCP servers live; diffs scans over time;
-/// emits a CycloneDX 2.0 Blueprint and compliance evidence. Runs locally, sends nothing.
+/// emits a CycloneDX 2.0 Blueprint and compliance evidence. Runs locally; sends nothing
+/// unless --verify-registry or --otel is given.
 ///
 /// Began as a Rust rewrite of step-security/dev-machine-guard (Apache-2.0); see NOTICE.
 #[derive(Parser)]
@@ -81,6 +84,15 @@ struct Cli {
     /// Paths only, never contents. Same as RMGUARD_TRACE=1.
     #[arg(long)]
     trace: bool,
+
+    /// Export OpenTelemetry traces and metrics for this scan (time per scanner, MCP probe,
+    /// registry lookup and subprocess) over OTLP http/protobuf. NETWORK, off by default:
+    /// setting OTEL_EXPORTER_OTLP_ENDPOINT alone never enables export; it only picks where
+    /// --otel sends (default http://localhost:4318; OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT
+    /// and OTEL_EXPORTER_OTLP_HEADERS honored). Exports labels, counts and durations only —
+    /// never paths, server or package names, or secret values. OTEL_SDK_DISABLED=true wins.
+    #[arg(long)]
+    otel: bool,
 }
 
 /// Severity threshold for `--fail-on`, ordered most- to least-severe.
@@ -243,6 +255,9 @@ fn main() {
 
     // Fleet report mode: aggregate a directory of JSON scans, don't scan locally.
     if let Some(ref dir) = cli.report {
+        if cli.otel {
+            eprintln!("warning: --otel is ignored with --report");
+        }
         run_fleet_report(dir, cli.output.as_deref());
         return;
     }
@@ -263,6 +278,26 @@ fn main() {
         .unwrap_or(false);
     if cli.trace || env_trace {
         rustmachineguard::scanners::telemetry::enable_trace();
+    }
+
+    // OpenTelemetry export: only ever started by the explicit flag. Ambient OTEL_* env
+    // (common on developer machines, set up for other tools) never turns it on; it only
+    // chooses where --otel sends. Without the flag nothing below is built or read.
+    if cli.otel {
+        match otel::init() {
+            Ok(()) => eprintln!(
+                "info: OpenTelemetry export enabled (OTLP http/protobuf; endpoint from OTEL_EXPORTER_OTLP_*, default http://localhost:4318)"
+            ),
+            Err(otel::InitError::NotCompiled) => {
+                eprintln!("warning: --otel ignored: this rmguard was built without the `otel` feature")
+            }
+            Err(otel::InitError::Disabled) => {
+                eprintln!("info: OTEL_SDK_DISABLED/OTEL_*_EXPORTER=none set; OpenTelemetry export off")
+            }
+            Err(otel::InitError::Config) => {
+                eprintln!("warning: OpenTelemetry disabled: invalid OTEL_EXPORTER_OTLP_* configuration")
+            }
+        }
     }
 
     let skip: Vec<&str> = cli
@@ -297,8 +332,34 @@ fn main() {
         })
         .collect();
 
-    let primary_plat = platform::current_platform();
-    let device = primary_plat.device_info();
+    let format_name: &'static str = match cli.format {
+        Format::Terminal => "terminal",
+        Format::Json => "json",
+        Format::Html => "html",
+        Format::Sbom => "sbom",
+        Format::Blueprint => "blueprint",
+        Format::Compliance => "compliance",
+    };
+    // Root span of the whole scan; every phase and scanner span nests under it. Options
+    // are exported as flags and counts, never as the paths or names they carry.
+    let scan_start = Instant::now();
+    let root = otel::span("rmguard.scan", || {
+        vec![
+            Attr::str(Key::Format, format_name),
+            Attr::int(Key::SkipCount, skip.len() as i64),
+            Attr::int(Key::SearchDirs, search_dirs.len() as i64),
+            Attr::bool(Key::ProbeMcp, cli.probe_mcp),
+            Attr::bool(Key::VerifyRegistry, cli.verify_registry),
+            Attr::bool(Key::Diff, cli.diff.is_some()),
+        ]
+    });
+
+    let (primary_plat, device) = {
+        let _p = otel::span("phase.device_info", || vec![Attr::str(Key::Phase, "device_info")]);
+        let plat = platform::current_platform();
+        let device = plat.device_info();
+        (plat, device)
+    };
 
     let now = chrono::Utc::now();
 
@@ -372,19 +433,38 @@ fn main() {
     };
 
     // Global scanners (PATH-based, platform-level): run once
-    run_global_scanners(primary_plat.as_ref(), &skip, &mut report);
+    {
+        let _p = otel::span("phase.global_scanners", || vec![Attr::str(Key::Phase, "global_scanners")]);
+        run_global_scanners(primary_plat.as_ref(), &skip, &mut report);
+    }
 
     // Home-rooted scanners: run for primary home + each --search-dirs entry
-    run_home_rooted_scanners(primary_plat.as_ref(), &skip, &mut report);
-    for extra_home in &search_dirs {
+    {
+        let _p = otel::span("phase.home_pass", || {
+            vec![Attr::str(Key::Phase, "home_pass"), Attr::int(Key::RootIndex, 0), Attr::str(Key::RootKind, "home")]
+        });
+        run_home_rooted_scanners(primary_plat.as_ref(), &skip, &mut report);
+    }
+    for (i, extra_home) in search_dirs.iter().enumerate() {
+        let _p = otel::span("phase.home_pass", || {
+            vec![
+                Attr::str(Key::Phase, "home_pass"),
+                Attr::int(Key::RootIndex, i as i64 + 1),
+                Attr::str(Key::RootKind, "search_dir"),
+            ]
+        });
         let alt_plat = platform::platform_for_home(extra_home.clone());
         run_home_rooted_scanners(alt_plat.as_ref(), &skip, &mut report);
     }
 
     // Deduplicate results that might appear from overlapping roots
-    dedupe_report(&mut report);
+    {
+        let _p = otel::span("phase.dedupe", || vec![Attr::str(Key::Phase, "dedupe")]);
+        dedupe_report(&mut report);
+    }
 
     // Exposure catalog matching — built-in catalog + optional user catalog
+    let catalog_phase = otel::span("phase.catalog_load", || vec![Attr::str(Key::Phase, "catalog_load")]);
     let mut catalog = if cli.no_builtin_catalog {
         None
     } else {
@@ -425,6 +505,8 @@ fn main() {
         }
     }
 
+    drop(catalog_phase);
+
     // Without a catalog the package scanners never run; say so in the table rather
     // than leaving two labels with no row at all, which reads as "never existed".
     if catalog.is_none() {
@@ -435,6 +517,7 @@ fn main() {
         }
     }
     if let Some(ref catalog) = catalog {
+        let _p = otel::span("phase.exposure", || vec![Attr::str(Key::Phase, "exposure")]);
         for mcp in &report.mcp_configs {
             for server in &mcp.servers {
                 report
@@ -575,33 +658,42 @@ fn main() {
     }
 
     // Agent identity posture (static keys vs OAuth vs SPIFFE) — derived from the scan.
-    report.agent_identity = Some(rustmachineguard::identity::analyze(&report));
-
-    report.compute_summary();
+    {
+        let _p = otel::span("phase.identity", || vec![Attr::str(Key::Phase, "identity")]);
+        report.agent_identity = Some(rustmachineguard::identity::analyze(&report));
+        report.compute_summary();
+    }
 
     // Diff mode: compare against a baseline scan
     if let Some(ref baseline_path) = cli.diff {
-        let baseline_str = std::fs::read_to_string(baseline_path).unwrap_or_else(|e| {
-            eprintln!("Error reading baseline {}: {}", baseline_path.display(), e);
-            std::process::exit(1);
-        });
-        let baseline: serde_json::Value = serde_json::from_str(&baseline_str).unwrap_or_else(|e| {
-            eprintln!("Error parsing baseline JSON: {}", e);
-            std::process::exit(1);
-        });
-
-        let current_json = serde_json::to_value(&report).unwrap_or_default();
-        let diff = rustmachineguard::diff::diff_reports(&baseline, &current_json);
-        let diff_output = rustmachineguard::diff::render_diff(&diff);
-
-        if let Some(ref path) = cli.output {
-            std::fs::write(path, &diff_output).unwrap_or_else(|e| {
-                eprintln!("Error writing to {path}: {e}");
+        {
+            let _p = otel::span("phase.diff", || vec![Attr::str(Key::Phase, "diff")]);
+            let baseline_str = std::fs::read_to_string(baseline_path).unwrap_or_else(|e| {
+                eprintln!("Error reading baseline {}: {}", baseline_path.display(), e);
+                otel::shutdown();
                 std::process::exit(1);
             });
-        } else {
-            print!("{diff_output}");
+            let baseline: serde_json::Value = serde_json::from_str(&baseline_str).unwrap_or_else(|e| {
+                eprintln!("Error parsing baseline JSON: {}", e);
+                otel::shutdown();
+                std::process::exit(1);
+            });
+
+            let current_json = serde_json::to_value(&report).unwrap_or_default();
+            let diff = rustmachineguard::diff::diff_reports(&baseline, &current_json);
+            let diff_output = rustmachineguard::diff::render_diff(&diff);
+
+            if let Some(ref path) = cli.output {
+                std::fs::write(path, &diff_output).unwrap_or_else(|e| {
+                    eprintln!("Error writing to {path}: {e}");
+                    otel::shutdown();
+                    std::process::exit(1);
+                });
+            } else {
+                print!("{diff_output}");
+            }
         }
+        finish_scan(root, scan_start, &report);
         return;
     }
 
@@ -618,22 +710,34 @@ fn main() {
         report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
     }
 
-    let mut rendered = output::render(&report, format);
-    if cli.verbose && format == OutputFormat::Terminal {
-        rendered.push_str(&output::terminal::render_diagnostics(&report));
+    let rendered = {
+        let _p = otel::span("phase.render", || vec![Attr::str(Key::Phase, "render")]);
+        let mut rendered = output::render(&report, format);
+        if cli.verbose && format == OutputFormat::Terminal {
+            rendered.push_str(&output::terminal::render_diagnostics(&report));
+        }
+        rendered
+    };
+
+    {
+        let _p = otel::span("phase.write", || vec![Attr::str(Key::Phase, "write")]);
+        if let Some(ref path) = cli.output {
+            std::fs::write(path, &rendered).unwrap_or_else(|e| {
+                eprintln!("Error writing to {path}: {e}");
+                otel::shutdown();
+                std::process::exit(1);
+            });
+            if format == OutputFormat::Terminal {
+                eprintln!("Report written to {path}");
+            }
+        } else {
+            print!("{rendered}");
+        }
     }
 
-    if let Some(ref path) = cli.output {
-        std::fs::write(path, &rendered).unwrap_or_else(|e| {
-            eprintln!("Error writing to {path}: {e}");
-            std::process::exit(1);
-        });
-        if format == OutputFormat::Terminal {
-            eprintln!("Report written to {path}");
-        }
-    } else {
-        print!("{rendered}");
-    }
+    // The report is out; end the root span and flush telemetry (bounded at 2 s) before
+    // the fail-on gate can exit the process.
+    finish_scan(root, scan_start, &report);
 
     // CI / fleet-onboarding gate: fail the process when findings breach the threshold.
     // The report has already been emitted, so this only changes the exit status.
@@ -655,6 +759,20 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// End the root span with the scan's totals, record its duration, and flush/stop
+/// OpenTelemetry export. Nothing happens here unless `--otel` started export.
+fn finish_scan(mut root: otel::SpanGuard, scan_start: Instant, report: &ScanReport) {
+    root.set(|| {
+        vec![
+            Attr::int(Key::ExposureFindings, report.exposure_findings.len() as i64),
+            Attr::int(Key::ScannersRun, report.diagnostics.iter().filter(|d| !d.skipped).count() as i64),
+        ]
+    });
+    otel::record(Metric::ScanDuration, scan_start.elapsed().as_secs_f64(), Vec::new);
+    drop(root);
+    otel::shutdown();
 }
 
 /// Aggregate a directory of `--format json` scans into one fleet HTML dashboard.

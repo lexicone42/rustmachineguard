@@ -18,6 +18,8 @@ use std::time::Duration;
 // (verified 2026-10-22): `servers[].server` + `servers[]._meta`.
 const REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// The host of [`REGISTRY_BASE`], for the `server.address` span attribute.
+const REGISTRY_HOST: &str = "registry.modelcontextprotocol.io";
 
 /// The subset of a registry entry we use.
 #[derive(Debug, Clone)]
@@ -59,7 +61,11 @@ pub struct RegistryCheck {
 /// Returns one [`RegistryCheck`] per server. Network is used here; on failure the
 /// verdict is [`RegistryVerdict::LookupFailed`], never a panic.
 pub fn verify_servers(configs: &[crate::models::McpConfig]) -> Vec<RegistryCheck> {
+    use crate::otel::{Attr, Key, Metric};
     let mut checks = Vec::new();
+    // Lookups are identified in telemetry by position only: the package name is what
+    // the request sends to the registry, and it never goes to the collector as well.
+    let mut idx: i64 = 0;
     for config in configs {
         for server in &config.servers {
             let package = match (&server.package_ecosystem, &server.package_name) {
@@ -68,10 +74,31 @@ pub fn verify_servers(configs: &[crate::models::McpConfig]) -> Vec<RegistryCheck
             };
             let verdict = match &server.package_name {
                 None => RegistryVerdict::NoPackageIdentity,
-                Some(name) => match fetch_candidates(name) {
-                    Ok(candidates) => classify(server, &candidates),
-                    Err(_) => RegistryVerdict::LookupFailed,
-                },
+                Some(name) => {
+                    let mut span = crate::otel::client_span("registry.lookup", || {
+                        vec![
+                            Attr::int(Key::RegistryIndex, idx),
+                            Attr::str(Key::HttpMethod, "GET"),
+                            Attr::str(Key::ServerAddress, REGISTRY_HOST),
+                        ]
+                    });
+                    let t = std::time::Instant::now();
+                    let verdict = match fetch_candidates(name) {
+                        Ok(candidates) => classify(server, &candidates),
+                        Err(_) => RegistryVerdict::LookupFailed,
+                    };
+                    let kind = verdict.kind_str();
+                    span.set(|| vec![Attr::str(Key::RegistryVerdict, kind)]);
+                    if verdict == RegistryVerdict::LookupFailed {
+                        span.error("lookup_failed");
+                    }
+                    drop(span);
+                    crate::otel::record(Metric::RegistryLookupDuration, t.elapsed().as_secs_f64(), || {
+                        vec![Attr::str(Key::RegistryVerdict, kind)]
+                    });
+                    idx += 1;
+                    verdict
+                }
             };
             checks.push(RegistryCheck {
                 server_name: server.name.clone(),
@@ -93,12 +120,58 @@ pub fn fetch_candidates(package_name: &str) -> Result<Vec<RegistryEntry>, String
         .timeout_global(Some(LOOKUP_TIMEOUT))
         .build()
         .into();
-    let mut resp = agent.get(&url).call().map_err(|e| e.to_string())?;
-    let body = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    parse_entries(&body)
+    let mut resp = agent.get(&url).call().map_err(|e| {
+        annotate_ureq_error(&e);
+        e.to_string()
+    })?;
+    let body = resp.body_mut().read_to_string().map_err(|e| {
+        annotate_ureq_error(&e);
+        e.to_string()
+    })?;
+    parse_entries(&body).inspect_err(|_| {
+        crate::otel::annotate_current(|| {
+            vec![crate::otel::Attr::str(crate::otel::Key::ErrorType, "parse")]
+        })
+    })
+}
+
+/// Put a failed lookup's category (never its message, which holds the URL) on the
+/// current `registry.lookup` span.
+fn annotate_ureq_error(e: &ureq::Error) {
+    use crate::otel::{Attr, Key};
+    crate::otel::annotate_current(|| {
+        let (cat, code) = ureq_error_category(e);
+        let mut v = vec![Attr::str(Key::ErrorType, cat)];
+        if let Some(c) = code {
+            v.push(Attr::int(Key::HttpStatus, i64::from(c)));
+        }
+        v
+    });
+}
+
+/// A ureq error as a fixed category plus the HTTP status, if there was one.
+pub(crate) fn ureq_error_category(e: &ureq::Error) -> (&'static str, Option<u16>) {
+    match e {
+        ureq::Error::StatusCode(c) => ("status", Some(*c)),
+        ureq::Error::Timeout(_) => ("timeout", None),
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Io(_) => ("connect", None),
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => ("tls", None),
+        ureq::Error::BodyExceedsLimit(_) => ("body", None),
+        _ => ("other", None),
+    }
+}
+
+impl RegistryVerdict {
+    /// The verdict's kind as a fixed string (its serde tag), for telemetry.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            RegistryVerdict::Registered { .. } => "registered",
+            RegistryVerdict::PossibleTyposquat { .. } => "possible_typosquat",
+            RegistryVerdict::Unregistered => "unregistered",
+            RegistryVerdict::NoPackageIdentity => "no_package_identity",
+            RegistryVerdict::LookupFailed => "lookup_failed",
+        }
+    }
 }
 
 /// Parse the registry `/v0.1/servers` response into entries.
@@ -358,5 +431,46 @@ mod tests {
     fn publisher_from_name_maps_namespaces() {
         assert_eq!(publisher_from_name("io.github.bytedance/mcp-server-filesystem"), "github.com/bytedance");
         assert_eq!(publisher_from_name("com.notion/mcp"), "notion.com");
+    }
+
+    #[test]
+    fn ureq_error_category_is_fixed() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(ureq_error_category(&ureq::Error::StatusCode(503)), ("status", Some(503)));
+        assert_eq!(ureq_error_category(&ureq::Error::ConnectionFailed), ("connect", None));
+        assert_eq!(ureq_error_category(&ureq::Error::HostNotFound), ("connect", None));
+        assert_eq!(
+            ureq_error_category(&ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused))),
+            ("connect", None)
+        );
+        assert_eq!(ureq_error_category(&ureq::Error::BodyExceedsLimit(10)), ("body", None));
+        assert_eq!(ureq_error_category(&ureq::Error::Tls("x")), ("tls", None));
+        // Anything carrying text (here a URL with userinfo) still maps to a static value.
+        assert_eq!(ureq_error_category(&ureq::Error::BadUri("https://u:pw@h/".into())), ("other", None));
+        // A real timeout, produced by ureq against a listener that never answers.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", l.local_addr().unwrap());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_millis(200)))
+            .build()
+            .into();
+        let e = agent.get(&url).call().unwrap_err();
+        assert_eq!(ureq_error_category(&e), ("timeout", None), "{e:?}");
+    }
+
+    #[test]
+    fn verdict_kind_str_covers_all_variants() {
+        let all = [
+            RegistryVerdict::Registered { publisher: "p".into(), deprecated: false },
+            RegistryVerdict::PossibleTyposquat { registered_as: "x".into() },
+            RegistryVerdict::Unregistered,
+            RegistryVerdict::NoPackageIdentity,
+            RegistryVerdict::LookupFailed,
+        ];
+        for v in &all {
+            // kind_str is the serde tag, so telemetry and the JSON report agree.
+            let json = serde_json::to_value(v).unwrap();
+            assert_eq!(json["kind"], v.kind_str());
+        }
     }
 }

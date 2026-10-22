@@ -213,11 +213,17 @@ const TOOLS: &[ToolDef] = &[
 
 /// Verify a binary is real (not a shim that says "not installed").
 fn verify_binary_works(path: &std::path::Path) -> bool {
+    let mut x = crate::otel::exec_span("verify_binary", path.as_os_str());
     let output = std::process::Command::new(path)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output();
+    match &output {
+        Ok(o) => super::note_exit(&mut x, &o.status),
+        Err(_) => x.outcome("spawn_failed"),
+    }
+    drop(x);
     match output {
         Ok(o) => {
             if !o.status.success() {

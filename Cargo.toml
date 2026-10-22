@@ -10,6 +10,14 @@ license = "Apache-2.0"
 name = "rmguard"
 path = "src/main.rs"
 
+[features]
+default = ["otel"]
+# OpenTelemetry export (opt-in at runtime with --otel). See docs/OPENTELEMETRY.md.
+# Every otel crate is default-features = false: that keeps `internal-logs` (and with it
+# `tracing`) off so the SDK can never print, and keeps reqwest/hyper/tokio out -- export
+# goes through our own ureq client (src/otel/sdk.rs).
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-http", "dep:async-trait"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -29,7 +37,18 @@ semver = "1.0.28"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 # JetBrains plugin descriptors live inside jars; only deflate is needed to read META-INF/plugin.xml.
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "metrics"], optional = true }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "trace", "metrics"], optional = true }
+opentelemetry-http = { version = "0.33.1", default-features = false, optional = true }
+# HttpClient::send_bytes is an #[async_trait] method and opentelemetry-http does not
+# re-export the macro.
+async-trait = { version = "0.1.89", optional = true }
 
 [dev-dependencies]
 jsonschema = "0.60"
 proptest = "1"
+# Decode the OTLP bodies the in-test collector receives (tests/otel_export.rs).
+# default-features = false: the default `full` pulls tonic.
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics"] }
+prost = { version = "0.14", default-features = false, features = ["std"] }

@@ -193,7 +193,11 @@ impl Drop for Watchdog {
 
 /// Probe all stdio MCP servers in the given configs.
 pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
+    use crate::otel::{Attr, Key, Metric};
     let mut results = Vec::new();
+    // Servers are identified in telemetry only by their position, never by name or
+    // command: both are chosen by whoever wrote the config.
+    let mut idx: i64 = 0;
 
     for config in configs {
         for server in &config.servers {
@@ -210,17 +214,50 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
                 server.name, cmd
             );
 
+            let mut span = crate::otel::client_span("mcp.probe", || vec![Attr::int(Key::McpServerIndex, idx)]);
+            let t = Instant::now();
             let result = probe_stdio_server(
                 &server.name,
                 &config.config_source,
                 cmd,
                 &server.args,
             );
+            let oc = probe_outcome(&result);
+            span.set(|| {
+                vec![
+                    Attr::str(Key::McpOutcome, oc),
+                    Attr::int(Key::McpTools, result.tools.len() as i64),
+                    Attr::int(Key::McpResources, result.resources.len() as i64),
+                ]
+            });
+            if oc != "ok" {
+                span.error(oc);
+            }
+            drop(span);
+            crate::otel::record(Metric::McpProbeDuration, t.elapsed().as_secs_f64(), || {
+                vec![Attr::str(Key::McpOutcome, oc)]
+            });
+            idx += 1;
             results.push(result);
         }
     }
 
     results
+}
+
+/// The probe's result as a fixed telemetry category. The error text itself can be the
+/// server's own words, so it is classified, never exported.
+pub fn probe_outcome(r: &McpProbeResult) -> &'static str {
+    if r.success {
+        return "ok";
+    }
+    match r.error.as_deref() {
+        Some("empty command") => "empty_command",
+        Some(e) if e.starts_with("spawn failed") => "spawn_failed",
+        Some("timeout") => "timeout",
+        Some("connection closed") => "closed",
+        _ => "error",
+    }
 }
 
 /// Successful probe payload (server info + enumerated tools/resources).
@@ -943,5 +980,26 @@ mod tests {
         let huge = vec![b'a'; 2048];
         let mut r = Cursor::new(huge);
         assert!(read_line_bounded(&mut r, 1024).is_err());
+    }
+
+    #[test]
+    fn mcp_probe_outcome_classification() {
+        let mut ok = error_result("n", "s", "x");
+        ok.success = true;
+        ok.error = None;
+        assert_eq!(probe_outcome(&ok), "ok");
+        assert_eq!(probe_outcome(&error_result("n", "s", "empty command")), "empty_command");
+        assert_eq!(
+            probe_outcome(&error_result("n", "s", "spawn failed: No such file or directory (os error 2)")),
+            "spawn_failed"
+        );
+        assert_eq!(probe_outcome(&error_result("n", "s", "timeout")), "timeout");
+        assert_eq!(probe_outcome(&error_result("n", "s", "connection closed")), "closed");
+        assert_eq!(probe_outcome(&error_result("n", "s", "init response: E2E server text")), "error");
+        // Server-chosen text that mentions a category is still just "error".
+        assert_eq!(probe_outcome(&error_result("n", "s", "tools/list: my timeout E2EOTEL")), "error");
+        let mut none = error_result("n", "s", "x");
+        none.error = None;
+        assert_eq!(probe_outcome(&none), "error");
     }
 }
