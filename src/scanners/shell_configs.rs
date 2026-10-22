@@ -106,12 +106,12 @@ impl Scanner for ShellConfigsScanner {
         let home = platform.home_dir();
         results.extend(scan_systemd_units(&[
             (home.join(".config/systemd/user"), "systemd-user", true),
-            (PathBuf::from("/etc/systemd/system"), "systemd-system", false),
+            (crate::scanners::system_path("/etc/systemd/system"), "systemd-system", false),
         ]));
         results.extend(scan_launchd(&[
             (home.join("Library/LaunchAgents"), true),
-            (PathBuf::from("/Library/LaunchAgents"), false),
-            (PathBuf::from("/Library/LaunchDaemons"), false),
+            (crate::scanners::system_path("/Library/LaunchAgents"), false),
+            (crate::scanners::system_path("/Library/LaunchDaemons"), false),
         ]));
 
         results
@@ -256,8 +256,28 @@ fn systemd_words(v: &str) -> Vec<String> {
     out
 }
 
-/// The last OLLAMA_HOST in a systemd unit or drop-in, and whether the unit runs ollama.
-/// `EnvironmentFile=` is not followed (documented floor).
+/// True when a command line starts the Ollama server: the program's basename is `ollama`
+/// and its first argument is `serve`. systemd's ExecStart prefixes (`-`, `@`, `:`, `+`,
+/// `!`) and an `env [NAME=value ...]` wrapper are skipped. A client unit that merely
+/// mentions ollama (an Open WebUI image tagged `:ollama`) is not the server.
+pub fn runs_ollama_serve(cmdline: &str) -> bool {
+    let words: Vec<&str> = cmdline.split_whitespace().collect();
+    let mut i = 0;
+    let base = |w: &str| w.trim_matches(['"', '\'']).rsplit('/').next().unwrap_or("").to_string();
+    while i < words.len() {
+        let w = words[i].trim_start_matches(['-', '@', ':', '+', '!']);
+        if base(w) == "env" || (i > 0 && w.contains('=') && !w.starts_with('-')) {
+            i += 1;
+            continue;
+        }
+        return base(w) == "ollama" && words.get(i + 1).is_some_and(|a| a.trim_matches(['"', '\'']) == "serve");
+    }
+    false
+}
+
+/// The last OLLAMA_HOST in a systemd unit or drop-in, and whether the unit starts the
+/// Ollama server (see [`runs_ollama_serve`]). `EnvironmentFile=` is not followed
+/// (documented floor).
 pub fn systemd_ollama_host(text: &str) -> (Option<String>, bool) {
     let mut value = None;
     let mut runs_ollama = false;
@@ -273,7 +293,7 @@ pub fn systemd_ollama_host(text: &str) -> (Option<String>, bool) {
                 }
             }
         } else if let Some(rest) = t.strip_prefix("ExecStart=")
-            && rest.to_ascii_lowercase().contains("ollama")
+            && runs_ollama_serve(rest)
         {
             runs_ollama = true;
         }
@@ -309,12 +329,25 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
             crate::scanners::telemetry::note_probe(dir, false);
             continue;
         }
-        let Ok(entries) = crate::scanners::probe_read_dir(dir) else { continue };
-        let mut names: Vec<String> = entries
-            .flatten()
-            .take(MAX_SERVICE_ENTRIES)
-            .filter_map(|e| e.file_name().to_str().map(String::from))
-            .collect();
+        // The system directory is probed for the two names it can hold, not listed: a
+        // large /etc/systemd/system cut to a listing cap in read_dir order could drop
+        // ollama.service nondeterministically. Elsewhere the cap applies after the suffix
+        // filter, and the kept names are sorted.
+        let mut names: Vec<String> = if *all {
+            let Ok(entries) = crate::scanners::probe_read_dir(dir) else { continue };
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .filter(|n| n.ends_with(".service") || n.ends_with(".service.d"))
+                .take(MAX_SERVICE_ENTRIES)
+                .collect()
+        } else {
+            ["ollama.service", "ollama.service.d"]
+                .iter()
+                .filter(|n| std::fs::symlink_metadata(dir.join(n)).is_ok())
+                .map(|n| n.to_string())
+                .collect()
+        };
         names.sort();
         let wanted = |unit: &str| *all || unit == "ollama.service";
         let mut files: Vec<(PathBuf, String)> = Vec::new();
@@ -330,9 +363,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
             {
                 let mut cs: Vec<String> = confs
                     .flatten()
-                    .take(MAX_SERVICE_ENTRIES)
                     .filter_map(|e| e.file_name().to_str().map(String::from))
                     .filter(|c| c.ends_with(".conf"))
+                    .take(MAX_SERVICE_ENTRIES)
                     .collect();
                 cs.sort();
                 for c in cs {
@@ -347,7 +380,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
             let Some(text) = crate::scanners::read_bounded(&path) else { continue };
             let (value, runs) = systemd_ollama_host(&text);
             if let Some(v) = value {
-                let service = runs || unit.to_ascii_lowercase().contains("ollama");
+                // The server: a unit whose ExecStart is `ollama serve`, or the official
+                // installer's ollama.service (and its drop-ins), whatever it execs.
+                let service = runs || unit == "ollama.service";
                 out.push(ollama_entry(label, &path, &v, service));
             }
         }
@@ -412,7 +447,13 @@ pub fn launchd_ollama_host(text: &str) -> (Option<String>, bool) {
             value = Some(val.clone());
             service = true;
         }
-        if *tag == "string" && v != "OLLAMA_HOST" && v.to_ascii_lowercase().contains("ollama") {
+        // ProgramArguments of the server: `.../ollama` followed by `serve`, or the
+        // macOS app bundle. A job that merely mentions ollama is a client.
+        if *tag == "string"
+            && (v.contains("Ollama.app/")
+                || (v.rsplit('/').next() == Some("ollama")
+                    && toks.get(i + 1).is_some_and(|(t, a)| *t == "string" && a == "serve")))
+        {
             service = true;
         }
     }
@@ -432,10 +473,10 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
         let Ok(entries) = crate::scanners::probe_read_dir(dir) else { continue };
         let mut names: Vec<String> = entries
             .flatten()
-            .take(MAX_SERVICE_ENTRIES)
             .filter_map(|e| e.file_name().to_str().map(String::from))
             .filter(|n| n.ends_with(".plist"))
             .filter(|n| *all || n.to_ascii_lowercase().contains("ollama"))
+            .take(MAX_SERVICE_ENTRIES)
             .collect();
         names.sort();
         for n in names {
@@ -446,7 +487,10 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
             let Some(text) = crate::scanners::read_bounded(&p) else { continue };
             let (value, svc) = launchd_ollama_host(&text);
             if let Some(v) = value {
-                let service = svc || n.to_ascii_lowercase().contains("ollama");
+                // In the system directories only ollama-named jobs are read at all, and
+                // one there that sets OLLAMA_HOST is the server's. In the user's own
+                // LaunchAgents the job has to show it runs the server.
+                let service = svc || (!*all && n.to_ascii_lowercase().contains("ollama"));
                 out.push(ollama_entry("launchd", &p, &v, service));
             }
         }

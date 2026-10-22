@@ -25,7 +25,7 @@ impl Scanner for AgentSettingsScanner {
         );
 
         // Managed (organization) settings: highest precedence, machine-wide.
-        parse_managed_settings(&platform.managed_settings_dir(), &mut results);
+        parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &mut results);
 
         // Project-scoped settings from known projects + the current directory.
         let mut project_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
@@ -147,9 +147,15 @@ pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -
         out.push(AgentHook {
             event: (*key).to_string(),
             matcher: None,
-            command: crate::scanners::redact_secrets_in_text(cmd),
+            // A helper exists to print a credential, so literal arguments are redacted on
+            // top of the usual rules; sanitized so a repository cannot write ESC/newline
+            // into the terminal report.
+            command: crate::scanners::sanitize_display(&crate::scanners::redact_helper_command(cmd), 1000),
             dangerous: helper_dangerous(cmd),
-            risks: classify_hook_command(cmd, settings_path),
+            risks: classify_hook_command(&crate::scanners::redact_helper_command(cmd), settings_path)
+                .into_iter()
+                .map(|r| crate::scanners::sanitize_display(&r, 400))
+                .collect(),
         });
     }
     out
@@ -275,7 +281,7 @@ pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> V
             out.push(AgentHook {
                 event: event.clone(),
                 matcher,
-                command: crate::scanners::redact_secrets_in_text(command),
+                command: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(command), 2000),
                 dangerous: !crate::scanners::rules_files::check_dangerous_patterns(command)
                     .is_empty(),
                 risks: classify_hook_command(command, settings_path),
@@ -388,11 +394,26 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
 pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::GatewayOverride> {
     let (_, official_host) = GATEWAY_VARS.iter().find(|(v, _)| *v == var)?;
     let host = url_host(value);
-    Some(crate::models::GatewayOverride {
-        var: var.to_string(),
-        official: host.eq_ignore_ascii_case(official_host),
-        host,
-    })
+    let official = host.eq_ignore_ascii_case(official_host)
+        || (var.starts_with("OPENAI_") && is_openai_compatible_provider(&host));
+    Some(crate::models::GatewayOverride { var: var.to_string(), official, host })
+}
+
+/// First-party providers whose documented API is OpenAI-compatible, so an OPENAI_BASE_URL
+/// pointing at them is the provider's own endpoint, not a third-party gateway: Groq
+/// (api.groq.com/openai/v1), Mistral, Google Gemini (generativelanguage.googleapis.com
+/// /v1beta/openai), Together, DeepSeek, Fireworks, xAI, OpenRouter, Perplexity, and Azure
+/// OpenAI resources (`<resource>.openai.azure.com`).
+const OPENAI_COMPATIBLE_HOSTS: &[&str] = &[
+    "api.groq.com", "api.mistral.ai", "generativelanguage.googleapis.com", "api.together.xyz",
+    "api.deepseek.com", "api.fireworks.ai", "api.x.ai", "openrouter.ai", "api.perplexity.ai",
+];
+const OPENAI_COMPATIBLE_SUFFIXES: &[&str] = &[".openai.azure.com"];
+
+pub fn is_openai_compatible_provider(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    OPENAI_COMPATIBLE_HOSTS.contains(&h.as_str())
+        || OPENAI_COMPATIBLE_SUFFIXES.iter().any(|s| h.len() > s.len() && h.ends_with(s))
 }
 
 /// Extract the host from a URL-ish string (scheme optional), lowercased.
@@ -584,7 +605,7 @@ pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<Agen
                 hooks.push(AgentHook {
                     event: event.clone(),
                     matcher: matcher.clone(),
-                    command: crate::scanners::redact_secrets_in_text(command),
+                    command: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(command), 2000),
                     dangerous,
                     risks,
                 });

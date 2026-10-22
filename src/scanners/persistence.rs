@@ -512,7 +512,7 @@ pub(crate) fn lexical_join(base: &Path, target: &Path) -> PathBuf {
 }
 
 pub(crate) fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
-    if resolved.starts_with("/etc") {
+    if resolved.starts_with("/etc") || is_sensitive_read_target(resolved, home) {
         return true;
     }
     let Ok(rel) = resolved.strip_prefix(home) else {
@@ -529,9 +529,84 @@ pub(crate) fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
         .is_some_and(|n| SENSITIVE_TARGET_FILES.contains(&n))
 }
 
+/// HOME-relative paths (directories or files) whose content must never be read through a
+/// link: keys, credential stores, keyrings, browser profiles and agent homes. Narrower
+/// than SENSITIVE_TARGET_DIRS where that matters for reading: `~/.config` as a whole is
+/// the XDG location of ordinary dotfiles, so only its known credential subpaths are here.
+const SENSITIVE_READ_PATHS: &[&str] = &[
+    ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", ".pki", ".oci",
+    ".terraform.d", ".gem/credentials", ".cargo/credentials", ".cargo/credentials.toml",
+    ".vault-token", ".netrc", ".pgpass", ".my.cnf", ".git-credentials", ".npmrc", ".pypirc",
+    ".yarnrc.yml", ".local/share/keyrings", ".local/share/fish", ".mozilla", ".thunderbird",
+    ".config/gcloud", ".config/gh", ".config/hub", ".config/op", ".config/sops", ".config/rclone",
+    ".config/containers", ".config/git/credentials", ".config/google-chrome", ".config/chromium",
+    ".config/BraveSoftware", ".config/doctl", ".config/Bitwarden CLI", ".config/fish/config.fish",
+    ".config/github-copilot", ".config/claude", "Library/Keychains", "Library/Cookies",
+    "Library/Application Support/Google/Chrome", ".claude", ".claude.json", ".codex", ".gemini",
+    ".cursor", ".kiro",
+];
+/// File names that are sensitive wherever they sit under HOME: shell rc and history
+/// files, `.env` files, authorized_keys.
+const SENSITIVE_READ_NAMES: &[&str] = &[
+    ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv", ".zprofile",
+    ".zlogin", ".profile", ".bash_history", ".zsh_history", ".python_history", ".psql_history",
+    ".mysql_history", ".node_repl_history", ".sqlite_history", ".lesshst", ".viminfo",
+    "authorized_keys", ".netrc", ".pgpass",
+];
+/// Trees outside HOME that hold system configuration, process state or other users' data.
+const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
+    "/etc", "/proc", "/sys", "/dev", "/root", "/var", "/private", "/run", "/boot", "/Library/Keychains",
+];
+
+/// True when a resolved path must not be READ through a link: a credential, key,
+/// keyring, shell-rc/history, `.env` or agent-settings path under HOME, another user's
+/// home, or a system tree (/etc, /proc, /sys, /root, /var, ...). Paths under HOME are
+/// judged only by the HOME rules, so a HOME that itself lives under /var (macOS temp
+/// homes) is not refused wholesale.
+pub(crate) fn is_sensitive_read_target(resolved: &Path, home: &Path) -> bool {
+    if let Ok(rel) = resolved.strip_prefix(home) {
+        if SENSITIVE_READ_PATHS.iter().any(|p| rel.starts_with(p)) {
+            return true;
+        }
+        return resolved.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            SENSITIVE_READ_NAMES.contains(&n) || n == ".env" || n.starts_with(".env.")
+        });
+    }
+    if SENSITIVE_SYSTEM_ROOTS.iter().any(|r| resolved.starts_with(r)) {
+        return true;
+    }
+    // Another user's home directory.
+    ["/home", "/Users"].iter().any(|b| resolved.starts_with(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_read_targets() {
+        let home = Path::new("/home/u");
+        for p in [
+            "/home/u/.ssh/id_ed25519", "/home/u/.netrc", "/home/u/.pgpass", "/home/u/.vault-token",
+            "/home/u/.password-store/x.gpg", "/home/u/.local/share/keyrings/login.keyring",
+            "/home/u/.config/gcloud/credentials.db", "/home/u/.config/gh/hosts.yml",
+            "/home/u/.zsh_history", "/home/u/proj/.env", "/home/u/.claude/settings.json",
+            "/proc/self/environ", "/sys/kernel/x", "/root/.bashrc", "/home/other/notes.md",
+            "/etc/shadow", "/var/lib/x",
+        ] {
+            assert!(is_sensitive_read_target(Path::new(p), home), "{p}");
+        }
+        for p in [
+            "/home/u/.config/dotfiles/skills/x/SKILL.md", "/home/u/dotfiles/SKILL.md",
+            "/home/u/Documents/notes.md", "/nix/store/abc-skill/SKILL.md", "/tmp/x",
+        ] {
+            assert!(!is_sensitive_read_target(Path::new(p), home), "{p}");
+        }
+        // A home under /var is judged by the HOME rules only.
+        let mac = Path::new("/private/var/folders/x/T/h");
+        assert!(!is_sensitive_read_target(&mac.join("dotfiles/a.md"), mac));
+        assert!(is_sensitive_read_target(&mac.join(".ssh/id_rsa"), mac));
+    }
 
     #[test]
     fn pth_import_detection_ignores_path_lines() {

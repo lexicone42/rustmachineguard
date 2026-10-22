@@ -30,18 +30,28 @@ fn write(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
 }
 
-/// Run rmguard against `home` with only `keep` scanners enabled. Returns (stdout, report).
-fn scan(home: &Path, keep: &[&str]) -> (String, ScanReport) {
+/// Run rmguard against `home` with only `keep` scanners enabled, in `format`. Machine-wide
+/// paths (/etc/claude-code, /etc/systemd/system, /Library/...) are re-rooted under
+/// `<home>/sysroot` (RMGUARD_TEST_SYSTEM_ROOT, honoured by debug builds only), so the
+/// host's own managed settings and Ollama unit cannot change a test's counts.
+fn scan_format(home: &Path, keep: &[&str], format: &str) -> String {
     let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| !keep.contains(l)).collect();
     let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
-        .args(["--format", "json", "--skip", &skip.join(",")])
+        .args(["--format", format, "--skip", &skip.join(",")])
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
+        .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+        .env("NO_COLOR", "1")
         .current_dir(home)
         .output()
         .expect("run rmguard");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// [`scan_format`] as JSON. Returns (stdout, report).
+fn scan(home: &Path, keep: &[&str]) -> (String, ScanReport) {
+    let text = scan_format(home, keep, "json");
     let report: ScanReport = serde_json::from_str(&text).expect("report json");
     (text, report)
 }
@@ -147,7 +157,7 @@ fn plugin_pin_shapes_are_flagged_and_normal_clones_stay_quiet() {
     assert!(has(Severity::Critical, &|f| f.location.ends_with("FETCH_HEAD") && f.title.contains("different commit")), "{dump}");
     assert!(has(Severity::Critical, &|f| f.evidence.as_deref().is_some_and(|e| e.starts_with("refs/remotes/origin/"))), "{dump}");
     assert!(has(Severity::Medium, &|f| f.evidence.as_deref().is_some_and(|e| e.starts_with("refs/tags/")) && !f.title.contains("different")), "{dump}");
-    assert!(has(Severity::Medium, &|f| f.title.contains("plugin 'p' from 'evilmkt' is pinned to a branch name")), "{dump}");
+    assert!(has(Severity::Medium, &|f| f.title.contains("plugin 'p' from 'evilmkt' is pinned to a branch or tag name")), "{dump}");
     assert!(has(Severity::Medium, &|f| f.title.contains("installed plugin 'p@evilmkt'")), "{dump}");
     assert!(has(Severity::Medium, &|f| f.title.contains("plugin 'q' from 'evilmkt' gives a commit ID as its ref")), "{dump}");
     assert!(!pins.iter().any(|f| f.title.contains("'r'")), "uninstalled plugin r must stay quiet: {dump}");
@@ -256,11 +266,11 @@ fn skill_symlinks_dynamic_context_and_bash_grants() {
     assert_eq!(tp_grant[0].severity, Severity::Low);
     assert!(!grant.iter().any(|f| f.title.contains("op@official")), "{dump}");
     if have_git {
-        assert!(
-            grant.iter().any(|f| f.severity == Severity::Low && f.title.contains("'deploy'") && f.title.contains("git-tracked")),
-            "{dump}"
-        );
-        assert_eq!(grant.len(), 2, "{dump}");
+        // The committed grant is the repository's documented choice: inventory only.
+        assert!(!grant.iter().any(|f| f.title.contains("'deploy'")), "{dump}");
+        let deploy = report.agent_skills.iter().find(|s| s.path.ends_with("deploy/SKILL.md")).unwrap();
+        assert!(deploy.unrestricted_bash, "still inventoried");
+        assert_eq!(grant.len(), 1, "{dump}");
     }
 }
 
@@ -270,6 +280,7 @@ fn disable_skill_shell_execution_suppresses_skill_commands() {
     let proj = home.join("proj");
     let have_git = git_repo(&proj, &home);
     write(&proj.join(".claude/commands/st.md"), "Status: !`git status`\n");
+    // Untracked in a git repository: the grant is reported (the command is not, below).
     write(&proj.join(".claude/skills/deploy/SKILL.md"), "---\nallowed-tools: Bash(*)\n---\nDeploy.\n");
     register_projects(&home, &[&proj]);
     write(&home.join(".claude/settings.json"), r#"{"disableSkillShellExecution": true}"#);
@@ -520,7 +531,7 @@ fn extension_theme_code_and_native_addon() {
     let dump = format!("{ec:#?}");
     assert_eq!(ec.len(), 2, "{dump}");
     assert!(ec.iter().all(|f| f.severity == Severity::Low && f.location == "evil.night-theme"), "{dump}");
-    assert!(ec.iter().any(|f| f.title.contains("also runs code (main, activationEvents)")), "{dump}");
+    assert!(ec.iter().any(|f| f.title.contains("runs code (main, activationEvents) but contributes no commands or settings")), "{dump}");
     assert!(ec.iter().any(|f| f.title.contains("declares itself Themes but ships native addon(s): bin/x.node")), "{dump}");
     let pyl = report.ide_extensions.iter().find(|x| x.id == "ms-python.vscode-pylance").unwrap();
     assert!(!pyl.declarative_claim && pyl.native_addons.is_empty(), "non-declarative extensions are not walked");
@@ -613,6 +624,386 @@ fn system_unit_dir_reads_only_the_ollama_unit() {
     assert_eq!((o.bind.as_str(), o.service), ("wildcard", true));
 }
 
+// ── Review round 1 (2026-10-22): each test below fails on d7a3b4e ─────────────────
+
+/// A symlink chain must be judged on its REAL path: an intermediate directory link, a
+/// second hop through a directory outside HOME, and credential files the first-hop
+/// lexical list missed (.netrc, .pgpass, /proc/self/environ) are never read.
+#[test]
+fn skill_links_are_judged_on_their_real_path() {
+    let home = temp_home("realpath");
+    let key = "!`KEYCANARY_cmd`\n-----BEGIN OPENSSH PRIVATE KEY-----\nKEYCANARY\n";
+    write(&home.join(".ssh/id_ed25519"), key);
+    write(&home.join(".netrc"), "machine h login u password NETRCCANARY !`NETRCCANARY_cmd`\n");
+    write(&home.join(".pgpass"), "h:5432:db:u:PGCANARY\n");
+    let skills = home.join(".claude/skills");
+    // (1) Intermediate directory symlink in the user's own skills.
+    fs::create_dir_all(skills.join("indirect")).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh"), skills.join("indirect/d")).unwrap();
+    std::os::unix::fs::symlink("d/id_ed25519", skills.join("indirect/SKILL.md")).unwrap();
+    // (2) Two hops: the first through a directory outside HOME.
+    let hop = std::env::temp_dir().join(format!("rmg-asd-hop-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&hop);
+    fs::create_dir_all(&hop).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), hop.join("chainhop")).unwrap();
+    fs::create_dir_all(skills.join("evil2")).unwrap();
+    std::os::unix::fs::symlink(hop.join("chainhop"), skills.join("evil2/SKILL.md")).unwrap();
+    // (3) Credential files outside the old first-hop list, and procfs.
+    fs::create_dir_all(skills.join("netrc")).unwrap();
+    std::os::unix::fs::symlink("../../../.netrc", skills.join("netrc/SKILL.md")).unwrap();
+    fs::create_dir_all(skills.join("environ")).unwrap();
+    std::os::unix::fs::symlink("/proc/self/environ", skills.join("environ/SKILL.md")).unwrap();
+    write(&home.join(".claude/commands/ok.md"), "fine\n");
+    std::os::unix::fs::symlink(home.join(".pgpass"), home.join(".claude/commands/pg.md")).unwrap();
+    std::os::unix::fs::symlink("../../.ssh/id_ed25519", home.join(".claude/commands/k.md")).unwrap();
+    // (4) A third-party marketplace clone using only relative (committable) links.
+    let plugins = home.join(".claude/plugins");
+    write(&plugins.join("known_marketplaces.json"), r#"{"evil-mkt":{"source":{"source":"github","repo":"randomvendor/x"}}}"#);
+    let helper = plugins.join("marketplaces/evil-mkt/skills/helper");
+    fs::create_dir_all(&helper).unwrap();
+    std::os::unix::fs::symlink("../../../../../../.ssh", helper.join("keys")).unwrap();
+    std::os::unix::fs::symlink("keys/id_ed25519", helper.join("SKILL.md")).unwrap();
+
+    let (stdout, report) = scan(&home, &["skills"]);
+    let _ = fs::remove_dir_all(&home);
+    let _ = fs::remove_dir_all(&hop);
+    for canary in ["KEYCANARY", "NETRCCANARY", "PGCANARY"] {
+        assert!(!stdout.contains(canary), "{canary} was read through a skill link");
+    }
+    let key_sha = rustmachineguard::scanners::sha256_hex(key);
+    assert!(!stdout.contains(&key_sha), "the private key's hash reached the report");
+    let findings = collect_findings(&report);
+    let sym = of(&findings, "Skill symlink");
+    let dump = format!("{sym:#?}\n{:#?}", report.agent_skills);
+    for name in ["indirect/SKILL.md", "evil2/SKILL.md", "netrc/SKILL.md", "environ/SKILL.md", "commands/pg.md", "commands/k.md", "helper/SKILL.md"] {
+        let s = report.agent_skills.iter().find(|s| s.path.ends_with(name)).unwrap_or_else(|| panic!("{name} not inventoried: {dump}"));
+        assert_eq!(s.sha256, "symlink-not-followed", "{name}: {dump}");
+        assert_eq!(s.size_bytes, 0, "{name}");
+        assert!(s.dynamic_commands.is_empty() && s.capabilities.is_empty(), "{name}: content was analysed");
+        assert!(s.symlink.as_ref().is_some_and(|l| l.sensitive_target && !l.followed), "{name}: {dump}");
+        assert!(sym.iter().any(|f| f.severity == Severity::High && f.location.ends_with(name)), "{name}: {dump}");
+    }
+    // Negative control: a plain command file is still read.
+    let ok = report.agent_skills.iter().find(|s| s.path.ends_with("commands/ok.md")).unwrap();
+    assert_eq!(ok.size_bytes, 5);
+    assert!(!sym.iter().any(|f| f.location.ends_with("ok.md")));
+}
+
+/// The user's own links into their own non-credential files are read and reported Low:
+/// an XDG dotfiles checkout under ~/.config is not a credential path. Repository-controlled
+/// links (a project, a plugin) are read only inside the repository; a project command
+/// linked to another file in the same repository is not an escape.
+#[test]
+fn skill_links_xdg_dotfiles_and_in_repo_links_stay_low_or_quiet() {
+    let home = temp_home("xdg");
+    write(&home.join(".config/dotfiles/skills/xdg/SKILL.md"), "---\nname: xdg\n---\nStatus: !`git status`\n");
+    fs::create_dir_all(home.join(".claude/skills/xdg")).unwrap();
+    std::os::unix::fs::symlink(home.join(".config/dotfiles/skills/xdg/SKILL.md"), home.join(".claude/skills/xdg/SKILL.md")).unwrap();
+    let proj = home.join("proj");
+    write(&proj.join("docs/review.md"), "Review: !`git diff --stat`\n");
+    fs::create_dir_all(proj.join(".claude/commands")).unwrap();
+    std::os::unix::fs::symlink("../../docs/review.md", proj.join(".claude/commands/review.md")).unwrap();
+    // A project link out of the repository into the user's documents: not read.
+    write(&home.join("Documents/notes.md"), "NOTESCANARY\n");
+    std::os::unix::fs::symlink(home.join("Documents/notes.md"), proj.join(".claude/commands/notes.md")).unwrap();
+    register_projects(&home, &[&proj]);
+
+    let (stdout, report) = scan(&home, &["skills"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let dump = format!("{:#?}", findings.iter().filter(|f| f.category.starts_with("Skill")).collect::<Vec<_>>());
+    let xdg = report.agent_skills.iter().find(|s| s.path.ends_with("xdg/SKILL.md")).unwrap();
+    assert!(xdg.symlink.as_ref().is_some_and(|l| l.escapes && l.followed && !l.sensitive_target), "{dump}");
+    assert_eq!(xdg.dynamic_commands.len(), 1, "the dotfiles skill must be analysed");
+    let sym = of(&findings, "Skill symlink");
+    assert!(sym.iter().any(|f| f.severity == Severity::Low && f.location.ends_with("xdg/SKILL.md")), "{dump}");
+    assert!(!sym.iter().any(|f| f.severity == Severity::High), "{dump}");
+    assert!(!sym.iter().any(|f| f.location.ends_with("review.md")), "in-repo link flagged: {dump}");
+    let review = report.agent_skills.iter().find(|s| s.path.ends_with("commands/review.md")).unwrap();
+    assert_eq!(review.dynamic_commands.len(), 1);
+    assert!(!stdout.contains("NOTESCANARY"), "a project link out of the repository was read");
+    assert!(sym.iter().any(|f| f.severity == Severity::Low && f.location.ends_with("notes.md") && f.title.contains("outside its project — not read")), "{dump}");
+}
+
+/// marketplace.json, HEAD, FETCH_HEAD and packed-refs inside a clone are repository
+/// content: a symlink there is never opened. The "key" files here hold content that WOULD
+/// produce a finding if read, so silence proves the read was refused.
+#[test]
+fn marketplace_clone_files_are_not_read_through_symlinks() {
+    let home = temp_home("mktlink");
+    let plugins = home.join(".claude/plugins");
+    write(&plugins.join("known_marketplaces.json"), r#"{"evil-mkt":{"source":{"source":"github","repo":"randomvendor/x"}},"m-link":{"source":{"source":"github","repo":"randomvendor/y"}}}"#);
+    write(&plugins.join("installed_plugins.json"), r#"{"version":2,"plugins":{"p@evil-mkt":[{"installPath":"/nowhere"}]}}"#);
+    write(&home.join(".ssh/id_ed25519"), r#"{"plugins":[{"name":"p","source":{"source":"url","url":"https://x/p.git","sha":"main"}}]}"#);
+    write(&home.join(".ssh/id_rsa"), &format!("ref: refs/heads/{HEXA}\n"));
+    write(&home.join(".ssh/fetch"), &format!("{HEXB}\t\tbranch '{HEXA}' of https://x\n"));
+    write(&home.join(".ssh/packed"), &format!("{HEXC} refs/tags/{HEXC}\n"));
+    let cp = plugins.join("marketplaces/evil-mkt/.claude-plugin");
+    fs::create_dir_all(&cp).unwrap();
+    std::os::unix::fs::symlink("../../../../../.ssh/id_ed25519", cp.join("marketplace.json")).unwrap();
+    let g = plugins.join("marketplaces/m-link/.git");
+    fs::create_dir_all(g.join("refs/heads")).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), g.join("HEAD")).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh/fetch"), g.join("FETCH_HEAD")).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh/packed"), g.join("packed-refs")).unwrap();
+    let (_, report) = scan(&home, &["marketplaces"]);
+    // Control: the same content as regular files is reported.
+    fs::remove_file(cp.join("marketplace.json")).unwrap();
+    fs::copy(home.join(".ssh/id_ed25519"), cp.join("marketplace.json")).unwrap();
+    fs::remove_file(g.join("HEAD")).unwrap();
+    fs::copy(home.join(".ssh/id_rsa"), g.join("HEAD")).unwrap();
+    let (_, control) = scan(&home, &["marketplaces"]);
+    let _ = fs::remove_dir_all(&home);
+    let pins = of(&collect_findings(&report), "Plugin pin").len();
+    assert_eq!(pins, 0, "{:#?}", report.marketplaces);
+    let c = collect_findings(&control);
+    let cp = of(&c, "Plugin pin");
+    assert!(cp.iter().any(|f| f.title.contains("plugin 'p'")), "{cp:#?}");
+    assert!(cp.iter().any(|f| f.title.contains("checked out on a branch")), "{cp:#?}");
+}
+
+/// An abbreviated sha, an empty one and a branch name are three different statements.
+#[test]
+fn pin_sha_problems_are_worded_by_kind() {
+    let home = temp_home("pinkind");
+    let plugins = home.join(".claude/plugins");
+    write(&plugins.join("known_marketplaces.json"), r#"{"m1":{"source":{"source":"github","repo":"randomvendor/m1","sha":"faf5305"}}}"#);
+    write(
+        &plugins.join("marketplaces/m1/.claude-plugin/marketplace.json"),
+        &format!(
+            r#"{{"plugins":[{{"name":"p2","source":{{"source":"url","url":"https://x/p2.git","ref":"v1.2.3","sha":"faf530538"}}}},
+                {{"name":"p3","source":{{"source":"url","url":"https://x/p3.git","sha":"release"}}}},
+                {{"name":"p4","source":{{"source":"url","url":"https://x/p4.git","sha":"{HEXE}"}}}}]}}"#
+        ),
+    );
+    write(
+        &plugins.join("installed_plugins.json"),
+        &format!(
+            r#"{{"version":2,"plugins":{{"p1@m1":[{{"gitCommitSha":""}}],"p2@m1":[{{"gitCommitSha":"faf5305"}}],"p3@m1":[{{"gitCommitSha":"main"}}],"p4@m1":[{{"gitCommitSha":"{HEXE}"}}]}}}}"#
+        ),
+    );
+    let (_, report) = scan(&home, &["marketplaces"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let pins = of(&findings, "Plugin pin");
+    let dump = format!("{pins:#?}");
+    let has = |sev: Severity, s: &str| pins.iter().any(|f| f.severity == sev && f.title.contains(s));
+    assert!(has(Severity::Medium, "marketplace 'm1' is pinned to an abbreviated commit ID"), "{dump}");
+    assert!(has(Severity::Medium, "plugin 'p2' from 'm1' is pinned to an abbreviated commit ID"), "{dump}");
+    assert!(has(Severity::Medium, "plugin 'p3' from 'm1' is pinned to a branch or tag name"), "{dump}");
+    assert!(has(Severity::Low, "installed plugin 'p1@m1' records an empty gitCommitSha"), "{dump}");
+    assert!(has(Severity::Medium, "installed plugin 'p2@m1' records an abbreviated gitCommitSha"), "{dump}");
+    assert!(has(Severity::Medium, "installed plugin 'p3@m1' records a gitCommitSha that is a name"), "{dump}");
+    assert!(!pins.iter().any(|f| f.title.contains("branch name") && (f.title.contains("'p2'") || f.title.contains("'m1' is"))), "{dump}");
+    assert!(!pins.iter().any(|f| f.title.contains("p4")), "full commit pins are quiet: {dump}");
+    assert_eq!(pins.len(), 6, "{dump}");
+}
+
+/// OLLAMA_HOST as a client target (a remote IP in a profile or .env, a web UI unit that
+/// points at a remote Ollama) is quiet; only a wildcard, or the server's own unit, warns.
+#[test]
+fn ollama_client_targets_stay_quiet() {
+    let home = temp_home("ollamaclient");
+    write(&home.join(".zshrc"), "export OLLAMA_HOST=http://192.168.1.20:11434\n");
+    write(&home.join(".profile"), "OLLAMA_HOST=gpu-box.lan:11434\n");
+    let units = home.join(".config/systemd/user");
+    write(
+        &units.join("open-webui.service"),
+        "[Service]\nExecStart=/usr/bin/docker run --rm -p 127.0.0.1:3000:8080 ghcr.io/open-webui/open-webui:ollama\nEnvironment=OLLAMA_HOST=http://192.168.1.20:11434\n",
+    );
+    write(&units.join("my-ollama.service"), "[Service]\nExecStart=-/usr/local/bin/ollama serve\nEnvironment=OLLAMA_HOST=192.168.1.20\n");
+    let proj = home.join("app");
+    write(&proj.join(".env"), "OLLAMA_HOST=http://192.168.1.20:11434\n");
+    register_projects(&home, &[&proj]);
+    let (_, report) = scan(&home, &["shell", "envfiles"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let oe = of(&findings, "Ollama exposure");
+    let dump = format!("{oe:#?}");
+    assert_eq!(oe.len(), 1, "{dump}");
+    assert!(oe[0].location.ends_with("my-ollama.service") && oe[0].severity == Severity::Medium, "{dump}");
+    assert!(oe[0].title.contains("makes the Ollama server listen on a non-loopback address"), "{dump}");
+    let webui = report.shell_configs.iter().find(|c| c.config_path.ends_with("open-webui.service")).unwrap();
+    assert!(!webui.ollama_host.as_ref().unwrap().service, "a client unit is not the server");
+}
+
+#[test]
+fn ollama_serve_command_lines() {
+    use rustmachineguard::scanners::shell_configs::runs_ollama_serve as r;
+    assert!(r("/usr/bin/ollama serve"));
+    assert!(r("-/usr/local/bin/ollama serve"));
+    assert!(r("/usr/bin/env OLLAMA_DEBUG=1 ollama serve"));
+    assert!(!r("/usr/bin/ollama run llama3"));
+    assert!(!r("/usr/bin/docker run ghcr.io/open-webui/open-webui:ollama"));
+    assert!(!r("/opt/ollama-proxy/bin/proxy serve"));
+}
+
+/// The settings helpers exist to print a credential: a literal one never reaches any
+/// output, nor does attacker ESC/newline text from a helper, a hook, a skill directory
+/// name or an extension directory name.
+#[test]
+fn helper_literals_and_terminal_escapes_never_reach_the_report() {
+    let home = temp_home("helperlit");
+    let ant = "sk-ant-api03-AIXY2Wb5727UjyaZqQ8cVnM0ggAAbcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH-AA";
+    write(
+        &home.join(".claude/settings.json"),
+        &format!(
+            r#"{{"apiKeyHelper":"echo {ant}",
+                "awsAuthRefresh":"MYPASS=plainhunter2 aws sso login",
+                "otelHeadersHelper":"echo litellm-0123456789abcdef0123456789",
+                "hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"x \u001b[2J hook\nFAKELINE"}}]}}]}}}}"#
+        ),
+    );
+    let proj = home.join("proj");
+    write(&proj.join(".claude/settings.json"), r#"{"apiKeyHelper":"./k.sh \u001b[2J\u001b[32mALL CLEAN\nfake \u001b]0;pwned\u0007"}"#);
+    write(&proj.join(".claude/settings.local.json"), r#"{"awsCredentialExport":"op read op://vault/aws/creds"}"#);
+    let evil_skill = proj.join(".claude/commands").join("ev\u{1b}]0;T\u{7}il.md");
+    write(&evil_skill, "Status: !`git status`\n");
+    let ext = home.join(".vscode/extensions/pub.th\u{1b}[31m-1.0.0");
+    write(&ext.join("package.json"), r#"{"name":"th","categories":["Themes"],"contributes":{"themes":[]},"main":"./x.js"}"#);
+    register_projects(&home, &[&proj]);
+    let keep = ["settings", "skills", "extensions"];
+    let (json, report) = scan(&home, &keep);
+    let term = scan_format(&home, &keep, "terminal");
+    let html = scan_format(&home, &keep, "html");
+    let bp = scan_format(&home, &keep, "blueprint");
+    let _ = fs::remove_dir_all(&home);
+    for (fmt, text) in [("json", &json), ("terminal", &term), ("html", &html), ("blueprint", &bp)] {
+        for canary in ["AIXY2Wb5727", "plainhunter2", "0123456789abcdef0123456789"] {
+            assert!(!text.contains(canary), "{fmt}: {canary} reached the report");
+        }
+    }
+    let raw: Vec<&str> = term.lines().filter(|l| l.contains('\u{1b}') || l.contains('\u{7}')).collect();
+    assert!(raw.is_empty(), "raw ESC/BEL in the terminal report: {raw:?}");
+    assert!(!term.lines().any(|l| l.trim_start().starts_with("fake") || l.trim_start().starts_with("FAKELINE")), "a newline forged a report line");
+    // Redaction keeps the signal: the program, the pipe-less form, and the user's vars.
+    let user = report.agent_settings.iter().find(|s| s.source == "user-global").unwrap();
+    let cmd = |k: &str| user.helper_commands.iter().find(|h| h.event == k).map(|h| h.command.clone()).unwrap();
+    assert_eq!(cmd("apiKeyHelper"), "echo <redacted>");
+    assert_eq!(cmd("awsAuthRefresh"), "MYPASS=<redacted> aws sso login");
+    let findings = collect_findings(&report);
+    let helpers = of(&findings, "Helper command");
+    // settings.local.json untracked: the user's own file, Low.
+    assert!(helpers.iter().any(|f| f.severity == Severity::Low && f.title.starts_with("awsCredentialExport")), "{helpers:#?}");
+    assert!(helpers.iter().any(|f| f.evidence.as_deref().is_some_and(|e| e.contains("./k.sh ?[2J"))), "{helpers:#?}");
+    let ec = of(&findings, "Extension code");
+    assert!(ec.iter().all(|f| !f.location.contains('\u{1b}') && !f.title.contains('\u{1b}')), "{ec:#?}");
+    assert!(of(&findings, "Skill command").iter().all(|f| !f.location.contains('\u{1b}')));
+}
+
+/// .env gateways: named OpenAI-compatible providers are not "non-official"; an untracked
+/// non-official host is Low and worded "when loaded"; the default agent home relocates
+/// nothing; `../` leaves the project; a key pasted into a base URL is never echoed.
+#[test]
+fn env_gateway_grading_and_values() {
+    let home = temp_home("envgw");
+    let app = home.join("app");
+    write(
+        &app.join(".env"),
+        "OPENAI_BASE_URL=https://api.groq.com/openai/v1\nCLAUDE_CONFIG_DIR=~/.claude\n\
+         ANTHROPIC_BASE_URL=https://llm-proxy.example.net\nCODEX_HOME=../../../../../tmp/evil-codex\n",
+    );
+    let azure = home.join("azure");
+    write(&azure.join(".env"), "OPENAI_BASE_URL=https://myco.openai.azure.com/openai/v1\nOPENAI_API_BASE=sk-proj-AAAAbbbbCCCCddddEEEEffffGGGGhhhh\n");
+    register_projects(&home, &[&app, &azure]);
+    let (stdout, report) = scan(&home, &["envfiles"]);
+    let _ = fs::remove_dir_all(&home);
+    assert!(!stdout.contains("AAAAbbbbCCCC") && !stdout.to_lowercase().contains("aaaabbbbcccc"), "a key in a base-URL var was echoed");
+    let findings: Vec<Finding> = collect_findings(&report).into_iter().filter(|f| f.category != "Secret exposure").collect();
+    let dump = format!("{findings:#?}");
+    assert!(!findings.iter().any(|f| f.title.contains("groq") || f.title.contains("azure.com")), "{dump}");
+    assert!(!findings.iter().any(|f| f.title.starts_with("CLAUDE_CONFIG_DIR")), "default home is not a relocation: {dump}");
+    let gw: Vec<_> = findings.iter().filter(|f| f.category == "Gateway routing").collect();
+    assert!(gw.iter().any(|f| f.severity == Severity::Low && f.title.contains("llm-proxy.example.net") && f.title.contains("when the .env is loaded")), "{dump}");
+    assert!(gw.iter().any(|f| f.severity == Severity::Low && f.title.contains("<unparseable>")), "{dump}");
+    let codex = findings.iter().find(|f| f.title.starts_with("CODEX_HOME")).expect("CODEX_HOME reported");
+    assert!(!codex.title.contains("inside the project") && codex.severity == Severity::Low, "{dump}");
+}
+
+/// --diff must surface a new Plugin4Shell pin, a new .env agent override, and a new
+/// OLLAMA_HOST bind.
+#[test]
+fn diff_reports_new_pin_issue_env_override_and_ollama_bind() {
+    use rustmachineguard::diff::diff_reports;
+    let base = serde_json::json!({
+        "marketplaces": [{"name": "m", "source_ref": "x", "source_type": "github", "auto_update": false, "official": false, "installed_plugin_count": 0}],
+        "env_files": [{"path": "/p/.env", "git_tracked": false}],
+        "shell_configs": [{"shell": "bash", "config_path": "/h/.bashrc"}],
+    });
+    let mut cur = base.clone();
+    cur["marketplaces"][0]["pin_issues"] = serde_json::json!([{"kind": "head-on-sha-branch", "path": "/h/.git/HEAD", "detail": "HEAD -> x"}]);
+    assert!(!diff_reports(&base, &cur).is_empty(), "a new pin issue was invisible to --diff");
+    let mut cur = base.clone();
+    cur["env_files"][0]["agent_overrides"] = serde_json::json!([{"key": "CLAUDE_CONFIG_DIR", "kind": "agent-home", "value": "./x"}]);
+    assert!(!diff_reports(&base, &cur).is_empty(), "a new .env override was invisible to --diff");
+    let mut cur = base.clone();
+    cur["shell_configs"][0]["ollama_host"] = serde_json::json!({"value": "0.0.0.0", "bind": "wildcard"});
+    assert!(!diff_reports(&base, &cur).is_empty(), "a new OLLAMA_HOST bind was invisible to --diff");
+    assert!(diff_reports(&base, &base).is_empty());
+}
+
+/// System roots are injectable (debug builds): a managed-settings.d drop-in is discovered,
+/// the official ollama.service drop-in is read, and nothing from the real host leaks in.
+#[test]
+fn system_roots_managed_drop_ins_and_system_ollama_unit() {
+    let home = temp_home("sysroot");
+    let sys = home.join("sysroot");
+    write(&sys.join("etc/claude-code/managed-settings.json"), r#"{"permissions":{}}"#);
+    write(&sys.join("etc/claude-code/managed-settings.d/10-shell.json"), r#"{"disableSkillShellExecution": true}"#);
+    write(&sys.join("etc/claude-code/managed-settings.d/.hidden.json"), r#"{"apiKeyHelper":"echo hidden"}"#);
+    write(&sys.join("etc/systemd/system/ollama.service"), "[Service]\nExecStart=/usr/local/bin/ollama serve\n");
+    write(&sys.join("etc/systemd/system/ollama.service.d/override.conf"), "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"\n");
+    let proj = home.join("proj");
+    write(&proj.join(".claude/commands/st.md"), "Status: !`git status`\n");
+    register_projects(&home, &[&proj]);
+    let (_, report) = scan(&home, &["settings", "skills", "shell"]);
+    let _ = fs::remove_dir_all(&home);
+    let managed: Vec<_> = report.agent_settings.iter().filter(|s| s.source == "managed").collect();
+    assert_eq!(managed.len(), 2, "managed-settings.json + one visible drop-in: {managed:#?}");
+    assert!(managed.iter().any(|s| s.path.ends_with("10-shell.json") && s.disable_skill_shell_execution));
+    let findings = collect_findings(&report);
+    assert!(of(&findings, "Skill command").is_empty(), "managed disableSkillShellExecution honoured");
+    let oe = of(&findings, "Ollama exposure");
+    assert_eq!(oe.len(), 1, "{oe:#?}");
+    assert!(oe[0].location.contains("sysroot/etc/systemd/system/ollama.service.d"), "{oe:#?}");
+}
+
+/// A plugin cache version that is itself a git clone gets the ref checks too.
+#[test]
+fn plugin_cache_git_dir_is_checked() {
+    let home = temp_home("cachegit");
+    let plugins = home.join(".claude/plugins");
+    write(&plugins.join("known_marketplaces.json"), r#"{"m":{"source":{"source":"github","repo":"randomvendor/m"}}}"#);
+    let ip = plugins.join("cache/m/p/1.0.0");
+    write(&plugins.join("installed_plugins.json"), &format!(r#"{{"version":2,"plugins":{{"p@m":[{{"installPath":"{}","gitCommitSha":"{HEXA}"}}]}}}}"#, ip.display()));
+    write(&ip.join(".git/HEAD"), &format!("ref: refs/heads/{HEXA}\n"));
+    write(&ip.join(".git/refs/heads").join(HEXA), &format!("{HEXB}\n"));
+    let (_, report) = scan(&home, &["marketplaces"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let pins = of(&findings, "Plugin pin");
+    assert!(pins.iter().any(|f| f.severity == Severity::Critical && f.location.contains("cache/m/p/1.0.0/.git/HEAD")), "{pins:#?}");
+}
+
+/// Theme extensions that explain their code with commands or settings (the shape of
+/// Material Icon Theme and One Dark Pro, checked against their published package.json)
+/// stay quiet; a theme with mixed categories makes no declarative claim (pinned).
+#[test]
+fn popular_theme_shapes_and_mixed_categories_stay_quiet() {
+    let home = temp_home("themes");
+    let root = home.join(".vscode/extensions");
+    ext(&root, "pkief.material-icon-theme-5.0.0", r#"{"name":"material-icon-theme","categories":["Themes"],"main":"./dist/extension/desktop/extension.cjs","browser":"./dist/extension/web/extension.cjs","activationEvents":["onStartupFinished"],"contributes":{"iconThemes":[],"commands":[],"configuration":{}}}"#);
+    ext(&root, "zhuangtongfa.material-theme-3.19.0", r#"{"name":"material-theme","categories":["Themes"],"main":"./out/extension.js","activationEvents":["onStartupFinished"],"contributes":{"themes":[],"commands":[],"configuration":{}}}"#);
+    ext(&root, "x.mixed-1.0.0", r#"{"name":"mixed","categories":["Themes","Other"],"main":"./x.js","contributes":{"themes":[]}}"#);
+    ext(&root, "x.bare-1.0.0", r#"{"name":"bare","categories":["Themes"],"main":"./x.js","contributes":{"themes":[]}}"#);
+    let (_, report) = scan(&home, &["extensions"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let ec = of(&findings, "Extension code");
+    assert_eq!(ec.len(), 1, "{ec:#?}");
+    assert_eq!(ec[0].location, "x.bare");
+}
+
 const EMPTY_REPORT: &str = r#"{"agent_version":"t","scan_timestamp":0,"scan_timestamp_iso":"t",
     "device":{"hostname":"h","os_name":"o","os_version":"v","platform":"p",
     "kernel_version":"k","user_identity":"u","home_dir":"/h"},
@@ -659,4 +1050,27 @@ proptest::proptest! {
         let _ = rustmachineguard::scanners::skills::parse_allowed_tools(&s);
         let _ = rustmachineguard::scanners::shell_configs::classify_ollama_host(&s);
     }
+}
+
+/// The no-follow reader: a symlink at the final component, a FIFO, or a file whose real
+/// path is not the one the caller classified (a swap after canonicalize) is refused.
+#[test]
+fn nofollow_reader_refuses_links_fifos_and_swapped_paths() {
+    use rustmachineguard::scanners::read_bounded_nofollow as r;
+    let dir = temp_home("nofollow");
+    let real = fs::canonicalize(&dir).unwrap();
+    write(&real.join("a.md"), "A\n");
+    write(&real.join("b.md"), "B\n");
+    std::os::unix::fs::symlink(real.join("a.md"), real.join("link.md")).unwrap();
+    assert_eq!(r(&real.join("a.md"), Some(&real.join("a.md"))).as_deref(), Some("A\n"));
+    assert_eq!(r(&real.join("link.md"), None), None, "final-component symlink followed");
+    if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+        // The caller classified b.md but the open landed on a.md: refused.
+        assert_eq!(r(&real.join("a.md"), Some(&real.join("b.md"))), None, "fd path not verified");
+    }
+    let fifo = real.join("fifo.md");
+    if Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+        assert_eq!(r(&fifo, None), None, "FIFO opened");
+    }
+    let _ = fs::remove_dir_all(&dir);
 }

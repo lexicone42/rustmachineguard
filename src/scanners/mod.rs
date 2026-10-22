@@ -346,7 +346,162 @@ pub fn redact_secrets_in_text(text: &str) -> String {
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
+    redact_token_shapes(&out)
+}
+
+/// Vendor credential prefixes and the minimum tail length that makes a match a key
+/// rather than a word. The context rules above key on NAMES and positions
+/// (`--token X`, `password=X`), so a bare literal such as `echo sk-ant-api03-...` in an
+/// apiKeyHelper passed straight through; these shapes are distinctive enough to redact
+/// wherever they appear. The prefix is kept (it says WHAT leaked), the tail is not.
+const TOKEN_PREFIXES: &[(&str, usize)] = &[
+    ("sk-ant-", 16), ("sk-proj-", 16), ("sk-svcacct-", 16), ("sk-or-", 16), ("sk-", 20),
+    ("sk_live_", 16), ("sk_test_", 16), ("rk_live_", 16), ("ghp_", 20), ("gho_", 20),
+    ("ghu_", 20), ("ghs_", 20), ("ghr_", 20), ("github_pat_", 20), ("glpat-", 20),
+    ("xoxb-", 10), ("xoxp-", 10), ("xoxa-", 10), ("xoxr-", 10), ("xoxs-", 10), ("xoxe-", 10),
+    ("xapp-", 10), ("AIza", 30), ("npm_", 30), ("hf_", 30), ("pypi-", 32), ("gsk_", 20),
+    ("AKIA", 16), ("ASIA", 16),
+];
+
+fn is_token_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// Redact credential-shaped literals (see TOKEN_PREFIXES) anywhere in `text`.
+pub fn redact_token_shapes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut copied = 0;
+    while i < bytes.len() {
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if boundary
+            && let Some((prefix, min)) = TOKEN_PREFIXES.iter().find(|(p, _)| bytes[i..].starts_with(p.as_bytes()))
+        {
+            let start = i + prefix.len();
+            let end = start + bytes[start..].iter().take_while(|b| is_token_char(**b)).count();
+            if end - start >= *min {
+                out.push_str(&text[copied..start]);
+                out.push_str("<redacted>");
+                copied = end;
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[copied..]);
     out
+}
+
+/// Redact a credential-helper command (apiKeyHelper, awsAuthRefresh, ...). A helper's
+/// job is to PRINT a credential, so its most naive form carries the credential as a
+/// literal: `echo <key>`, `printf '%s' <key>`, a heredoc, or `NAME=<value> cmd`. On top of
+/// [`redact_secrets_in_text`], this keeps the program and its flags but redacts every
+/// literal argument of echo/printf, every heredoc body, the values of leading
+/// `NAME=value` assignments, and any long high-entropy token. `$VAR` references stay.
+pub fn redact_helper_command(cmd: &str) -> String {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut idx = 0;
+    while idx < cmd.len() {
+        let Some(off) = cmd[idx..].find(|c: char| !c.is_whitespace()) else { break };
+        let start = idx + off;
+        let end = cmd[start..].find(char::is_whitespace).map_or(cmd.len(), |o| start + o);
+        spans.push((start, end));
+        idx = end;
+    }
+    let is_operator = |t: &str| matches!(t, "|" | "||" | "&&" | ";" | "&" | ">" | ">>" | "<" | "2>" | "2>&1");
+    let is_var_ref = |t: &str| {
+        let t = t.trim_matches(['"', '\'']);
+        let name = t.strip_prefix("${").and_then(|r| r.strip_suffix('}')).or_else(|| t.strip_prefix('$'));
+        name.is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    };
+    let is_assignment = |t: &str| {
+        t.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty()
+                && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let mut out = String::with_capacity(cmd.len());
+    let mut last = 0;
+    let mut command_start = true; // the next token begins a simple command
+    let mut in_echo = false;
+    let mut heredoc: Option<String> = None;
+    for &(s, e) in &spans {
+        out.push_str(&cmd[last..s]);
+        last = e;
+        let tok = &cmd[s..e];
+        if let Some(delim) = heredoc.as_deref() {
+            if tok.trim_matches(['"', '\'']) == delim {
+                heredoc = None;
+                out.push_str(tok);
+            } else {
+                out.push_str("<redacted>");
+            }
+            continue;
+        }
+        if is_operator(tok) {
+            out.push_str(tok);
+            command_start = true;
+            in_echo = false;
+            continue;
+        }
+        if let Some(rest) = tok.strip_prefix("<<") {
+            // `<<EOF`, `<<'EOF'`, `<<-EOF`, `<<<word` (a here-string is one literal).
+            if let Some(word) = rest.strip_prefix('<') {
+                out.push_str(if word.is_empty() { "<<<" } else { "<<<<redacted>" });
+                in_echo = word.is_empty();
+            } else {
+                let d = rest.trim_start_matches('-').trim_matches(['"', '\'']);
+                if !d.is_empty() {
+                    heredoc = Some(d.to_string());
+                }
+                out.push_str(tok);
+            }
+            continue;
+        }
+        let ends_command = tok.ends_with(';') || tok.ends_with('|');
+        let rendered = if command_start && is_assignment(tok) {
+            let (k, v) = tok.split_once('=').unwrap_or((tok, ""));
+            if v.is_empty() || is_var_ref(v) { tok.to_string() } else { format!("{k}=<redacted>") }
+        } else if command_start && matches!(tok.trim_end_matches([';', '|']), "export" | "env") {
+            tok.to_string()
+        } else if command_start {
+            command_start = false;
+            in_echo = matches!(tok.rsplit('/').next().unwrap_or(tok), "echo" | "printf" | "print");
+            tok.to_string()
+        } else if in_echo && !is_var_ref(tok) && !matches!(tok, "-n" | "-e" | "-ne" | "-en" | "-E" | "--") {
+            let tail = &tok[tok.trim_end_matches([';', '|']).len()..];
+            format!("<redacted>{tail}")
+        } else if looks_high_entropy(tok) {
+            "<redacted>".to_string()
+        } else {
+            tok.to_string()
+        };
+        out.push_str(&rendered);
+        if ends_command {
+            command_start = true;
+            in_echo = false;
+        }
+    }
+    out.push_str(&cmd[last..]);
+    redact_secrets_in_text(&out)
+}
+
+/// A long run of key-alphabet characters mixing letters and digits that is not a path or
+/// a flag: the shape of an API key with no recognisable vendor prefix.
+fn looks_high_entropy(tok: &str) -> bool {
+    let core = tok.trim_matches(['"', '\'', ';', ',', ')', '(']);
+    let core = core.split_once('=').map_or(core, |(_, v)| v);
+    core.len() >= 24
+        && !core.starts_with(['/', '.', '~', '$', '-'])
+        && !core.contains("//")
+        && core.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'+' | b'/' | b'=' | b'.'))
+        && core.bytes().any(|b| b.is_ascii_digit())
+        && core.bytes().filter(|b| b.is_ascii_alphabetic()).count() >= 4
+        && core.bytes().filter(|b| *b == b'/').count() <= 2
+        && core.bytes().filter(|b| *b == b'.').count() <= 1
 }
 
 /// What the tokenizer owes the NEXT token(s): nothing, one redaction (the credential
@@ -925,6 +1080,117 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
     }
     telemetry::note_read(path, "ok");
     Some(buf)
+}
+
+/// Open a file for reading only if its FINAL component is not a symlink and it is a
+/// regular file: `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks the open), then fstat on
+/// the opened descriptor, so what is classified is what is read. With `expect`, the
+/// descriptor's real path (Linux `/proc/self/fd`, macOS `F_GETPATH`) must equal it: a
+/// directory in the chain swapped for a symlink between the caller's canonicalize() and
+/// this open is refused instead of read. Returns the file and its length.
+pub fn open_regular_nofollow(
+    path: &std::path::Path,
+    expect: Option<&std::path::Path>,
+) -> Option<(std::fs::File, u64)> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)
+            .ok()?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        if !std::fs::symlink_metadata(path).ok()?.is_file() {
+            return None;
+        }
+        std::fs::File::open(path).ok()?
+    };
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        telemetry::note_read(path, "not a regular file");
+        return None;
+    }
+    if let Some(want) = expect
+        && fd_real_path(&file).is_some_and(|got| got != want)
+    {
+        telemetry::note_read(path, "changed during read");
+        return None;
+    }
+    Some((file, meta.len()))
+}
+
+/// The path the kernel holds for an open descriptor, where the platform exposes it.
+fn fd_real_path(file: &std::fs::File) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::io::AsRawFd;
+        let mut buf = vec![0u8; libc::PATH_MAX as usize + 1];
+        // SAFETY: F_GETPATH writes at most MAXPATHLEN (== PATH_MAX) bytes plus NUL into
+        // a buffer of PATH_MAX + 1 bytes owned by this frame.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+        if rc == -1 {
+            return None;
+        }
+        let len = buf.iter().position(|b| *b == 0)?;
+        Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = file;
+        None
+    }
+}
+
+/// [`read_bounded`] for a file whose path may be attacker-arranged (a repository's or a
+/// marketplace clone's own files): the final component must not be a symlink, the target
+/// must be a regular file, and with `expect` the opened file must be exactly that path.
+pub fn read_bounded_nofollow(path: &std::path::Path, expect: Option<&std::path::Path>) -> Option<String> {
+    use std::io::Read;
+    let Some((file, len)) = open_regular_nofollow(path, expect) else {
+        telemetry::note_read(path, "refused (symlink or not a regular file)");
+        return None;
+    };
+    if len > MAX_CONFIG_SIZE {
+        telemetry::note_read(path, "too large");
+        return None;
+    }
+    let mut buf = String::new();
+    file.take(MAX_CONFIG_SIZE).read_to_string(&mut buf).ok()?;
+    telemetry::note_read(path, "ok");
+    Some(buf)
+}
+
+/// [`read_head_bytes`] without following a symlink at the final component.
+pub fn read_head_bytes_nofollow(path: &std::path::Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let (file, _) = open_regular_nofollow(path, None)?;
+    telemetry::note_read(path, "ok");
+    let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
+    file.take(max_bytes as u64).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// A machine-wide path (managed settings, system service directories). Debug builds
+/// honour `RMGUARD_TEST_SYSTEM_ROOT`, which re-roots these under a directory so the
+/// end-to-end tests do not read the host's /etc; release builds never do, so the knob
+/// cannot hide a real machine's managed settings from a scan.
+pub fn system_path(p: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    let p = p.as_ref();
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os("RMGUARD_TEST_SYSTEM_ROOT").filter(|r| !r.is_empty()) {
+        let rel = p.strip_prefix("/").unwrap_or(p);
+        return std::path::PathBuf::from(root).join(rel);
+    }
+    p.to_path_buf()
 }
 
 /// Read the first N raw BYTES of a file. Unlike [`read_head`], this does not require

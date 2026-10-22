@@ -178,6 +178,39 @@ fn expand_home(v: &str, home: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The agent's own default home for an agent-home key, relative to HOME. Setting the key
+/// to this relocates nothing. GEMINI_CLI_HOME names the directory that CONTAINS `.gemini`,
+/// so its default is HOME itself.
+fn default_agent_home(key: &str) -> Option<&'static str> {
+    match key {
+        "CLAUDE_CONFIG_DIR" => Some(".claude"),
+        "CODEX_HOME" => Some(".codex"),
+        "GEMINI_CLI_HOME" => Some(""),
+        "CURSOR_CONFIG_DIR" => Some(".cursor"),
+        "KIRO_HOME" => Some(".kiro"),
+        _ => None,
+    }
+}
+
+/// A host as it may be shown: a hostname (labels of `[A-Za-z0-9-_]`, dots between) or an
+/// IP literal. Anything else -- a key pasted into a *_BASE_URL, free text -- is not
+/// echoed; the redirection is still reported, as `<unparseable>`.
+fn displayable_host(host: &str) -> String {
+    let h = host.trim_end_matches('.');
+    let hostname = !h.is_empty()
+        && h.len() <= 253
+        && h.split('.').all(|l| {
+            !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        // A credential has no dots and is long; a single-label host (`gateway`) is short.
+        && (h.contains('.') || h.len() <= 32);
+    if hostname || h.parse::<std::net::IpAddr>().is_ok() {
+        sanitize_display(&redact_secrets_in_text(host), 128)
+    } else {
+        "<unparseable>".to_string()
+    }
+}
+
 fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) -> Vec<EnvAgentOverride> {
     let mut out = Vec::new();
     for (key, v) in pairs {
@@ -185,25 +218,38 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
         let mut o = EnvAgentOverride { key: key.clone(), kind: kind.to_string(), ..Default::default() };
         match kind {
             "agent-home" => {
+                use crate::scanners::persistence::lexical_join;
                 o.value = Some(sanitize_display(&redact_secrets_in_text(v), 256));
                 let relative = !v.is_empty() && !v.starts_with(['/', '~', '$']);
-                let abs = if v.starts_with('/') { Some(PathBuf::from(v)) } else { expand_home(v, home) };
-                let project = crate::scanners::persistence::lexical_join(Path::new("/"), project_dir);
-                o.inside_project = relative
-                    || abs.is_some_and(|p| {
-                        crate::scanners::persistence::lexical_join(Path::new("/"), &p).starts_with(&project)
-                    });
+                // A relative value resolves against the project (where the .env is
+                // loaded); `../../x` climbs out of it and is not "inside".
+                let abs = if v.starts_with('/') {
+                    Some(PathBuf::from(v))
+                } else if relative {
+                    Some(project_dir.join(v))
+                } else {
+                    expand_home(v, home)
+                };
+                let abs = abs.map(|p| lexical_join(Path::new("/"), &p));
+                // Pointing an agent at its own default home relocates nothing.
+                if let (Some(a), Some(d)) = (&abs, default_agent_home(key))
+                    && *a == lexical_join(Path::new("/"), &home.join(d))
+                {
+                    continue;
+                }
+                let project = lexical_join(Path::new("/"), project_dir);
+                o.inside_project = abs.is_some_and(|p| p.starts_with(&project));
             }
             "gateway" => {
                 let (host, _) = crate::scanners::host_of(v);
                 o.official = crate::scanners::agent_settings::classify_base_url(key, v).is_some_and(|g| g.official);
                 o.loopback = crate::scanners::is_loopback_host(&host);
-                o.value = Some(sanitize_display(&host, 128));
+                o.value = Some(displayable_host(&host));
             }
             "proxy" => {
                 let (host, _) = crate::scanners::host_of(v);
                 o.loopback = host.is_empty() || crate::scanners::is_loopback_host(&host);
-                o.value = Some(sanitize_display(&host, 128));
+                o.value = Some(displayable_host(&host));
             }
             "headers" => {}
             "ollama-host" => {

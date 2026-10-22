@@ -89,6 +89,17 @@ fn lexically_under(path: &Path, prefix: &Path) -> bool {
     p.starts_with(&q) && p != q
 }
 
+/// The canonical path of `file` when it is a regular file, not itself a symlink, whose
+/// real location lies inside the real location of `root`.
+fn contained_real_path(file: &Path, root: &Path) -> Option<PathBuf> {
+    if !std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let real = std::fs::canonicalize(file).ok()?;
+    let real_root = std::fs::canonicalize(root).ok()?;
+    real.starts_with(&real_root).then_some(real)
+}
+
 /// A real `.git` DIRECTORY (not a symlink, not a `gitdir:` file).
 fn git_dir_of(work: &Path) -> Option<PathBuf> {
     let g = work.join(".git");
@@ -131,9 +142,13 @@ fn attach_pin_issues(
                 issues.extend(git_pin_issues(&git));
             }
             // marketplace.json plugin pins, for plugins installed from this marketplace.
+            // The clone's own file: repository content, so it is read only when it is a
+            // regular file (not a symlink) whose real path stays inside the clone (a
+            // symlinked `.claude-plugin` directory cannot redirect it either).
             let manifest = clone.join(".claude-plugin").join("marketplace.json");
             if crate::scanners::probe_file(&manifest)
-                && let Some(text) = read_bounded(&manifest)
+                && let Some(real) = contained_real_path(&manifest, &clone)
+                && let Some(text) = crate::scanners::read_bounded_nofollow(&manifest, Some(&real))
                 && let Ok(mj) = serde_json::from_str::<serde_json::Value>(&text)
                 && let Some(list) = mj.get("plugins").and_then(|v| v.as_array())
             {
@@ -161,10 +176,10 @@ fn attach_pin_issues(
         let mut issues = Vec::new();
         for e in entries {
             if let Some(sha) = e.get("gitCommitSha").and_then(|v| v.as_str())
-                && !is_full_hex(sha)
+                && let Some(problem) = sha_problem(sha)
             {
                 issues.push(PluginPinIssue {
-                    kind: "installed-sha-not-commit".into(),
+                    kind: format!("installed-sha-{problem}"),
                     path: show_path(&installed_path),
                     plugin: Some(sanitize_display(plugin, 128)),
                     detail: format!("gitCommitSha = {}", show_value(sha)),
@@ -213,10 +228,10 @@ fn source_pin_issues(src: &serde_json::Value, path: &Path, plugin: Option<&str>)
     let sha = src.get("sha").and_then(|v| v.as_str());
     let r#ref = src.get("ref").and_then(|v| v.as_str());
     if let Some(s) = sha
-        && !is_full_hex(s)
+        && let Some(problem) = sha_problem(s)
     {
         out.push(PluginPinIssue {
-            kind: "manifest-sha-not-commit".into(),
+            kind: format!("manifest-sha-{problem}"),
             path: show_path(path),
             plugin: plugin.map(|p| sanitize_display(p, 128)),
             detail: format!("sha = {}", show_value(s)),
@@ -236,6 +251,22 @@ fn source_pin_issues(src: &serde_json::Value, path: &Path, plugin: Option<&str>)
         });
     }
     out
+}
+
+/// Why a `sha` / `gitCommitSha` value is not a full commit ID, or None when it is one:
+/// "empty" (no pin recorded), "abbreviated" (a hex prefix: still a commit, but resolved
+/// by name, so a branch of that name wins) or "not-commit" (a branch or tag name).
+pub fn sha_problem(s: &str) -> Option<&'static str> {
+    let t = s.trim();
+    if is_full_hex(t) {
+        None
+    } else if t.is_empty() {
+        Some("empty")
+    } else if t.len() >= 4 && t.len() < 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some("abbreviated")
+    } else {
+        Some("not-commit")
+    }
 }
 
 /// True for a full git object name: 40 (SHA-1) or 64 (SHA-256) ASCII hex digits.
@@ -320,7 +351,8 @@ pub fn sha_shaped_refs(git_dir: &Path) -> Vec<(String, Option<String>)> {
 const MAX_REF_ENTRIES: usize = 10_000;
 
 fn ref_oid(path: &Path) -> Option<String> {
-    let text = crate::scanners::read_head(path, 256)?;
+    let bytes = crate::scanners::read_head_bytes_nofollow(path, 256)?;
+    let text = String::from_utf8(bytes).ok()?;
     let tok = text.split_whitespace().next()?;
     is_full_hex(tok).then(|| tok.to_ascii_lowercase())
 }
@@ -328,7 +360,7 @@ fn ref_oid(path: &Path) -> Option<String> {
 fn sha_shaped_refs_with_source(git_dir: &Path) -> BTreeMap<String, (Option<String>, PathBuf)> {
     let mut out: BTreeMap<String, (Option<String>, PathBuf)> = BTreeMap::new();
     let packed = git_dir.join("packed-refs");
-    if let Some(bytes) = crate::scanners::read_head_bytes(&packed, 4 * 1024 * 1024) {
+    if let Some(bytes) = crate::scanners::read_head_bytes_nofollow(&packed, 4 * 1024 * 1024) {
         let text = String::from_utf8_lossy(&bytes);
         for (oid, name) in parse_packed_refs(&text) {
             if dwim_hex_name(&name).is_some() {
@@ -395,7 +427,9 @@ pub fn git_pin_issues(git_dir: &Path) -> Vec<PluginPinIssue> {
     };
 
     let head = git_dir.join("HEAD");
-    if let Some(text) = crate::scanners::read_head(&head, 256)
+    // HEAD, packed-refs and FETCH_HEAD are read like the loose refs: never through a
+    // symlink (a link to ~/.ssh/id_ed25519 would otherwise be opened and parsed).
+    if let Some(text) = crate::scanners::read_head_bytes_nofollow(&head, 256).and_then(|b| String::from_utf8(b).ok())
         && let Some(branch) = parse_head(&text)
         && is_full_hex(&branch)
     {
@@ -433,7 +467,7 @@ pub fn git_pin_issues(git_dir: &Path) -> Vec<PluginPinIssue> {
     }
 
     let fetch = git_dir.join("FETCH_HEAD");
-    if let Some(bytes) = crate::scanners::read_head_bytes(&fetch, 1024 * 1024) {
+    if let Some(bytes) = crate::scanners::read_head_bytes_nofollow(&fetch, 1024 * 1024) {
         let text = String::from_utf8_lossy(&bytes);
         for (oid, name) in parse_fetch_head(&text) {
             let Some(name) = name.filter(|n| is_full_hex(n)) else { continue };

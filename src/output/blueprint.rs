@@ -1859,13 +1859,17 @@ impl BlueprintDocument {
         // expressed as native CycloneDX 2.0 constructs instead of rmg: properties.
         // Resolve a finding to the specific asset it concerns, falling back to the
         // machine when there's no more precise target.
+        let env_paths: std::collections::HashSet<&str> =
+            report.env_files.iter().map(|e| e.path.as_str()).collect();
         let resolve_asset = |f: &crate::analysis::Finding| -> String {
             let key = match f.category.as_str() {
                 "MCP transport" | "MCP scope" | "MCP secret" | "MCP command" => {
                     first_single_quoted(&f.title).map(|n| format!("mcp:{n}"))
                 }
                 "Rules file" => Some(format!("rules:{}", f.location)),
-                "Gateway routing" => {
+                // Only a settings-file gateway has a `gwvar:` asset; a .env override names
+                // its own host, so it must not attach to the settings asset's host.
+                "Gateway routing" if !env_paths.contains(f.location.as_str()) => {
                     f.title.split_whitespace().next().map(|v| format!("gwvar:{v}"))
                 }
                 "Transcript exposure" => Some(format!("transcript:{}", f.location)),
@@ -1923,7 +1927,11 @@ impl BlueprintDocument {
                             }
                         }
                     }
-                    "Gateway routing" => {
+                    // CVE-2026-21852 is Claude Code's project-settings ANTHROPIC_BASE_URL
+                    // bug: linked only for an ANTHROPIC_* gateway from a settings file.
+                    "Gateway routing"
+                        if f.title.starts_with("ANTHROPIC_") && !env_paths.contains(f.location.as_str()) =>
+                    {
                         used_cves.insert(GATEWAY_CVE.into());
                         related_vulnerabilities
                             .push(format!("vuln:{}", GATEWAY_CVE.to_lowercase()));

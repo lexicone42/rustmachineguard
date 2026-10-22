@@ -188,6 +188,10 @@ pub struct IdeExtension {
     /// `contributes` has themes, iconThemes or productIconThemes.
     #[serde(default)]
     pub contributes_theme: bool,
+    /// `contributes` declares commands or configuration: the extension says what its
+    /// code is for (an icon theme with a "toggle folder icons" command).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub contributes_commands: bool,
     /// The extension presents itself as declarative (themes, snippets, keymaps,
     /// language packs): such an extension has no reason to run code.
     #[serde(default)]
@@ -387,18 +391,25 @@ pub struct AgentSkill {
     pub provenance: Option<SkillProvenance>,
 }
 
-/// A skill file that is a symbolic link. `target` is the link text (sanitized), not a
-/// resolved path; resolution is lexical.
+/// A skill file that is a symbolic link, or a regular file reached through a symlinked
+/// directory. `target` is the link text (sanitized); for `through_directory`, the real
+/// path. The verdict is made on the fully resolved real path and on the lexical target.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SkillSymlink {
     pub target: String,
-    /// The lexical target lies outside the skill's directory.
+    /// The real path lies outside the skill's directory (for a project: its repository).
     pub escapes: bool,
-    /// The lexical target is a credential, shell-rc or agent-config path. Such a target
-    /// is never read.
+    /// The real or lexical target is a credential, key, shell-rc/history, agent-config
+    /// or system path. Such a target is never read.
     pub sensitive_target: bool,
-    /// True when the target was read (it was not sensitive).
+    /// True when the target was read.
     pub followed: bool,
+    /// The real path is in a read-only content-addressed store (/nix/store).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub store: bool,
+    /// The file itself is not a link; a directory above it is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub through_directory: bool,
 }
 
 /// One dynamic-context command (`!`cmd`` or a ```! block) in a skill or command file.
@@ -565,8 +576,8 @@ pub struct AgentMarketplace {
 /// One pin that is not a commit (see `scanners::marketplaces`).
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PluginPinIssue {
-    /// head-on-sha-branch | sha-shaped-ref | fetch-head-sha-branch |
-    /// manifest-sha-not-commit | manifest-ref-is-sha | installed-sha-not-commit
+    /// head-on-sha-branch | sha-shaped-ref | fetch-head-sha-branch | manifest-ref-is-sha |
+    /// manifest-sha-{not-commit,abbreviated,empty} | installed-sha-{not-commit,abbreviated,empty}
     pub kind: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

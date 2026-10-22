@@ -139,7 +139,24 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
         get_array(baseline, "marketplaces"),
         get_array(current, "marketplaces"),
         "name",
-        &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count"],
+        &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count", "pin_issues"],
+    ));
+
+    // A .env gaining an agent-home relocation or a gateway, and a profile or service
+    // unit starting to bind Ollama beyond loopback, are drift like a new hook.
+    sections.push(diff_array_section(
+        ".env Files",
+        get_array(baseline, "env_files"),
+        get_array(current, "env_files"),
+        "path",
+        &["git_tracked", "agent_overrides"],
+    ));
+    sections.push(diff_array_section(
+        "Shell Configs",
+        get_array(baseline, "shell_configs"),
+        get_array(current, "shell_configs"),
+        "config_path",
+        &["ollama_host"],
     ));
 
     let summary_changes = diff_summary(baseline, current);

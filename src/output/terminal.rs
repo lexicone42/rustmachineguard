@@ -52,16 +52,21 @@ pub fn render(report: &ScanReport) -> String {
                 crate::analysis::Severity::Medium => f.severity.label().yellow(),
                 crate::analysis::Severity::Low => f.severity.label().blue(),
             };
+            // Titles, locations and evidence carry attacker-chosen text (a skill directory
+            // name, an extension id, a settings command). Every scanner is meant to
+            // sanitize at extraction; this is the backstop, so a missed field still
+            // cannot write ESC/OSC sequences or forge a line in the terminal.
+            let clean = |s: &str| crate::scanners::sanitize_display(s, 4000);
             out.push_str(&format!(
                 "  {} [{}] {} {}\n      {}\n",
                 "!".bold(),
                 sev,
-                f.category.dimmed(),
-                f.title,
-                f.location.dimmed()
+                clean(&f.category).dimmed(),
+                clean(&f.title),
+                clean(&f.location).dimmed()
             ));
             if let Some(ev) = &f.evidence {
-                out.push_str(&format!("      {} {}\n", "→".dimmed(), ev.yellow()));
+                out.push_str(&format!("      {} {}\n", "→".dimmed(), clean(ev).yellow()));
             }
         }
     }

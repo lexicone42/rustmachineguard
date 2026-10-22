@@ -197,7 +197,7 @@ technique. Each detection also names its source in a comment at the code.
 | Detection | Where | Source |
 |---|---|---|
 | Plugin pin | `marketplaces` | Air Security (Or Nevo Michrowski, Dor Granat, Niv Hoffman): Plugin4Shell, CVE-2026-86063 / GHSA-pq7j-f95f-qfcv; Codex fix openai/codex PR #34644 |
-| Skill symlink | `skills` | CVE-2026-103435 write-time symlink following (c_h4ck_0, edbr) |
+| Skill symlink | `skills` | CVE-2026-103435 write-time symlink following (c_h4ck_0, edbr); real-path (multi-hop, symlinked-directory) resolution added after an internal review showed the lexical first-hop check could be walked past |
 | Skill command, Skill grant | `skills` | Anthropic Claude Code docs: skills (dynamic context injection, `allowed-tools`, `disableSkillShellExecution`, synced skills) and permissions (`Bash(*)` is equivalent to `Bash`) |
 | Agent redirection, .env Gateway routing | `envfiles` | Redguard AG (Benjamin Faller): Gemini CLI CVE-2026-13745; EAA-007 hostile gateway routing (0x4D31); CVE-2026-21852; vendor variable docs (Claude Code env-vars, Gemini CLI configuration, Codex config, Cursor CLI configuration, Kiro settings) |
 | Helper command, Login gateway | `settings` | Anthropic Claude Code settings reference and Claude apps gateway docs |

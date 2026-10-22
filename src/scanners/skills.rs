@@ -191,38 +191,134 @@ struct SkillRead {
     symlink: Option<SkillSymlink>,
 }
 
-/// Read a skill file that may be a symbolic link. A link is resolved lexically against
-/// its own directory; one that lands in a credential, shell-rc or agent-config path is
-/// NOT read (its content would otherwise land in the report's hash and capability
-/// inference, and the agent itself would load it as a skill).
+/// The canonical form of `p`, or its lexical normalisation when it does not resolve.
+fn canon_or_lexical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+}
+
+#[cfg(unix)]
+fn owned_by_current_user(p: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    std::fs::metadata(p).is_ok_and(|m| m.uid() == me)
+}
+
+#[cfg(not(unix))]
+fn owned_by_current_user(_p: &Path) -> bool {
+    true
+}
+
+/// Read a skill file without letting a symlink take the read somewhere it must not go.
 ///
-/// CVE-2026-103435 class (c_h4ck_0, edbr): resolved lexically, never read through into
-/// credential/agent-config paths.
-fn read_skill_file(path: &Path, is_link: bool, containment: &Path, home: &Path) -> Option<SkillRead> {
+/// The decision is made on the file's REAL path (`fs::canonicalize`, every hop and every
+/// directory symlink resolved), and on the link's lexical target too, so neither a second
+/// hop (`SKILL.md -> /tmp/x -> ~/.ssh/id_ed25519`) nor a symlinked directory in the chain
+/// (`keys -> ~/.ssh`, `SKILL.md -> keys/id_ed25519`) gets past it. The file is then
+/// opened at that real path with `O_NOFOLLOW` and the opened descriptor's path checked
+/// against it, so a swap between the check and the read is refused, not followed.
+///
+/// Policy, by who authored the link:
+/// - a real path that is a credential, key, shell-rc/history, agent-settings or
+///   system/other-user path is never read (`sensitive_target`, High);
+/// - inside the skill's own directory (for a project: the repository), or inside the
+///   user's own skill areas (`~/.claude/{skills,commands,plugins,agents,hooks}`): read;
+/// - links in content the scanner inspects (`repo_root`: a plugin's install or clone
+///   root, a project repository) are read only when they stay inside it;
+/// - the user's own links (`repo_root` None) may also point at their own non-sensitive
+///   files under HOME (a dotfiles checkout, XDG `~/.config/...`): read, reported Low;
+/// - `/nix/store` (home-manager): read, inventory only;
+/// - anything else is inventoried without being read.
+///
+/// CVE-2026-103435 class (c_h4ck_0, edbr): never read through into credential or
+/// agent-config paths.
+fn read_skill_file(
+    path: &Path,
+    is_link: bool,
+    containment: &Path,
+    repo_root: Option<&Path>,
+    home: &Path,
+) -> Option<SkillRead> {
+    use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    let real_home = canon_or_lexical(home);
+    let areas: Vec<PathBuf> = SKILL_LINK_OK_DIRS
+        .iter()
+        .flat_map(|d| {
+            let l = home.join(".claude").join(d);
+            [canon_or_lexical(&l), l]
+        })
+        .collect();
+    let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
+    let read = |r: &Path| crate::scanners::read_bounded_nofollow(r, Some(r));
+
     if !is_link {
-        return Some(SkillRead { content: read_bounded(path), symlink: None });
+        // The walk never descends a symlinked directory, so a regular file can only be
+        // redirected by the walk root itself. The user's own roots (a dotfiles-managed
+        // ~/.claude/commands) are theirs to link; a repository's are checked.
+        let Some(repo) = repo_root else {
+            return Some(SkillRead { content: read_bounded(path), symlink: None });
+        };
+        let real = std::fs::canonicalize(path).ok()?;
+        if real.starts_with(canon_or_lexical(repo)) {
+            return Some(SkillRead { content: read(&real), symlink: None });
+        }
+        let sensitive = !in_skill_area(&real) && is_sensitive_read_target(&real, &real_home);
+        return Some(SkillRead {
+            content: None,
+            symlink: Some(SkillSymlink {
+                target: sanitize_display(&real.to_string_lossy(), 300),
+                escapes: true,
+                sensitive_target: sensitive,
+                followed: false,
+                through_directory: true,
+                ..Default::default()
+            }),
+        });
     }
+
     let target = std::fs::read_link(path).ok()?;
-    let verdict = crate::scanners::persistence::symlink_escapes(containment, path, &target, home);
-    let resolved = crate::scanners::persistence::lexical_join(path.parent().unwrap_or(containment), &target);
-    let claude = home.join(".claude");
-    let skill_area = SKILL_LINK_OK_DIRS.iter().any(|d| resolved.starts_with(claude.join(d)));
-    let escapes = verdict.is_some();
-    let sensitive = verdict.unwrap_or(false) && !skill_area;
     let shown = sanitize_display(&target.to_string_lossy(), 300);
+    let lexical = lexical_join(path.parent().unwrap_or(containment), &target);
+    let real = std::fs::canonicalize(path).ok();
+    let sensitive = (!in_skill_area(&lexical) && is_sensitive_read_target(&lexical, home))
+        || real.as_ref().is_some_and(|r| !in_skill_area(r) && is_sensitive_read_target(r, &real_home));
     if sensitive {
         return Some(SkillRead {
             content: None,
-            symlink: Some(SkillSymlink { target: shown, escapes, sensitive_target: true, followed: false }),
+            symlink: Some(SkillSymlink {
+                target: shown,
+                escapes: true,
+                sensitive_target: true,
+                followed: false,
+                ..Default::default()
+            }),
         });
     }
-    // A link to a directory (or a dangling link) is not a skill file.
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+    // Dangling, looping, or not a regular file (a link to a directory): not a skill file.
+    let real = real?;
+    if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
         return None;
     }
+    if real.starts_with(canon_or_lexical(containment)) {
+        return Some(SkillRead {
+            content: read(&real),
+            symlink: Some(SkillSymlink { target: shown, followed: true, ..Default::default() }),
+        });
+    }
+    let store = real.starts_with("/nix/store");
+    let in_repo = repo_root.is_some_and(|r| real.starts_with(canon_or_lexical(r)));
+    let users_own = repo_root.is_none() && real.starts_with(&real_home) && owned_by_current_user(&real);
+    let followed = in_skill_area(&real) || in_repo || users_own || store;
     Some(SkillRead {
-        content: read_bounded(path),
-        symlink: Some(SkillSymlink { target: shown, escapes, sensitive_target: false, followed: true }),
+        content: if followed { read(&real) } else { None },
+        symlink: Some(SkillSymlink {
+            target: shown,
+            escapes: true,
+            sensitive_target: false,
+            followed,
+            store,
+            through_directory: false,
+        }),
     })
 }
 
@@ -293,7 +389,7 @@ fn build_skill(
         provenance = None;
     }
     let sha256 = match (&content, &read.symlink) {
-        (_, Some(l)) if l.sensitive_target => "symlink-not-followed".to_string(),
+        (_, Some(l)) if !l.followed => "symlink-not-followed".to_string(),
         (Some(c), _) => sha256_hex(c),
         (None, _) => "unreadable".to_string(),
     };
@@ -326,8 +422,8 @@ fn build_skill(
 /// Bundled siblings are inventoried too, not just the manifest: the manifest routinely
 /// reads clean while the payload sits in an adjacent script.
 ///
-/// Symlinked FILES are inventoried with their lexical target (see `read_skill_file`);
-/// symlinked DIRECTORIES are never descended.
+/// Symlinked FILES are inventoried with their link text and judged on their real path
+/// (see `read_skill_file`); symlinked DIRECTORIES are never descended.
 fn scan_skill_bundles(
     root: &Path,
     framework: &str,
@@ -380,14 +476,21 @@ fn scan_skill_bundles(
                 continue;
             }
             budget -= 1;
-            let containment = if is_command {
+            // A project's skills may link anywhere inside the repository; a plugin's
+            // links are judged against the skill (or commands) directory and may be read
+            // anywhere inside the plugin's own root.
+            let plugin_root = ctx.plugin_root(&path);
+            let containment = if let Some(proj) = project_root.filter(|_| scope == "project") {
+                proj.to_path_buf()
+            } else if is_command {
                 path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
             } else {
                 skill_dir_of(&path, root)
-                    .or_else(|| ctx.plugin_root(&path))
+                    .or_else(|| plugin_root.clone())
                     .unwrap_or_else(|| root.to_path_buf())
             };
-            let Some(read) = read_skill_file(&path, is_link, &containment, &ctx.home) else {
+            let repo_root = project_root.filter(|_| scope == "project").map(Path::to_path_buf).or(plugin_root);
+            let Some(read) = read_skill_file(&path, is_link, &containment, repo_root.as_deref(), &ctx.home) else {
                 continue;
             };
             // A manifest is named by its bundle directory (the unit users think in);
@@ -457,7 +560,11 @@ fn scan_skill_dir(
             continue;
         }
 
-        let Some(read) = read_skill_file(&path, is_link, dir, &ctx.home) else {
+        // A project's commands may link anywhere inside the repository (monorepos share
+        // prompt files between .claude/commands and other agents' rule directories).
+        let project = project_root.filter(|_| scope == "project");
+        let containment = project.unwrap_or(dir);
+        let Some(read) = read_skill_file(&path, is_link, containment, project, &ctx.home) else {
             continue;
         };
 

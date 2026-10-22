@@ -137,9 +137,9 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP Agentic Apps Top 10 (excessive agency)",
         },
         "Gateway routing" => Guidance {
-            what: "An AI provider base-URL override points at a non-official host, so requests (and the API key) route through a third party.",
-            why: "Whoever controls that host sees every prompt and can capture the API key — the exfiltration vector behind CVE-2026-21852. A legitimate proxy looks identical, so this needs a human check.",
-            fix: "Confirm the host is a gateway you deliberately configured and trust. If not, remove the override and rotate the API key.",
+            what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not the provider's own API, so requests (and the API key) route through it. Named OpenAI-compatible providers (Groq, Azure OpenAI, Mistral, Gemini, ...) and loopback proxies are not reported.",
+            why: "Whoever controls that host sees every prompt and can capture the API key. In Claude Code project settings this is the exfiltration vector behind CVE-2026-21852. A .env applies only to tools that load it (Gemini CLI loads project .env files itself; other agents need direnv, an IDE or a dotenv loader), and a git-tracked one is the repository choosing the host for everyone. A legitimate proxy looks identical, so this needs a human check.",
+            fix: "Confirm the host is a gateway you deliberately configured and trust. If it is not, remove the override, and rotate the API key if a tool already sent requests there.",
             reference: "EAA-007 · CVE-2026-21852",
         },
         "Credential" => Guidance {
@@ -209,13 +209,13 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "CVE-2026-103435 · GhostApproval · write-time symlink following",
         },
         "Plugin pin" => Guidance {
-            what: "A Claude Code plugin marketplace clone or plugin manifest holds a \"pin\" that is not a commit: a git ref whose name is a full 40- or 64-character hex string (a branch or tag impersonating a commit ID), HEAD checked out on such a branch, FETCH_HEAD recording a fetched branch with a commit-shaped name, or a manifest whose sha or gitCommitSha field holds a branch name, or whose ref field holds a commit ID with no sha.",
+            what: "A Claude Code plugin marketplace clone or plugin manifest holds a \"pin\" that is not a commit: a git ref whose name is a full 40- or 64-character hex string (a branch or tag impersonating a commit ID), HEAD checked out on such a branch, FETCH_HEAD recording a fetched branch with a commit-shaped name, or a manifest whose sha or gitCommitSha field holds a branch or tag name, an abbreviated commit ID (resolved by name, so a same-named branch wins) or nothing at all, or whose ref field holds a commit ID with no sha.",
             why: "Plugin4Shell (CVE-2026-86063): plugin install and update checked out the pinned commit by name, and a branch named with the same hex string won. So whoever controlled the plugin's upstream repository could swap reviewed code for their own while the pin still read intact. Git never creates a ref named like a commit, so one on disk is either an exploitation attempt or a pin that floats with a branch.",
             fix: "Update Claude Code to 2.1.179 or later (Codex to 0.146.0 or later). Remove and reinstall the affected marketplace or plugin, and compare the installed files against the pinned commit before trusting them. In a manifest, put the 40-hex commit in `sha` and keep branch names in `ref`.",
             reference: "CVE-2026-86063 · Plugin4Shell (Air Security) · EAA-009",
         },
         "Skill symlink" => Guidance {
-            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link whose target resolves outside its skill directory. rmguard resolves the target lexically and does not read through it when it lands on a credential, shell-rc or agent-config path.",
+            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, shell-rc or history, agent-config or system path; a repository's or plugin's link that leaves it is inventoried without being read, and only your own links into your own files (a dotfiles checkout) are read.",
             why: "Claude Code loads the link's target as the skill. A SKILL.md that points at ~/.ssh or a settings file puts that file into the model's context. An edit the agent makes to the skill writes through the link: the write-time symlink-following class behind CVE-2026-103435. A link into a dotfiles checkout is common and benign.",
             fix: "If you did not create the link, replace it with a regular file or remove the skill. Keep skill bundles self-contained; dotfile managers can copy instead of linking.",
             reference: "CVE-2026-103435 · write-time symlink following · AST02",
@@ -241,7 +241,7 @@ pub fn guidance(category: &str) -> Guidance {
         "Helper command" => Guidance {
             what: "A Claude Code settings file names a credential or telemetry helper (apiKeyHelper, awsAuthRefresh, awsCredentialExport, gcpAuthRefresh, otelHeadersHelper). This is a shell command Claude Code runs on its own to fetch credentials or headers.",
             why: "Like a hook, it runs silently with your privileges, and its output becomes the agent's credential. In a repository's settings file the repository author chooses the command. In your own or managed settings it is a normal enterprise setup and is only reported when the command matches a dangerous pattern.",
-            fix: "Review the command below. Remove a helper that arrived with a repository; keep credential helpers in user or managed settings.",
+            fix: "Review the command below (literal arguments are redacted). Remove a helper that arrived with a repository; keep credential helpers in user or managed settings, and have them read the key from a secret store rather than echo it.",
             reference: "EAA-003 (lifecycle hook persistence) · OWASP ASI03",
         },
         "Login gateway" => Guidance {
@@ -251,13 +251,13 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "Claude apps gateway · EAA-007",
         },
         "Extension code" => Guidance {
-            what: "An IDE extension that presents itself as declarative (a colour or icon theme, snippets, keymaps, a language pack) carries code: a main/browser entry point or a native .node addon.",
+            what: "An IDE extension that presents itself as declarative (a colour or icon theme, snippets, keymaps, a language pack) carries code: a main/browser entry point with no contributed commands or settings to explain it, or a native .node addon.",
             why: "Pure themes are JSON and run nothing. GlassWorm-linked \"theme\" extensions shipped encrypted JavaScript, and the GlassWorm Zig dropper loaded a native addon to install a second-stage extension into every IDE. Some popular themes legitimately add commands or settings code, so this is advisory.",
             fix: "Check the publisher and the marketplace page, and uninstall the extension if the code is not explained. Prefer themes with no entry point.",
             reference: "GlassWorm theme loaders (Socket) · GlassWorm Zig dropper (Aikido) · OWASP ASI04",
         },
         "Ollama exposure" => Guidance {
-            what: "OLLAMA_HOST is set to listen on every interface (0.0.0.0, [::], or a bare :port) or on a non-loopback address. It was found in a shell profile, a .env, a systemd unit or a launchd job.",
+            what: "OLLAMA_HOST tells the Ollama server where to listen (and clients where to connect). It is set to every interface (0.0.0.0, [::], or a bare :port) in a shell profile, .env, systemd unit or launchd job, or to a non-loopback address in the Ollama server's own unit or job. A remote address in a profile or .env is a client target and is not reported.",
             why: "Ollama's API has no authentication. Bound beyond 127.0.0.1, anyone who can reach the port can run, pull, push and delete models.",
             fix: "Bind to 127.0.0.1 (the default) and reach it remotely through an authenticating reverse proxy or an SSH tunnel. Inside a container, publish the port on 127.0.0.1 only.",
             reference: "Ollama FAQ (OLLAMA_HOST) · unauthenticated local API",
@@ -434,7 +434,15 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             } else if cross_dir {
                 Severity::High
             } else if project_scoped {
-                if s.git_tracked { Severity::High } else { Severity::Medium }
+                // settings.local.json is created and gitignored by Claude Code, so an
+                // untracked one is normally the user's own; untracked settings.json is not.
+                if s.git_tracked {
+                    Severity::High
+                } else if s.source == "local" {
+                    Severity::Low
+                } else {
+                    Severity::Medium
+                }
             } else {
                 continue;
             };
@@ -919,14 +927,28 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         if i.mismatch { ", which resolved to a different commit" } else { "" }
                     ),
                 ),
-                "manifest-sha-not-commit" if i.plugin.is_some() => (
-                    Severity::Medium,
-                    format!("plugin '{p}' from '{}' is pinned to a branch name, not a commit — the pin moves with the branch", m.name),
-                ),
-                "manifest-sha-not-commit" => (
-                    Severity::Medium,
-                    format!("marketplace '{}' is pinned to a branch name, not a commit — the pin moves with the branch", m.name),
-                ),
+                // Three different things a non-commit sha can be; each gets its own words.
+                k @ ("manifest-sha-not-commit" | "manifest-sha-abbreviated" | "manifest-sha-empty") => {
+                    let who = if i.plugin.is_some() {
+                        format!("plugin '{p}' from '{}'", m.name)
+                    } else {
+                        format!("marketplace '{}'", m.name)
+                    };
+                    match k {
+                        "manifest-sha-abbreviated" => (
+                            Severity::Medium,
+                            format!("{who} is pinned to an abbreviated commit ID — it is resolved by name, so a branch of that name would win; use the full 40-hex ID"),
+                        ),
+                        "manifest-sha-empty" => (
+                            Severity::Low,
+                            format!("{who} has an empty sha — no commit pin is recorded, so it follows its ref"),
+                        ),
+                        _ => (
+                            Severity::Medium,
+                            format!("{who} is pinned to a branch or tag name, not a commit — the pin moves with the branch"),
+                        ),
+                    }
+                }
                 "manifest-ref-is-sha" if i.plugin.is_some() => (
                     Severity::Medium,
                     format!("plugin '{p}' from '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
@@ -937,7 +959,15 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 ),
                 "installed-sha-not-commit" => (
                     Severity::Medium,
-                    format!("installed plugin '{p}@{}' records a gitCommitSha that is not a commit ID", m.name),
+                    format!("installed plugin '{p}@{}' records a gitCommitSha that is a name, not a commit ID", m.name),
+                ),
+                "installed-sha-abbreviated" => (
+                    Severity::Medium,
+                    format!("installed plugin '{p}@{}' records an abbreviated gitCommitSha — a branch of that name would win; a full 40-hex ID cannot be shadowed", m.name),
+                ),
+                "installed-sha-empty" => (
+                    Severity::Low,
+                    format!("installed plugin '{p}@{}' records an empty gitCommitSha — no commit pin is recorded", m.name),
                 ),
                 _ => continue,
             };
@@ -966,22 +996,36 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     let mut plugin_grants: BTreeMap<PluginKey, GrantAgg> =
         BTreeMap::new();
     for skill in &report.agent_skills {
+        // AgentSkill.path is the raw path (a directory name is attacker-chosen text).
+        let loc = crate::scanners::sanitize_display(&skill.path, 512);
+        // A /nix/store target (home-manager) is read-only and content-addressed: inventory.
         if let Some(l) = &skill.symlink
             && l.escapes
+            && !l.store
         {
+            let via = if l.through_directory { "is reached through a symlinked directory" } else { "is a symlink" };
+            let within = if skill.scope == "project" {
+                "its project"
+            } else if skill.provenance.as_ref().is_some_and(|p| p.marketplace.is_some()) {
+                "its plugin"
+            } else {
+                "its skill directory"
+            };
             let (severity, title) = if l.sensitive_target {
                 (
                     Severity::High,
-                    format!("skill file '{}' is a symlink into a credential, shell-rc or agent-config path — not read", skill.name),
+                    format!("skill file '{}' {via} into a credential, key, shell-rc or agent-config path — not read", skill.name),
                 )
+            } else if !l.followed {
+                (Severity::Low, format!("skill file '{}' {via} that resolves outside {within} — not read", skill.name))
             } else {
-                (Severity::Low, format!("skill file '{}' is a symlink that resolves outside its skill directory", skill.name))
+                (Severity::Low, format!("skill file '{}' {via} that resolves outside its skill directory", skill.name))
             };
             f.push(Finding {
                 severity,
                 category: "Skill symlink".into(),
                 title,
-                location: skill.path.clone(),
+                location: loc.clone(),
                 evidence: Some(format!("-> {}", l.target)),
             });
         }
@@ -1010,7 +1054,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         skill.name,
                         d.patterns.join("; ")
                     ),
-                    location: skill.path.clone(),
+                    location: loc.clone(),
                     evidence: Some(d.command.clone()),
                 });
             } else if third_active {
@@ -1036,7 +1080,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         skill.name,
                         skill.dynamic_commands.len()
                     ),
-                    location: skill.path.clone(),
+                    location: loc.clone(),
                     evidence: Some(skill.dynamic_commands[0].command.clone()),
                 });
             }
@@ -1049,16 +1093,19 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     .or_insert_with(|| (plugin_install_root(&skill.path), BTreeSet::new(), BTreeSet::new()));
                 e.1.insert(plugin_skill_label(skill, &e.0));
                 e.2.insert(skill.path.clone());
-            } else if project && let Some(g) = git {
+            } else if project && git == Some("untracked") {
+                // A git-tracked grant is the repository's reviewable, documented choice and
+                // stays in the inventory (agent_skills[].unrestricted_bash). An untracked
+                // one in a repository arrived some other way (a tool, a script, an
+                // unreviewed drop) and is worth a look.
                 f.push(Finding {
                     severity: Severity::Low,
                     category: "Skill grant".into(),
                     title: format!(
-                        "project skill '{}' pre-approves unrestricted Bash ({})",
-                        skill.name,
-                        if g == "tracked" { "git-tracked" } else { "untracked in a git repository" }
+                        "project skill '{}' pre-approves unrestricted Bash (untracked in a git repository)",
+                        skill.name
                     ),
-                    location: skill.path.clone(),
+                    location: loc.clone(),
                     evidence: None,
                 });
             }
@@ -1069,7 +1116,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             severity: Severity::Low,
             category: "Skill command".into(),
             title: format!("third-party plugin '{p}@{m}' runs shell commands when its skills load: {}", first_names(names)),
-            location: root.clone(),
+            location: crate::scanners::sanitize_display(root, 512),
             evidence: first.as_ref().map(|(_, c)| c.clone()),
         });
     }
@@ -1082,7 +1129,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 files.len(),
                 first_names(names)
             ),
-            location: root.clone(),
+            location: crate::scanners::sanitize_display(root, 512),
             evidence: None,
         });
     }
@@ -1106,14 +1153,25 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         if o.inside_project { " inside the project" } else { "" },
                     ),
                 )),
+                // A tracked .env is repository-controlled redirection. An untracked one is
+                // usually the user's own app config (an OpenAI-compatible SDK pointed at a
+                // provider) and reaches a coding agent only when something loads it, so
+                // it is advisory.
                 "gateway" if !o.official && !o.loopback => Some((
-                    if t { Severity::High } else { Severity::Medium },
+                    if t { Severity::High } else { Severity::Low },
                     "Gateway routing",
-                    // Starts with the key: Blueprint resolves `gwvar:<first word>`.
-                    format!(
-                        "{} points to non-official host {value} in a{tracked} .env — verify this gateway is trusted (EAA-007){gemini_note}",
-                        o.key
-                    ),
+                    // Starts with the key: Blueprint matches .env gateways by location.
+                    if t {
+                        format!(
+                            "{} points to non-official host {value} in a git-tracked .env — every clone routes requests (and the API key) there when the .env is loaded (EAA-007){gemini_note}",
+                            o.key
+                        )
+                    } else {
+                        format!(
+                            "{} points to non-official host {value} in a .env — when the .env is loaded, requests and the API key go there; verify the host (EAA-007){gemini_note}",
+                            o.key
+                        )
+                    },
                 )),
                 "headers" if t => Some((
                     Severity::Medium,
@@ -1125,13 +1183,14 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     "Agent redirection",
                     format!("{} in a{tracked} .env sends agent traffic through proxy {value}", o.key),
                 )),
+                // Only a wildcard means the same thing read by the server or a client. A
+                // specific remote address or host is how clients point at another machine.
                 "ollama-host" => match o.bind.as_deref() {
-                    Some(b @ ("wildcard" | "non-loopback-ip")) => Some((
+                    Some("wildcard") => Some((
                         Severity::Low,
                         "Ollama exposure",
                         format!(
-                            "OLLAMA_HOST={value} in a .env would make Ollama listen on {} if the server starts from this environment (normal inside a container; check the published port)",
-                            if b == "wildcard" { "every interface" } else { "a non-loopback address" }
+                            "OLLAMA_HOST={value} in a .env would make Ollama listen on every interface if the server starts from this environment (normal inside a container; check the published port)"
                         ),
                     )),
                     _ => None,
@@ -1149,23 +1208,27 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         if !x.declarative_claim {
             continue;
         }
+        // The id is the extension's directory name: attacker-chosen text.
+        let id = crate::scanners::sanitize_display(&x.id, 200);
         let runs: Vec<&str> = x
             .code_entry_points
             .iter()
             .map(String::as_str)
             .filter(|e| matches!(*e, "main" | "browser"))
             .collect();
-        if x.contributes_theme && !runs.is_empty() {
+        // A theme that also contributes commands or settings (Material Icon Theme,
+        // vscode-icons, One Dark Pro) declares what its code is for; that stays in the
+        // inventory. Code with no declared purpose is the GlassWorm loader shape.
+        if x.contributes_theme && !runs.is_empty() && !x.contributes_commands {
             f.push(Finding {
                 severity: Severity::Low,
                 category: "Extension code".into(),
                 title: format!(
-                    "theme extension '{}' ({}) also runs code ({}) — pure themes are JSON only",
-                    x.id,
+                    "theme extension '{id}' ({}) runs code ({}) but contributes no commands or settings — pure themes are JSON only",
                     x.ide_type,
                     x.code_entry_points.join(", ")
                 ),
-                location: x.id.clone(),
+                location: id.clone(),
                 evidence: None,
             });
         }
@@ -1175,12 +1238,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 severity: Severity::Low,
                 category: "Extension code".into(),
                 title: format!(
-                    "extension '{}' ({}) declares itself {claim} but ships native addon(s): {}",
-                    x.id,
+                    "extension '{id}' ({}) declares itself {claim} but ships native addon(s): {}",
                     x.ide_type,
                     x.native_addons.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
                 ),
-                location: x.id.clone(),
+                location: id.clone(),
                 evidence: None,
             });
         }
@@ -1189,21 +1251,29 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     // ── F. OLLAMA_HOST binds in profiles, systemd units and launchd jobs ──
     for c in &report.shell_configs {
         let Some(o) = &c.ollama_host else { continue };
-        let severity = match (o.bind.as_str(), o.service) {
-            ("wildcard", _) => Severity::Medium,
-            ("non-loopback-ip" | "hostname", true) => Severity::Medium,
-            ("non-loopback-ip", false) => Severity::Low,
+        // OLLAMA_HOST is read by the server (where to listen) AND by clients (where to
+        // connect). A wildcard means "listen everywhere" either way. A specific address
+        // or host is a server bind only in the server's own unit or job; in a shell
+        // profile it is how a client reaches a remote GPU box, and stays quiet.
+        let title = match (o.bind.as_str(), o.service) {
+            ("wildcard", true) => format!(
+                "OLLAMA_HOST={} in {} config makes the Ollama server listen on every interface — the Ollama API has no authentication",
+                o.value, c.shell
+            ),
+            ("wildcard", false) => format!(
+                "OLLAMA_HOST={} in {} config makes `ollama serve` started from this environment listen on every interface — the Ollama API has no authentication",
+                o.value, c.shell
+            ),
+            ("non-loopback-ip" | "hostname", true) => format!(
+                "OLLAMA_HOST={} in {} config makes the Ollama server listen on a non-loopback address — the Ollama API has no authentication",
+                o.value, c.shell
+            ),
             _ => continue,
         };
         f.push(Finding {
-            severity,
+            severity: Severity::Medium,
             category: "Ollama exposure".into(),
-            title: format!(
-                "OLLAMA_HOST={} in {} config makes Ollama listen on {} — the Ollama API has no authentication",
-                o.value,
-                c.shell,
-                if o.bind == "wildcard" { "every interface" } else { "a non-loopback address" }
-            ),
+            title,
             location: c.config_path.clone(),
             evidence: None,
         });

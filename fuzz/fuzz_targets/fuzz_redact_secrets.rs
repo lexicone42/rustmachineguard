@@ -9,5 +9,9 @@ fuzz_target!(|data: &[u8]| {
         let once = rustmachineguard::scanners::redact_secrets_in_text(s);
         let twice = rustmachineguard::scanners::redact_secrets_in_text(&once);
         assert_eq!(once, twice, "redaction not idempotent");
+        // The credential-helper redactor (literal echo/printf/heredoc arguments) must be
+        // total too, and never let a vendor-shaped key through that the base pass caught.
+        let helper = rustmachineguard::scanners::redact_helper_command(s);
+        assert_eq!(rustmachineguard::scanners::redact_token_shapes(&helper), helper, "a key shape survived");
     }
 });

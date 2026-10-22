@@ -779,7 +779,7 @@ fn agent_surface_findings_conform() {
             scope: "global".into(),
             file_type: "skill-manifest".into(),
             sha256: "symlink-not-followed".into(),
-            symlink: Some(SkillSymlink { target: "/h/.ssh/id_rsa".into(), escapes: true, sensitive_target: true, followed: false }),
+            symlink: Some(SkillSymlink { target: "/h/.ssh/id_rsa".into(), escapes: true, sensitive_target: true, followed: false, ..Default::default() }),
             dynamic_commands: vec![SkillDynamicCommand { command: "git status".into(), ..Default::default() }],
             unrestricted_bash: true,
             provenance: Some(SkillProvenance { marketplace: Some("third".into()), plugin: Some("tp".into()), third_party: true, active: true, ..Default::default() }),
@@ -814,6 +814,7 @@ fn agent_surface_findings_conform() {
             contributes_theme: true,
             declarative_claim: true,
             native_addons: vec!["bin/x.node".into()],
+            ..Default::default()
         }];
         r.shell_configs = vec![ShellConfig {
             shell: "systemd-user".into(),
@@ -830,5 +831,68 @@ fn agent_surface_findings_conform() {
     ] {
         assert!(cats.contains(c), "fixture produced no {c} finding: {cats:?}");
     }
+    assert_blueprint_valid(&report);
+}
+
+/// CVE-2026-21852 is Claude Code's project-settings ANTHROPIC_BASE_URL bug: a .env
+/// OPENAI_BASE_URL (or any .env gateway) must not be linked to it, nor attach to the
+/// settings file's gateway asset; a settings ANTHROPIC_BASE_URL still is.
+#[test]
+fn gateway_cve_links_only_settings_anthropic_gateways() {
+    use rustmachineguard::models::*;
+    let report = make_report(|r| {
+        r.env_files = vec![EnvFile {
+            path: "/p/.env".into(),
+            git_tracked: true,
+            agent_overrides: vec![
+                EnvAgentOverride { key: "OPENAI_BASE_URL".into(), kind: "gateway".into(), value: Some("envhost.example".into()), ..Default::default() },
+                EnvAgentOverride { key: "ANTHROPIC_BASE_URL".into(), kind: "gateway".into(), value: Some("envhost.example".into()), ..Default::default() },
+            ],
+            ..Default::default()
+        }];
+        r.agent_settings = vec![AgentSettings {
+            path: "/p/.claude/settings.json".into(),
+            source: "project".into(),
+            framework: "claude-code".into(),
+            gateway_overrides: vec![GatewayOverride { var: "ANTHROPIC_BASE_URL".into(), host: "settingshost.example".into(), official: false }],
+            ..Default::default()
+        }];
+    });
+    let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    let doc: Value = serde_json::from_str(&rendered).unwrap();
+    fn threats<'a>(v: &'a Value, out: &mut Vec<&'a Value>) {
+        match v {
+            Value::Object(m) => {
+                if m.get("bom-ref").and_then(|b| b.as_str()).is_some_and(|b| b.starts_with("threat:")) {
+                    out.push(v);
+                }
+                m.values().for_each(|x| threats(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| threats(x, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    threats(&doc, &mut all);
+    let cves = |t: &Value| t.get("relatedVulnerabilities").map(|v| v.to_string()).unwrap_or_default();
+    let by = |needle: &str, loc: &str| -> Vec<&Value> {
+        all.iter()
+            .copied()
+            .filter(|t| {
+                t["name"].as_str().unwrap_or("").contains(needle)
+                    && t["description"].as_str().unwrap_or("").contains(loc)
+            })
+            .collect()
+    };
+    let env_openai = by("OPENAI_BASE_URL", "/p/.env");
+    let env_anthropic = by("ANTHROPIC_BASE_URL", "/p/.env");
+    let settings = by("settingshost.example", "settings.json");
+    assert_eq!((env_openai.len(), env_anthropic.len(), settings.len()), (1, 1, 1), "{rendered}");
+    assert!(!cves(env_openai[0]).contains("cve-2026-21852"), "{}", env_openai[0]);
+    assert!(!cves(env_anthropic[0]).contains("cve-2026-21852"), ".env is not Claude Code project settings");
+    assert!(cves(settings[0]).contains("cve-2026-21852"), "{}", settings[0]);
+    // The .env threat does not point at the settings host's asset.
+    let affects = |t: &Value| t.get("affects").map(|v| v.to_string()).unwrap_or_default();
+    assert!(!affects(env_anthropic[0]).contains("asset:gateway:"), "{}", env_anthropic[0]);
     assert_blueprint_valid(&report);
 }

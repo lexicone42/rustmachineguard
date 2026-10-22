@@ -64,15 +64,18 @@ fn scan_vscode_style_extensions(
 
             let manifest = read_manifest_claims(&path);
             let native_addons = if manifest.declarative_claim { find_native_addons(&path) } else { Vec::new() };
+            // The directory name is attacker-chosen text that reaches the terminal.
+            let clean = |s: &str| crate::scanners::sanitize_display(s, 200);
             results.push(IdeExtension {
-                id: id.clone(),
-                name,
-                version,
-                publisher,
+                id: clean(&id),
+                name: clean(&name),
+                version: clean(&version),
+                publisher: clean(&publisher),
                 ide_type: ide.name().to_string(),
                 categories: manifest.categories,
                 code_entry_points: manifest.code_entry_points,
                 contributes_theme: manifest.contributes_theme,
+                contributes_commands: manifest.contributes_commands,
                 declarative_claim: manifest.declarative_claim,
                 native_addons,
             });
@@ -99,6 +102,7 @@ pub struct ManifestClaims {
     pub categories: Vec<String>,
     pub code_entry_points: Vec<String>,
     pub contributes_theme: bool,
+    pub contributes_commands: bool,
     pub declarative_claim: bool,
 }
 
@@ -137,12 +141,17 @@ pub fn manifest_claims(pkg: &serde_json::Value) -> ManifestClaims {
     let contributes_theme = contributes.is_some_and(|c| {
         ["themes", "iconThemes", "productIconThemes"].iter().any(|k| c.contains_key(*k))
     });
+    let contributes_commands = contributes.is_some_and(|c| c.contains_key("commands") || c.contains_key("configuration"));
+    // Deliberately stricter than "contributes a theme": the extension must present ITSELF
+    // as declarative (every category declarative, or with no categories only data
+    // contributions). A theme filed under "Themes" and "Other" makes no such claim, and
+    // flagging every extension that happens to bundle a theme would cry wolf.
     let declarative_claim = if !categories.is_empty() {
         categories.iter().all(|c| DECLARATIVE_CATEGORIES.contains(&c.to_ascii_lowercase().as_str()))
     } else {
         contributes.is_some_and(|c| !c.is_empty() && c.keys().all(|k| DECLARATIVE_CONTRIBUTES.contains(&k.as_str())))
     };
-    ManifestClaims { categories, code_entry_points, contributes_theme, declarative_claim }
+    ManifestClaims { categories, code_entry_points, contributes_theme, contributes_commands, declarative_claim }
 }
 
 /// Native `.node` addons (by magic bytes, not just extension) inside an extension
