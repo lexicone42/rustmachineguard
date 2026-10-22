@@ -29,11 +29,20 @@ static STATE: OnceLock<State> = OnceLock::new();
 /// The first export failure seen by the HTTP client. Only the first is kept: one
 /// warning line per run, and the first failure is the informative one.
 static EXPORT_ERR: OnceLock<ExportErr> = OnceLock::new();
-/// At most one `warning:` line per run from this module.
+/// At most one end-of-run `warning: OpenTelemetry export ...` line per run. Start-up
+/// configuration notices are printed directly and do not use this slot: sharing it once
+/// let an OTEL_EXPORTER_OTLP_PROTOCOL notice swallow the export-failure warning.
 static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Per-request cap for an export (HTTP client and OTLP exporter both).
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(1);
+/// The span pipeline's own shutdown cap. A little above EXPORT_TIMEOUT so that a request
+/// that times out is reported by the HTTP client as `timeout`, not cut off first by the
+/// processor (which only says "failed"), and still well inside SHUTDOWN_DEADLINE.
+const SPAN_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Sent on every export request, replacing opentelemetry-otlp's own
+/// `OTel-OTLP-Exporter-Rust/<version>`, which overrides the agent's default.
+const USER_AGENT: &str = concat!("rmguard/", env!("CARGO_PKG_VERSION"));
 /// Hard cap on the whole shutdown/flush, however the collector behaves.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 /// Histogram buckets in seconds: a scanner is milliseconds, a `--version` probe tens of
@@ -65,6 +74,7 @@ struct Instruments {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExportErr {
     Refused,
+    Dns,
     Timeout,
     Tls,
     Status(u16),
@@ -75,6 +85,7 @@ impl std::fmt::Display for ExportErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExportErr::Refused => f.write_str("could not connect"),
+            ExportErr::Dns => f.write_str("could not resolve host"),
             ExportErr::Timeout => f.write_str("timeout"),
             ExportErr::Tls => f.write_str("tls"),
             ExportErr::Status(c) => write!(f, "HTTP {c}"),
@@ -86,7 +97,8 @@ impl std::fmt::Display for ExportErr {
 fn categorize(e: &ureq::Error) -> ExportErr {
     use std::io::ErrorKind;
     match e {
-        ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => ExportErr::Refused,
+        ureq::Error::ConnectionFailed => ExportErr::Refused,
+        ureq::Error::HostNotFound => ExportErr::Dns,
         ureq::Error::Io(io)
             if matches!(
                 io.kind(),
@@ -96,6 +108,18 @@ fn categorize(e: &ureq::Error) -> ExportErr {
             ExportErr::Refused
         }
         ureq::Error::Io(io) if io.kind() == ErrorKind::TimedOut => ExportErr::Timeout,
+        // ureq 3.5's resolver hands back std's `to_socket_addrs` error unchanged
+        // (resolver.rs), and std gives a getaddrinfo failure no stable ErrorKind, only
+        // this fixed message prefix. Matching std's own text, never anything remote.
+        ureq::Error::Io(io)
+            if io.raw_os_error().is_none() && io.to_string().starts_with("failed to lookup address information") =>
+        {
+            ExportErr::Dns
+        }
+        // ureq's rustls connector runs the handshake through rustls' `complete_io`, which
+        // reports a protocol failure (e.g. a plain-HTTP server on an https:// endpoint)
+        // as an io::Error of kind InvalidData wrapping the rustls error.
+        ureq::Error::Io(io) if io.kind() == ErrorKind::InvalidData => ExportErr::Tls,
         ureq::Error::Timeout(_) => ExportErr::Timeout,
         ureq::Error::Tls(_) | ureq::Error::Rustls(_) => ExportErr::Tls,
         ureq::Error::StatusCode(c) => ExportErr::Status(*c),
@@ -112,11 +136,13 @@ fn note_export_err(slot: &OnceLock<ExportErr>, e: ExportErr) {
 fn shutdown_warning(deadline_passed: bool, err: Option<ExportErr>) -> Option<String> {
     if deadline_passed {
         Some(format!(
-            "warning: OpenTelemetry export did not finish within {}s; abandoned (the scan report is unaffected)",
+            "warning: OpenTelemetry export did not finish within {}s; abandoned (telemetry only; the report and exit code are not affected by this)",
             SHUTDOWN_DEADLINE.as_secs()
         ))
     } else {
-        err.map(|e| format!("warning: OpenTelemetry export failed ({e}); the scan report is unaffected"))
+        err.map(|e| {
+            format!("warning: OpenTelemetry export failed ({e}); telemetry only, the report and exit code are not affected by this")
+        })
     }
 }
 
@@ -126,19 +152,44 @@ fn warn_once(line: &str) {
     }
 }
 
-/// OTLP over our ureq agent. Pattern from the opentelemetry-http 0.33 crate docs' custom
+/// OTLP over our ureq agents. Pattern from the opentelemetry-http 0.33 crate docs' custom
 /// HttpClient example, adapted to ureq 3: status codes come back as responses (not
 /// errors) so the exporter sees them, the body read is capped, and failures are
 /// recorded as a category before being handed back unchanged.
-#[derive(Debug)]
-struct UreqClient(ureq::Agent);
+///
+/// Two agents, one proxy policy: a loopback collector (the default `localhost:4318`) is
+/// always reached directly, because ureq's environment proxy (ALL_PROXY, HTTPS_PROXY,
+/// HTTP_PROXY, lowercase too; the first one set wins for http:// and https:// alike)
+/// has no loopback exemption. Without this, a corporate proxy variable sent telemetry
+/// meant for this machine, with any OTEL_EXPORTER_OTLP_HEADERS credential, in cleartext
+/// to the proxy. Any other endpoint uses the environment proxy, with NO_PROXY honored.
+#[derive(Debug, Clone)]
+struct UreqClient {
+    direct: ureq::Agent,
+    proxied: ureq::Agent,
+}
+
+/// `localhost`, `*.localhost`, 127.0.0.0/8 or ::1 (RFC 6761 reserves `localhost` names
+/// for loopback).
+fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    let lower = h.to_ascii_lowercase();
+    let lower = lower.trim_end_matches('.');
+    lower == "localhost"
+        || lower.ends_with(".localhost")
+        || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
 
 #[async_trait::async_trait]
 impl HttpClient for UreqClient {
     async fn send_bytes(&self, request: Request<Bytes>) -> Result<Response<Bytes>, HttpError> {
-        let (parts, body) = request.into_parts();
+        let (mut parts, body) = request.into_parts();
+        if let Ok(ua) = USER_AGENT.parse() {
+            parts.headers.insert("user-agent", ua);
+        }
+        let agent = if parts.uri.host().is_some_and(is_loopback_host) { &self.direct } else { &self.proxied };
         let req = Request::from_parts(parts, body.to_vec());
-        let mut resp = match self.0.run(req) {
+        let mut resp = match agent.run(req) {
             Ok(r) => r,
             Err(e) => {
                 note_export_err(&EXPORT_ERR, categorize(&e));
@@ -191,12 +242,20 @@ pub(super) fn init() -> Result<(), InitError> {
     if env_is("OTEL_SDK_DISABLED", "true") {
         return Err(InitError::Disabled);
     }
+    // Start-up notices print directly; WARNED is kept for the end-of-run export warning.
+    // Values are not echoed: they are the user's, but nothing here needs them.
     if let Ok(p) = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
         && !p.trim().is_empty()
         && p.trim() != "http/protobuf"
     {
-        // The value is not echoed: it is the user's, but nothing here needs it.
-        warn_once("warning: OTEL_EXPORTER_OTLP_PROTOCOL is ignored; rmguard exports OTLP over http/protobuf only");
+        eprintln!("warning: OTEL_EXPORTER_OTLP_PROTOCOL is ignored; rmguard exports OTLP over http/protobuf only");
+    }
+    for var in ["OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"] {
+        if let Ok(v) = std::env::var(var)
+            && !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "otlp" | "none")
+        {
+            eprintln!("warning: {var} supports only `otlp` and `none` here; exporting OTLP");
+        }
     }
     let want_traces = !env_is("OTEL_TRACES_EXPORTER", "none");
     let want_metrics = !env_is("OTEL_METRICS_EXPORTER", "none");
@@ -218,13 +277,17 @@ pub(super) fn init() -> Result<(), InitError> {
         ])
         .build();
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(EXPORT_TIMEOUT))
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .user_agent(concat!("rmguard/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .into();
+    let agent = |proxy: Option<ureq::Proxy>| -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(EXPORT_TIMEOUT))
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .user_agent(USER_AGENT)
+            .proxy(proxy)
+            .build()
+            .into()
+    };
+    let client = UreqClient { direct: agent(None), proxied: agent(ureq::Proxy::try_from_env()) };
 
     // No with_endpoint(): the standard OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT /
     // OTEL_EXPORTER_OTLP_ENDPOINT / default resolution applies. Protocol and timeout are
@@ -233,7 +296,7 @@ pub(super) fn init() -> Result<(), InitError> {
     let tp = if want_traces {
         let exp = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
-            .with_http_client(UreqClient(agent.clone()))
+            .with_http_client(client.clone())
             .with_protocol(Protocol::HttpBinary)
             .with_timeout(EXPORT_TIMEOUT)
             .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
@@ -261,7 +324,7 @@ pub(super) fn init() -> Result<(), InitError> {
     let mp = if want_metrics {
         let mexp = match opentelemetry_otlp::MetricExporter::builder()
             .with_http()
-            .with_http_client(UreqClient(agent))
+            .with_http_client(client)
             .with_protocol(Protocol::HttpBinary)
             .with_timeout(EXPORT_TIMEOUT)
             .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
@@ -337,7 +400,6 @@ pub(super) fn init() -> Result<(), InitError> {
 fn value(v: V) -> Value {
     match v {
         V::S(s) => Value::from(s),
-        V::Owned(s) => Value::from(s),
         V::I(i) => Value::I64(i),
         V::B(b) => Value::Bool(b),
     }
@@ -353,6 +415,9 @@ pub(super) struct Live {
     // Dropped after `Drop::drop` ends the span: restores the parent context.
     _attach: ContextGuard,
     start: SystemTime,
+    /// Monotonic twin of `start`. Every end time is `start + <Instant elapsed>`, so a wall
+    /// clock step mid-scan cannot put a child span outside its parent.
+    t0: Instant,
     finished: bool,
 }
 
@@ -374,7 +439,7 @@ impl Live {
 impl Drop for Live {
     fn drop(&mut self) {
         if !self.finished {
-            self.cx.span().end();
+            self.cx.span().end_with_timestamp(self.start + self.t0.elapsed());
         }
     }
 }
@@ -382,6 +447,7 @@ impl Drop for Live {
 pub(super) fn start(name: Cow<'static, str>, client: bool, attrs: Vec<Attr>) -> Option<Live> {
     let tracer = STATE.get()?.tracer.as_ref()?;
     let start = SystemTime::now();
+    let t0 = Instant::now();
     let span = tracer
         .span_builder(name)
         .with_kind(if client { SpanKind::Client } else { SpanKind::Internal })
@@ -390,7 +456,7 @@ pub(super) fn start(name: Cow<'static, str>, client: bool, attrs: Vec<Attr>) -> 
         .start(tracer);
     let cx = Context::current_with_span(span);
     let attach = cx.clone().attach();
-    Some(Live { cx, _attach: attach, start, finished: false })
+    Some(Live { cx, _attach: attach, start, t0, finished: false })
 }
 
 pub(super) fn annotate_current(attrs: Vec<Attr>) {
@@ -414,9 +480,9 @@ pub(super) fn record(metric: Metric, v: f64, attrs: Vec<Attr>) {
     }
 }
 
-pub(super) fn record_scanner(stat: &ScannerStat, elapsed: Duration) {
+pub(super) fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration) {
     let Some(inst) = STATE.get().and_then(|s| s.inst.as_ref()) else { return };
-    let kv = conv(vec![Attr::scanner(&stat.scanner)]);
+    let kv = conv(vec![Attr::scanner(label)]);
     inst.scanner_duration.record(elapsed.as_secs_f64(), &kv);
     inst.files_read.add(stat.files_read, &kv);
     inst.files_missing.add(stat.files_missing, &kv);
@@ -444,7 +510,7 @@ pub(super) fn shutdown() {
         match std::thread::Builder::new()
             .name("rmguard-otel-trace".into())
             .spawn(move || {
-                let _ = tx.send(tp.shutdown_with_timeout(EXPORT_TIMEOUT).is_ok());
+                let _ = tx.send(tp.shutdown_with_timeout(SPAN_SHUTDOWN_TIMEOUT).is_ok());
             }) {
             Ok(_) => pending += 1,
             Err(_) => spawn_failed = true,
@@ -515,7 +581,7 @@ mod tests {
 
         assert_eq!(
             shutdown_warning(false, Some(ExportErr::Status(401))).unwrap(),
-            "warning: OpenTelemetry export failed (HTTP 401); the scan report is unaffected"
+            "warning: OpenTelemetry export failed (HTTP 401); telemetry only, the report and exit code are not affected by this"
         );
         assert!(shutdown_warning(true, Some(ExportErr::Timeout)).unwrap().contains("did not finish within 2s"));
         assert_eq!(shutdown_warning(false, None), None);
@@ -525,9 +591,48 @@ mod tests {
     fn ureq_errors_map_to_categories() {
         use std::io::{Error, ErrorKind};
         assert_eq!(categorize(&ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused))), ExportErr::Refused);
-        assert_eq!(categorize(&ureq::Error::HostNotFound), ExportErr::Refused);
+        assert_eq!(categorize(&ureq::Error::HostNotFound), ExportErr::Dns);
+        assert_eq!(categorize(&ureq::Error::Io(Error::from(ErrorKind::InvalidData))), ExportErr::Tls);
         assert_eq!(categorize(&ureq::Error::StatusCode(500)), ExportErr::Status(500));
         assert_eq!(categorize(&ureq::Error::Tls("x")), ExportErr::Tls);
         assert_eq!(categorize(&ureq::Error::BadUri("http://u:pw@h".into())), ExportErr::Other);
+    }
+
+    /// Errors from real requests, not hand-built variants: a refused loopback port, and
+    /// an https:// endpoint answered in plain HTTP. Local sockets only.
+    #[test]
+    fn real_request_errors_map_to_categories() {
+        use std::io::Write;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .proxy(None)
+            .build()
+            .into();
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let e = agent.get(format!("http://127.0.0.1:{closed}/v1/traces")).call().unwrap_err();
+        assert_eq!(categorize(&e), ExportErr::Refused, "{e:?}");
+
+        let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = plain.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = plain.accept() {
+                let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let e = agent.get(format!("https://127.0.0.1:{port}/v1/traces")).call().unwrap_err();
+        let _ = server.join();
+        assert_eq!(categorize(&e), ExportErr::Tls, "{e:?}");
+    }
+
+    #[test]
+    fn loopback_hosts_bypass_the_proxy() {
+        for h in ["localhost", "LOCALHOST", "localhost.", "collector.localhost", "127.0.0.1", "127.8.9.10", "[::1]", "::1"] {
+            assert!(is_loopback_host(h), "{h}");
+        }
+        for h in ["otel.example.com", "localhost.example.com", "10.0.0.1", "[2001:db8::1]", "0.0.0.0", ""] {
+            assert!(!is_loopback_host(h), "{h}");
+        }
     }
 }

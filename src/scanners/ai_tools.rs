@@ -213,8 +213,8 @@ const TOOLS: &[ToolDef] = &[
 
 /// Verify a binary is real (not a shim that says "not installed").
 fn verify_binary_works(path: &std::path::Path) -> bool {
-    let mut x = crate::otel::exec_span("verify_binary", path.as_os_str());
-    let output = std::process::Command::new(path)
+    let mut x = crate::otel::exec_span("verify_binary");
+    let output = crate::scanners::child_command(path)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -374,7 +374,7 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     {
         let plist = app_path.join("Contents/Info.plist");
         if crate::scanners::probe_file(&plist) {
-            if let Ok(output) = std::process::Command::new("defaults")
+            if let Ok(output) = crate::scanners::child_command("defaults")
                 .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"])
                 .output()
             {

@@ -1,7 +1,6 @@
 use super::{Ide, PlatformInfo};
 use crate::models::DeviceInfo;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub struct LinuxPlatform {
     home: PathBuf,
@@ -37,7 +36,7 @@ impl PlatformInfo for LinuxPlatform {
             .or_else(|| Self::read_os_release_field("NAME"))
             .unwrap_or_else(|| "Linux".to_string());
         let os_version = Self::read_os_release_field("VERSION_ID").unwrap_or_default();
-        let kernel_version = Command::new("uname")
+        let kernel_version = crate::scanners::child_command("uname")
             .arg("-r")
             .output()
             .ok()
@@ -236,7 +235,7 @@ fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| {
-            Command::new("hostname")
+            crate::scanners::child_command("hostname")
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())

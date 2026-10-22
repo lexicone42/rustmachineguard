@@ -5,7 +5,11 @@
 //! * nothing scan-derived (names, commands, args, env values, paths) is exported;
 //! * a dead or black-holed collector costs at most ~2 s and never changes the report
 //!   or the exit code;
-//! * OTEL_SDK_DISABLED wins over the flag, and `--fail-on` still flushes first.
+//! * OTEL_SDK_DISABLED wins over the flag, and `--fail-on` still flushes first;
+//! * no child process rmguard runs (probed MCP servers, `--version` probes, pgrep, git)
+//!   inherits an `OTEL_*` variable, so a collector API key in OTEL_EXPORTER_OTLP_HEADERS
+//!   never reaches a config-authored command;
+//! * a loopback collector is reached directly even when a proxy variable is set.
 //!
 //! Every child gets a cleared environment (HOME = a temp dir, PATH=/usr/bin:/bin) so no
 //! tool it runs can talk to the test port and nothing from the developer's own shell
@@ -99,6 +103,113 @@ fn default_run_never_connects_even_with_otel_env() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// The reviewer's reproduction, generalized: a hostile MCP server command plus a fake
+/// tool on PATH under the names rmguard runs (`ghcs` for the Copilot CLI's verify and
+/// `--version` probes, `tabby` to trigger `pgrep`, `pgrep` and `git` themselves). Each
+/// one dumps its environment. With OTEL_EXPORTER_OTLP_HEADERS holding a canary API key,
+/// no dump may contain any OTEL_ variable, with or without `--otel`.
+#[test]
+fn children_never_inherit_otel_env() {
+    use std::os::unix::fs::PermissionsExt;
+    for (tag, with_otel) in [("childenv-default", false), ("childenv-otel", true)] {
+        let home = temp_home(tag);
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dump = home.join("child_env.txt");
+        let probe_dump = home.join("probe_env.txt");
+        let recorder = format!(
+            "#!/bin/sh\n{{ echo \"ARGV0=$(basename \"$0\")\"; env; }} >> '{}'\necho \"$(basename \"$0\") 1.2.3\"\nexit 0\n",
+            dump.display()
+        );
+        for name in ["ghcs", "tabby", "pgrep", "git"] {
+            let f = bin.join(name);
+            std::fs::write(&f, &recorder).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let claude = serde_json::json!({
+            "mcpServers": {
+                "leak": {
+                    "command": "/bin/sh",
+                    "args": ["-c", format!("env > '{}'", probe_dump.display())]
+                }
+            }
+        });
+        std::fs::write(home.join(".claude.json"), claude.to_string()).unwrap();
+        std::fs::write(home.join(".gitconfig"), "[user]\n\tname = x\n").unwrap();
+
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut args = vec!["--probe-mcp", "--format", "json"];
+        if with_otel {
+            args.insert(0, "--otel");
+        }
+        let mut cmd = rmguard(&home, Some(closed), &args);
+        cmd.env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer E2EOTELHEADERKEY")
+            .env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-api-key=E2EOTELHEADERKEY")
+            .env("OTEL_RESOURCE_ATTRIBUTES", "team=E2EOTELHEADERKEY")
+            .env("otel_lowercase_too", "E2EOTELHEADERKEY");
+        let (out, _) = run(cmd);
+        assert!(out.status.success(), "{tag}: exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        json(&out);
+
+        let probe_env = std::fs::read_to_string(&probe_dump)
+            .unwrap_or_else(|e| panic!("{tag}: the probed server did not run ({e}); stderr:\n{}", stderr(&out)));
+        let child_env = std::fs::read_to_string(&dump)
+            .unwrap_or_else(|e| panic!("{tag}: no fake tool ran ({e}); stderr:\n{}", stderr(&out)));
+        // Positive controls: the dumps are real environments from the sites under test.
+        assert!(probe_env.contains("HOME="), "{tag}: {probe_env}");
+        for site in ["ARGV0=ghcs", "ARGV0=pgrep"] {
+            assert!(child_env.contains(site), "{tag}: {site} never ran:\n{child_env}");
+        }
+        for (what, text) in [("probed MCP server", &probe_env), ("--version/pgrep/git child", &child_env)] {
+            assert!(!text.contains("E2EOTELHEADERKEY"), "{tag}: the collector key reached a {what}:\n{text}");
+            assert!(
+                !text.lines().any(|l| l.to_ascii_uppercase().starts_with("OTEL_")),
+                "{tag}: an OTEL_ variable reached a {what}:\n{text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+/// Every child process goes through `scanners::child_command`, which scrubs `OTEL_*`.
+/// A new `Command::new` anywhere else in src/ would bypass it.
+#[test]
+fn no_bare_command_new_outside_child_command() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    assert!(files.len() > 20, "src/ not found");
+    let mut allowed = 0;
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            if f.ends_with("src/scanners/mod.rs") && line.trim() == "let mut cmd = std::process::Command::new(program);" {
+                allowed += 1;
+                continue;
+            }
+            panic!(
+                "{}:{}: spawn through crate::scanners::child_command, not Command::new: {line}",
+                f.display(),
+                i + 1
+            );
+        }
+    }
+    assert_eq!(allowed, 1, "child_command itself not found");
+}
+
 #[cfg(not(feature = "otel"))]
 #[test]
 fn otel_flag_without_feature_warns() {
@@ -135,6 +246,8 @@ mod enabled {
     struct Collector {
         port: u16,
         got: Arc<Mutex<Bodies>>,
+        /// The User-Agent header of every request.
+        agents: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
         live: Arc<AtomicUsize>,
         accept: Option<std::thread::JoinHandle<()>>,
@@ -146,17 +259,18 @@ mod enabled {
             let port = listener.local_addr().unwrap().port();
             listener.set_nonblocking(true).unwrap();
             let got = Arc::new(Mutex::new(Vec::new()));
+            let agents = Arc::new(Mutex::new(Vec::new()));
             let stop = Arc::new(AtomicBool::new(false));
             let live = Arc::new(AtomicUsize::new(0));
-            let (g, s, l) = (got.clone(), stop.clone(), live.clone());
+            let (g, a, s, l) = (got.clone(), agents.clone(), stop.clone(), live.clone());
             let accept = std::thread::spawn(move || {
                 while !s.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let (g, l) = (g.clone(), l.clone());
+                            let (g, a, l) = (g.clone(), a.clone(), l.clone());
                             l.fetch_add(1, Ordering::SeqCst);
                             std::thread::spawn(move || {
-                                serve(stream, &g);
+                                serve(stream, &g, &a);
                                 l.fetch_sub(1, Ordering::SeqCst);
                             });
                         }
@@ -164,7 +278,7 @@ mod enabled {
                     }
                 }
             });
-            Collector { port, got, stop, live, accept: Some(accept) }
+            Collector { port, got, agents, stop, live, accept: Some(accept) }
         }
 
         /// Stop accepting and wait (at most 5 s) for open connections to drain.
@@ -181,7 +295,7 @@ mod enabled {
         }
     }
 
-    fn serve(mut s: std::net::TcpStream, got: &Mutex<Bodies>) {
+    fn serve(mut s: std::net::TcpStream, got: &Mutex<Bodies>, agents: &Mutex<Vec<String>>) {
         let _ = s.set_nonblocking(false);
         let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
         let mut buf: Vec<u8> = Vec::new();
@@ -205,6 +319,11 @@ mod enabled {
                     k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok())?
                 })
                 .unwrap_or(0);
+            let ua = head.lines().find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.trim().eq_ignore_ascii_case("user-agent").then(|| v.trim().to_string())
+            });
+            agents.lock().unwrap().push(ua.unwrap_or_default());
             let total = head_end + 4 + len;
             while buf.len() < total {
                 match s.read(&mut tmp) {
@@ -337,8 +456,14 @@ mod enabled {
     fn otel_run_exports_spans_and_metrics() {
         let home = temp_home("positive");
         let collector = Collector::start();
+        let agents = collector.agents.clone();
         let (out, _) = run(rmguard(&home, Some(collector.port), &["--otel", "--format", "json"]));
         let bodies = collector.finish();
+        let agents = agents.lock().unwrap().clone();
+        assert!(!agents.is_empty());
+        for ua in &agents {
+            assert_eq!(ua, concat!("rmguard/", env!("CARGO_PKG_VERSION")), "documented user agent");
+        }
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         let report = json(&out);
         assert!(stderr(&out).contains("info: OpenTelemetry export enabled"), "{}", stderr(&out));
@@ -471,6 +596,11 @@ mod enabled {
         }
 
         let all = spans(&tr);
+        // Program names are an inventory of installed tools: not exported.
+        assert!(
+            all.iter().all(|s| attr(&s.attributes, "process.executable.name").is_none()),
+            "process.executable.name exported"
+        );
         let probes: Vec<&Span> = all.iter().filter(|s| s.name == "mcp.probe").collect();
         assert_eq!(probes.len(), 1, "expected one mcp.probe span");
         let p = probes[0];
@@ -498,10 +628,13 @@ mod enabled {
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
+        assert!(stderr(&out).contains("export failed (could not connect)"), "{}", stderr(&out));
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
         assert!(!stderr(&out).contains(&format!(":{port}")), "the endpoint was echoed: {}", stderr(&out));
+        // A refused port costs about a millisecond; 2.5 s still catches a deadline loop
+        // that stopped working (the sequential-shutdown regression cost 3.03 s).
         assert!(
-            wall.saturating_sub(base_wall) < Duration::from_secs(3),
+            wall.saturating_sub(base_wall) < Duration::from_millis(2500),
             "dead collector cost {wall:?} vs {base_wall:?}"
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -525,9 +658,9 @@ mod enabled {
         json(&out);
         assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
-        // The hard bound in code is 2 s; the slack is for loaded CI machines.
+        // Measured ~1.03 s; the hard bound in code is 2 s; 0.5 s of slack for loaded CI.
         assert!(
-            wall.saturating_sub(base_wall) < Duration::from_secs(3),
+            wall.saturating_sub(base_wall) < Duration::from_millis(2500),
             "black-holed collector cost {wall:?} vs {base_wall:?}"
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -562,6 +695,82 @@ mod enabled {
         json(&out);
         let all = spans(&traces(&bodies));
         assert!(all.iter().any(|s| s.name == "rmguard.scan"), "root span not flushed before exit 2");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The protocol notice is a start-up line of its own; it must not use up the single
+    /// end-of-run warning. A gRPC setup on :4317 is common, and there every export fails.
+    #[test]
+    fn protocol_notice_does_not_swallow_export_warning() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let home = temp_home("protocol");
+        let mut cmd = rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
+        cmd.env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+        let (out, _) = run(cmd);
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        json(&out);
+        let err = stderr(&out);
+        assert_eq!(err.lines().filter(|l| l.contains("OTEL_EXPORTER_OTLP_PROTOCOL is ignored")).count(), 1, "{err}");
+        assert_eq!(warning_lines(&out), 1, "{err}");
+        assert!(err.contains("export failed (could not connect)"), "{err}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Every proxy variable ureq reads is set and points at a listener; the loopback
+    /// collector must still get the export directly and the proxy nothing.
+    #[test]
+    fn loopback_collector_bypasses_proxy_env() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://127.0.0.1:{}", proxy.local_addr().unwrap().port());
+        let home = temp_home("proxy");
+        let collector = Collector::start();
+        let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
+        for var in ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            cmd.env(var, &proxy_url);
+        }
+        let (out, _) = run(cmd);
+        let bodies = collector.finish();
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        json(&out);
+        assert_eq!(warning_lines(&out), 0, "{}", stderr(&out));
+        assert!(bodies.iter().any(|(p, _)| p == "/v1/traces"), "no direct export; stderr:\n{}", stderr(&out));
+        assert!(bodies.iter().any(|(p, _)| p == "/v1/metrics"), "no direct export");
+        assert_never_connected(&proxy);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A real TLS failure (https:// endpoint, plain-HTTP server) is reported as `tls`,
+    /// not `other`.
+    #[test]
+    fn tls_failure_is_categorized() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            while !s2.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut s, _)) => {
+                        let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        let home = temp_home("tls");
+        let mut cmd = rmguard(&home, None, &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
+        cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", format!("https://127.0.0.1:{port}"));
+        let (out, _) = run(cmd);
+        stop.store(true, Ordering::SeqCst);
+        let _ = server.join();
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        json(&out);
+        assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
+        assert!(stderr(&out).contains("export failed (tls)"), "{}", stderr(&out));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

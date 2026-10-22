@@ -82,7 +82,8 @@ pub fn verify_servers(configs: &[crate::models::McpConfig]) -> Vec<RegistryCheck
                             Attr::str(Key::ServerAddress, REGISTRY_HOST),
                         ]
                     });
-                    let t = std::time::Instant::now();
+                    // No clock read unless exporting.
+                    let t = crate::otel::enabled().then(std::time::Instant::now);
                     let verdict = match fetch_candidates(name) {
                         Ok(candidates) => classify(server, &candidates),
                         Err(_) => RegistryVerdict::LookupFailed,
@@ -93,9 +94,11 @@ pub fn verify_servers(configs: &[crate::models::McpConfig]) -> Vec<RegistryCheck
                         span.error("lookup_failed");
                     }
                     drop(span);
-                    crate::otel::record(Metric::RegistryLookupDuration, t.elapsed().as_secs_f64(), || {
-                        vec![Attr::str(Key::RegistryVerdict, kind)]
-                    });
+                    if let Some(t) = t {
+                        crate::otel::record(Metric::RegistryLookupDuration, t.elapsed().as_secs_f64(), || {
+                            vec![Attr::str(Key::RegistryVerdict, kind)]
+                        });
+                    }
                     idx += 1;
                     verdict
                 }

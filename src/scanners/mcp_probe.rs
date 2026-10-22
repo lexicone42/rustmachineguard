@@ -1,6 +1,6 @@
 use crate::models::{McpConfig, McpProbeResult, McpResourceInfo, McpServerInfo, McpToolInfo};
 use std::io::{BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -143,6 +143,8 @@ fn install_signal_forwarder() {
 struct Watchdog {
     // (cancelled, child-already-reaped) guarded together; Condvar wakes the thread.
     state: Arc<(Mutex<bool>, Condvar)>,
+    /// Set by the thread when it actually killed the child: the probe timed out.
+    fired: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -151,6 +153,8 @@ impl Watchdog {
         let state = Arc::new((Mutex::new(false), Condvar::new()));
         let child_id = child.id();
         let thread_state = state.clone();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_fired = fired.clone();
         let handle = std::thread::spawn(move || {
             let (lock, cvar) = &*thread_state;
             let guard = lock.lock().unwrap();
@@ -162,13 +166,20 @@ impl Watchdog {
             // held across the kill so the reaper cannot mark-reaped concurrently —
             // this serializes the check-and-kill against the cancel path.
             if timed_out.timed_out() && !*guard {
+                thread_fired.store(true, std::sync::atomic::Ordering::SeqCst);
                 kill_tree(child_id);
             }
         });
         Watchdog {
             state,
+            fired,
             handle: Some(handle),
         }
+    }
+
+    /// Did the watchdog kill the child? Meaningful after `cancel` (which joins).
+    fn fired(&self) -> bool {
+        self.fired.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Cancel the watchdog (after the child has been reaped) and join its thread.
@@ -215,14 +226,15 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
             );
 
             let mut span = crate::otel::client_span("mcp.probe", || vec![Attr::int(Key::McpServerIndex, idx)]);
-            let t = Instant::now();
-            let result = probe_stdio_server(
+            // No clock read unless exporting.
+            let t = crate::otel::enabled().then(Instant::now);
+            let (result, outcome) = probe_stdio_server(
                 &server.name,
                 &config.config_source,
                 cmd,
                 &server.args,
             );
-            let oc = probe_outcome(&result);
+            let oc = outcome.as_str();
             span.set(|| {
                 vec![
                     Attr::str(Key::McpOutcome, oc),
@@ -234,9 +246,11 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
                 span.error(oc);
             }
             drop(span);
-            crate::otel::record(Metric::McpProbeDuration, t.elapsed().as_secs_f64(), || {
-                vec![Attr::str(Key::McpOutcome, oc)]
-            });
+            if let Some(t) = t {
+                crate::otel::record(Metric::McpProbeDuration, t.elapsed().as_secs_f64(), || {
+                    vec![Attr::str(Key::McpOutcome, oc)]
+                });
+            }
             idx += 1;
             results.push(result);
         }
@@ -245,18 +259,49 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
     results
 }
 
-/// The probe's result as a fixed telemetry category. The error text itself can be the
-/// server's own words, so it is classified, never exported.
-pub fn probe_outcome(r: &McpProbeResult) -> &'static str {
-    if r.success {
-        return "ok";
+/// How a probe ended, as a fixed telemetry category. Decided where the failure happens
+/// (the reader's own timeout, EOF, a broken pipe, the watchdog), never by re-reading the
+/// error text afterwards: that text is wrapped with a phase prefix ("init response:
+/// timeout"), and part of it can be the server's own words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    Ok,
+    EmptyCommand,
+    SpawnFailed,
+    /// The probe deadline or the watchdog cut the exchange short.
+    Timeout,
+    /// The server closed its end (EOF on stdout, or a broken pipe on stdin).
+    Closed,
+    /// Anything else, including every server-reported error.
+    Error,
+}
+
+impl ProbeOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProbeOutcome::Ok => "ok",
+            ProbeOutcome::EmptyCommand => "empty_command",
+            ProbeOutcome::SpawnFailed => "spawn_failed",
+            ProbeOutcome::Timeout => "timeout",
+            ProbeOutcome::Closed => "closed",
+            ProbeOutcome::Error => "error",
+        }
     }
-    match r.error.as_deref() {
-        Some("empty command") => "empty_command",
-        Some(e) if e.starts_with("spawn failed") => "spawn_failed",
-        Some("timeout") => "timeout",
-        Some("connection closed") => "closed",
-        _ => "error",
+
+    /// Category of an `await_response` error. Exact match on the reader's own two fixed
+    /// strings; everything else it returns (size limit, read error, too many messages)
+    /// is `Error`. Applied before any prefix is added.
+    fn of_read(e: &str) -> ProbeOutcome {
+        match e {
+            "timeout" => ProbeOutcome::Timeout,
+            "connection closed" => ProbeOutcome::Closed,
+            _ => ProbeOutcome::Error,
+        }
+    }
+
+    /// Category of a failed write to the server's stdin: a broken pipe means it exited.
+    fn of_send(e: &std::io::Error) -> ProbeOutcome {
+        if e.kind() == std::io::ErrorKind::BrokenPipe { ProbeOutcome::Closed } else { ProbeOutcome::Error }
     }
 }
 
@@ -266,13 +311,14 @@ pub fn probe_outcome(r: &McpProbeResult) -> &'static str {
 /// away with the error -- they were spliced into a system prompt either way.
 struct ProbeFailure {
     error: String,
+    kind: ProbeOutcome,
     server_info: Option<McpServerInfo>,
     instructions: Option<String>,
 }
 
 impl From<String> for ProbeFailure {
     fn from(error: String) -> Self {
-        ProbeFailure { error, server_info: None, instructions: None }
+        ProbeFailure { error, kind: ProbeOutcome::Error, server_info: None, instructions: None }
     }
 }
 
@@ -283,8 +329,28 @@ impl From<&str> for ProbeFailure {
 }
 
 impl ProbeFailure {
-    fn with(error: String, server_info: &Option<McpServerInfo>, instructions: &Option<String>) -> Self {
-        ProbeFailure { error, server_info: server_info.clone(), instructions: instructions.clone() }
+    fn with(
+        kind: ProbeOutcome,
+        error: String,
+        server_info: &Option<McpServerInfo>,
+        instructions: &Option<String>,
+    ) -> Self {
+        ProbeFailure { error, kind, server_info: server_info.clone(), instructions: instructions.clone() }
+    }
+
+    /// A failed write to the server's stdin, before anything was learned.
+    fn send(what: &str, e: std::io::Error) -> Self {
+        ProbeFailure { kind: ProbeOutcome::of_send(&e), ..ProbeFailure::from(format!("{what}: {e}")) }
+    }
+
+    /// A failed `await_response`, classified before the phase prefix is added.
+    fn read(
+        phase: &str,
+        e: String,
+        server_info: &Option<McpServerInfo>,
+        instructions: &Option<String>,
+    ) -> Self {
+        Self::with(ProbeOutcome::of_read(&e), format!("{phase}: {e}"), server_info, instructions)
     }
 }
 
@@ -308,12 +374,27 @@ pub fn probe_server_for_test(
     command: &str,
     args: &[String],
 ) -> McpProbeResult {
+    probe_stdio_server(name, config_source, command, args).0
+}
+
+/// Like [`probe_server_for_test`], plus the telemetry outcome category the probe chose.
+pub fn probe_server_outcome_for_test(
+    name: &str,
+    config_source: &str,
+    command: &str,
+    args: &[String],
+) -> (McpProbeResult, ProbeOutcome) {
     probe_stdio_server(name, config_source, command, args)
 }
 
-fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[String]) -> McpProbeResult {
+fn probe_stdio_server(
+    name: &str,
+    config_source: &str,
+    command: &str,
+    args: &[String],
+) -> (McpProbeResult, ProbeOutcome) {
     if command.is_empty() {
-        return error_result(name, config_source, "empty command");
+        return (error_result(name, config_source, "empty command"), ProbeOutcome::EmptyCommand);
     }
 
     eprintln!(
@@ -323,7 +404,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         args.join(" ")
     );
 
-    let mut cmd = Command::new(command);
+    let mut cmd = crate::scanners::child_command(command);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -339,7 +420,9 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return error_result(name, config_source, &format!("spawn failed: {}", e)),
+        Err(e) => {
+            return (error_result(name, config_source, &format!("spawn failed: {}", e)), ProbeOutcome::SpawnFailed);
+        }
     };
 
     // Watchdog kills the child if the protocol exchange exceeds PROBE_TIMEOUT.
@@ -353,6 +436,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
     // Cancel the watchdog (sets flag + joins) BEFORE reaping the child, so the
     // watchdog can never signal a PID that has been reaped and possibly reused.
     watchdog.cancel();
+    let watchdog_fired = watchdog.fired();
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
@@ -362,7 +446,7 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
         Ok(data) => {
             let observed_capabilities =
                 infer_capabilities_from_tools(&data.tools, &data.resources);
-            McpProbeResult {
+            let r = McpProbeResult {
                 server_name: name.to_string(),
                 config_source: config_source.to_string(),
                 success: true,
@@ -379,13 +463,17 @@ fn probe_stdio_server(name: &str, config_source: &str, command: &str, args: &[St
                     }
                     .to_string(),
                 ),
-            }
+            };
+            (r, ProbeOutcome::Ok)
         }
         Err(f) => {
             let mut r = error_result(name, config_source, &f.error);
             r.server_info = f.server_info;
             r.instructions = f.instructions;
-            r
+            // The watchdog's SIGKILL reaches the reader as EOF or the writer as a broken
+            // pipe; either way the probe ran out of time.
+            let kind = if watchdog_fired { ProbeOutcome::Timeout } else { f.kind };
+            (r, kind)
         }
     }
 }
@@ -419,7 +507,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
         "params": { "_meta": modern_meta() }
     });
     send_message(&mut stdin, &discover_req)
-        .map_err(|e| format!("send server/discover failed: {}", e))?;
+        .map_err(|e| ProbeFailure::send("send server/discover failed", e))?;
     let discover_deadline = Instant::now() + DISCOVER_TIMEOUT.min(PROBE_TIMEOUT);
     let discover = await_response(&mut reader, ID_DISCOVER, discover_deadline);
     // No response at all (or a read error) means legacy, per the spec's timeout rule.
@@ -443,9 +531,9 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
                 "clientInfo": { "name": "rustmachineguard-probe", "version": "0.1.0" }
             }
         });
-        send_message(&mut stdin, &init_req).map_err(|e| format!("send init failed: {}", e))?;
+        send_message(&mut stdin, &init_req).map_err(|e| ProbeFailure::send("send init failed", e))?;
         let init_response = await_response(&mut reader, ID_INITIALIZE, deadline)
-            .map_err(|e| format!("init response: {}", e))?;
+            .map_err(|e| ProbeFailure::read("init response", e, &server_info, &instructions))?;
         // `"error": null` beside a result is the JSON-RPC 1.0 habit of hand-rolled
         // servers; it is a success, not a rejection.
         if let Some(err) = init_response.get("error").filter(|e| !e.is_null()) {
@@ -465,7 +553,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
                 "params": { "_meta": modern_meta() }
             });
             send_message(&mut stdin, &retry)
-                .map_err(|e| format!("send server/discover retry failed: {}", e))?;
+                .map_err(|e| ProbeFailure::send("send server/discover retry failed", e))?;
             match await_response(&mut reader, ID_DISCOVER_RETRY, deadline) {
                 // Only a RESULT counts as a modern answer. A spec-reserved error code also
                 // classifies as modern, but a server that rejected every request has
@@ -479,6 +567,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
                 }
                 _ => {
                     return Err(ProbeFailure::with(
+                        ProbeOutcome::Error,
                         format!(
                             "initialize rejected: {} {}",
                             err.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
@@ -537,7 +626,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
             // A timeout or EOF on the retry is the same deadline-cut the first attempt
             // reports; swallowing it here was success=true with zero tools again.
             Err(e) => {
-                return Err(ProbeFailure::with(format!("tools/list retry: {e}"), &server_info, &instructions));
+                return Err(ProbeFailure::read("tools/list retry", e, &server_info, &instructions));
             }
         }
     }
@@ -546,7 +635,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
     // crossed PROBE_TIMEOUT here was reported success=true with an empty list.
     let tools = match tools_resp {
         Ok(r) => extract_tools(&r),
-        Err(e) => return Err(ProbeFailure::with(format!("tools/list: {e}"), &server_info, &instructions)),
+        Err(e) => return Err(ProbeFailure::read("tools/list", e, &server_info, &instructions)),
     };
 
     // Phase 3: resources/list (best-effort).
@@ -984,22 +1073,41 @@ mod tests {
 
     #[test]
     fn mcp_probe_outcome_classification() {
-        let mut ok = error_result("n", "s", "x");
-        ok.success = true;
-        ok.error = None;
-        assert_eq!(probe_outcome(&ok), "ok");
-        assert_eq!(probe_outcome(&error_result("n", "s", "empty command")), "empty_command");
-        assert_eq!(
-            probe_outcome(&error_result("n", "s", "spawn failed: No such file or directory (os error 2)")),
-            "spawn_failed"
-        );
-        assert_eq!(probe_outcome(&error_result("n", "s", "timeout")), "timeout");
-        assert_eq!(probe_outcome(&error_result("n", "s", "connection closed")), "closed");
-        assert_eq!(probe_outcome(&error_result("n", "s", "init response: E2E server text")), "error");
-        // Server-chosen text that mentions a category is still just "error".
-        assert_eq!(probe_outcome(&error_result("n", "s", "tools/list: my timeout E2EOTEL")), "error");
-        let mut none = error_result("n", "s", "x");
-        none.error = None;
-        assert_eq!(probe_outcome(&none), "error");
+        // The reader's own two strings, exactly; anything else is "error", including
+        // server-chosen text that merely mentions a category.
+        assert_eq!(ProbeOutcome::of_read("timeout"), ProbeOutcome::Timeout);
+        assert_eq!(ProbeOutcome::of_read("connection closed"), ProbeOutcome::Closed);
+        assert_eq!(ProbeOutcome::of_read("my timeout E2EOTEL"), ProbeOutcome::Error);
+        assert_eq!(ProbeOutcome::of_read("message exceeds size limit"), ProbeOutcome::Error);
+        let f = ProbeFailure::read("init response", "timeout".into(), &None, &None);
+        assert_eq!((f.kind, f.error.as_str()), (ProbeOutcome::Timeout, "init response: timeout"));
+        let f = ProbeFailure::send("send init failed", std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert_eq!(f.kind, ProbeOutcome::Closed);
+        let f = ProbeFailure::send("send init failed", std::io::Error::from(std::io::ErrorKind::Other));
+        assert_eq!(f.kind, ProbeOutcome::Error);
+
+        // And through the real probe, against real children.
+        let (r, oc) = probe_stdio_server("n", "s", "", &[]);
+        assert_eq!((r.success, oc), (false, ProbeOutcome::EmptyCommand));
+        let (r, oc) = probe_stdio_server("n", "s", "/nonexistent/rmguard-E2E", &[]);
+        assert_eq!((r.success, oc), (false, ProbeOutcome::SpawnFailed));
+        // A server that exits at once: EOF on discover, then a broken pipe or EOF on
+        // initialize. Was "error" (the text was "send init failed: Broken pipe ...").
+        let (r, oc) = probe_stdio_server("n", "s", "true", &[]);
+        assert_eq!((r.success, oc), (false, ProbeOutcome::Closed), "{:?}", r.error);
+    }
+
+    /// A server that never answers ends as `timeout`. Before, the real error text was
+    /// "init response: timeout", which the string classifier filed under "error".
+    /// Takes PROBE_TIMEOUT (10 s).
+    #[cfg(unix)]
+    #[test]
+    fn mcp_probe_silent_server_is_timeout() {
+        let t = Instant::now();
+        let (r, oc) = probe_stdio_server("n", "s", "sleep", &["30".to_string()]);
+        assert!(!r.success);
+        assert_eq!(oc, ProbeOutcome::Timeout, "{:?}", r.error);
+        assert_eq!(oc.as_str(), "timeout");
+        assert!(t.elapsed() < PROBE_TIMEOUT + Duration::from_secs(5), "{:?}", t.elapsed());
     }
 }

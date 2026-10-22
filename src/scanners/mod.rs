@@ -36,8 +36,8 @@ pub fn is_process_running(name: &str) -> bool {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // Try pgrep first
-        let mut x = crate::otel::exec_span("pgrep", std::ffi::OsStr::new("pgrep"));
-        match std::process::Command::new("pgrep").arg("-x").arg(name).output() {
+        let mut x = crate::otel::exec_span("pgrep");
+        match child_command("pgrep").arg("-x").arg(name).output() {
             Ok(output) => {
                 note_exit(&mut x, &output.status);
                 return output.status.success();
@@ -81,10 +81,38 @@ fn proc_has_process(name: &str) -> bool {
     false
 }
 
+/// Every child process rmguard runs is built here, so none of them inherits the user's
+/// OpenTelemetry configuration. `OTEL_EXPORTER_OTLP_HEADERS` is where a hosted backend's
+/// API key goes (docs/OPENTELEMETRY.md tells `--otel` users to put it there), and the
+/// programs rmguard runs include config-authored, possibly hostile MCP server commands
+/// (`--probe-mcp`) and whatever binary sits on PATH under a known tool's name. They get
+/// no `OTEL_*` variable at all, whether or not `--otel` was given: the scan never asks
+/// a child to report anywhere, and a child that would have reported on its own is
+/// better silent than holding a credential it was never meant to see.
+/// `tests/otel_export.rs::no_bare_command_new_outside_child_command` keeps every spawn
+/// site going through this function.
+pub fn child_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    scrub_otel_env(&mut cmd);
+    cmd
+}
+
+/// Remove every `OTEL_*` variable (any case) present in this process's environment from
+/// `cmd`'s. Only names are compared; no value is read.
+pub fn scrub_otel_env(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    for (name, _) in std::env::vars_os() {
+        let b = name.as_encoded_bytes();
+        if b.len() >= 5 && b[..5].eq_ignore_ascii_case(b"OTEL_") {
+            cmd.env_remove(&name);
+        }
+    }
+    cmd
+}
+
 /// Get version from a binary by running `binary --version` with a 5-second timeout.
 pub fn get_binary_version(binary: &str) -> Option<String> {
-    let mut x = crate::otel::exec_span("version_probe", std::ffi::OsStr::new(binary));
-    let mut child = match std::process::Command::new(binary)
+    let mut x = crate::otel::exec_span("version_probe");
+    let mut child = match child_command(binary)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -758,7 +786,7 @@ pub fn is_world_or_group_writable(path: &std::path::Path) -> bool {
 /// config (`git config --list`) does not go through this, since the `-c` values would
 /// appear in its own output.
 pub fn hardened_git() -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = child_command("git");
     cmd.args([
         "-c", "core.fsmonitor=false",
         "-c", "core.hooksPath=/dev/null",
@@ -776,7 +804,7 @@ pub fn hardened_git() -> std::process::Command {
 /// Check whether a file is tracked by git (shells out to `git ls-files`).
 pub fn is_git_tracked(path: &std::path::Path) -> bool {
     let parent = path.parent().unwrap_or(path);
-    let mut x = crate::otel::exec_span("git_tracked", std::ffi::OsStr::new("git"));
+    let mut x = crate::otel::exec_span("git_tracked");
     let status = hardened_git()
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
@@ -1038,7 +1066,7 @@ pub mod telemetry {
     /// Run one scanner, attributing wall time and read counters to it.
     pub fn timed<T>(
         diagnostics: &mut Vec<ScannerStat>,
-        scanner: &str,
+        scanner: &'static str,
         root: Option<PathBuf>,
         f: impl FnOnce() -> Vec<T>,
     ) -> Vec<T> {
@@ -1073,7 +1101,7 @@ pub mod telemetry {
             ]
         });
         span.finish_after(elapsed);
-        crate::otel::record_scanner(&stat, elapsed);
+        crate::otel::record_scanner(scanner, &stat, elapsed);
         if trace_enabled() {
             eprintln!(
                 "trace: scanner {scanner} done: {}ms, {} read, {} missing, {} items",
@@ -1084,7 +1112,7 @@ pub mod telemetry {
         out
     }
 
-    pub fn skipped(scanner: &str) -> ScannerStat {
+    pub fn skipped(scanner: &'static str) -> ScannerStat {
         crate::otel::record(crate::otel::Metric::Skipped, 1.0, || vec![crate::otel::Attr::scanner(scanner)]);
         ScannerStat {
             scanner: scanner.to_string(),
@@ -1137,7 +1165,7 @@ pub fn output_with_timeout(
 ) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut x = crate::otel::exec_span("output_with_timeout", cmd.get_program());
+    let mut x = crate::otel::exec_span("output_with_timeout");
     let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(c) => c,
         Err(_) => {

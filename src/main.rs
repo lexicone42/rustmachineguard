@@ -300,21 +300,22 @@ fn main() {
         }
     }
 
-    let skip: Vec<&str> = cli
+    // Mapped onto VALID_SKIP's own static strings, so a label that reaches telemetry is
+    // one of ours and never the user's text.
+    let skip: Vec<&'static str> = cli
         .skip
         .iter()
         .map(|s| s.trim())
-        .filter(|s| {
-            if !VALID_SKIP.contains(s) {
+        .filter_map(|s| {
+            let known = VALID_SKIP.iter().copied().find(|v| *v == s);
+            if known.is_none() {
                 eprintln!(
                     "warning: unknown --skip category '{}' (valid: {})",
                     s,
                     VALID_SKIP.join(", ")
                 );
-                false
-            } else {
-                true
             }
+            known
         })
         .collect();
 
@@ -340,9 +341,10 @@ fn main() {
         Format::Blueprint => "blueprint",
         Format::Compliance => "compliance",
     };
+    // Only for the rmguard.scan.duration metric: no clock read unless exporting.
+    let scan_start = otel::enabled().then(Instant::now);
     // Root span of the whole scan; every phase and scanner span nests under it. Options
     // are exported as flags and counts, never as the paths or names they carry.
-    let scan_start = Instant::now();
     let root = otel::span("rmguard.scan", || {
         vec![
             Attr::str(Key::Format, format_name),
@@ -763,14 +765,16 @@ fn main() {
 
 /// End the root span with the scan's totals, record its duration, and flush/stop
 /// OpenTelemetry export. Nothing happens here unless `--otel` started export.
-fn finish_scan(mut root: otel::SpanGuard, scan_start: Instant, report: &ScanReport) {
+fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &ScanReport) {
     root.set(|| {
         vec![
             Attr::int(Key::ExposureFindings, report.exposure_findings.len() as i64),
             Attr::int(Key::ScannersRun, report.diagnostics.iter().filter(|d| !d.skipped).count() as i64),
         ]
     });
-    otel::record(Metric::ScanDuration, scan_start.elapsed().as_secs_f64(), Vec::new);
+    if let Some(t) = scan_start {
+        otel::record(Metric::ScanDuration, t.elapsed().as_secs_f64(), Vec::new);
+    }
     drop(root);
     otel::shutdown();
 }

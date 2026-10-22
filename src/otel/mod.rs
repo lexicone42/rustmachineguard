@@ -4,24 +4,29 @@
 //! shaped so that the door cannot carry scan content:
 //!
 //! * Attribute keys are a closed enum ([`Key`]); there is no free-form key.
-//! * Attribute values are built only through [`Attr`]'s constructors. Compile-time
-//!   strings, integers and booleans go in as they are; the only two constructors that
-//!   accept runtime text ([`Attr::scanner`] and [`Attr::exec_name`]) run it through the
-//!   report's own redaction and display sanitizers and cap it at 64 characters.
-//!   (Allow-list attribute construction; the pattern is ours, the sanitizers are the
-//!   existing report helpers in `crate::scanners`.)
-//! * Span names are `&'static str`, or `scanner.<label>` / `exec.<site>` built from a
-//!   scanner label and a static call-site name.
+//! * Attribute values are built only through [`Attr`]'s constructors, and none of them
+//!   accepts runtime text: strings are `&'static str` (a scanner label, a phase name, an
+//!   outcome category), everything else is an integer or a boolean. There is nothing to
+//!   sanitize because nothing a scan read can be passed in; a `String` does not
+//!   compile:
 //!
-//! Nothing here reads paths, server or package names, commands, arguments, environment
-//! values, URLs or error text into telemetry. See docs/OPENTELEMETRY.md.
+//! ```compile_fail
+//! let label = String::from("read from disk");
+//! let _ = rustmachineguard::otel::Attr::scanner(&label);
+//! ```
+//! * Span names are `&'static str`, or `scanner.<label>` / `exec.<site>` built from the
+//!   same static strings.
+//!
+//! Nothing here reads paths, server or package names, commands, program names,
+//! arguments, environment values, URLs or error text into telemetry. See
+//! docs/OPENTELEMETRY.md.
 //!
 //! Disabled cost: every entry point checks one `Relaxed` atomic (a constant `false` in a
-//! build without the `otel` feature) and returns before evaluating any closure, reading
-//! a clock or allocating.
+//! build without the `otel` feature) and returns before evaluating any closure or
+//! allocating. Call sites that time something read `Instant::now()` only when
+//! [`enabled`] says so.
 
 use crate::models::ScannerStat;
-use std::ffi::OsStr;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "otel")]
@@ -62,7 +67,7 @@ mod sdk {
     #[inline(always)]
     pub fn record(_: Metric, _: f64, _: Vec<Attr>) {}
     #[inline(always)]
-    pub fn record_scanner(_: &ScannerStat, _: Duration) {}
+    pub fn record_scanner(_: &'static str, _: &ScannerStat, _: Duration) {}
     pub fn init() -> Result<(), InitError> {
         Err(InitError::NotCompiled)
     }
@@ -92,7 +97,6 @@ pub enum Key {
     HttpStatus,
     ErrorType,
     ExecSite,
-    ExecName,
     ExecOutcome,
     ExitCode,
     Format,
@@ -126,7 +130,6 @@ impl Key {
         Key::HttpStatus,
         Key::ErrorType,
         Key::ExecSite,
-        Key::ExecName,
         Key::ExecOutcome,
         Key::ExitCode,
         Key::Format,
@@ -140,7 +143,7 @@ impl Key {
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
-    /// names (`error.type`, `http.response.status_code`, `process.executable.name`, ...);
+    /// names (`error.type`, `http.response.status_code`, `process.exit.code`, ...);
     /// rmguard-specific ones live under `rmguard.`.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -163,7 +166,6 @@ impl Key {
             Key::HttpStatus => "http.response.status_code",
             Key::ErrorType => "error.type",
             Key::ExecSite => "rmguard.exec.site",
-            Key::ExecName => "process.executable.name",
             Key::ExecOutcome => "rmguard.exec.outcome",
             Key::ExitCode => "process.exit.code",
             Key::Format => "rmguard.format",
@@ -179,51 +181,15 @@ impl Key {
 }
 
 /// One attribute. The value enum is private: the constructors below are the only way
-/// to make one, and only two of them accept runtime text, both sanitized.
+/// to make one, and none of them accepts runtime text.
 #[cfg_attr(not(feature = "otel"), allow(dead_code))]
 pub struct Attr(Key, V);
 
 #[cfg_attr(not(feature = "otel"), allow(dead_code))]
 enum V {
     S(&'static str),
-    Owned(String),
     I(i64),
     B(bool),
-}
-
-/// Maximum characters of runtime text in one attribute value.
-const MAX_ATTR_CHARS: usize = 64;
-
-/// Token prefixes of widely used credentials, from each vendor's published token format
-/// (GitHub ghp_/gho_/ghu_/ghs_/ghr_/github_pat_, Anthropic sk-ant-, OpenAI sk-, GitLab
-/// glpat-, Slack xox?-, Hugging Face hf_, AWS AKIA/ASIA, Google AIza).
-/// `redact_secrets_in_text` keys on *context* (`token=`, URL userinfo, Authorization);
-/// a bare token has none, so attribute text also drops any word that starts like one.
-/// Nothing legitimate in a scanner label or a program basename looks like this.
-const CREDENTIAL_PREFIXES: &[&str] = &[
-    "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "xoxa-", "xoxb-",
-    "xoxp-", "xoxs-", "hf_", "AKIA", "ASIA", "AIza",
-];
-
-fn is_word_sep(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '/' | '=' | ':' | ',' | '"' | '\'')
-}
-
-fn clean(s: &str) -> String {
-    let redacted = crate::scanners::redact_secrets_in_text(s);
-    let mut out = String::with_capacity(redacted.len());
-    for piece in redacted.split_inclusive(is_word_sep) {
-        let word = piece.trim_end_matches(is_word_sep);
-        let sep = &piece[word.len()..];
-        let bare = word.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-        if CREDENTIAL_PREFIXES.iter().any(|p| bare.starts_with(p)) {
-            out.push_str("[redacted]");
-        } else {
-            out.push_str(word);
-        }
-        out.push_str(sep);
-    }
-    crate::scanners::sanitize_display(&out, MAX_ATTR_CHARS)
 }
 
 impl Attr {
@@ -237,19 +203,9 @@ impl Attr {
     pub fn bool(key: Key, value: bool) -> Attr {
         Attr(key, V::B(value))
     }
-    /// A scanner label (`mcp`, `packages`, ...). Labels are ours, but the value is
-    /// sanitized anyway so this constructor cannot become a side door.
-    pub fn scanner(label: &str) -> Attr {
-        Attr(Key::Scanner, V::Owned(clean(label)))
-    }
-    /// The basename of an executed program (`git`, `ssh-keygen`). The directory is
-    /// dropped: it can be the user's home or a project path.
-    pub fn exec_name(program: &OsStr) -> Attr {
-        let base = std::path::Path::new(program)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        Attr(Key::ExecName, V::Owned(clean(&base)))
+    /// A scanner label (`mcp`, `packages`, ...): a string literal at every call site.
+    pub fn scanner(label: &'static str) -> Attr {
+        Attr(Key::Scanner, V::S(label))
     }
 
     pub fn key(&self) -> Key {
@@ -371,24 +327,24 @@ pub fn record(metric: Metric, value: f64, attrs: impl FnOnce() -> Vec<Attr>) {
 }
 
 /// The per-scanner metrics for one finished scanner: duration plus the three counts.
+/// `label` is the same static label as `stat.scanner`.
 #[inline]
-pub fn record_scanner(stat: &ScannerStat, elapsed: Duration) {
+pub fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration) {
     if enabled() {
-        sdk::record_scanner(stat, elapsed);
+        sdk::record_scanner(label, stat, elapsed);
     }
 }
 
-/// A subprocess span: `exec.<site>`, with the program's basename. Set the outcome before
-/// it drops; its duration is recorded as `rmguard.exec.duration` on drop.
+/// A subprocess span: `exec.<site>`. The program is not named: its call site already
+/// says what ran, and a list of `--version`-probed program names is an inventory of the
+/// AI tools on the machine, which is a scan finding. Set the outcome before it drops;
+/// its duration is recorded as `rmguard.exec.duration` on drop.
 #[inline]
-pub fn exec_span(site: &'static str, program: &OsStr) -> ExecSpan {
+pub fn exec_span(site: &'static str) -> ExecSpan {
     if !enabled() {
         return ExecSpan(None);
     }
-    let guard = span_with(
-        || format!("exec.{site}"),
-        || vec![Attr::str(Key::ExecSite, site), Attr::exec_name(program)],
-    );
+    let guard = span_with(|| format!("exec.{site}"), || vec![Attr::str(Key::ExecSite, site)]);
     ExecSpan(Some(ExecInner { guard, start: Instant::now(), site, outcome: None }))
 }
 
@@ -456,7 +412,6 @@ mod tests {
     fn text(a: &Attr) -> String {
         match &a.1 {
             V::S(s) => s.to_string(),
-            V::Owned(s) => s.clone(),
             V::I(i) => i.to_string(),
             V::B(b) => b.to_string(),
         }
@@ -477,12 +432,13 @@ mod tests {
         drop(c);
         annotate_current(|| panic!("annotate evaluated while disabled"));
         record(Metric::Skipped, 1.0, || panic!("record attrs evaluated while disabled"));
-        let mut x = exec_span("site", OsStr::new("/usr/bin/git"));
+        let mut x = exec_span("site");
         assert!(x.0.is_none(), "exec span allocated state while disabled");
         x.outcome("ok");
         x.exit_code(0);
         drop(x);
         record_scanner(
+            "mcp",
             &ScannerStat {
                 scanner: "mcp".into(),
                 root: None,
@@ -496,47 +452,17 @@ mod tests {
         );
     }
 
+    /// Every attribute value is static text, an integer or a boolean: what goes in is
+    /// exactly what is exported, with no runtime text to clean. (That `Attr::scanner`
+    /// rejects a `String` is the module doc's compile_fail example.)
     #[test]
-    fn attr_scanner_and_exec_name_sanitize() {
-        for evil in [
-            "a\x1b[32mb",
-            "a\u{9b}31mb",
-            "a\r\nb",
-            "a\u{2028}b",
-            "a\u{202e}b",
-            "a\u{2066}b",
-        ] {
-            let v = text(&Attr::scanner(evil));
-            assert!(
-                !v.chars().any(|c| c.is_control()
-                    || ('\u{80}'..='\u{9f}').contains(&c)
-                    || matches!(c, '\u{2028}' | '\u{202e}' | '\u{2066}')),
-                "unsanitized: {v:?}"
-            );
-            assert!(v.starts_with('a') && v.ends_with('b'), "{v:?}");
-        }
-        let long = "x".repeat(200);
-        let v = text(&Attr::scanner(&long));
-        assert_eq!(v.chars().count(), MAX_ATTR_CHARS + 1);
-        assert!(v.ends_with('…'));
-
-        for (canary, secret) in [
-            ("key sk-ant-api03-E2EOTELCANARY", "E2EOTELCANARY"),
-            ("tok ghp_E2EOTELCANARY0000000000000000000000", "E2EOTELCANARY"),
-            ("url https://u:E2EOTELPW@h/", "E2EOTELPW"),
-        ] {
-            let v = text(&Attr::scanner(canary));
-            assert!(!v.contains(secret), "secret survived: {v:?}");
-        }
-
-        let a = Attr::exec_name(OsStr::new("/home/x/E2EDIR/bin/git"));
-        assert_eq!(a.key(), Key::ExecName);
-        assert_eq!(text(&a), "git");
-        assert_eq!(text(&Attr::exec_name(OsStr::new("ssh-keygen"))), "ssh-keygen");
-        let v = text(&Attr::exec_name(OsStr::new("/tmp/ghp_E2EOTELCANARY0000000000000000000000")));
-        assert!(!v.contains("E2EOTELCANARY"), "{v:?}");
-        let v = text(&Attr::exec_name(OsStr::new("/tmp/evil\x1b[2Jname")));
-        assert!(!v.contains('\x1b'), "{v:?}");
+    fn attr_values_are_static_or_numeric() {
+        let a = Attr::scanner("mcp");
+        assert_eq!(a.key(), Key::Scanner);
+        assert_eq!(text(&a), "mcp");
+        assert_eq!(text(&Attr::str(Key::McpOutcome, "timeout")), "timeout");
+        assert_eq!(text(&Attr::int(Key::Items, -3)), "-3");
+        assert_eq!(text(&Attr::bool(Key::Diff, true)), "true");
     }
 
     #[test]
@@ -552,8 +478,11 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 30, "a Key variant is missing from Key::ALL");
-        assert_eq!(Key::ExecName.as_str(), "process.executable.name");
+        assert_eq!(Key::ALL.len(), 29, "a Key variant is missing from Key::ALL");
+        assert!(
+            !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
+            "program names are a tool inventory and are not exported"
+        );
         assert_eq!(Key::HttpStatus.as_str(), "http.response.status_code");
         assert_eq!(Key::ErrorType.as_str(), "error.type");
     }

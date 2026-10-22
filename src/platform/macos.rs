@@ -1,7 +1,6 @@
 use super::{Ide, PlatformInfo};
 use crate::models::DeviceInfo;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub struct MacOsPlatform {
     home: PathBuf,
@@ -22,14 +21,14 @@ impl MacOsPlatform {
 
 impl PlatformInfo for MacOsPlatform {
     fn device_info(&self) -> DeviceInfo {
-        let hostname = Command::new("hostname")
+        let hostname = crate::scanners::child_command("hostname")
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let os_version = Command::new("sw_vers")
+        let os_version = crate::scanners::child_command("sw_vers")
             .arg("-productVersion")
             .output()
             .ok()
@@ -37,7 +36,7 @@ impl PlatformInfo for MacOsPlatform {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
-        let kernel_version = Command::new("uname")
+        let kernel_version = crate::scanners::child_command("uname")
             .arg("-r")
             .output()
             .ok()

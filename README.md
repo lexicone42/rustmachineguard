@@ -189,16 +189,22 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel
 
 - **Off unless you pass `--otel`.** `OTEL_EXPORTER_OTLP_ENDPOINT` and the other
   `OTEL_*` variables only say *where* `--otel` sends; on their own they never turn export
-  on, and a default run reads none of them and opens no socket. `OTEL_SDK_DISABLED=true`
-  overrides the flag.
-- **What is exported:** scanner labels, phase names, counts, durations, program basenames
-  (`git`), and fixed outcome categories (`ok`, `timeout`, `spawn_failed`, `lookup_failed`,
-  `error.type=connect`, an HTTP status code). Resource: `service.name`, `service.version`,
-  `os.type`, `host.arch`.
+  on. In a default run rmguard reads none of their values and its own process opens no
+  socket (programs it runs for `--version` are their own programs; `ollama --version`,
+  for one, talks to its local server). `OTEL_SDK_DISABLED=true` overrides the flag.
+- **Your collector key stays with rmguard:** every child process (probed MCP servers,
+  `--version` probes, `git`, `pgrep`, `ssh-keygen`) starts with all `OTEL_*` variables
+  removed, so `OTEL_EXPORTER_OTLP_HEADERS` never reaches a config-authored command.
+- **What is exported:** scanner labels, phase names, subprocess call-site names, counts,
+  durations, and fixed outcome categories (`ok`, `timeout`, `spawn_failed`,
+  `lookup_failed`, `error.type=connect`, an HTTP status code). Resource: `service.name`,
+  `service.version`, `os.type`, `host.arch`.
 - **What is never exported:** file paths (including your home directory), MCP server
-  names, commands, arguments and environment, package names, registry URLs or responses,
-  error message text, host names, user names, file contents, `--trace` lines, or any
-  secret value. MCP servers and registry lookups are identified only by their position.
+  names, commands, arguments and environment, names of the programs rmguard ran (that
+  list would be an inventory of installed tools), package names, registry URLs or
+  responses, error message text, host names, user names, file contents, `--trace`
+  lines, or any secret value. MCP servers and registry lookups are identified only by
+  their position.
 - **A dead collector cannot hurt the scan:** the report is written first; flushing is
   capped at 2 s; one `warning:` line on stderr says what failed; the exit code is
   unchanged.
@@ -256,7 +262,7 @@ This tool is itself a security-sensitive program. Design decisions:
 - **Adversarially reviewed**: the redaction, the git walk, the probe and the diagnostics have each been through multiple rounds of multi-agent adversarial review in which every finding was independently reproduced by a second agent before being accepted. Several of those rounds found that a fix had introduced a second edge; each is documented in the commit history along with the floors that remain by design.
 - **SSH passphrase detection**: Uses `ssh-keygen` probing for OpenSSH-format keys (the PEM `ENCRYPTED` marker is unreliable for modern key formats); reports a tri-state (encrypted / no-passphrase / unknown) so a missing `ssh-keygen` is never reported as "unprotected".
 - **MCP probing is opt-in**: `--probe-mcp` spawns local MCP servers and is gated behind an explicit flag with a runtime warning; each server runs in its own process group under a watchdog, its output is read with enforced deadlines, and the whole group is killed when the probe ends or the user interrupts.
-- **Telemetry export is opt-in and content-free**: `--otel` exports OTLP traces/metrics of scan timing; ambient `OTEL_*` env never enables it; only labels, counts, durations and fixed outcome categories are exported (attribute keys are a closed enum, and the only two attribute constructors that take runtime text run it through the same redaction and display sanitizers as the report); a dead collector costs ≤2 s and never changes the report or exit code. Tested end to end with canaries in every scanned surface and a socket-level check that a default run connects to nothing.
+- **Telemetry export is opt-in and content-free**: `--otel` exports OTLP traces/metrics of scan timing; ambient `OTEL_*` env never enables it; only labels, counts, durations and fixed outcome categories are exported (attribute keys are a closed enum, and attribute values are `&'static str`, integers or booleans, so no runtime text can become an attribute); child processes never inherit `OTEL_*` variables, so a collector API key never reaches a probed server; a dead collector costs ≤2 s and never changes the report or exit code. Tested end to end with canaries in every scanned surface, a fake-tool canary for child environments, and a check that a default run with every `OTEL_*` endpoint variable set never connects to the collector port they name (rmguard's own process; tools it runs for `--version` are not covered).
 - **HTML XSS prevention**: Report data is base64-encoded in script tags to prevent injection; all user content is HTML-escaped including single quotes.
 - **Input validation**: `--format` and `--skip` flags are validated at parse time with clear error messages.
 - **No `/tmp` fallback**: Fails fast if `$HOME` cannot be determined rather than scanning a shared directory.
@@ -324,12 +330,6 @@ Options:
       --trace                        Print every path the scanners open or probe to
                                      stderr as it happens (paths only, redacted and
                                      sanitized). Same as RMGUARD_TRACE=1.
-      --otel                         Export OpenTelemetry traces/metrics of scan
-                                     timing over OTLP http/protobuf (opt-in;
-                                     NETWORK). OTEL_EXPORTER_OTLP_ENDPOINT alone
-                                     never enables it; it only picks where --otel
-                                     sends (default http://localhost:4318).
-                                     Labels, counts and durations only.
       --fail-on <SEVERITY>           Exit 2 if any finding is at or above this
                                      severity [values: critical, high, medium,
                                      low]. The report still prints; only the exit
@@ -337,6 +337,18 @@ Options:
       --report <DIR>                 Aggregate a directory of --format json scans
                                      into one fleet HTML dashboard (does not scan
                                      the local machine).
+      --otel                         Export OpenTelemetry traces and metrics for
+                                     this scan (time per scanner, MCP probe,
+                                     registry lookup and subprocess) over OTLP
+                                     http/protobuf. NETWORK, off by default:
+                                     setting OTEL_EXPORTER_OTLP_ENDPOINT alone
+                                     never enables export; it only picks where
+                                     --otel sends (default http://localhost:4318;
+                                     OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT
+                                     and OTEL_EXPORTER_OTLP_HEADERS honored).
+                                     Exports labels, counts and durations only —
+                                     never paths, server or package names, or
+                                     secret values. OTEL_SDK_DISABLED=true wins
   -h, --help                         Print help
   -V, --version                      Print version
 ```

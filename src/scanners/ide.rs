@@ -33,7 +33,7 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     {
         let plist = install_path.join("Contents/Info.plist");
         if crate::scanners::probe_exists(&plist) {
-            if let Ok(output) = std::process::Command::new("defaults")
+            if let Ok(output) = crate::scanners::child_command("defaults")
                 .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"])
                 .output()
             {

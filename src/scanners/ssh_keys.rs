@@ -113,8 +113,8 @@ pub fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> 
 
 /// Use ssh-keygen to probe whether a key file is passphrase-protected.
 fn probe_passphrase(path: &std::path::Path) -> PassphraseStatus {
-    let mut x = crate::otel::exec_span("ssh_keygen", std::ffi::OsStr::new("ssh-keygen"));
-    let result = std::process::Command::new("ssh-keygen")
+    let mut x = crate::otel::exec_span("ssh_keygen");
+    let result = crate::scanners::child_command("ssh-keygen")
         .args(["-y", "-P", "", "-f"])
         .arg(path)
         .stdout(std::process::Stdio::null())

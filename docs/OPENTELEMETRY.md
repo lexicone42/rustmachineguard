@@ -9,7 +9,7 @@ counts and durations only**, and never anything the scan found.
 
 | Condition | Export? |
 |---|---|
-| no `--otel` (whatever `OTEL_*` variables are set) | **no**: no `OTEL_*` variable is read, nothing is built, no socket is opened |
+| no `--otel` (whatever `OTEL_*` variables are set) | **no**: no `OTEL_*` value is read, nothing is built, rmguard opens no socket |
 | `--otel` | yes |
 | `--otel` + `OTEL_SDK_DISABLED=true` (any case) | no (`info:` line) |
 | `--otel` + `OTEL_TRACES_EXPORTER=none` | metrics only |
@@ -27,13 +27,26 @@ The variables only choose **where** `--otel` sends:
 - Endpoint: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
   then `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces` or `/v1/metrics`, then
   `http://localhost:4318`. https works (rustls, the same TLS stack as `--verify-registry`).
-- `OTEL_EXPORTER_OTLP_HEADERS` (e.g. an API key for a hosted backend) is honored.
+- `OTEL_EXPORTER_OTLP_HEADERS` (e.g. an API key for a hosted backend) is honored. It is
+  never handed on: every process rmguard starts (a probed MCP server, a `--version`
+  probe, `git`, `pgrep`, `ssh-keygen`) gets an environment with **every** `OTEL_*`
+  variable removed, with or without `--otel`. A probed server command is written by
+  whoever wrote the MCP config, and must not be able to read your collector key.
 - `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` are honored. What you add there is
   your choice and your data.
-- `HTTPS_PROXY`/`ALL_PROXY` are honored the same way as for registry lookups.
+- Proxies: a **loopback** endpoint (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`,
+  which includes the default) is always reached directly. For any other endpoint, ureq's
+  environment proxy applies: the first of `ALL_PROXY`, `all_proxy`, `HTTPS_PROXY`,
+  `https_proxy`, `HTTP_PROXY`, `http_proxy` that is set is used for http:// and https://
+  endpoints alike, and `NO_PROXY`/`no_proxy` exempts hosts. A plain http:// export
+  through a proxy is cleartext to that proxy, headers included; use https:// or
+  `NO_PROXY` for a collector you reach without one.
 - The protocol is always http/protobuf. A different `OTEL_EXPORTER_OTLP_PROTOCOL` gets
-  one `warning:` line and is ignored. Timeouts are fixed in code (below), and env values
-  do not lengthen them.
+  one start-up `warning:` line and is ignored. For `OTEL_TRACES_EXPORTER` /
+  `OTEL_METRICS_EXPORTER`, only `none` (turn that signal off) and `otlp` are recognized;
+  any other value (`console`, `zipkin`, ...) gets one start-up `warning:` line and OTLP
+  export proceeds. Timeouts are fixed in code (below), and env values do not lengthen
+  them.
 
 ## Quickstart
 
@@ -50,8 +63,9 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.internal:4318 rmguard --otel --
 ```
 
 On stderr you get one `info: OpenTelemetry export enabled ...` line. If the collector
-cannot be reached you also get exactly one `warning: OpenTelemetry export ...` line. The
-report on stdout or in `-o` is the same either way.
+cannot be reached you also get exactly one `warning: OpenTelemetry export ...` line,
+whatever configuration notices were printed at start-up. The report on stdout or in
+`-o` is the same either way.
 
 ## Span tree
 
@@ -109,11 +123,10 @@ attributes carry the same counts.
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `pgrep` \| `ssh_keygen` |
-| `process.executable.name` | exec.* | program **basename** only (`git`), directory dropped |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
 | `rmguard.mcp.server_index` | mcp.probe | position among probed servers (not the name) |
-| `rmguard.mcp.outcome` | mcp.probe, metric | `ok` \| `empty_command` \| `spawn_failed` \| `timeout` \| `closed` \| `error` |
+| `rmguard.mcp.outcome` | mcp.probe, metric | `ok` \| `empty_command` \| `spawn_failed` \| `timeout` (deadline or watchdog) \| `closed` (server exited: EOF or broken pipe) \| `error` (anything else, including every server-reported error) |
 | `rmguard.mcp.tools`, `rmguard.mcp.resources` | mcp.probe | counts |
 | `rmguard.registry.index` | registry.lookup | position among lookups (not the package) |
 | `rmguard.registry.verdict` | registry.lookup, metric | `registered` \| `possible_typosquat` \| `unregistered` \| `no_package_identity` \| `lookup_failed` |
@@ -124,6 +137,10 @@ attributes carry the same counts.
 Failed spans carry `Status::Error` with a fixed category as the description, such as
 `spawn_failed`, `timeout` or `lookup_failed`. A non-zero exit is not an error: for
 `git ls-files` it means "not tracked".
+
+Subprocess spans name the call site, not the program. A list of the programs whose
+`--version` answered is an inventory of the AI tools installed on the machine, which is
+a scan finding, so `process.executable.name` is not exported.
 
 Resource attributes: `service.name=rmguard` (unless `OTEL_SERVICE_NAME` is set),
 `service.version`, `os.type` (`linux` \| `darwin`), `host.arch` (`amd64` \| `arm64` \| raw),
@@ -155,6 +172,7 @@ so none of that map goes out:
 
 - file paths, including diagnostics `root` and your home directory;
 - MCP server names, commands, arguments and environment;
+- names of programs rmguard ran (an installed-tool inventory);
 - package names and versions, registry URLs and response bodies;
 - error message text from servers, ureq or the OS (only the fixed categories above);
 - host names, user names, file contents, secret values;
@@ -162,12 +180,13 @@ so none of that map goes out:
   but they are not shipped. Per-scanner counts already answer the performance question.
 
 This is enforced by construction rather than by review. In `src/otel/mod.rs`, attribute
-keys are a closed enum. Attribute values can be built only from compile-time strings,
-integers and booleans. The two exceptions, the scanner label and the program basename,
-go through the report's redaction and display sanitizers and a credential-prefix
-filter, and are capped at 64 characters. Span names are static or `scanner.<label>` /
-`exec.<site>`. No context is propagated: there is no `traceparent` on the registry
-request, and nothing is injected into spawned processes.
+keys are a closed enum. Attribute values can be built only from `&'static str`,
+integers and booleans; there is no constructor that takes runtime text, so nothing a
+scan read can be passed in (a `compile_fail` doc test in that module checks that a
+`String` label does not compile). Span names are static or `scanner.<label>` /
+`exec.<site>` built from the same static strings. No context is propagated: there is no
+`traceparent` on the registry request, nothing is injected into spawned processes, and
+`OTEL_*` variables are removed from them.
 `tests/otel_export.rs::otel_never_exports_secrets_paths_or_names` plants canaries in a
 server name (with an ANSI escape), a command, an argument, an env value, a `.env` file
 and an Aider config. It then asserts that none of them, and not the HOME path, appears
@@ -177,17 +196,24 @@ anywhere in the raw OTLP bodies.
 
 - Nothing from telemetry is written to stdout. The SDK's internal logging is compiled
   out (`internal-logs` off), so it cannot print either.
-- stderr gets at most one `info:` line at start and at most one `warning:` line per run.
-  The warning names a category (`could not connect`, `timeout`, `tls`, `HTTP 503`, ...)
-  and never the endpoint or headers, because those can carry credentials.
+- stderr gets one `info:` line at start, a start-up `warning:` line per unsupported
+  setting (`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_*_EXPORTER`), and at most one
+  `warning: OpenTelemetry export ...` line at the end. The end-of-run warning names a
+  category (`could not connect`, `could not resolve host`, `timeout`, `tls`, `HTTP 503`,
+  `other`) and never the endpoint or headers, because those can carry credentials. It
+  says "telemetry only": the report and the exit code do not depend on it (on an
+  operational error the exit code is 1 for that error, not for telemetry).
 - Each export request times out after 1 s, with retries off. Trace and metric shutdown
-  run side by side under a 2 s overall deadline. Whatever is still pending at the
+  run side by side under a 2 s overall deadline (the span processor's own cap is 1.5 s,
+  so a request timeout is reported as `timeout`). Whatever is still pending at the
   deadline is abandoned. The report has already been written by then, and the exit code
   (including `--fail-on`'s 2) is unchanged. Measured costs: a refused port adds under
   1 ms, and a collector that accepts connections but never answers adds about 1.0 s.
 - When export is off, every instrumentation point is one relaxed atomic load and a
-  branch. No closure runs, no clock is read, nothing is allocated, and no thread or
-  socket exists.
+  branch. No closure runs, nothing is allocated, and no thread or socket exists. The
+  call sites that time something for telemetry (the scan, each MCP probe, each registry
+  lookup) read `Instant::now()` only when export is on. The per-scanner diagnostics
+  table reads the clock either way; it is part of the report.
 
 ## Known limits
 
@@ -196,10 +222,14 @@ anywhere in the raw OTLP bodies.
   Scanner spans and metrics are unaffected in practice, because they are few.
 - An operational error that exits 1 (an unreadable `--diff` baseline, an unwritable
   `-o`) flushes what has ended, but the root span is still open and is lost.
-- Child processes inherit your environment, `OTEL_*` included. A probed MCP server or a
-  tool run for `--version` that is itself instrumented may send its own telemetry to
-  your collector, independent of `--otel`. rmguard does not add or remove `OTEL_*`
-  variables for children.
+- Child processes inherit your environment **minus every `OTEL_*` variable** (see
+  above). Everything else is inherited as before; in particular a probed MCP server
+  still sees the rest of your shell environment, as it would when your agent host
+  starts it. A child that is itself instrumented may still find a collector through its
+  own configuration files.
+- "rmguard opens no socket" is about rmguard's own process. Programs it runs in a default
+  scan are their own programs: `ollama --version`, for example, connects to its local
+  server on 127.0.0.1:11434. That predates `--otel` and is unrelated to it.
 - Spans opened on another thread would start a new trace. All instrumented work runs on
   the main thread today.
 
@@ -213,9 +243,14 @@ anywhere in the raw OTLP bodies.
 - The HTTP transport is a small `opentelemetry_http::HttpClient` over the ureq 3 + rustls
   agent rmguard already ships (pattern from the opentelemetry-http crate docs' custom
   client example). Status codes come back as responses, bodies are capped at 64 KiB,
-  redirects are off, and the user agent is `rmguard/<version>`.
+  redirects are off, and the user agent is `rmguard/<version>` (set on each request:
+  opentelemetry-otlp's own `OTel-OTLP-Exporter-Rust/<version>` header would otherwise
+  override the agent's default).
 - `opentelemetry_sdk` 0.33.1's `SdkMeterProvider::shutdown_with_timeout` ignores its
   argument (a hardcoded 5 s), which is why the two shutdowns run on separate threads
   under rmguard's own deadline.
 - The feature is `otel`, on by default. `cargo build --no-default-features` builds the
-  same CLI with no OpenTelemetry code; `--otel` then prints one warning.
+  same CLI with no OpenTelemetry code; `--otel` then prints one warning. The feature adds
+  about 1.6 MB (21%) to the release binary (7.66 MB without, 9.27 MB with, measured on
+  linux x86_64) and no measurable start-up time; packagers who do not want it can build
+  without it.
