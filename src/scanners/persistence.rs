@@ -486,7 +486,7 @@ pub fn symlink_escapes(repo: &Path, link: &Path, target: &Path, home: &Path) -> 
 
 /// Join and normalise `.`/`..` lexically (no filesystem access, so a dangling or
 /// looping link is still classified).
-fn lexical_join(base: &Path, target: &Path) -> PathBuf {
+pub(crate) fn lexical_join(base: &Path, target: &Path) -> PathBuf {
     let start: PathBuf = if target.is_absolute() { PathBuf::new() } else { base.to_path_buf() };
     let mut parts: Vec<std::ffi::OsString> = Vec::new();
     let mut absolute = false;
@@ -511,7 +511,7 @@ fn lexical_join(base: &Path, target: &Path) -> PathBuf {
     out
 }
 
-fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
+pub(crate) fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
     if resolved.starts_with("/etc") {
         return true;
     }

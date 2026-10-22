@@ -740,7 +740,7 @@ fn capec_for_category(category: &str) -> Option<(u32, &'static str, &'static str
             "Sniffing Attacks",
             "Intercepting unencrypted traffic to capture tokens and data in transit.",
         ),
-        "Gateway routing" => (
+        "Gateway routing" | "Agent redirection" | "Login gateway" => (
             94,
             "Adversary in the Middle (AiTM)",
             "Routing requests through an attacker-controlled host that can read and alter them.",
@@ -750,12 +750,12 @@ fn capec_for_category(category: &str) -> Option<(u32, &'static str, &'static str
             "Malicious Software Download",
             "Causing the victim to fetch and run attacker-controlled code at startup.",
         ),
-        "Exposure" => (
+        "Exposure" | "Plugin pin" | "Extension code" => (
             437,
             "Supply Chain",
             "Compromise introduced through a dependency or package the victim trusts.",
         ),
-        "Hook" => (
+        "Hook" | "Skill command" | "Helper command" => (
             242,
             "Code Injection",
             "Injecting commands that execute in the victim's context.",

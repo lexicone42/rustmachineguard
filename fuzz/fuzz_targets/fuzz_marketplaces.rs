@@ -1,6 +1,7 @@
 #![no_main]
 //! Fuzzes the plugin-marketplace parsers, which navigate untrusted
-//! `known_marketplaces.json` / `installed_plugins.json` structures.
+//! `known_marketplaces.json` / `installed_plugins.json` structures, and the plain-file
+//! git readers of the Plugin4Shell check (HEAD, FETCH_HEAD, packed-refs).
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -8,6 +9,12 @@ fuzz_target!(|data: &[u8]| {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
             let counts = rustmachineguard::scanners::marketplaces::plugin_counts(&v);
             let _ = rustmachineguard::scanners::marketplaces::parse_marketplaces(&v, &counts);
+            let _ = rustmachineguard::scanners::marketplaces::installed_entries(&v);
+        }
+        let _ = rustmachineguard::scanners::marketplaces::parse_head(s);
+        let _ = rustmachineguard::scanners::marketplaces::parse_fetch_head(s);
+        for (_, name) in rustmachineguard::scanners::marketplaces::parse_packed_refs(s) {
+            let _ = rustmachineguard::scanners::marketplaces::dwim_hex_name(&name);
         }
     }
 });

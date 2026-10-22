@@ -874,4 +874,11 @@ fn dedupe_report(report: &mut ScanReport) {
     report
         .agent_skills
         .retain(|x| seen.insert(x.path.clone()));
+
+    // Managed settings and the systemd/launchd service paths are system-wide, so every
+    // --search-dirs home pass finds them again.
+    let mut seen = HashSet::new();
+    report
+        .agent_settings
+        .retain(|x| seen.insert(x.path.clone()));
 }

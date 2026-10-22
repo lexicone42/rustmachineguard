@@ -24,6 +24,9 @@ impl Scanner for AgentSettingsScanner {
             &mut results,
         );
 
+        // Managed (organization) settings: highest precedence, machine-wide.
+        parse_managed_settings(&platform.managed_settings_dir(), &mut results);
+
         // Project-scoped settings from known projects + the current directory.
         let mut project_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
         if let Ok(cwd) = std::env::current_dir() {
@@ -77,15 +80,116 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
 }
 
 fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<AgentSettings>) {
-    if !crate::scanners::probe_file(&path) {
+    if let Some(s) = parse_settings_file(path, source, framework) {
+        out.push(s);
+    }
+}
+
+/// Managed settings: `managed-settings.json`, then `managed-settings.d/*.json` in
+/// alphabetical order (hidden and non-.json names skipped), each its own entry with
+/// source "managed". code.claude.com/docs/en/settings (managed settings).
+fn parse_managed_settings(dir: &Path, out: &mut Vec<AgentSettings>) {
+    parse_settings(&dir.join("managed-settings.json"), "managed", "claude-code", out);
+    let drop_in = dir.join("managed-settings.d");
+    if !crate::scanners::probe_dir(&drop_in) {
         return;
     }
-    let Some(content) = read_bounded(path) else {
-        return;
+    let Ok(entries) = crate::scanners::probe_read_dir(&drop_in) else { return };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| !n.starts_with('.') && n.ends_with(".json"))
+        .collect();
+    names.sort();
+    for n in names.iter().take(200) {
+        parse_settings(&drop_in.join(n), "managed", "claude-code", out);
+    }
+}
+
+/// Settings keys whose string value is a shell command Claude Code runs on its own
+/// to fetch credentials or headers (code.claude.com/docs/en/settings-reference).
+pub const HELPER_KEYS: &[&str] = &[
+    "apiKeyHelper",
+    "awsAuthRefresh",
+    "awsCredentialExport",
+    "gcpAuthRefresh",
+    "otelHeadersHelper",
+];
+
+/// Dangerous-pattern descriptions a credential helper legitimately matches: it reads a
+/// key, prints an environment variable, or base64-decodes a stored secret. These do not
+/// make a helper dangerous on their own; a fetch piped to a shell, an exfiltration pipe,
+/// a listener, `eval(`, `--no-verify` or any obfuscated match still do.
+const HELPER_EXPECTED: &[&str] = &[
+    "credential access",
+    "environment variable exfiltration",
+    "base64 decode to shell",
+    "cross-channel: encoding + network access",
+    "shell command execution",
+];
+
+/// True when a helper command matches a dangerous pattern beyond what a credential
+/// helper normally does (see HELPER_EXPECTED).
+pub fn helper_dangerous(cmd: &str) -> bool {
+    crate::scanners::rules_files::check_dangerous_patterns(cmd).iter().any(|f| {
+        f.pattern.contains("(obfuscated") || !HELPER_EXPECTED.iter().any(|e| f.pattern.starts_with(e))
+    })
+}
+
+/// Credential/telemetry helpers in a settings object, recorded like hooks (redacted).
+pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
+    let mut out = Vec::new();
+    for key in HELPER_KEYS {
+        let Some(cmd) = json.get(*key).and_then(|v| v.as_str()) else { continue };
+        if cmd.trim().is_empty() {
+            continue;
+        }
+        out.push(AgentHook {
+            event: (*key).to_string(),
+            matcher: None,
+            command: crate::scanners::redact_secrets_in_text(cmd),
+            dangerous: helper_dangerous(cmd),
+            risks: classify_hook_command(cmd, settings_path),
+        });
+    }
+    out
+}
+
+/// forceLoginMethod / forceLoginGatewayUrl. Claude Code honours the gateway URL only in
+/// user or managed settings (settings-reference scope "User or managed"), so `effective`
+/// is false in project and local files. See code.claude.com/docs/en/claude-apps-gateway.
+pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<crate::models::LoginGateway> {
+    let method = json.get("forceLoginMethod").and_then(|v| v.as_str());
+    let url = json.get("forceLoginGatewayUrl").and_then(|v| v.as_str());
+    if method.is_none() && url.is_none() {
+        return None;
+    }
+    let (host, scheme) = match url {
+        Some(u) => {
+            let (scheme, _) = crate::scanners::split_url_authority(u.trim());
+            let h = url_host(u.trim());
+            (
+                (!h.is_empty()).then(|| crate::scanners::sanitize_display(&h, 128)),
+                (!scheme.is_empty()).then(|| crate::scanners::sanitize_display(&scheme.to_ascii_lowercase(), 16)),
+            )
+        }
+        None => (None, None),
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
-    };
+    Some(crate::models::LoginGateway {
+        method: method.map(|m| crate::scanners::sanitize_display(m, 32)),
+        host,
+        scheme,
+        effective: matches!(source, "user-global" | "managed"),
+    })
+}
+
+/// Parse one Claude Code settings file. None when it is absent or not JSON.
+pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option<AgentSettings> {
+    if !crate::scanners::probe_file(path) {
+        return None;
+    }
+    let content = read_bounded(path)?;
+    let json = serde_json::from_str::<serde_json::Value>(&content).ok()?;
 
     let hooks = extract_hooks(&json, path);
 
@@ -123,11 +227,12 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
     let inline_secret_env_keys =
         crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
 
-    out.push(AgentSettings {
+    Some(AgentSettings {
         path: path.to_string_lossy().to_string(),
         source: source.to_string(),
         framework: framework.to_string(),
-        git_tracked: is_git_tracked(path),
+        // Managed settings are machine policy, not repository content.
+        git_tracked: source != "managed" && is_git_tracked(path),
         hooks,
         permission_mode,
         allow_rules,
@@ -137,7 +242,13 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
         gateway_overrides,
         inline_secret_env_keys,
         world_writable: crate::scanners::is_world_or_group_writable(path),
-    });
+        helper_commands: extract_helper_commands(&json, path),
+        login_gateway: extract_login_gateway(&json, source),
+        disable_skill_shell_execution: json
+            .get("disableSkillShellExecution")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
 }
 
 /// Parse Cursor's `hooks.json`, whose schema differs from Claude Code's: the command
@@ -233,6 +344,9 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         gateway_overrides,
         inline_secret_env_keys,
         world_writable,
+        helper_commands: Vec::new(),
+        login_gateway: None,
+        disable_skill_shell_execution: false,
     });
 }
 
@@ -258,17 +372,27 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
     let Some(env) = json.get("env").and_then(|e| e.as_object()) else {
         return out;
     };
-    for (var, official_host) in GATEWAY_VARS {
-        if let Some(value) = env.get(*var).and_then(|v| v.as_str()) {
-            let host = url_host(value);
-            out.push(crate::models::GatewayOverride {
-                var: (*var).to_string(),
-                official: host.eq_ignore_ascii_case(official_host),
-                host,
-            });
+    for (var, _) in GATEWAY_VARS {
+        if let Some(value) = env.get(*var).and_then(|v| v.as_str())
+            && let Some(g) = classify_base_url(var, value)
+        {
+            out.push(g);
         }
     }
     out
+}
+
+/// Classify one base-URL assignment against GATEWAY_VARS: None when `var` is not a
+/// known gateway variable. Shared by the settings `env` block and project `.env` files
+/// so both decide "official" identically (exact host match).
+pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::GatewayOverride> {
+    let (_, official_host) = GATEWAY_VARS.iter().find(|(v, _)| *v == var)?;
+    let host = url_host(value);
+    Some(crate::models::GatewayOverride {
+        var: var.to_string(),
+        official: host.eq_ignore_ascii_case(official_host),
+        host,
+    })
 }
 
 /// Extract the host from a URL-ish string (scheme optional), lowercased.
@@ -308,7 +432,7 @@ fn referenced_paths(command: &str) -> Vec<&str> {
 
 /// True if `path` is a native executable rather than a script, by magic bytes.
 /// A hook is normally a shell command or a script; a shipped binary is not normal.
-fn is_native_binary(path: &std::path::Path) -> bool {
+pub(crate) fn is_native_binary(path: &std::path::Path) -> bool {
     // Raw bytes: a binary is not valid UTF-8, so the String-returning read_head()
     // would silently return None here and the check would never fire.
     let Some(b) = crate::scanners::read_head_bytes(path, 64) else {

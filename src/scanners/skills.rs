@@ -1,67 +1,167 @@
-use crate::models::AgentSkill;
+use crate::models::{AgentSkill, SkillDynamicCommand, SkillProvenance, SkillSymlink};
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, Scanner};
-use std::path::PathBuf;
+use crate::scanners::{read_bounded, redact_secrets_in_text, sanitize_display, Scanner};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 pub struct SkillsScanner;
+
+/// What the skill walk needs to know about installed plugins, read once per scan:
+/// which marketplaces are Anthropic's, which cache directories are installed plugin
+/// versions, and which plugins the user disabled.
+#[derive(Default)]
+pub struct PluginContext {
+    home: PathBuf,
+    plugins_dir: PathBuf,
+    /// marketplace name -> official
+    marketplaces: HashMap<String, bool>,
+    /// (installPath, plugin, marketplace), installPath restricted to `<plugins>/cache/`.
+    install_paths: Vec<(PathBuf, String, String)>,
+    /// `plugin@marketplace` keys set to false in ~/.claude/settings.json enabledPlugins.
+    disabled: HashSet<String>,
+}
+
+impl PluginContext {
+    pub fn load(home: &Path) -> Self {
+        let plugins_dir = home.join(".claude").join("plugins");
+        let mut ctx = PluginContext { home: home.to_path_buf(), plugins_dir: plugins_dir.clone(), ..Default::default() };
+        if let Some(text) = read_bounded(&plugins_dir.join("known_marketplaces.json"))
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(obj) = json.as_object()
+        {
+            let parsed = crate::scanners::marketplaces::parse_marketplaces(&json, &HashMap::new());
+            for name in obj.keys() {
+                let shown = sanitize_display(name, 128);
+                let official = parsed.iter().any(|m| m.name == shown && m.official);
+                ctx.marketplaces.insert(name.clone(), official);
+            }
+        }
+        let cache = plugins_dir.join("cache");
+        if let Some(text) = read_bounded(&plugins_dir.join("installed_plugins.json"))
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+        {
+            for ((plugin, market), entries) in crate::scanners::marketplaces::installed_entries(&json) {
+                for e in entries {
+                    let Some(ip) = e.get("installPath").and_then(|v| v.as_str()) else { continue };
+                    let ip = crate::scanners::persistence::lexical_join(Path::new("/"), Path::new(ip));
+                    if ip.starts_with(&cache) && ip != cache {
+                        ctx.install_paths.push((ip, plugin.clone(), market.clone()));
+                    }
+                }
+            }
+        }
+        if let Some(text) = read_bounded(&home.join(".claude").join("settings.json"))
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(obj) = json.get("enabledPlugins").and_then(|v| v.as_object())
+        {
+            for (k, v) in obj {
+                if v.as_bool() == Some(false) {
+                    ctx.disabled.insert(k.clone());
+                }
+            }
+        }
+        ctx
+    }
+
+    /// Provenance of a path under `~/.claude/plugins` or `~/.claude/skills/synced`.
+    fn provenance(&self, path: &Path) -> Option<SkillProvenance> {
+        let synced_root = self.home.join(".claude").join("skills").join("synced");
+        if path.starts_with(&synced_root) {
+            return Some(SkillProvenance { synced: true, ..Default::default() });
+        }
+        let rel = path.strip_prefix(&self.plugins_dir).ok()?;
+        let comps: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        let (market, plugin) = match comps.as_slice() {
+            ["cache", m, p, _, ..] => (m.to_string(), Some(p.to_string())),
+            ["marketplaces", m, _, ..] => (m.to_string(), None),
+            _ => return Some(SkillProvenance::default()),
+        };
+        let third_party = self.marketplaces.get(&market).is_some_and(|official| !official);
+        let lexical = crate::scanners::persistence::lexical_join(Path::new("/"), path);
+        // Active: inside an installed version's directory, and not disabled. Marketplace
+        // clones and orphaned cache versions never load.
+        let active = plugin.as_ref().is_some_and(|p| {
+            self.install_paths.iter().any(|(ip, ipp, ipm)| {
+                ipp == p && *ipm == market && lexical.starts_with(ip)
+            }) && !self.disabled.contains(&format!("{p}@{market}"))
+        });
+        Some(SkillProvenance {
+            marketplace: Some(sanitize_display(&market, 128)),
+            plugin: plugin.map(|p| sanitize_display(&p, 128)),
+            third_party,
+            active,
+            git: None,
+            synced: false,
+        })
+    }
+
+    /// For a link with no SKILL.md ancestor in the plugins walk: the plugin root
+    /// (`cache/<m>/<p>/<v>` or `marketplaces/<m>`).
+    fn plugin_root(&self, path: &Path) -> Option<PathBuf> {
+        let rel = path.strip_prefix(&self.plugins_dir).ok()?;
+        let comps: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        match comps.as_slice() {
+            ["cache", m, p, v, _, ..] => Some(self.plugins_dir.join("cache").join(m).join(p).join(v)),
+            ["marketplaces", m, _, ..] => Some(self.plugins_dir.join("marketplaces").join(m)),
+            _ => None,
+        }
+    }
+}
 
 impl Scanner for SkillsScanner {
     type Output = Vec<AgentSkill>;
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
         let home = platform.home_dir();
+        let ctx = PluginContext::load(&home);
         let mut results = Vec::new();
 
         // Claude Code custom commands: ~/.claude/commands/
         let global_commands = home.join(".claude").join("commands");
-        scan_skill_dir(&global_commands, "claude-code", "global", &mut results);
+        scan_skill_dir(&global_commands, "claude-code", "global", None, &ctx, &mut results);
 
         // Claude Code project commands from known projects
         let claude_json = home.join(".claude.json");
         if let Some(project_dirs) = extract_project_dirs(&claude_json) {
             for dir in project_dirs {
                 let project_commands = dir.join(".claude").join("commands");
-                scan_skill_dir(
-                    &project_commands,
-                    "claude-code",
-                    "project",
-                    &mut results,
-                );
+                scan_skill_dir(&project_commands, "claude-code", "project", Some(&dir), &ctx, &mut results);
             }
         }
 
         // Current directory project commands
         if let Ok(cwd) = std::env::current_dir() {
             let cwd_commands = cwd.join(".claude").join("commands");
-            scan_skill_dir(&cwd_commands, "claude-code", "project", &mut results);
+            scan_skill_dir(&cwd_commands, "claude-code", "project", Some(&cwd), &ctx, &mut results);
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
         let global_hooks = home.join(".claude").join("hooks");
-        scan_skill_dir(&global_hooks, "claude-code-hook", "global", &mut results);
+        scan_skill_dir(&global_hooks, "claude-code-hook", "global", None, &ctx, &mut results);
 
         // Codex hooks from ~/.codex/
         let codex_dir = home.join(".codex");
         if crate::scanners::probe_dir(&codex_dir) {
-            scan_skill_dir(&codex_dir, "codex", "global", &mut results);
+            scan_skill_dir(&codex_dir, "codex", "global", None, &ctx, &mut results);
         }
 
         // Skill BUNDLES (SKILL.md + sibling scripts), which the flat walk above cannot
         // see. `plugins/` covers the marketplace -> plugin -> skill chain: marketplaces
         // are already inventoried as a remote hot-load surface, but the skills they
         // actually install were never walked.
-        scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", &mut results);
-        scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", &mut results);
+        scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, &mut results);
+        scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, &mut results);
         if let Some(project_dirs) = extract_project_dirs(&home.join(".claude.json")) {
             for dir in project_dirs {
-                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", &mut results);
+                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(&dir), &ctx, &mut results);
             }
         }
         if let Ok(cwd) = std::env::current_dir() {
-            scan_skill_bundles(&cwd.join(".claude").join("skills"), "claude-code", "project", &mut results);
+            scan_skill_bundles(&cwd.join(".claude").join("skills"), "claude-code", "project", Some(&cwd), &ctx, &mut results);
         }
 
-        // Dedupe by path
+        // Dedupe by path. Global entries are pushed first, so a home directory that is
+        // also a registered project keeps scope "global".
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(r.path.clone()));
 
@@ -69,11 +169,152 @@ impl Scanner for SkillsScanner {
     }
 }
 
-/// Cap the recursive bundle walk so a pathological tree can't hang the scan.
+/// Cap on qualifying files (manifests, commands, scripts) per bundle walk.
 const MAX_BUNDLE_FILES: usize = 5_000;
+/// Cap on directory entries visited per bundle walk, so a pathological tree can't hang
+/// the scan. Counted separately from qualifying files: on a real machine the plugin tree
+/// holds ~5,000 non-skill files (docs, images, test data), and a single shared budget
+/// ran out before the walk reached the installed plugin cache.
+const MAX_BUNDLE_ENTRIES: usize = 50_000;
+/// Frontmatter larger than this is not parsed.
+const MAX_FRONTMATTER: usize = 16 * 1024;
+/// Dynamic commands kept per file.
+const MAX_DYNAMIC_COMMANDS: usize = 50;
+
+/// Agent-config directories a skill link may legitimately point into (one skill
+/// reusing another, a plugin's own files): not "sensitive" for the symlink check.
+const SKILL_LINK_OK_DIRS: &[&str] = &["skills", "commands", "plugins", "agents", "hooks"];
+
+/// What reading one skill file produced.
+struct SkillRead {
+    content: Option<String>,
+    symlink: Option<SkillSymlink>,
+}
+
+/// Read a skill file that may be a symbolic link. A link is resolved lexically against
+/// its own directory; one that lands in a credential, shell-rc or agent-config path is
+/// NOT read (its content would otherwise land in the report's hash and capability
+/// inference, and the agent itself would load it as a skill).
+///
+/// CVE-2026-103435 class (c_h4ck_0, edbr): resolved lexically, never read through into
+/// credential/agent-config paths.
+fn read_skill_file(path: &Path, is_link: bool, containment: &Path, home: &Path) -> Option<SkillRead> {
+    if !is_link {
+        return Some(SkillRead { content: read_bounded(path), symlink: None });
+    }
+    let target = std::fs::read_link(path).ok()?;
+    let verdict = crate::scanners::persistence::symlink_escapes(containment, path, &target, home);
+    let resolved = crate::scanners::persistence::lexical_join(path.parent().unwrap_or(containment), &target);
+    let claude = home.join(".claude");
+    let skill_area = SKILL_LINK_OK_DIRS.iter().any(|d| resolved.starts_with(claude.join(d)));
+    let escapes = verdict.is_some();
+    let sensitive = verdict.unwrap_or(false) && !skill_area;
+    let shown = sanitize_display(&target.to_string_lossy(), 300);
+    if sensitive {
+        return Some(SkillRead {
+            content: None,
+            symlink: Some(SkillSymlink { target: shown, escapes, sensitive_target: true, followed: false }),
+        });
+    }
+    // A link to a directory (or a dangling link) is not a skill file.
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    Some(SkillRead {
+        content: read_bounded(path),
+        symlink: Some(SkillSymlink { target: shown, escapes, sensitive_target: false, followed: true }),
+    })
+}
+
+/// The nearest ancestor of `path` (up to and including `root`) holding a SKILL.md entry.
+fn skill_dir_of(path: &Path, root: &Path) -> Option<PathBuf> {
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        if std::fs::symlink_metadata(dir.join("SKILL.md")).is_ok() {
+            return Some(dir.to_path_buf());
+        }
+        if dir == root || !dir.starts_with(root) {
+            break;
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Build one inventory entry, running the dynamic-context and allowed-tools analysis on
+/// SKILL.md manifests and command files.
+#[allow(clippy::too_many_arguments)]
+fn build_skill(
+    path: &Path,
+    name: String,
+    file_type: String,
+    analyze: bool,
+    read: SkillRead,
+    framework: &str,
+    scope: &str,
+    project_root: Option<&Path>,
+    ctx: &PluginContext,
+) -> AgentSkill {
+    let content = read.content;
+    let mut dynamic_commands = Vec::new();
+    let mut unrestricted_bash = false;
+    if analyze && let Some(text) = content.as_deref() {
+        // Claude Code runs these in the user's shell before the skill text reaches the
+        // model: code.claude.com/docs/en/skills#dynamic-context-injection
+        for (raw, block) in extract_dynamic_commands(text) {
+            let patterns: Vec<String> = crate::scanners::rules_files::check_dangerous_patterns(&raw)
+                .into_iter()
+                .map(|f| f.pattern)
+                .collect();
+            dynamic_commands.push(SkillDynamicCommand {
+                command: sanitize_display(&redact_secrets_in_text(&raw), 300),
+                dangerous: !patterns.is_empty(),
+                patterns,
+                block,
+            });
+        }
+        if let Some(fm) = frontmatter(text) {
+            unrestricted_bash = grants_unrestricted_shell(&parse_allowed_tools(fm));
+        }
+    }
+    let mut provenance = ctx.provenance(path);
+    if scope == "project"
+        && (unrestricted_bash || !dynamic_commands.is_empty())
+        && let Some(root) = project_root
+        && crate::scanners::probe_exists(&root.join(".git"))
+    {
+        let git = if crate::scanners::is_git_tracked(path) { "tracked" } else { "untracked" };
+        provenance.get_or_insert_with(SkillProvenance::default).git = Some(git.into());
+    }
+    // An all-default provenance (a skill outside the plugin tree) says nothing.
+    if provenance.as_ref().is_some_and(|p| {
+        p.marketplace.is_none() && p.plugin.is_none() && p.git.is_none() && !p.synced
+    }) {
+        provenance = None;
+    }
+    let sha256 = match (&content, &read.symlink) {
+        (_, Some(l)) if l.sensitive_target => "symlink-not-followed".to_string(),
+        (Some(c), _) => sha256_hex(c),
+        (None, _) => "unreadable".to_string(),
+    };
+    AgentSkill {
+        name: sanitize_display(&name, 128),
+        path: path.to_string_lossy().to_string(),
+        framework: framework.to_string(),
+        scope: scope.to_string(),
+        file_type,
+        size_bytes: content.as_ref().map(|c| c.len()).unwrap_or(0),
+        sha256,
+        capabilities: content.as_ref().map(|c| infer_capabilities(c)).unwrap_or_default(),
+        symlink: read.symlink,
+        dynamic_commands,
+        unrestricted_bash,
+        provenance,
+    }
+}
 
 /// Recursively discover skill BUNDLES: a `SKILL.md` manifest plus the scripts shipped
-/// alongside it.
+/// alongside it, and `commands/*.md` files inside the tree (plugin commands).
 ///
 /// Modern agent skills are not flat files in `commands/` — they are directories
 /// (`skills/<name>/SKILL.md` + `scripts/*.sh|*.py|*.js`), and they arrive through the
@@ -84,49 +325,75 @@ const MAX_BUNDLE_FILES: usize = 5_000;
 ///
 /// Bundled siblings are inventoried too, not just the manifest: the manifest routinely
 /// reads clean while the payload sits in an adjacent script.
+///
+/// Symlinked FILES are inventoried with their lexical target (see `read_skill_file`);
+/// symlinked DIRECTORIES are never descended.
 fn scan_skill_bundles(
-    root: &std::path::Path,
+    root: &Path,
     framework: &str,
     scope: &str,
+    project_root: Option<&Path>,
+    ctx: &PluginContext,
     results: &mut Vec<AgentSkill>,
 ) {
-    if !crate::scanners::probe_dir(&root) {
+    if !crate::scanners::probe_dir(root) {
         return;
     }
     let mut budget = MAX_BUNDLE_FILES;
+    let mut entries_left = MAX_BUNDLE_ENTRIES;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            if budget == 0 {
+            if budget == 0 || entries_left == 0 {
                 return;
             }
+            entries_left -= 1;
             let path = entry.path();
             // symlink_metadata: never follow a link out of the tree we were pointed at.
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if meta.is_dir() {
-                stack.push(path);
+                // A git directory never holds a skill; walking it only spent budget.
+                if file_name != ".git" {
+                    stack.push(path);
+                }
                 continue;
             }
-            if !meta.is_file() {
+            let is_link = meta.file_type().is_symlink();
+            if !meta.is_file() && !is_link {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // The manifest, a plugin command, or a script shipped beside them.
+            let is_manifest = file_name.eq_ignore_ascii_case("SKILL.md");
+            let in_commands = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "commands");
+            let is_command = !is_manifest && ext.eq_ignore_ascii_case("md") && in_commands;
+            if !is_manifest && !is_command && !matches!(ext, "sh" | "bash" | "py" | "js" | "ts" | "mjs") {
                 continue;
             }
             budget -= 1;
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            // The manifest, or a script shipped beside it.
-            let is_manifest = file_name.eq_ignore_ascii_case("SKILL.md");
-            if !is_manifest && !matches!(ext, "sh" | "bash" | "py" | "js" | "ts" | "mjs") {
+            let containment = if is_command {
+                path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
+            } else {
+                skill_dir_of(&path, root)
+                    .or_else(|| ctx.plugin_root(&path))
+                    .unwrap_or_else(|| root.to_path_buf())
+            };
+            let Some(read) = read_skill_file(&path, is_link, &containment, &ctx.home) else {
                 continue;
-            }
-            let content = read_bounded(&path);
+            };
             // A manifest is named by its bundle directory (the unit users think in);
-            // a bundled script is named by its path relative to the walk root, which
-            // stays unambiguous when several bundles each ship a `scripts/run.sh`.
+            // a bundled script or command is named by its path relative to the walk
+            // root, which stays unambiguous when several bundles each ship a
+            // `scripts/run.sh`.
             let name = if is_manifest {
                 path.parent()
                     .and_then(|p| p.file_name())
@@ -140,36 +407,43 @@ fn scan_skill_bundles(
                     .map(String::from)
                     .unwrap_or_else(|| file_name.to_string())
             };
-            results.push(AgentSkill {
-                name: crate::scanners::sanitize_display(&name, 128),
-                path: path.to_string_lossy().to_string(),
-                framework: framework.to_string(),
-                scope: scope.to_string(),
-                file_type: if is_manifest { "skill-manifest".into() } else { ext.to_string() },
-                size_bytes: content.as_ref().map(|c| c.len()).unwrap_or(0),
-                sha256: content
-                    .as_ref()
-                    .map(|c| sha256_hex(c))
-                    .unwrap_or_else(|| "unreadable".to_string()),
-                capabilities: content.as_ref().map(|c| infer_capabilities(c)).unwrap_or_default(),
-            });
+            let file_type = if is_manifest {
+                "skill-manifest".to_string()
+            } else if is_command {
+                "command".to_string()
+            } else {
+                ext.to_string()
+            };
+            results.push(build_skill(
+                &path, name, file_type, is_manifest || is_command, read, framework, scope, project_root, ctx,
+            ));
         }
     }
 }
 
 fn scan_skill_dir(
-    dir: &std::path::Path,
+    dir: &Path,
     framework: &str,
     scope: &str,
+    project_root: Option<&Path>,
+    ctx: &PluginContext,
     results: &mut Vec<AgentSkill>,
 ) {
     let Ok(entries) = crate::scanners::probe_read_dir(dir) else {
         return;
     };
+    // `commands/` holds custom slash commands, which support dynamic context too.
+    let is_commands_dir = dir.file_name().is_some_and(|n| n == "commands");
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !crate::scanners::probe_file(&path) {
+        // symlink_metadata, not is_file(): a symlinked command is inventoried with its
+        // target instead of being followed blindly.
+        let meta = std::fs::symlink_metadata(&path).ok();
+        let is_link = meta.as_ref().is_some_and(|m| m.file_type().is_symlink());
+        let present = meta.as_ref().is_some_and(|m| m.is_file()) || is_link;
+        crate::scanners::telemetry::note_probe(&path, present);
+        if !present {
             continue;
         }
 
@@ -183,45 +457,259 @@ fn scan_skill_dir(
             continue;
         }
 
+        let Some(read) = read_skill_file(&path, is_link, dir, &ctx.home) else {
+            continue;
+        };
+
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        let content = read_bounded(&path);
-        let size_bytes = content.as_ref().map(|c| c.len()).unwrap_or(0);
-        let sha256 = content
-            .as_ref()
-            .map(|c| sha256_hex(c))
-            .unwrap_or_else(|| "unreadable".to_string());
-
-        let capabilities = content
-            .as_ref()
-            .map(|c| infer_capabilities(c))
-            .unwrap_or_default();
-
-        results.push(AgentSkill {
-            name: crate::scanners::sanitize_display(&name, 128),
-            path: path.to_string_lossy().to_string(),
-            framework: framework.to_string(),
-            scope: scope.to_string(),
-            file_type: ext.to_string(),
-            size_bytes,
-            sha256,
-            capabilities,
-        });
+        results.push(build_skill(
+            &path,
+            name,
+            ext.to_string(),
+            is_commands_dir && ext == "md",
+            read,
+            framework,
+            scope,
+            project_root,
+            ctx,
+        ));
     }
 }
 
-fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
+/// The YAML frontmatter text (between a leading `---` line and the next `---` line),
+/// if present and at most 16 KiB.
+pub fn frontmatter(text: &str) -> Option<&str> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let first_end = text.find('\n')?;
+    if text[..first_end].trim_end() != "---" {
+        return None;
+    }
+    let body = &text[first_end + 1..];
+    let mut off = 0;
+    for line in body.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            let fm = &body[..off];
+            return (fm.len() <= MAX_FRONTMATTER).then_some(fm);
+        }
+        off += line.len();
+        if off > MAX_FRONTMATTER {
+            return None;
+        }
+    }
+    None
+}
+
+/// Text after the frontmatter (the whole text when there is none).
+fn body_after_frontmatter(text: &str) -> &str {
+    let t = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let Some(first_end) = t.find('\n') else { return t };
+    if t[..first_end].trim_end() != "---" {
+        return t;
+    }
+    let body = &t[first_end + 1..];
+    let mut off = 0;
+    for line in body.split_inclusive('\n') {
+        off += line.len();
+        if line.trim_end() == "---" {
+            return &body[off..];
+        }
+    }
+    t
+}
+
+/// Claude Code dynamic context injection: inline `` !`cmd` `` placeholders (at line
+/// start or after whitespace) and ```` ```! ```` fenced blocks, which Claude Code runs
+/// in the user's shell when the skill or command loads. Returns `(raw command, block)`,
+/// at most 50.
+///
+/// Ordinary fenced blocks are skipped (documentation teaching the syntax shows it inside
+/// ```` ```markdown ```` fences), as are inline code spans: a backtick run of length n
+/// opens a span closed only by a run of exactly n, so `` `` !`cmd` `` `` is not a
+/// command. `KEY=!`cmd`` and `fuzz_target!`` are not matches either: the `!` has to
+/// follow whitespace or start the line.
+pub fn extract_dynamic_commands(text: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let body = body_after_frontmatter(text);
+    // (fence char, run length, is a ! block, collected body lines)
+    let mut fence: Option<(char, usize, bool, Vec<String>)> = None;
+    for line in body.lines() {
+        if out.len() >= MAX_DYNAMIC_COMMANDS {
+            break;
+        }
+        let t = line.trim_start();
+        let run_char = t.chars().next().filter(|c| *c == '`' || *c == '~');
+        let run_len = run_char.map(|c| t.chars().take_while(|x| *x == c).count()).unwrap_or(0);
+        if let Some((fc, flen, is_bang, lines)) = fence.as_mut() {
+            if run_char == Some(*fc) && run_len >= *flen && t[run_len..].trim().is_empty() {
+                if *is_bang {
+                    let joined = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+                    if !joined.is_empty() {
+                        out.push((joined, true));
+                    }
+                }
+                fence = None;
+            } else if *is_bang {
+                lines.push(line.to_string());
+            }
+            continue;
+        }
+        if run_len >= 3 {
+            let info = t[run_len..].trim_start();
+            // A backtick fence's info string may not contain a backtick (CommonMark).
+            if !(run_char == Some('`') && info.contains('`')) {
+                fence = Some((run_char.unwrap_or('`'), run_len, info.starts_with('!'), Vec::new()));
+                continue;
+            }
+        }
+        inline_commands(line, &mut out);
+    }
+    // An unterminated ```! block still runs up to the end of the file.
+    if let Some((_, _, true, lines)) = fence {
+        let joined = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+        if !joined.is_empty() && out.len() < MAX_DYNAMIC_COMMANDS {
+            out.push((joined, true));
+        }
+    }
+    out.truncate(MAX_DYNAMIC_COMMANDS);
+    out
+}
+
+fn inline_commands(line: &str, out: &mut Vec<(String, bool)>) {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if out.len() >= MAX_DYNAMIC_COMMANDS {
+            return;
+        }
+        let c = chars[i];
+        if c == '!'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && i + 1 < n
+            && chars[i + 1] == '`'
+            && (i + 2 >= n || chars[i + 2] != '`')
+        {
+            if let Some(end) = (i + 2..n).find(|&j| chars[j] == '`') {
+                let cmd: String = chars[i + 2..end].iter().collect();
+                if !cmd.trim().is_empty() {
+                    out.push((cmd, false));
+                }
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '`' {
+            let run = chars[i..].iter().take_while(|x| **x == '`').count();
+            // Find a closing run of exactly `run` backticks.
+            let mut j = i + run;
+            let mut closed = None;
+            while j < n {
+                if chars[j] == '`' {
+                    let r = chars[j..].iter().take_while(|x| **x == '`').count();
+                    if r == run {
+                        closed = Some(j + r);
+                        break;
+                    }
+                    j += r;
+                } else {
+                    j += 1;
+                }
+            }
+            // An unmatched run is literal text.
+            i = closed.unwrap_or(i + run);
+            continue;
+        }
+        i += 1;
+    }
+}
+
+/// Split an allowed-tools string on commas/whitespace outside parentheses.
+fn tokenize_tools(s: &str, out: &mut Vec<String>) {
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
+        let t = cur.trim().trim_matches(|c| c == '[' || c == ']' || c == '"' || c == '\'').trim();
+        if !t.is_empty() {
+            out.push(t.to_string());
+        }
+        cur.clear();
+    };
+    for c in s.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' | ' ' | '\t' | '\n' | '\r' if depth <= 0 => flush(&mut cur, out),
+            _ => cur.push(c),
+        }
+    }
+    flush(&mut cur, out);
+}
+
+/// The `allowed-tools` frontmatter value as tool tokens. Accepts a string
+/// (`Bash Read`, `Bash, Read`), a YAML sequence, or (when the YAML does not parse) the
+/// scalar after `allowed-tools:` on its own line.
+pub fn parse_allowed_tools(frontmatter: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if frontmatter.len() > MAX_FRONTMATTER {
+        return out;
+    }
+    match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(frontmatter) {
+        Ok(v) => {
+            let Some(val) = v.get("allowed-tools") else { return out };
+            match val {
+                serde_yaml_ng::Value::String(s) => tokenize_tools(s, &mut out),
+                serde_yaml_ng::Value::Sequence(seq) => {
+                    for item in seq {
+                        if let Some(s) = item.as_str() {
+                            tokenize_tools(s, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(_) => {
+            for line in frontmatter.lines() {
+                if let Some(rest) = line.trim_start().strip_prefix("allowed-tools:") {
+                    tokenize_tools(rest, &mut out);
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// True if any token pre-approves every shell command. Claude Code's permissions docs:
+/// `Bash(*)` is equivalent to `Bash`. Scoped forms (`Bash(git diff:*)`) are not.
+pub fn grants_unrestricted_shell(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| {
+        let t = t.replace(' ', "");
+        matches!(t.as_str(), "Bash" | "Bash(*)" | "Bash(**)" | "PowerShell" | "PowerShell(*)")
+    })
+}
+
+fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
     let content = read_bounded(claude_json)?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     let projects = parsed.get("projects")?.as_object()?;
     let dirs: Vec<PathBuf> = projects
         .keys()
         .map(PathBuf::from)
-        .filter(|p| crate::scanners::probe_dir(&p))
+        .filter(|p| crate::scanners::probe_dir(p))
         .collect();
     if dirs.is_empty() {
         None

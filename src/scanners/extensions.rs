@@ -62,17 +62,119 @@ fn scan_vscode_style_extensions(
                 None => ("unknown".to_string(), id.clone()),
             };
 
+            let manifest = read_manifest_claims(&path);
+            let native_addons = if manifest.declarative_claim { find_native_addons(&path) } else { Vec::new() };
             results.push(IdeExtension {
                 id: id.clone(),
                 name,
                 version,
                 publisher,
                 ide_type: ide.name().to_string(),
+                categories: manifest.categories,
+                code_entry_points: manifest.code_entry_points,
+                contributes_theme: manifest.contributes_theme,
+                declarative_claim: manifest.declarative_claim,
+                native_addons,
             });
         }
     }
 
     results
+}
+
+// GlassWorm-linked theme loaders (Socket Threat Research, Kirill Boychenko) and the
+// GlassWorm Zig dropper's native addon (Aikido Security, Ilyas Makari).
+
+/// Marketplace categories that describe an extension with no reason to run code.
+const DECLARATIVE_CATEGORIES: &[&str] = &["themes", "snippets", "keymaps", "language packs"];
+/// `contributes` keys that are pure data (JSON grammars, colour tables, snippets).
+const DECLARATIVE_CONTRIBUTES: &[&str] = &[
+    "themes", "iconThemes", "productIconThemes", "snippets", "keybindings", "grammars", "languages", "localizations",
+];
+const MAX_ADDON_WALK: usize = 20_000;
+
+/// What an extension's package.json claims about itself.
+#[derive(Debug, Default, PartialEq)]
+pub struct ManifestClaims {
+    pub categories: Vec<String>,
+    pub code_entry_points: Vec<String>,
+    pub contributes_theme: bool,
+    pub declarative_claim: bool,
+}
+
+fn read_manifest_claims(dir: &std::path::Path) -> ManifestClaims {
+    crate::scanners::read_bounded(&dir.join("package.json"))
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|v| manifest_claims(&v))
+        .unwrap_or_default()
+}
+
+/// Classify a VS Code `package.json`. `declarative_claim` is true when every category
+/// is a declarative one (Themes, Snippets, Keymaps, Language Packs), or, with no
+/// categories, when every `contributes` key is pure data.
+pub fn manifest_claims(pkg: &serde_json::Value) -> ManifestClaims {
+    let categories: Vec<String> = pkg
+        .get("categories")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| c.as_str())
+                .take(10)
+                .map(|c| crate::scanners::sanitize_display(c, 64))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut code_entry_points = Vec::new();
+    for key in ["main", "browser"] {
+        if pkg.get(key).and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
+            code_entry_points.push(key.to_string());
+        }
+    }
+    if pkg.get("activationEvents").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+        code_entry_points.push("activationEvents".to_string());
+    }
+    let contributes = pkg.get("contributes").and_then(|v| v.as_object());
+    let contributes_theme = contributes.is_some_and(|c| {
+        ["themes", "iconThemes", "productIconThemes"].iter().any(|k| c.contains_key(*k))
+    });
+    let declarative_claim = if !categories.is_empty() {
+        categories.iter().all(|c| DECLARATIVE_CATEGORIES.contains(&c.to_ascii_lowercase().as_str()))
+    } else {
+        contributes.is_some_and(|c| !c.is_empty() && c.keys().all(|k| DECLARATIVE_CONTRIBUTES.contains(&k.as_str())))
+    };
+    ManifestClaims { categories, code_entry_points, contributes_theme, declarative_claim }
+}
+
+/// Native `.node` addons (by magic bytes, not just extension) inside an extension
+/// directory: up to 5 relative paths, sorted. No symlink is followed; the walk is
+/// bounded. Only called for extensions that claim to be declarative.
+pub fn find_native_addons(dir: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut budget = MAX_ADDON_WALK;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            let p = e.path();
+            let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+            if meta.is_dir() {
+                stack.push(p);
+            } else if meta.is_file()
+                && p.extension().is_some_and(|x| x == "node")
+                && crate::scanners::agent_settings::is_native_binary(&p)
+                && let Ok(rel) = p.strip_prefix(dir)
+            {
+                found.push(crate::scanners::sanitize_display(&rel.to_string_lossy(), 200));
+            }
+        }
+    }
+    found.sort();
+    found.truncate(5);
+    found
 }
 
 /// Parse "publisher.name-1.2.3" into ("publisher.name", "1.2.3").
@@ -127,6 +229,7 @@ fn scan_zed_extensions(
             version,
             publisher: "zed-extensions".to_string(),
             ide_type: ide.name().to_string(),
+            ..Default::default()
         });
     }
 

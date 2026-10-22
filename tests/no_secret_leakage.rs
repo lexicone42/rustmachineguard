@@ -74,7 +74,24 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("QSPACE", "mysql --password \"first QSPACE\" -e select".into()),
         ("QSPACE2", "export TOKEN=\"a QSPACE2 c\"".into()),
         ("QSPACE3", "-d 'password=my QSPACE3'".into()),
+        // --- agent-surface detections (2026-10): skill dynamic context, settings
+        // helpers, and the host values read from .env / OLLAMA_HOST ---
+        ("SKILLDYN", "deploy --token SKILLDYN".into()),
+        ("HELPERTOK", "./key.sh --token HELPERTOK".into()),
+        ("PROXYUSER", "http://u:PROXYUSER@proxy.internal:3128".into()),
+        ("OLLAMAUSER", "http://u:OLLAMAUSER@0.0.0.0:11434".into()),
     ]
+}
+
+/// The host-only readers never return userinfo, independent of redaction.
+#[test]
+fn host_readers_drop_userinfo() {
+    let (shown, bind) =
+        rustmachineguard::scanners::shell_configs::classify_ollama_host("http://u:OLLAMAUSER@0.0.0.0:11434");
+    assert!(!shown.contains("OLLAMAUSER"), "{shown}");
+    assert_eq!(bind, "wildcard");
+    let redacted = redact("http://u:PROXYUSER@proxy.internal:3128");
+    assert!(redacted.contains("proxy.internal"), "the host must survive: {redacted}");
 }
 
 #[test]
@@ -364,6 +381,13 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     fs::write(home.join(".aider.conf.yml"), "model: gpt-4o\nopenai-api-key: E2EAIDERKEY\n").unwrap();
     fs::create_dir_all(home.join(".cache/huggingface")).unwrap();
     fs::write(home.join(".cache/huggingface/token"), "E2EHFTOKEN").unwrap();
+    // Agent-surface detections: a skill command, a settings helper, a proxy with
+    // userinfo in a project .env, and an OLLAMA_HOST with userinfo in a shell profile.
+    fs::create_dir_all(proj.join(".claude/commands")).unwrap();
+    fs::write(proj.join(".claude/commands/ship.md"), "Ship: !`deploy --token E2ESKILLDYN https://skill.internal/`\n").unwrap();
+    fs::write(proj.join(".claude/settings.local.json"), r#"{"apiKeyHelper":"./key.sh --token E2EHELPERTOK https://helper.internal/"}"#).unwrap();
+    fs::write(proj.join(".env"), "HTTPS_PROXY=http://u:E2EPROXYUSER@proxy.internal:3128\n").unwrap();
+    fs::write(home.join(".bashrc"), "export OLLAMA_HOST=http://u:E2EOLLAMAUSER@0.0.0.0:11434\n").unwrap();
     fs::create_dir_all(home.join(".claude/plugins")).unwrap();
     fs::write(
         home.join(".claude/plugins/known_marketplaces.json"),
@@ -401,6 +425,7 @@ fn no_canary_reaches_any_output_format_end_to_end() {
                 "deploy.internal", "tasks.internal", "npm.internal", "pypi.internal",
                 "yarn.internal", "bun.internal", "gitlab.internal",
                 "Hugging Face", "Continue", "Aider",
+                "skill.internal", "helper.internal", "proxy.internal", "0.0.0.0:11434",
             ] {
                 assert!(
                     text.contains(host),

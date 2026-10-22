@@ -118,13 +118,13 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **GitHub Advisory Database** | GHSA records for `@mcpjam/inspector` (CVE-2026-23744), `@cyanheads/git-mcp-server` (CVE-2025-53107) | GHSA (CC-BY-4.0) |
 
 | **LayerX Security / Akamai** | AiFrame: 32 fake AI-assistant Chrome extensions (260K+ users) with injected-iframe credential and Gmail theft; IDs verified against the original post | Public blog post |
-| **Air Security** | Plugin4Shell: SHA-shaped-branch plugin pin bypass in Claude Code (CVE-2026-86063), Codex, Copilot CLI and Gemini CLI | Public blog post, GHSA credit |
+| **Air Security** | Plugin4Shell: SHA-shaped-branch plugin pin bypass in Claude Code (CVE-2026-86063), Codex, Copilot CLI and Gemini CLI; inspired the plugin-pin check | Public blog post, GHSA credit |
 | **Manifold Security** | GitSpawn: repo-local `core.fsmonitor` executed by agents' background git calls (Claude Code, Goose CVE-2026-72718, Hermes CVE-2026-71963); Open VSX evil-twin extension research | Public blog posts |
 | **Pluto Research** | EtherDuck / SleepyDuck Open VSX Solidity extensions (mp4-steganographed payload, Ethereum-contract C2), both waves | Public blog post |
 | **Yeeth Security** | Operation Solidity Pro (WhiteCobra-attributed) Open VSX stealer identifiers | Public blog post |
-| **Socket Threat Research** | keyv/cacheable ChainDrop wave, tensorlake and litellm 1.107.0 detections, GlassWorm-linked VS Code theme loaders (Kirill Boychenko) | Public blog posts |
+| **Socket Threat Research** | keyv/cacheable ChainDrop wave, tensorlake and litellm 1.107.0 detections, GlassWorm-linked VS Code theme loaders (Kirill Boychenko); inspired the theme-with-code detection | Public blog posts |
 | **StepSecurity** | ChainDrop naming and keyv timeline, tensorlake hostage-token worm (Ashish Kurmi), litellm 1.107.0 analysis, MemTensor sckit corroboration | Public blog posts |
-| **Aikido Security** | Shai-Hulud 2026-09-07 redeployment (Charlie Eriksen), GlassWorm Zig dropper and its second-stage extension (Ilyas Makari), MemTensor PyPI side (Oliver Smith) | Public blog posts |
+| **Aikido Security** | Shai-Hulud 2026-09-07 redeployment (Charlie Eriksen), GlassWorm Zig dropper and its second-stage extension (Ilyas Makari), MemTensor PyPI side (Oliver Smith); inspired the native-addon detection | Public blog posts |
 | **SafeDep** | MemTensor sckit worm (npm + PyPI), Apex Foundation macOS infostealer (Kunal Singh), keyv/cacheable corroboration | Public blog posts |
 | **Elastic Security Labs** | REF8801 Apex Accelerator: backdoored coding-agent fork relaying OpenRouter traffic and planting an attacker MCP server (Jia Yu Chan, Daniel Stepanic) | Public blog post |
 | **CloudSEK** | NEBULA fake AI SDK npm packages dropping the KNTRAT Windows RAT (Vikas Kundu) | Public blog post |
@@ -135,7 +135,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **Cycode** | MCP Python SDK OAuth authorization-server misdirection (GHSA-qx49-fqc8-xw99, Yuval Elbar) | Public blog post, GHSA credit |
 | **Compass Security** | Codex CVE-2026-19591 PowerShell stop-parsing token bypass | CNA credit |
 | **Fudan University SSSL and Doyensec via ZDI** | Codex CVE-2026-19592 repo-local fsmonitor execution | CNA credit |
-| **Redguard AG** | Gemini CLI CVE-2026-13745 `.env` overriding `GEMINI_CLI_HOME` (Benjamin Faller) | Public advisory |
+| **Redguard AG** | Gemini CLI CVE-2026-13745 `.env` overriding `GEMINI_CLI_HOME` (Benjamin Faller); inspired the .env agent-home override detection | Public advisory |
 | **Cyera Research** | Claude Desktop Cowork shared-folder file execution (GHSA-v234-4jrq-mgg6, Vladimir Tokarev) | Vendor advisory credit |
 | **NVIDIA AI Red Team** | Claude Code CVE-2026-103012 managed settings not applied (Tamas Voros) | Vendor advisory credit |
 | **HiddenLayer SAI** | Mistral Vibe shell-permission bypasses CVE-2026-87983 to -87988 (Esteban Tonglet) | CNA |
@@ -188,6 +188,21 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | MCP-ITP | arXiv:2601.07395 | Implicit tool poisoning, 84.2% ASR |
 | ETDI | arXiv:2506.01333 | Tool squatting and rug pull attack models |
 | MCP-38 | arXiv:2603.18063 | 38 threat categories mapped to STRIDE/OWASP |
+
+## Detection techniques and their sources
+
+Detections that are not catalog rows but follow a researcher's or vendor's published
+technique. Each detection also names its source in a comment at the code.
+
+| Detection | Where | Source |
+|---|---|---|
+| Plugin pin | `marketplaces` | Air Security (Or Nevo Michrowski, Dor Granat, Niv Hoffman): Plugin4Shell, CVE-2026-86063 / GHSA-pq7j-f95f-qfcv; Codex fix openai/codex PR #34644 |
+| Skill symlink | `skills` | CVE-2026-103435 write-time symlink following (c_h4ck_0, edbr) |
+| Skill command, Skill grant | `skills` | Anthropic Claude Code docs: skills (dynamic context injection, `allowed-tools`, `disableSkillShellExecution`, synced skills) and permissions (`Bash(*)` is equivalent to `Bash`) |
+| Agent redirection, .env Gateway routing | `envfiles` | Redguard AG (Benjamin Faller): Gemini CLI CVE-2026-13745; EAA-007 hostile gateway routing (0x4D31); CVE-2026-21852; vendor variable docs (Claude Code env-vars, Gemini CLI configuration, Codex config, Cursor CLI configuration, Kiro settings) |
+| Helper command, Login gateway | `settings` | Anthropic Claude Code settings reference and Claude apps gateway docs |
+| Extension code | `extensions` | Socket Threat Research (Kirill Boychenko): GlassWorm-linked theme loaders; Aikido Security (Ilyas Makari): GlassWorm Zig dropper native addon |
+| Ollama exposure | `shell`, `envfiles` | Ollama FAQ (`OLLAMA_HOST`, default 127.0.0.1:11434) and `envconfig.Host()` in ollama/ollama |
 
 ## Updating the Catalog
 

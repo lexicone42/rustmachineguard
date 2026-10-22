@@ -165,6 +165,10 @@ impl PlatformInfo for MacOsPlatform {
         ]
     }
 
+    fn managed_settings_dir(&self) -> PathBuf {
+        PathBuf::from("/Library/Application Support/ClaudeCode")
+    }
+
     fn claude_config_dir(&self) -> PathBuf {
         self.home.join(".claude")
     }

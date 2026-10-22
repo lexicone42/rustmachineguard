@@ -307,8 +307,8 @@ fn summary_counts_match_vector_lengths() {
         ai_frameworks: vec![],
         ide_installations: vec![],
         ide_extensions: vec![
-            IdeExtension { id: "a".into(), name: "a".into(), version: "1".into(), publisher: "p".into(), ide_type: "vs".into() },
-            IdeExtension { id: "b".into(), name: "b".into(), version: "2".into(), publisher: "p".into(), ide_type: "vs".into() },
+            IdeExtension { id: "a".into(), name: "a".into(), version: "1".into(), publisher: "p".into(), ide_type: "vs".into(), ..Default::default() },
+            IdeExtension { id: "b".into(), name: "b".into(), version: "2".into(), publisher: "p".into(), ide_type: "vs".into(), ..Default::default() },
         ],
         mcp_configs: vec![],
         node_package_managers: vec![],
@@ -1582,6 +1582,7 @@ fn toxic_flow_detected_when_source_and_sink_present() {
             name: "poster".into(), path: "/s".into(), framework: "claude-code".into(),
             scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
             capabilities: vec!["network".into()],
+            ..Default::default()
         }];
     });
     let tf = analyze_toxic_flow(&report).expect("toxic flow should be detected");
@@ -1598,6 +1599,7 @@ fn toxic_flow_not_detected_with_source_only() {
             name: "reader".into(), path: "/s".into(), framework: "claude-code".into(),
             scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
             capabilities: vec!["filesystem".into(), "database".into()],
+            ..Default::default()
         }];
     });
     assert!(analyze_toxic_flow(&report).is_none(), "source without a sink is not a toxic flow");
@@ -1631,6 +1633,7 @@ fn blueprint_emits_toxic_flow_behavior() {
             name: "s".into(), path: "/s".into(), framework: "claude-code".into(),
             scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
             capabilities: vec!["environment".into(), "network".into()],
+            ..Default::default()
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -1667,6 +1670,7 @@ fn blueprint_emits_the_risk_layer() {
             name: "s".into(), path: "/s".into(), framework: "claude-code".into(),
             scope: "project".into(), file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
             capabilities: vec!["filesystem".into(), "network".into()],
+            ..Default::default()
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -1820,6 +1824,7 @@ fn findings_flag_git_tracked_env_as_critical() {
         r.env_files = vec![EnvFile {
             path: "/proj/.env".into(), git_tracked: true, world_readable: false,
             key_count: 3, secret_keys: vec!["API_TOKEN".into()],
+            ..Default::default()
         }];
     });
     let f = collect_findings(&report);
@@ -1842,6 +1847,7 @@ fn findings_dangerous_hook_is_critical() {
             allow_rules: 0, deny_rules: 0, auto_approve_mcp: true, enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
     });
     let f = collect_findings(&report);
@@ -1869,6 +1875,7 @@ fn gateway_override_to_non_official_host_is_flagged() {
             ],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
     });
     let f = collect_findings(&report);
@@ -1893,6 +1900,7 @@ fn identity_classifies_static_keys_oauth_and_findings() {
             shell: "bash".into(),
             config_path: "/h/.bashrc".into(),
             ai_related_entries: vec!["OPENAI_API_KEY=<redacted>".into(), "OLLAMA_HOST=localhost".into()],
+            ..Default::default()
         }];
         r.ai_credentials = vec![AiCredential {
             provider: "Claude Code".into(), credential_type: "OAuth token".into(),
@@ -1925,6 +1933,7 @@ fn identity_static_only_finding_is_medium() {
         r.env_files = vec![EnvFile {
             path: "/proj/.env".into(), git_tracked: false, world_readable: false,
             key_count: 2, secret_keys: vec!["ANTHROPIC_API_KEY".into()],
+            ..Default::default()
         }];
     });
     let id = analyze(&report);
@@ -1976,6 +1985,7 @@ fn findings_sort_by_severity_not_insertion_order() {
             name: "s".into(), path: "/s".into(), framework: "cc".into(), scope: "p".into(),
             file_type: "md".into(), size_bytes: 1, sha256: "z".into(),
             capabilities: vec!["filesystem".into(), "network".into()],
+            ..Default::default()
         }];
     });
     let f = collect_findings(&report);
@@ -2071,6 +2081,7 @@ fn html_findings_are_expandable_with_guidance_and_evidence() {
             auto_approve_mcp: false, enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
     });
     let html = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Html);
@@ -2878,6 +2889,7 @@ fn blueprint_no_dangling_refs_full_report() {
             name: "deploy".into(), path: "/s/deploy.md".into(), framework: "claude-code".into(),
             scope: "project".into(), file_type: "md".into(), size_bytes: 50, sha256: "x".into(),
             capabilities: vec!["shell".into(), "skill_invoke".into()],
+            ..Default::default()
         }];
         r.rules_files = vec![RulesFile {
             path: "/p/CLAUDE.md".into(), file_name: "CLAUDE.md".into(), sha256: "y".into(),
@@ -3087,6 +3099,7 @@ fn blueprint_agent_settings_hooks_become_behaviors() {
             enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -3668,6 +3681,7 @@ fn cross_directory_hook_is_high_even_when_the_command_looks_benign() {
             auto_approve_mcp: false, enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![],
             world_writable: false,
+            ..Default::default()
         }];
     });
     let f = collect_findings(&report);
@@ -4008,6 +4022,7 @@ fn cursor_unrestricted_approval_mode_is_flagged_like_bypass_permissions() {
                 enabled_mcp_servers: vec![], gateway_overrides: vec![],
                 inline_secret_env_keys: vec![],
                 world_writable: false,
+                ..Default::default()
             }];
         })
     };
@@ -4055,6 +4070,7 @@ fn world_writable_agent_config_is_flagged() {
             permission_mode: None, allow_rules: 0, deny_rules: 0, auto_approve_mcp: false,
             enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![], world_writable: true,
+            ..Default::default()
         }];
     });
     let f = rustmachineguard::analysis::collect_findings(&report);
@@ -4526,6 +4542,7 @@ fn default_terminal_report_shows_security_findings() {
             permission_mode: None, allow_rules: 0, deny_rules: 0, auto_approve_mcp: false,
             enabled_mcp_servers: vec![], gateway_overrides: vec![],
             inline_secret_env_keys: vec![], world_writable: true,
+            ..Default::default()
         }];
     });
     let out = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Terminal);
@@ -5875,4 +5892,39 @@ fn scanner_git_calls_do_not_execute_repo_controlled_hooks() {
     assert!(kinds.contains(&"planted-binary") && kinds.contains(&"escaping-symlink"), "{kinds:?}");
     // And the git autorun scanner reports the hostile value itself.
     assert!(!v["git_autorun_configs"].as_array().unwrap().is_empty(), "the fsmonitor value is itself a finding");
+}
+
+proptest! {
+    /// `.env` override parsing reads ONLY the allowlisted agent-home / gateway keys: any
+    /// other key's value is never sliced out, whatever it contains.
+    #[test]
+    fn env_overrides_never_return_non_allowlisted_keys(
+        key in "[A-Za-z][A-Za-z0-9_]{0,24}",
+        value in "[ -~]{0,60}",
+    ) {
+        use rustmachineguard::scanners::env_files::{parse_env_overrides, AGENT_OVERRIDE_KEYS};
+        prop_assume!(!AGENT_OVERRIDE_KEYS.iter().any(|(k, _)| *k == key));
+        let content = format!("{key}={value}\nexport {key}={value}\n");
+        prop_assert!(parse_env_overrides(&content).is_empty());
+    }
+
+    /// For allowlisted keys, an unquoted value stops at a ` #` comment, and the header
+    /// variable's value is never read at all.
+    #[test]
+    fn env_override_values_drop_trailing_comments(
+        idx in 0usize..64,
+        value in "[a-zA-Z0-9:/._-]{0,30}",
+        comment in "[ -~]{0,30}",
+    ) {
+        use rustmachineguard::scanners::env_files::{parse_env_overrides, AGENT_OVERRIDE_KEYS};
+        let (key, kind) = AGENT_OVERRIDE_KEYS[idx % AGENT_OVERRIDE_KEYS.len()];
+        let got = parse_env_overrides(&format!("{key}={value} #{comment}\n"));
+        prop_assert_eq!(got.len(), 1);
+        prop_assert!(!got[0].1.contains(" #"));
+        if kind == "headers" {
+            prop_assert_eq!(got[0].1.as_str(), "", "header values are never read");
+        } else {
+            prop_assert_eq!(got[0].1.as_str(), value.as_str());
+        }
+    }
 }

@@ -64,6 +64,9 @@ pub trait PlatformInfo {
 
     // AI CLI config directories
     fn claude_config_dir(&self) -> PathBuf;
+    /// Claude Code managed (organization) settings directory: `managed-settings.json`
+    /// and `managed-settings.d/`. A system path, the same for every home.
+    fn managed_settings_dir(&self) -> PathBuf;
     fn gemini_config_dir(&self) -> PathBuf;
     fn aws_q_config_dir(&self) -> PathBuf;
     fn codex_config_dir(&self) -> PathBuf;

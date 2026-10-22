@@ -159,6 +159,10 @@ impl PlatformInfo for LinuxPlatform {
         ]
     }
 
+    fn managed_settings_dir(&self) -> PathBuf {
+        PathBuf::from("/etc/claude-code")
+    }
+
     fn claude_config_dir(&self) -> PathBuf {
         self.home.join(".claude")
     }

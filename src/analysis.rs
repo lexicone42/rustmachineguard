@@ -208,6 +208,60 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Replace the symlink with a real file or remove it, and review who committed it. Do not let an agent write through it in the meantime.",
             reference: "CVE-2026-103435 · GhostApproval · write-time symlink following",
         },
+        "Plugin pin" => Guidance {
+            what: "A Claude Code plugin marketplace clone or plugin manifest holds a \"pin\" that is not a commit: a git ref whose name is a full 40- or 64-character hex string (a branch or tag impersonating a commit ID), HEAD checked out on such a branch, FETCH_HEAD recording a fetched branch with a commit-shaped name, or a manifest whose sha or gitCommitSha field holds a branch name, or whose ref field holds a commit ID with no sha.",
+            why: "Plugin4Shell (CVE-2026-86063): plugin install and update checked out the pinned commit by name, and a branch named with the same hex string won. So whoever controlled the plugin's upstream repository could swap reviewed code for their own while the pin still read intact. Git never creates a ref named like a commit, so one on disk is either an exploitation attempt or a pin that floats with a branch.",
+            fix: "Update Claude Code to 2.1.179 or later (Codex to 0.146.0 or later). Remove and reinstall the affected marketplace or plugin, and compare the installed files against the pinned commit before trusting them. In a manifest, put the 40-hex commit in `sha` and keep branch names in `ref`.",
+            reference: "CVE-2026-86063 · Plugin4Shell (Air Security) · EAA-009",
+        },
+        "Skill symlink" => Guidance {
+            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link whose target resolves outside its skill directory. rmguard resolves the target lexically and does not read through it when it lands on a credential, shell-rc or agent-config path.",
+            why: "Claude Code loads the link's target as the skill. A SKILL.md that points at ~/.ssh or a settings file puts that file into the model's context. An edit the agent makes to the skill writes through the link: the write-time symlink-following class behind CVE-2026-103435. A link into a dotfiles checkout is common and benign.",
+            fix: "If you did not create the link, replace it with a regular file or remove the skill. Keep skill bundles self-contained; dotfile managers can copy instead of linking.",
+            reference: "CVE-2026-103435 · write-time symlink following · AST02",
+        },
+        "Skill command" => Guidance {
+            what: "A skill or custom command contains dynamic context injection: an inline !`command` placeholder or a ```! block. Claude Code runs it in your shell before the skill text reaches the model, every time the skill is invoked.",
+            why: "The command runs with your privileges on invocation, and Claude can invoke a skill on its own unless the skill sets disable-model-invocation. So a third-party plugin or a repository can ship code that runs when its skill loads, with no tool-approval prompt. Read-only context commands (git status, gh pr view) are the documented use.",
+            fix: "Read the command shown below. Remove the skill if you did not expect it. To stop all skills running inline shell, set \"disableSkillShellExecution\": true in user or managed settings.",
+            reference: "Claude Code skills: dynamic context injection · AST02 · EAA-003",
+        },
+        "Skill grant" => Guidance {
+            what: "A skill's or command's allowed-tools frontmatter pre-approves unrestricted Bash (Bash or Bash(*)). Every shell command Claude runs during the invoking turn then executes without a permission prompt.",
+            why: "The grant opts the skill out of human review of the shell. Claude Code does not gate this field on workspace trust, so the repository or third-party plugin that ships the skill decides it for you. Scoped grants such as Bash(git diff:*) are the documented alternative.",
+            fix: "Narrow the grant to the commands the skill needs, or remove the skill. Organizations can set allowManagedPermissionRulesOnly so allowed-tools is ignored.",
+            reference: "Claude Code skills: allowed-tools · AST02 · EAA-002 (permissive execution)",
+        },
+        "Agent redirection" => Guidance {
+            what: "A project .env file sets a variable that relocates an AI agent's home directory (CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME, CURSOR_CONFIG_DIR, KIRO_HOME) or reroutes its traffic (HTTPS_PROXY to a non-loopback host, ANTHROPIC_CUSTOM_HEADERS).",
+            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A proxy sees all traffic. Gemini CLI loads project .env files itself; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader).",
+            fix: "Remove the variable unless you put it there. Never commit agent-home or proxy overrides; set them in your own shell profile. Upgrade Gemini CLI to 0.39.1 or later.",
+            reference: "CVE-2026-13745 · EAA-006 · EAA-007",
+        },
+        "Helper command" => Guidance {
+            what: "A Claude Code settings file names a credential or telemetry helper (apiKeyHelper, awsAuthRefresh, awsCredentialExport, gcpAuthRefresh, otelHeadersHelper). This is a shell command Claude Code runs on its own to fetch credentials or headers.",
+            why: "Like a hook, it runs silently with your privileges, and its output becomes the agent's credential. In a repository's settings file the repository author chooses the command. In your own or managed settings it is a normal enterprise setup and is only reported when the command matches a dangerous pattern.",
+            fix: "Review the command below. Remove a helper that arrived with a repository; keep credential helpers in user or managed settings.",
+            reference: "EAA-003 (lifecycle hook persistence) · OWASP ASI03",
+        },
+        "Login gateway" => Guidance {
+            what: "forceLoginGatewayUrl in your user settings sends Claude Code's /login to the Claude apps gateway at the host shown.",
+            why: "A gateway you sign in to holds the upstream credential, sees every prompt, and can push managed settings (including hooks and env) that run commands on this machine. Anthropic documents user-settings gateways for machines without managed settings, so this is expected where your organization runs one.",
+            fix: "Confirm your organization operates this gateway. If not, remove forceLoginGatewayUrl and forceLoginMethod from ~/.claude/settings.json and sign in again.",
+            reference: "Claude apps gateway · EAA-007",
+        },
+        "Extension code" => Guidance {
+            what: "An IDE extension that presents itself as declarative (a colour or icon theme, snippets, keymaps, a language pack) carries code: a main/browser entry point or a native .node addon.",
+            why: "Pure themes are JSON and run nothing. GlassWorm-linked \"theme\" extensions shipped encrypted JavaScript, and the GlassWorm Zig dropper loaded a native addon to install a second-stage extension into every IDE. Some popular themes legitimately add commands or settings code, so this is advisory.",
+            fix: "Check the publisher and the marketplace page, and uninstall the extension if the code is not explained. Prefer themes with no entry point.",
+            reference: "GlassWorm theme loaders (Socket) · GlassWorm Zig dropper (Aikido) · OWASP ASI04",
+        },
+        "Ollama exposure" => Guidance {
+            what: "OLLAMA_HOST is set to listen on every interface (0.0.0.0, [::], or a bare :port) or on a non-loopback address. It was found in a shell profile, a .env, a systemd unit or a launchd job.",
+            why: "Ollama's API has no authentication. Bound beyond 127.0.0.1, anyone who can reach the port can run, pull, push and delete models.",
+            fix: "Bind to 127.0.0.1 (the default) and reach it remotely through an authenticating reverse proxy or an SSH tunnel. Inside a container, publish the port on 127.0.0.1 only.",
+            reference: "Ollama FAQ (OLLAMA_HOST) · unauthenticated local API",
+        },
         "Toxic Flow" => Guidance {
             what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time.",
             why: "Each capability is individually authorized and benign, but together they complete the \"lethal trifecta\": one prompt injection can read private data and send it out. No single MCP client sees this composition.",
@@ -367,6 +421,60 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 location: s.path.clone(),
                 // The actual command is the offending artifact — surface it verbatim.
                 evidence: Some(h.command.clone()),
+            });
+        }
+        // Credential/telemetry helpers: commands Claude Code runs on its own. In the
+        // user's own or managed settings they are normal enterprise plumbing and are
+        // reported only when dangerous; from a project file the repository chose them.
+        let project_scoped = matches!(s.source.as_str(), "project" | "local");
+        for h in &s.helper_commands {
+            let cross_dir = h.risks.iter().any(|r| r.starts_with("cross-references"));
+            let severity = if h.dangerous {
+                Severity::Critical
+            } else if cross_dir {
+                Severity::High
+            } else if project_scoped {
+                if s.git_tracked { Severity::High } else { Severity::Medium }
+            } else {
+                continue;
+            };
+            let origin = if !project_scoped {
+                ""
+            } else if s.git_tracked {
+                " — from a git-tracked project settings file"
+            } else {
+                " — from project settings"
+            };
+            let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
+            f.push(Finding {
+                severity,
+                category: "Helper command".into(),
+                title: format!(
+                    "{} runs a command{}{}{}",
+                    h.event,
+                    if h.dangerous { " matching a dangerous pattern" } else { "" },
+                    origin,
+                    detail
+                ),
+                location: s.path.clone(),
+                evidence: Some(h.command.clone()),
+            });
+        }
+        // A login gateway in user settings is surfaced for review; managed settings are
+        // the organization's own, and project/local files are ignored by Claude Code.
+        if let Some(lg) = &s.login_gateway
+            && lg.effective
+            && s.source == "user-global"
+            && let Some(host) = &lg.host
+        {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Login gateway".into(),
+                title: format!(
+                    "Claude Code login is forced to the gateway at {host} from user settings — confirm your organization runs it"
+                ),
+                location: s.path.clone(),
+                evidence: None,
             });
         }
         if s.auto_approve_mcp {
@@ -742,8 +850,364 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         });
     }
 
+    collect_agent_surface_findings(report, &mut f);
+
     f.sort_by_key(|x| x.severity.rank());
     f
+}
+
+/// `~/.claude/plugins/cache/<m>/<p>/<v>` for a path inside a plugin cache version.
+fn plugin_install_root(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let comps: Vec<_> = p.components().collect();
+    for (i, c) in comps.iter().enumerate() {
+        if c.as_os_str() == "cache" && i > 0 && comps[i - 1].as_os_str() == "plugins" && comps.len() > i + 3 {
+            return comps[..=i + 3].iter().collect::<std::path::PathBuf>().to_string_lossy().to_string();
+        }
+    }
+    path.to_string()
+}
+
+/// How a plugin's skill is named in an aggregated finding: a manifest by its bundle
+/// name, a command or script by its path inside the plugin version (`commands/x.md`).
+fn plugin_skill_label(skill: &crate::models::AgentSkill, root: &str) -> String {
+    if skill.file_type == "skill-manifest" {
+        return skill.name.clone();
+    }
+    match std::path::Path::new(&skill.path).strip_prefix(root) {
+        Ok(rel) => crate::scanners::sanitize_display(&rel.to_string_lossy(), 128),
+        Err(_) => skill.name.clone(),
+    }
+}
+
+fn first_names(names: &BTreeSet<String>) -> String {
+    let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+    let more = names.len().saturating_sub(5);
+    if more > 0 {
+        format!("{} (+{more} more)", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// Plugin pins, skills, .env agent overrides, extensions and OLLAMA_HOST binds.
+fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    use std::collections::BTreeMap;
+
+    // ── A. Plugin4Shell pins ──
+    for m in &report.marketplaces {
+        for i in &m.pin_issues {
+            let p = i.plugin.as_deref().unwrap_or("");
+            let (severity, title) = match i.kind.as_str() {
+                "head-on-sha-branch" => (
+                    Severity::Critical,
+                    format!("marketplace '{}' is checked out on a branch named like a commit — Plugin4Shell shape (CVE-2026-86063)", m.name),
+                ),
+                "sha-shaped-ref" => (
+                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    format!(
+                        "marketplace '{}' has a ref named like a commit{}",
+                        m.name,
+                        if i.mismatch { " that points at a different commit" } else { "" }
+                    ),
+                ),
+                "fetch-head-sha-branch" => (
+                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    format!(
+                        "marketplace '{}' last fetched a branch named like a commit{}",
+                        m.name,
+                        if i.mismatch { ", which resolved to a different commit" } else { "" }
+                    ),
+                ),
+                "manifest-sha-not-commit" if i.plugin.is_some() => (
+                    Severity::Medium,
+                    format!("plugin '{p}' from '{}' is pinned to a branch name, not a commit — the pin moves with the branch", m.name),
+                ),
+                "manifest-sha-not-commit" => (
+                    Severity::Medium,
+                    format!("marketplace '{}' is pinned to a branch name, not a commit — the pin moves with the branch", m.name),
+                ),
+                "manifest-ref-is-sha" if i.plugin.is_some() => (
+                    Severity::Medium,
+                    format!("plugin '{p}' from '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
+                ),
+                "manifest-ref-is-sha" => (
+                    Severity::Medium,
+                    format!("marketplace '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
+                ),
+                "installed-sha-not-commit" => (
+                    Severity::Medium,
+                    format!("installed plugin '{p}@{}' records a gitCommitSha that is not a commit ID", m.name),
+                ),
+                _ => continue,
+            };
+            f.push(Finding {
+                severity,
+                category: "Plugin pin".into(),
+                title,
+                location: i.path.clone(),
+                evidence: Some(i.detail.clone()),
+            });
+        }
+    }
+
+    // ── B. Skills: escaping symlinks, dynamic context, unrestricted Bash grants ──
+    let shell_disabled = report
+        .agent_settings
+        .iter()
+        .any(|s| matches!(s.source.as_str(), "user-global" | "managed") && s.disable_skill_shell_execution);
+    // (marketplace, plugin) -> (install root, skill names, (path, first command))
+    type PluginKey = (String, String);
+    type CmdAgg = (String, BTreeSet<String>, Option<(String, String)>);
+    type GrantAgg = (String, BTreeSet<String>, BTreeSet<String>);
+    let mut plugin_cmds: BTreeMap<PluginKey, CmdAgg> =
+        BTreeMap::new();
+    // (marketplace, plugin) -> (install root, skill names, file paths)
+    let mut plugin_grants: BTreeMap<PluginKey, GrantAgg> =
+        BTreeMap::new();
+    for skill in &report.agent_skills {
+        if let Some(l) = &skill.symlink
+            && l.escapes
+        {
+            let (severity, title) = if l.sensitive_target {
+                (
+                    Severity::High,
+                    format!("skill file '{}' is a symlink into a credential, shell-rc or agent-config path — not read", skill.name),
+                )
+            } else {
+                (Severity::Low, format!("skill file '{}' is a symlink that resolves outside its skill directory", skill.name))
+            };
+            f.push(Finding {
+                severity,
+                category: "Skill symlink".into(),
+                title,
+                location: skill.path.clone(),
+                evidence: Some(format!("-> {}", l.target)),
+            });
+        }
+        let prov = skill.provenance.as_ref();
+        let synced = prov.is_some_and(|p| p.synced);
+        let is_plugin = prov.is_some_and(|p| p.marketplace.is_some());
+        let active = prov.is_some_and(|p| p.active);
+        let loadable = !synced && (!is_plugin || active);
+        let third_active = prov.is_some_and(|p| p.third_party && p.active);
+        let project = skill.scope == "project";
+        let git = prov.and_then(|p| p.git.as_deref());
+        let plugin_key = || {
+            (
+                prov.and_then(|p| p.marketplace.clone()).unwrap_or_default(),
+                prov.and_then(|p| p.plugin.clone()).unwrap_or_default(),
+            )
+        };
+
+        if loadable && !shell_disabled && !skill.dynamic_commands.is_empty() {
+            if let Some(d) = skill.dynamic_commands.iter().find(|d| d.dangerous) {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "Skill command".into(),
+                    title: format!(
+                        "skill '{}' runs a shell command matching a dangerous pattern when it loads ({})",
+                        skill.name,
+                        d.patterns.join("; ")
+                    ),
+                    location: skill.path.clone(),
+                    evidence: Some(d.command.clone()),
+                });
+            } else if third_active {
+                let e = plugin_cmds
+                    .entry(plugin_key())
+                    .or_insert_with(|| (plugin_install_root(&skill.path), BTreeSet::new(), None));
+                e.1.insert(plugin_skill_label(skill, &e.0));
+                let cand = (skill.path.clone(), skill.dynamic_commands[0].command.clone());
+                if e.2.as_ref().is_none_or(|(p, _)| cand.0 < *p) {
+                    e.2 = Some(cand);
+                }
+            } else if project {
+                let origin = match git {
+                    Some("tracked") => "project (git-tracked)",
+                    Some(_) => "project (untracked in a git repository)",
+                    None => "project",
+                };
+                f.push(Finding {
+                    severity: Severity::Low,
+                    category: "Skill command".into(),
+                    title: format!(
+                        "{origin} skill '{}' runs {} shell command(s) when it loads (dynamic context)",
+                        skill.name,
+                        skill.dynamic_commands.len()
+                    ),
+                    location: skill.path.clone(),
+                    evidence: Some(skill.dynamic_commands[0].command.clone()),
+                });
+            }
+        }
+
+        if skill.unrestricted_bash {
+            if third_active {
+                let e = plugin_grants
+                    .entry(plugin_key())
+                    .or_insert_with(|| (plugin_install_root(&skill.path), BTreeSet::new(), BTreeSet::new()));
+                e.1.insert(plugin_skill_label(skill, &e.0));
+                e.2.insert(skill.path.clone());
+            } else if project && let Some(g) = git {
+                f.push(Finding {
+                    severity: Severity::Low,
+                    category: "Skill grant".into(),
+                    title: format!(
+                        "project skill '{}' pre-approves unrestricted Bash ({})",
+                        skill.name,
+                        if g == "tracked" { "git-tracked" } else { "untracked in a git repository" }
+                    ),
+                    location: skill.path.clone(),
+                    evidence: None,
+                });
+            }
+        }
+    }
+    for ((m, p), (root, names, first)) in &plugin_cmds {
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "Skill command".into(),
+            title: format!("third-party plugin '{p}@{m}' runs shell commands when its skills load: {}", first_names(names)),
+            location: root.clone(),
+            evidence: first.as_ref().map(|(_, c)| c.clone()),
+        });
+    }
+    for ((m, p), (root, names, files)) in &plugin_grants {
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "Skill grant".into(),
+            title: format!(
+                "third-party plugin '{p}@{m}' pre-approves unrestricted Bash in {} skill(s)/command(s): {}",
+                files.len(),
+                first_names(names)
+            ),
+            location: root.clone(),
+            evidence: None,
+        });
+    }
+
+    // ── C. .env agent-home / gateway / proxy / headers / OLLAMA_HOST ──
+    for e in &report.env_files {
+        let t = e.git_tracked;
+        let tracked = if t { " git-tracked" } else { "" };
+        for o in &e.agent_overrides {
+            let value = o.value.as_deref().unwrap_or("");
+            let gemini = o.key.starts_with("GEMINI") || o.key.starts_with("GOOGLE_GEMINI");
+            let gemini_note = if gemini { " (Gemini CLI loads project .env files itself)" } else { "" };
+            let finding = match o.kind.as_str() {
+                "agent-home" => Some((
+                    if t { Severity::High } else if o.inside_project { Severity::Medium } else { Severity::Low },
+                    "Agent redirection",
+                    format!(
+                        "{} in a{tracked} .env relocates the {} home to {value}{}{gemini_note}",
+                        o.key,
+                        crate::scanners::env_files::agent_for_home_key(&o.key),
+                        if o.inside_project { " inside the project" } else { "" },
+                    ),
+                )),
+                "gateway" if !o.official && !o.loopback => Some((
+                    if t { Severity::High } else { Severity::Medium },
+                    "Gateway routing",
+                    // Starts with the key: Blueprint resolves `gwvar:<first word>`.
+                    format!(
+                        "{} points to non-official host {value} in a{tracked} .env — verify this gateway is trusted (EAA-007){gemini_note}",
+                        o.key
+                    ),
+                )),
+                "headers" if t => Some((
+                    Severity::Medium,
+                    "Agent redirection",
+                    "ANTHROPIC_CUSTOM_HEADERS is set in a git-tracked .env — adds request headers (often a credential) to every Claude Code request when loaded".to_string(),
+                )),
+                "proxy" if !o.loopback => Some((
+                    if t { Severity::Medium } else { Severity::Low },
+                    "Agent redirection",
+                    format!("{} in a{tracked} .env sends agent traffic through proxy {value}", o.key),
+                )),
+                "ollama-host" => match o.bind.as_deref() {
+                    Some(b @ ("wildcard" | "non-loopback-ip")) => Some((
+                        Severity::Low,
+                        "Ollama exposure",
+                        format!(
+                            "OLLAMA_HOST={value} in a .env would make Ollama listen on {} if the server starts from this environment (normal inside a container; check the published port)",
+                            if b == "wildcard" { "every interface" } else { "a non-loopback address" }
+                        ),
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((severity, category, title)) = finding {
+                f.push(Finding { severity, category: category.into(), title, location: e.path.clone(), evidence: None });
+            }
+        }
+    }
+
+    // ── E. Declarative extensions that carry code ──
+    for x in &report.ide_extensions {
+        if !x.declarative_claim {
+            continue;
+        }
+        let runs: Vec<&str> = x
+            .code_entry_points
+            .iter()
+            .map(String::as_str)
+            .filter(|e| matches!(*e, "main" | "browser"))
+            .collect();
+        if x.contributes_theme && !runs.is_empty() {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Extension code".into(),
+                title: format!(
+                    "theme extension '{}' ({}) also runs code ({}) — pure themes are JSON only",
+                    x.id,
+                    x.ide_type,
+                    x.code_entry_points.join(", ")
+                ),
+                location: x.id.clone(),
+                evidence: None,
+            });
+        }
+        if !x.native_addons.is_empty() {
+            let claim = if x.categories.is_empty() { "declarative".to_string() } else { x.categories.join(", ") };
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Extension code".into(),
+                title: format!(
+                    "extension '{}' ({}) declares itself {claim} but ships native addon(s): {}",
+                    x.id,
+                    x.ide_type,
+                    x.native_addons.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+                ),
+                location: x.id.clone(),
+                evidence: None,
+            });
+        }
+    }
+
+    // ── F. OLLAMA_HOST binds in profiles, systemd units and launchd jobs ──
+    for c in &report.shell_configs {
+        let Some(o) = &c.ollama_host else { continue };
+        let severity = match (o.bind.as_str(), o.service) {
+            ("wildcard", _) => Severity::Medium,
+            ("non-loopback-ip" | "hostname", true) => Severity::Medium,
+            ("non-loopback-ip", false) => Severity::Low,
+            _ => continue,
+        };
+        f.push(Finding {
+            severity,
+            category: "Ollama exposure".into(),
+            title: format!(
+                "OLLAMA_HOST={} in {} config makes Ollama listen on {} — the Ollama API has no authentication",
+                o.value,
+                c.shell,
+                if o.bind == "wildcard" { "every interface" } else { "a non-loopback address" }
+            ),
+            location: c.config_path.clone(),
+            evidence: None,
+        });
+    }
 }
 
 /// Capability categories that read sensitive/private data (a flow "source").

@@ -127,6 +127,8 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "hooks",
             "gateway_overrides",
             "inline_secret_env_keys",
+            "helper_commands",
+            "login_gateway",
         ],
     ));
 

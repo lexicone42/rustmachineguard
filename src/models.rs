@@ -171,13 +171,33 @@ pub struct IdeInstallation {
     pub is_installed: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct IdeExtension {
     pub id: String,
     pub name: String,
     pub version: String,
     pub publisher: String,
     pub ide_type: String,
+    /// `package.json` `categories` (sanitized, at most 10). Attacker-authored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    /// Which code entry points the manifest declares: static labels from
+    /// {"main", "browser", "activationEvents"}.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub code_entry_points: Vec<String>,
+    /// `contributes` has themes, iconThemes or productIconThemes.
+    #[serde(default)]
+    pub contributes_theme: bool,
+    /// The extension presents itself as declarative (themes, snippets, keymaps,
+    /// language packs): such an extension has no reason to run code.
+    #[serde(default)]
+    pub declarative_claim: bool,
+    /// Native `.node` addons (ELF/Mach-O/PE by magic bytes) inside the extension
+    /// directory, relative paths, at most 5. ONLY inspected when `declarative_claim`
+    /// is true: ordinary extensions (Pylance, Jupyter) legitimately ship native addons,
+    /// so the walk never runs for them and this stays empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_addons: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -227,12 +247,31 @@ pub struct NodePackageManager {
 
 // --- New detection categories ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ShellConfig {
+    /// "bash" | "zsh" | ... for rc files; "systemd-user" | "systemd-system" | "launchd"
+    /// for service definitions that set OLLAMA_HOST.
     pub shell: String,
     pub config_path: String,
     /// AI-related environment variables or aliases found
     pub ai_related_entries: Vec<String>,
+    /// The last OLLAMA_HOST assignment in this file, classified the way Ollama parses it.
+    /// Not a secret: a bind address. Userinfo is stripped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_host: Option<OllamaHostSetting>,
+}
+
+/// An OLLAMA_HOST value and where it makes the Ollama server listen.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct OllamaHostSetting {
+    /// Sanitized host[:port] as written (userinfo stripped).
+    pub value: String,
+    /// "wildcard" | "non-loopback-ip" | "hostname" | "loopback" | "unresolved"
+    pub bind: String,
+    /// True when the source is the Ollama server's own service definition (a unit or
+    /// launchd job for ollama), so the value is a server bind, not a client target.
+    #[serde(default)]
+    pub service: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -319,25 +358,91 @@ pub struct RulesFileFinding {
 }
 
 /// An agent skill (custom command, hook, or plugin).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentSkill {
     pub name: String,
     pub path: String,
     pub framework: String,
     pub scope: String,
+    /// "skill-manifest", "command" (a `commands/*.md` inside a bundle walk), or the
+    /// file extension.
     pub file_type: String,
     pub size_bytes: usize,
+    /// sha256 of the content, "unreadable", or "symlink-not-followed" for a symlink
+    /// into a sensitive path (never read).
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Set when the skill file is a symbolic link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<SkillSymlink>,
+    /// Dynamic context injection: commands Claude Code runs when the skill loads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_commands: Vec<SkillDynamicCommand>,
+    /// `allowed-tools` pre-approves unrestricted Bash (Bash, Bash(*), PowerShell).
+    #[serde(default)]
+    pub unrestricted_bash: bool,
+    /// Where the skill came from, used to grade the two fields above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SkillProvenance>,
+}
+
+/// A skill file that is a symbolic link. `target` is the link text (sanitized), not a
+/// resolved path; resolution is lexical.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SkillSymlink {
+    pub target: String,
+    /// The lexical target lies outside the skill's directory.
+    pub escapes: bool,
+    /// The lexical target is a credential, shell-rc or agent-config path. Such a target
+    /// is never read.
+    pub sensitive_target: bool,
+    /// True when the target was read (it was not sensitive).
+    pub followed: bool,
+}
+
+/// One dynamic-context command (`!`cmd`` or a ```! block) in a skill or command file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SkillDynamicCommand {
+    /// Redacted and sanitized command text.
+    pub command: String,
+    /// Matches the dangerous-pattern set used for hooks.
+    pub dangerous: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<String>,
+    /// From a ```! fenced block rather than an inline placeholder.
+    #[serde(default)]
+    pub block: bool,
+}
+
+/// Provenance of a skill file: plugin marketplace, activation and git status.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SkillProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// The marketplace is listed in known_marketplaces.json and is not Anthropic's.
+    #[serde(default)]
+    pub third_party: bool,
+    /// The file lies under an installed plugin's installPath and the plugin is not
+    /// disabled in enabledPlugins. Marketplace clones and orphaned versions never are.
+    #[serde(default)]
+    pub active: bool,
+    /// Project skills inside a git work tree: "tracked" | "untracked".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    /// Under ~/.claude/skills/synced/ (dynamic context does not run locally for these).
+    #[serde(default)]
+    pub synced: bool,
 }
 
 /// An agent settings file (Claude Code / Codex), which can register hooks that run
 /// shell commands on agent events and auto-approve MCP servers.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentSettings {
     pub path: String,
-    /// "user-global" | "local" | "project"
+    /// "user-global" | "local" | "project" | "managed"
     pub source: String,
     pub framework: String,
     /// Project-scoped settings from a cloned repo are higher risk; git_tracked tells
@@ -368,6 +473,31 @@ pub struct AgentSettings {
     /// append a hook, which the agent then runs.
     #[serde(default)]
     pub world_writable: bool,
+    /// Credential and telemetry helpers (apiKeyHelper, awsAuthRefresh, ...): shell
+    /// commands Claude Code runs on its own. Recorded like hooks (redacted); `event` is
+    /// the settings key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub helper_commands: Vec<AgentHook>,
+    /// forceLoginMethod / forceLoginGatewayUrl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_gateway: Option<LoginGateway>,
+    /// `disableSkillShellExecution`: skills and commands may not run inline shell.
+    #[serde(default)]
+    pub disable_skill_shell_execution: bool,
+}
+
+/// Claude Code's forced login method / Claude apps gateway URL.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LoginGateway {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+    /// Claude Code honours forceLoginGatewayUrl only in user or managed settings.
+    #[serde(default)]
+    pub effective: bool,
 }
 
 /// An AI provider base-URL override (e.g. ANTHROPIC_BASE_URL) found in a settings
@@ -414,7 +544,7 @@ pub struct AgentTranscriptStore {
 /// A configured plugin marketplace — a remote source whose skills/plugins run as
 /// agent code (EAA-009 remote hot-load surface). Records provenance and whether it
 /// auto-updates; never fetches or executes anything.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentMarketplace {
     pub name: String,
     /// "git", "github", "local", etc.
@@ -426,6 +556,26 @@ pub struct AgentMarketplace {
     /// True if published by Anthropic (an official marketplace).
     pub official: bool,
     pub installed_plugin_count: usize,
+    /// Plugin4Shell-shaped pins: commit-shaped refs in the clone, HEAD/FETCH_HEAD on such
+    /// a branch, and manifest pins that are not commits. Sorted by (kind, path, plugin).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_issues: Vec<PluginPinIssue>,
+}
+
+/// One pin that is not a commit (see `scanners::marketplaces`).
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PluginPinIssue {
+    /// head-on-sha-branch | sha-shaped-ref | fetch-head-sha-branch |
+    /// manifest-sha-not-commit | manifest-ref-is-sha | installed-sha-not-commit
+    pub kind: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// Fixed words plus hex prefixes or a sanitized manifest value; never a URL.
+    pub detail: String,
+    /// The commit-shaped name resolves to a different object than the one it names.
+    #[serde(default)]
+    pub mismatch: bool,
 }
 
 /// Git configuration whose value git executes as a command, found in a scope an
@@ -483,7 +633,7 @@ pub struct AiCredential {
 }
 
 /// A `.env` file in an agent project root (agents read the working directory).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct EnvFile {
     pub path: String,
     /// A git-tracked .env is a committed secret.
@@ -494,6 +644,32 @@ pub struct EnvFile {
     /// NAMES (never values) of keys that look secret-bearing (TOKEN/SECRET/KEY/...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_keys: Vec<String>,
+    /// Keys that relocate an agent's home or redirect its traffic. These values are not
+    /// secrets, so the path or host is kept (sanitized); every other value is never read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_overrides: Vec<EnvAgentOverride>,
+}
+
+/// An agent-home or traffic override in a `.env` file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct EnvAgentOverride {
+    pub key: String,
+    /// agent-home | gateway | headers | proxy | ollama-host
+    pub kind: String,
+    /// Path (agent-home) or host (gateway, proxy, ollama-host). None for headers, whose
+    /// value is never read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub official: bool,
+    #[serde(default)]
+    pub loopback: bool,
+    /// agent-home: the relocated home is inside the project.
+    #[serde(default)]
+    pub inside_project: bool,
+    /// ollama-host only: the bind classification (see OllamaHostSetting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
 }
 
 /// A persistence or planting artifact: a Python startup hook, a tool-shadowing binary in

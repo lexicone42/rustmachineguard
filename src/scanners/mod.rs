@@ -753,6 +753,36 @@ pub fn split_url_authority(url: &str) -> (&str, &str) {
     (scheme, host_port)
 }
 
+/// The connection host (lowercased, IPv6 brackets removed) and port of a URL-ish value,
+/// built on [`split_url_authority`] so userinfo never survives. `[::1]:4000` gives
+/// `("::1", Some(4000))`; a bare IPv6 literal without brackets keeps all its colons.
+pub(crate) fn host_of(value: &str) -> (String, Option<u16>) {
+    let (_scheme, host_port) = split_url_authority(value.trim());
+    let host_port = host_port.trim();
+    if let Some(rest) = host_port.strip_prefix('[') {
+        let (host, after) = rest.split_once(']').unwrap_or((rest, ""));
+        let port = after.strip_prefix(':').and_then(|p| p.parse().ok());
+        return (host.to_ascii_lowercase(), port);
+    }
+    match host_port.rsplit_once(':') {
+        // Exactly one colon: host:port. Several colons without brackets is a bare IPv6.
+        Some((h, p)) if !h.contains(':') => (h.to_ascii_lowercase(), p.parse().ok()),
+        _ => (host_port.to_ascii_lowercase(), None),
+    }
+}
+
+/// True for `localhost`, 127.0.0.0/8, `::1`, and IPv4-mapped loopback (`::ffff:127.x`).
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match h.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.to_canonical().is_loopback(),
+        Err(_) => false,
+    }
+}
+
 /// Unix permission bits of a file as (octal_string, world_readable, group_readable).
 /// Returns None on non-Unix or if the file can't be stat'd. Never reads file content.
 pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {
