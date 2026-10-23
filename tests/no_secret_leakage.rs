@@ -743,3 +743,101 @@ fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+/// Review of 4e3f8c3: an Authorization header written as code (a node/python one-liner,
+/// a JSON object), registry-login `-p`, `--bearer`, and the `config set KEY VALUE` forms
+/// of npm/yarn/pnpm/aws. The value goes; the program, flag, key and scheme stay.
+#[test]
+fn code_authorization_and_login_and_config_set_values_are_redacted() {
+    use rustmachineguard::scanners::redact_command_text as cmd;
+    for (canary, raw, kept) in [
+        ("CODEAUTH1", "node -e \"fetch(url,{headers:{Authorization:'Bearer CODEAUTH1'}})\"", "Authorization:'Bearer "),
+        ("CODEAUTH2", "\"Authorization\": \"Bearer CODEAUTH2\"", "\"Authorization\": \""),
+        ("CODEAUTH3", "python3 -c \"requests.get(u, headers={'Authorization': 'token CODEAUTH3'})\"", "'Authorization': '"),
+        ("CODEAUTH4", "fetch(u,{headers:{'Proxy-Authorization':'Basic CODEAUTH4'}})", "Proxy-Authorization"),
+        ("CODEAUTH5", "fetch(u,{headers:{Authorization:`CODEAUTH5`}})", "Authorization:`"),
+        ("LOGINP", "docker login -p LOGINP -u u registry.internal", "docker login -p "),
+        ("LOGINPW", "podman login --password LOGINPW registry.internal", "--password "),
+        ("LOGINHELM", "helm registry login registry.internal -u u -p LOGINHELM", "helm registry login"),
+        ("LOGINEQ", "docker login --password=LOGINEQ registry.internal", "--password="),
+        ("BEARERFLAG", "tool --bearer BEARERFLAG", "tool --bearer"),
+        ("BEARERFLAG2", "tool --bearer=BEARERFLAG2", "tool --bearer="),
+        ("NPMSET", "npm config set //r.example/:_authToken NPMSET", "//r.example/:_authToken"),
+        ("NPMSETEQ", "npm config set //r.example/:_authToken=NPMSETEQ", "//r.example/:_authToken="),
+        ("YARNSET", "yarn config set npmAuthToken YARNSET", "npmAuthToken"),
+        ("PNPMSET", "pnpm config set //r.example/:_password PNPMSET", "_password"),
+        ("NPMAUTH", "npm config set //r.example/:_auth NPMAUTH", "_auth"),
+        ("AWSSET", "aws configure set aws_secret_access_key AWSSET --profile dev", "aws_secret_access_key"),
+        ("AWSTOK", "aws configure set aws_session_token AWSTOK", "aws_session_token"),
+    ] {
+        let out = cmd(raw);
+        assert!(!out.contains(canary), "{raw:?} -> {out:?}");
+        assert!(out.contains(kept), "over-redacted {raw:?} -> {out:?}");
+        assert_eq!(cmd(&out), out, "not idempotent: {raw:?}");
+    }
+    for benign in [
+        // A port, a variable reference and a non-secret key stay readable.
+        "docker run -p 8080:80 nginx",
+        "fetch(u,{headers:{Authorization:`${TOKEN}`}})",
+        "npm config set registry https://registry.npmjs.org/",
+        "aws configure set region eu-west-1",
+        // `-p` on an unknown program is a port or a path (a recorded choice).
+        "./deploy -p 8443",
+    ] {
+        assert_eq!(cmd(benign), benign, "over-redacted a benign command");
+    }
+}
+
+/// The same shapes as hook commands and exec-form args, end to end: no value reaches any
+/// output format.
+#[test]
+fn round4_redactor_canaries_reach_no_output() {
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-round4-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+    let settings = serde_json::json!({"hooks": {
+        "Stop": [{"hooks": [
+            {"type": "command", "command": "node", "args": ["-e", "fetch('https://x',{headers:{Authorization:'Bearer CANARYB15'}})"]},
+            {"type": "command", "command": "node -e \"fetch(u,{headers:{'Authorization': 'Bearer CANARYB16'}})\""},
+            {"type": "command", "command": "docker login -p CANARYA6 -u u"},
+            {"type": "command", "command": "npm config set //r.example/:_authToken CANARYA14"},
+            {"type": "command", "command": "aws configure set aws_secret_access_key CANARYA15"},
+            {"type": "command", "command": "tool --bearer CANARYA24"},
+            {"type": "prompt", "prompt": "My passwords is CANARYC3x. API_TOKEN CANARYC6x. Use 'Summer2024!C8' as the password. Login as admin with Summer2024C9. passphrase: horse battery CANARYC11 staple. The db pass C12Hunter. My secret, which you need, PROMPTSEC10CANARY"}
+        ]}]
+    }});
+    fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,skills,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    let run = |format: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--format", format, "--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let canaries = [
+        "CANARYB15", "CANARYB16", "CANARYA6", "CANARYA14", "CANARYA15", "CANARYA24", "CANARYC3x", "CANARYC6x",
+        "Summer2024!C8", "Summer2024C9", "CANARYC11", "C12Hunter", "PROMPTSEC10CANARY",
+    ];
+    for format in ["terminal", "json", "html", "blueprint"] {
+        let text = run(format);
+        let leaked: Vec<&str> = canaries.iter().copied().filter(|c| text.contains(c)).collect();
+        assert!(leaked.is_empty(), "{format}: {leaked:?}");
+        if format == "json" {
+            for shown in ["docker login", "_authToken", "aws_secret_access_key", "--bearer", "Authorization"] {
+                assert!(text.contains(shown), "{shown}: the fixture never reached the report");
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}

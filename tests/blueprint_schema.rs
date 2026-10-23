@@ -953,10 +953,10 @@ fn plugin_and_frontmatter_hooks_conform() {
     let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(rendered.contains("rmg:plugin") && rendered.contains("p@m"), "plugin provenance on the settings asset");
     assert!(rendered.contains("Stop[*] (module): ./register.ts"), "hook kind on the property");
-    // One behavior per hook, by what the hook does: commands and modules run code (3 + 1 + the
-    // disabled one), http sends data, prompt and agent hooks hand the event to a model,
-    // mcp_tool calls a tool.
-    assert_eq!(rendered.matches("executesNativeCommand").count(), 5, "{rendered}");
+    // One behavior per hook that runs, by what the hook does: commands and modules run code
+    // (3 + 1; the disabled plugin's hook declares none, review of 4e3f8c3), http sends data,
+    // prompt and agent hooks hand the event to a model, mcp_tool calls a tool.
+    assert_eq!(rendered.matches("executesNativeCommand").count(), 4, "{rendered}");
     assert_eq!(rendered.matches("network:transmission:sendsData").count(), 1, "{rendered}");
     assert_eq!(rendered.matches("ai:generative:processesPrompt").count(), 1, "{rendered}");
     assert_eq!(rendered.matches("ai:agent:delegatesTask").count(), 2, "{rendered}");

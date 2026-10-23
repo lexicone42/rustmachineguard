@@ -614,6 +614,9 @@ fn render_inner(report: &ScanReport) -> String {
                 s.source.dimmed(),
                 tracked
             ));
+            if let Some(l) = &s.symlink {
+                out.push_str(&format!("    {} symlink to {}, not read\n", "·".dimmed(), l.target));
+            }
             if let Some(ref mode) = s.permission_mode {
                 let m = if mode == "bypassPermissions" {
                     mode.red().bold().to_string()
@@ -671,15 +674,25 @@ fn render_inner(report: &ScanReport) -> String {
                     }
                     _ => String::new(),
                 };
-                let off = if h.disabled { " (disabled)".dimmed().to_string() } else { String::new() };
+                let off = match (h.disabled, &h.disabled_reason) {
+                    (true, Some(r)) => format!(" (disabled: {r})").dimmed().to_string(),
+                    (true, None) => " (disabled)".dimmed().to_string(),
+                    _ => String::new(),
+                };
+                let regs = if h.registers.is_empty() {
+                    String::new()
+                } else {
+                    format!(" registers=[{}]", h.registers.join(", ")).dimmed().to_string()
+                };
                 out.push_str(&format!(
-                    "    {} hook {}[{}]{}{}{}: {}\n",
+                    "    {} hook {}[{}]{}{}{}{}: {}\n",
                     marker,
                     h.event.dimmed(),
                     matcher,
                     kind,
                     plugin,
                     off,
+                    regs,
                     if h.dangerous {
                         cmd_preview.red().to_string()
                     } else {

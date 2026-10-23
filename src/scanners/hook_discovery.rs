@@ -283,7 +283,9 @@ fn claude(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
 
 /// One Claude Code plugin root: `hooks/hooks.json` (event map and `modules`), the
 /// manifest's `hooks` (a `./path.json`, an inline event map, or an array of either) and
-/// the root `settings.json` `subagentStatusLine`, merged into one entry.
+/// the root `settings.json` `subagentStatusLine`. Each source file is its own entry
+/// (inline manifest maps are the manifest's), so the inventory, --diff and a finding's
+/// location name the file to edit (review of 4e3f8c3); the hook cap is per plugin.
 fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
     let hooks_json = root.join("hooks").join("hooks.json");
     let manifest = root.join(".claude-plugin").join("plugin.json");
@@ -294,12 +296,16 @@ fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
     ctx.root_label = if src.source == "project" { "project" } else { "plugin" };
     ctx.vars = claude_plugin_vars(root);
 
-    let mut hooks = Vec::new();
-    let mut entry: Option<PathBuf> = None;
+    // (source file, its hooks), in load order.
+    let mut groups: Vec<(PathBuf, Vec<AgentHook>)> = Vec::new();
+    let total = |g: &[(PathBuf, Vec<AgentHook>)]| g.iter().map(|(_, h)| h.len()).sum::<usize>();
+    let mut seen = std::collections::HashSet::new();
     if let Some(j) = load(&hooks_json, src, out) {
-        hooks.extend(j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default());
+        let mut hooks = j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default();
         hooks.extend(claude_modules(&j, &hooks_json, root, src));
-        entry = Some(hooks_json.clone());
+        hooks.truncate(hs::MAX_HOOKS_PER_FILE);
+        seen.insert(hooks_json.clone());
+        groups.push((hooks_json.clone(), hooks));
     }
     if let Some(m) = load(&manifest, src, out) {
         let declared = match m.get("hooks") {
@@ -307,11 +313,10 @@ fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
             Some(v) => vec![v],
             None => Vec::new(),
         };
-        let before = hooks.len();
-        let mut seen = std::collections::HashSet::new();
+        let mut inline = Vec::new();
         for d in declared {
-            // Nothing past the entry's cap is parsed (review of b9cda85).
-            let room = hs::MAX_HOOKS_PER_FILE.saturating_sub(hooks.len());
+            // Nothing past the plugin's cap is parsed (review of b9cda85).
+            let room = hs::MAX_HOOKS_PER_FILE.saturating_sub(total(&groups) + inline.len());
             if room == 0 {
                 break;
             }
@@ -323,29 +328,22 @@ fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
                         && let Some(j) = load(&p, src, out)
                         && let Some(map) = j.get("hooks")
                     {
-                        hooks.extend(hs::extract_hook_map_limit(map, &ctx, room));
+                        groups.push((p, hs::extract_hook_map_limit(map, &ctx, room)));
                     }
                 }
                 // An inline manifest object is the bare event map.
-                v @ serde_json::Value::Object(_) => hooks.extend(hs::extract_hook_map_limit(v, &ctx, room)),
+                v @ serde_json::Value::Object(_) => inline.extend(hs::extract_hook_map_limit(v, &ctx, room)),
                 _ => {}
             }
         }
-        if hooks.len() > before && entry.is_none() {
-            entry = Some(manifest.clone());
-        }
+        groups.push((manifest.clone(), inline));
     }
-    if hooks.len() < hs::MAX_HOOKS_PER_FILE
+    if total(&groups) < hs::MAX_HOOKS_PER_FILE
         && let Some(j) = load(&settings, src, out)
     {
-        let before = hooks.len();
-        hooks.extend(hs::settings_commands_with(&j, &ctx, &["subagentStatusLine"]));
-        if hooks.len() > before && entry.is_none() {
-            entry = Some(settings.clone());
-        }
+        groups.push((settings.clone(), hs::settings_commands_with(&j, &ctx, &["subagentStatusLine"])));
     }
-    hooks.truncate(hs::MAX_HOOKS_PER_FILE);
-    if let Some(path) = entry {
+    for (path, hooks) in groups {
         push(&path, src, hooks, out);
     }
 }

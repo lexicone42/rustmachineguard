@@ -1091,8 +1091,8 @@ fn scan_skill_dir(
         // ~/.codex holds the Codex credential and state files beside its hook files:
         // auth.json (the OpenAI API key and OAuth tokens), internal_storage.json, the
         // models cache. Opening one would put its size and hash in the report. Only the
-        // instruction and hook files Codex defines there (AGENTS.md and other markdown,
-        // hooks.json, scripts) are read.
+        // instruction files and scripts Codex keeps there (AGENTS.md and other markdown,
+        // scripts) are read; hooks.json is the settings scanner's (hook_discovery).
         if framework == "codex" && !codex_skill_file(&path) {
             continue;
         }
@@ -1128,18 +1128,18 @@ fn scan_skill_dir(
     }
 }
 
-/// A top-level `~/.codex` file the skills walk may open: markdown, a script, or
-/// `hooks.json`; never a credential name ([`is_sensitive_read_name`]) and never any
-/// other JSON/YAML/text file (auth.json, internal_storage.json, config files).
+/// A top-level `~/.codex` file the skills walk may open: markdown or a script; never a
+/// credential name ([`is_sensitive_read_name`]) and never a JSON/YAML/text file
+/// (auth.json, internal_storage.json, config files, and `hooks.json`, which the settings
+/// scanner reads and grades as a hook file; review of 4e3f8c3).
 ///
 /// [`is_sensitive_read_name`]: crate::scanners::persistence::is_sensitive_read_name
 fn codex_skill_file(path: &Path) -> bool {
     if crate::scanners::persistence::is_sensitive_read_name(path) {
         return false;
     }
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    name.eq_ignore_ascii_case("hooks.json") || matches!(ext, "md" | "sh" | "bash" | "py" | "js" | "ts")
+    matches!(ext, "md" | "sh" | "bash" | "py" | "js" | "ts")
 }
 
 /// The YAML frontmatter text (between a leading `---` line and the next `---` line),
@@ -1536,10 +1536,23 @@ fn line_sends_credential_file(line: &str) -> bool {
         // A header value: the nearest option before this word is -H / --header. (Judged
         // on the nearest option, not the previous word, so it holds for de-quoted text
         // too, where `-H "Authorization: token $(cat x)"` is several words.)
+        let bare = word.trim_start_matches(['"', '\'']);
+        // curl's `-H @file` / `--header=@file` reads the headers from a file, so a
+        // credential file there is sent (security review of b9cda85).
+        let header_file = if matches!(prev, "-h" | "--header") && bare.starts_with('@') {
+            Some(&bare[1..])
+        } else {
+            bare.strip_prefix("--header=@").or_else(|| bare.strip_prefix("-h@"))
+        };
+        if let Some(f) = header_file {
+            if is_credential_path(f.trim_end_matches(['"', '\''])) {
+                return true;
+            }
+            continue;
+        }
         if nearest_opt.is_some_and(|w| matches!(w, "-h" | "--header")) {
             continue;
         }
-        let bare = word.trim_start_matches(['"', '\'']);
         let file_flag = matches!(prev, "<" | "--post-file" | "--body-file" | "--upload-file" | "-t")
             || ["--post-file=", "--body-file=", "--upload-file="].iter().any(|f| bare.starts_with(f));
         // Path-like runs of the word with their byte offsets (char boundaries only).

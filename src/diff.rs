@@ -130,6 +130,11 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "helper_commands",
             "login_gateway",
             "provenance",
+            // The hook-policy switches silence or unsilence every non-managed Claude
+            // Code hook; serde defaults make an older baseline read false / empty.
+            "allow_managed_hooks_only",
+            "disable_all_hooks",
+            "force_enabled_plugins",
         ],
     ));
 
@@ -359,7 +364,13 @@ fn normalize_hooks(v: Option<&Value>) -> Option<Value> {
                         m.insert(k.to_string(), x.clone());
                     }
                 }
-                if let Some(kind) = h.get("kind").and_then(|k| k.as_str()).filter(|k| !k.is_empty() && *k != "command") {
+                // A settings command is a command whose kind is derived from its key (the
+                // event), so it is dropped like `command`: an older baseline compares equal.
+                if let Some(kind) = h
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .filter(|k| !crate::scanners::hook_sources::is_command_kind(k))
+                {
                     m.insert("kind".to_string(), Value::String(kind.to_string()));
                 }
                 Value::Object(m)
@@ -754,6 +765,31 @@ mod hook_diff_tests {
         let cur = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": false}}]});
         let text = render_diff(&diff_reports(&base, &cur));
         assert!(text.contains("provenance"), "{text}");
+    }
+
+    /// The hook-policy switches are drift: a managed allowManagedHooksOnly or
+    /// disableAllHooks flip, or a plugin newly force-enabled, silences or unsilences
+    /// every non-managed Claude Code hook (review of 4e3f8c3). (False and empty are not
+    /// serialized, so an older baseline without the fields compares equal.) A settings
+    /// command's kind is derived and compares equal to a baseline without it.
+    #[test]
+    fn hook_policy_switch_flips_are_drift() {
+        let row = |extra: Value| {
+            let mut m = serde_json::json!({"path": "/etc/claude-code/managed-settings.json", "source": "managed"});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::json!({"agent_settings": [m]})
+        };
+        for (field, on) in [
+            ("allow_managed_hooks_only", serde_json::json!(true)),
+            ("disable_all_hooks", serde_json::json!(true)),
+            ("force_enabled_plugins", serde_json::json!(["p@m"])),
+        ] {
+            let text = render_diff(&diff_reports(&row(serde_json::json!({})), &row(serde_json::json!({field: on}))));
+            assert!(text.contains(field), "{field}: {text}");
+        }
+        let old = row(serde_json::json!({"hooks": [{"event": "statusLine", "command": "~/s.sh"}]}));
+        let new = row(serde_json::json!({"hooks": [{"event": "statusLine", "command": "~/s.sh", "kind": "settings-command"}]}));
+        assert!(render_diff(&diff_reports(&old, &new)).contains("No changes"));
     }
 
     /// Added and removed rows come out sorted, so two runs of the same `--diff` print the

@@ -581,6 +581,39 @@ pub(crate) fn is_sensitive_read_name(resolved: &Path) -> bool {
         .is_some_and(|e| SENSITIVE_READ_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
+/// Agent credential and state files kept inside an agent home, as (agent directory,
+/// file name): the OpenAI key and OAuth tokens of Codex (`auth.json`,
+/// learn.chatgpt.com/docs/auth), Gemini CLI's OAuth credentials and account list,
+/// Claude Code's Linux credential store, and Copilot CLI's config (its OAuth token).
+const AGENT_CREDENTIAL_FILES: &[(&str, &str)] = &[
+    (".codex", "auth.json"),
+    (".gemini", "oauth_creds.json"),
+    (".gemini", "google_accounts.json"),
+    (".claude", ".credentials.json"),
+    (".copilot", "config.json"),
+];
+
+/// Whether `p` is an agent's credential or state file ([`AGENT_CREDENTIAL_FILES`], or
+/// anything under `.copilot/mcp-oauth-config/`), judged lexically on its last
+/// components. With `agent_home` (the directory the file was found in, lexical or
+/// canonical, for a relocated home such as `CODEX_HOME`), a credential file name directly
+/// inside it counts too. Never opened through a link, even inside the agent's own home.
+pub(crate) fn is_agent_credential_path(p: &Path, agent_home: Option<&Path>) -> bool {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let parent = p.parent();
+    let parent_name = parent.and_then(|d| d.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+    if AGENT_CREDENTIAL_FILES.iter().any(|(d, f)| *d == parent_name && *f == name) {
+        return true;
+    }
+    let comps: Vec<&std::ffi::OsStr> = p.components().map(|c| c.as_os_str()).collect();
+    if comps.windows(2).any(|w| w[0] == ".copilot" && w[1] == "mcp-oauth-config") {
+        return true;
+    }
+    // `config.json` is left to the `.copilot` pair: Devin CLI's own hook file is a
+    // `config.json` directly in its home.
+    agent_home.is_some_and(|h| parent == Some(h) && name != "config.json" && AGENT_CREDENTIAL_FILES.iter().any(|(_, f)| *f == name))
+}
+
 /// Trees outside HOME that hold system configuration, process state or other users' data.
 const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
     "/etc", "/proc", "/sys", "/dev", "/root", "/var", "/private", "/run", "/boot", "/Library/Keychains",
@@ -678,6 +711,19 @@ mod tests {
             assert_eq!(sensitive_read_kind(Path::new(p), home), Some("credential"), "{p}");
         }
         assert_eq!(sensitive_read_kind(Path::new("/home/u/.claude/skills-archive/x/SKILL.md"), home), Some("agent-config"));
+        // Agent credential and state files (review of 4e3f8c3), by their agent directory
+        // or, for a relocated home, directly inside it.
+        for p in [
+            "/home/u/.codex/auth.json", "/home/u/.gemini/oauth_creds.json", "/home/u/.gemini/google_accounts.json",
+            "/home/u/.claude/.credentials.json", "/home/u/.copilot/config.json", "/home/u/.copilot/mcp-oauth-config/x.json",
+        ] {
+            assert!(is_agent_credential_path(Path::new(p), None), "{p}");
+        }
+        assert!(is_agent_credential_path(Path::new("/srv/codex-home/auth.json"), Some(Path::new("/srv/codex-home"))));
+        for p in ["/home/u/.codex/hooks.json", "/home/u/.gemini/settings.json", "/home/u/.copilot/settings.json", "/home/u/proj/auth.json"] {
+            assert!(!is_agent_credential_path(Path::new(p), None), "{p}");
+        }
+        assert!(!is_agent_credential_path(Path::new("/home/u/.config/devin/config.json"), Some(Path::new("/home/u/.config/devin"))));
         assert_eq!(sensitive_read_kind(Path::new("/var/tmp/x/SKILL.md"), home), Some("system"));
         assert_eq!(sensitive_read_kind(Path::new("/home/other/notes.md"), home), Some("other-home"));
         assert_eq!(sensitive_read_kind(Path::new("/home/u/dotfiles/SKILL.md"), home), None);

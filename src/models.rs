@@ -573,7 +573,8 @@ pub struct AgentHook {
     /// ordinary inline command. See `agent_settings::classify_hook_command`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub risks: Vec<String>,
-    /// "command" | "http" | "prompt" | "agent" | "mcp_tool" | "module" | "unknown".
+    /// "command" | "settings-command" (statusLine, subagentStatusLine, fileSuggestion) |
+    /// "http" | "prompt" | "agent" | "mcp_tool" | "module" | "unknown".
     /// Empty means command (older reports, credential helpers).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
@@ -631,6 +632,10 @@ pub struct AgentHook {
     /// `disableAllHooks: true`): inventoried, not graded.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// Why a hook is `disabled` when its own source does not say so (the managed Claude
+    /// Code `allowManagedHooksOnly` / `disableAllHooks` silencing it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 /// An agent transcript / conversation-state store (EAA-005 collection surface).
@@ -942,7 +947,7 @@ impl ScanReport {
                 .agent_settings
                 .iter()
                 .flat_map(|s| &s.hooks)
-                .filter(|h| crate::scanners::hook_sources::SETTINGS_COMMAND_KEYS.contains(&h.event.as_str()))
+                .filter(|h| h.kind == crate::scanners::hook_sources::SETTINGS_COMMAND_KIND)
                 .count(),
         };
     }

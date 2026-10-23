@@ -991,6 +991,12 @@ enum HookScope {
 /// The plugin root of a plugin hook file: the directory above `hooks/` or the manifest
 /// directory, else the file's own directory.
 fn plugin_root_of(path: &str) -> String {
+    // A Claude Code plugin cache version is the root of every file in it
+    // (`./config/hooks.json` too, now its own entry).
+    let cached = plugin_install_root(path);
+    if cached != path {
+        return cached;
+    }
     let p = std::path::Path::new(path);
     let parent = p.parent().unwrap_or(p);
     let up = matches!(
@@ -1095,7 +1101,7 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
     if h.disabled || h.kind == "unknown" || *scope == Inactive {
         return None;
     }
-    let kind = if h.kind.is_empty() { "command" } else { h.kind.as_str() };
+    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) { "command" } else { h.kind.as_str() };
     let by = |repo: Option<Severity>, user: Option<Severity>, official: Option<Severity>, tp: Option<HookGrade>| match scope {
         Repository { .. } => repo.map(Finding),
         UserOwn => user.map(Finding),
@@ -1136,15 +1142,18 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
         // command is (Critical in every scope); either alone, or a concealment or
         // override phrase, is High in a repository; phrases ordinary instructions also
         // use ("first read", "this is very important") are the plain repository row.
-        let (cred, weak, strong) = prompt_signals(h);
+        // A credential path alone, and a concealment phrase guard wording also uses
+        // ("never reveal any secret values you find") unless it is aimed at the user,
+        // are one step lower: the repository's plain-command row (review of 4e3f8c3).
+        let PromptSignals { cred, weak, soft, strong } = prompt_signals(h);
         return if cred && (weak || strong) {
             match scope {
                 Inactive => None,
                 _ => Some(Finding(Critical)),
             }
-        } else if cred || strong {
+        } else if strong {
             by(Some(High), Some(Low), Some(Low), Some(Finding(Medium)))
-        } else if weak {
+        } else if cred || weak || soft {
             by(Some(Medium), None, None, Some(Aggregate))
         } else {
             by(Some(Low), None, None, Some(Aggregate))
@@ -1175,21 +1184,33 @@ fn in_conversation(h: &crate::models::AgentHook) -> bool {
     matches!(h.prompt_target.as_str(), "conversation" | "undocumented")
 }
 
-/// (names a credential path, has only-weak phrases, has a concealment/override phrase or
-/// hidden text) for a prompt the agent reads.
-fn prompt_signals(h: &crate::models::AgentHook) -> (bool, bool, bool) {
+/// The signals of a prompt the agent reads, by kind.
+struct PromptSignals {
+    /// It names a credential path.
+    cred: bool,
+    /// A phrase ordinary instructions also use ([`crate::scanners::WEAK_CONTEXT_PHRASES`]).
+    weak: bool,
+    /// A concealment phrase not aimed at the user ([`crate::scanners::SOFT_CONCEALMENT_PHRASES`]).
+    soft: bool,
+    /// A concealment or override phrase, or hidden text.
+    strong: bool,
+}
+
+fn prompt_signals(h: &crate::models::AgentHook) -> PromptSignals {
     let cred_sig = crate::scanners::hook_sources::CREDENTIAL_PATH_SIGNAL;
-    let cred = h.poisoning.iter().any(|p| p.starts_with(cred_sig));
-    let phrases = h.poisoning.iter().filter(|p| !p.starts_with(cred_sig));
-    let (mut weak, mut strong) = (false, false);
-    for p in phrases {
-        if crate::scanners::WEAK_CONTEXT_PHRASES.contains(&p.as_str()) {
-            weak = true;
+    let mut sig = PromptSignals { cred: false, weak: false, soft: false, strong: false };
+    for p in &h.poisoning {
+        if p.starts_with(cred_sig) {
+            sig.cred = true;
+        } else if crate::scanners::WEAK_CONTEXT_PHRASES.contains(&p.as_str()) {
+            sig.weak = true;
+        } else if crate::scanners::SOFT_CONCEALMENT_PHRASES.contains(&p.as_str()) {
+            sig.soft = true;
         } else {
-            strong = true;
+            sig.strong = true;
         }
     }
-    (cred, weak, strong)
+    sig
 }
 
 /// The user's own notification hook: its only hit is the `| curl` / `| wget` row, and the
@@ -1210,7 +1231,7 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
         (m, Some(c)) => format!("{} if {c}", m.as_deref().unwrap_or("*")),
         (m, None) => m.as_deref().unwrap_or("*").to_string(),
     };
-    let kind = if h.kind.is_empty() { "command" } else { h.kind.as_str() };
+    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) { "command" } else { h.kind.as_str() };
     let advisory = if h.advisory_patterns.is_empty() {
         String::new()
     } else {
@@ -1233,10 +1254,25 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
                 let who = if framework.is_empty() { "the agent" } else { framework };
                 format!("sends a prompt that {who} does not document the handling of (graded as text in the agent's conversation)")
             };
+            let sig = prompt_signals(h);
             if h.poisoning.is_empty() {
                 format!("{event} {kind} hook [{m}] {into} on each event (advisory)")
-            } else {
+            } else if sig.strong || sig.weak {
                 format!("{event} {kind} hook [{m}] {into} with prompt-injection signals ({})", h.poisoning.join(", "))
+            } else {
+                // Only a credential path and/or guard-style concealment wording: say what
+                // it is, not "prompt injection".
+                let cred_sig = crate::scanners::hook_sources::CREDENTIAL_PATH_SIGNAL;
+                let paths: Vec<&str> = h.poisoning.iter().filter_map(|p| p.strip_prefix(cred_sig)).collect();
+                let soft: Vec<&str> = h.poisoning.iter().filter(|p| !p.starts_with(cred_sig)).map(String::as_str).collect();
+                let mut parts = Vec::new();
+                if !soft.is_empty() {
+                    parts.push(format!("with concealment wording ({})", soft.join(", ")));
+                }
+                if !paths.is_empty() {
+                    parts.push(format!("that names a credential path ({})", paths.join(", ")));
+                }
+                format!("{event} {kind} hook [{m}] {into} {}", parts.join(" and "))
             }
         }
         "prompt" | "agent" if !h.poisoning.is_empty() => format!(
@@ -1260,7 +1296,9 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
             } else {
                 String::new()
             };
-            format!("hooks module {} runs inside the agent on its events{regs}{bad}", h.command)
+            // Framework-labelled like every other agent's hook (review of 4e3f8c3).
+            let label = if framework.starts_with("claude-code") || framework.is_empty() { "claude-code mod" } else { framework };
+            format!("{label} hooks module {} runs inside the agent on its events{regs}{bad}", h.command)
         }
         _ => {
             let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
@@ -1282,8 +1320,8 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
 }
 
 /// Settings commands Claude Code alone runs (not hooks other agents import).
-fn claude_only_setting(event: &str) -> bool {
-    crate::scanners::hook_sources::SETTINGS_COMMAND_KEYS.contains(&event)
+fn claude_only_setting(h: &crate::models::AgentHook) -> bool {
+    h.kind == crate::scanners::hook_sources::SETTINGS_COMMAND_KIND
 }
 
 /// Agents other than Claude Code that run the hooks of a Claude Code settings file, by
@@ -1302,8 +1340,82 @@ fn claude_settings_importers(s: &crate::models::AgentSettings) -> Option<&'stati
     }
     match s.source.as_str() {
         "project" | "local" => Some("Cursor, GitHub Copilot CLI and Devin CLI"),
-        "user-global" | "user-local" => Some("Cursor and Devin CLI"),
+        "user-global" => Some("Cursor and Devin CLI"),
+        // Cursor documents no user-level settings.local.json
+        // (cursor.com/docs/reference/third-party-hooks, fetched 2026-10-23); Devin CLI
+        // reads it (docs.devin.ai/cli/extensibility/hooks/overview).
+        "user-local" => Some("Devin CLI"),
         _ => None,
+    }
+}
+
+/// Claude Code's managed hook policy, from the managed settings files.
+struct ManagedPolicy {
+    /// A managed `allowManagedHooksOnly` or `disableAllHooks`.
+    managed_only: bool,
+    /// A managed `disableAllHooks` (managed hooks are off too).
+    managed_off: bool,
+    /// Plugins the managed `enabledPlugins` force-enables (`plugin@marketplace`).
+    forced: BTreeSet<String>,
+}
+
+impl ManagedPolicy {
+    fn of(settings: &[crate::models::AgentSettings]) -> Self {
+        let managed = || settings.iter().filter(|s| s.source == "managed" && s.framework == "claude-code");
+        ManagedPolicy {
+            managed_only: managed().any(|s| s.allow_managed_hooks_only || s.disable_all_hooks),
+            managed_off: managed().any(|s| s.disable_all_hooks),
+            forced: managed().flat_map(|s| s.force_enabled_plugins.iter().cloned()).collect(),
+        }
+    }
+
+    fn policy(&self) -> &'static str {
+        if self.managed_off { "disableAllHooks" } else { "allowManagedHooksOnly" }
+    }
+
+    /// Whether Claude Code skips a hook of `framework` in `scope` under this policy
+    /// (before the other-agents exemption of [`claude_settings_importers`]).
+    fn silences(&self, framework: &str, scope: &HookScope, prov: Option<&crate::models::SkillProvenance>) -> bool {
+        let plugin_key = prov.and_then(|p| Some(format!("{}@{}", p.plugin.as_deref()?, p.marketplace.as_deref()?)));
+        framework.starts_with("claude-code")
+            && self.managed_only
+            && (*scope != HookScope::Managed || self.managed_off)
+            && !plugin_key.is_some_and(|k| self.forced.contains(&k))
+    }
+}
+
+/// Mark every hook the managed Claude Code policy silences as disabled, with the policy
+/// as its reason, so the inactive count, the terminal, HTML and Blueprint agree with the
+/// grading ([`collect_hook_findings`] skips the same hooks). A hook another agent also
+/// runs ([`claude_settings_importers`]) stays active. Run once on a fresh scan, before
+/// the summary.
+pub fn apply_managed_hook_policy(report: &mut ScanReport) {
+    let mp = ManagedPolicy::of(&report.agent_settings);
+    if !mp.managed_only {
+        return;
+    }
+    let reason = format!("managed {}", mp.policy());
+    let mut off = |h: &mut crate::models::AgentHook| {
+        if !h.disabled {
+            h.disabled = true;
+            h.disabled_reason = Some(reason.clone());
+        }
+    };
+    for s in &mut report.agent_settings {
+        let scope = hook_scope_for_settings(s);
+        if !mp.silences(&s.framework, &scope, s.provenance.as_ref()) {
+            continue;
+        }
+        let others = claude_settings_importers(s).is_some();
+        for h in s.hooks.iter_mut().filter(|h| !others || claude_only_setting(h)) {
+            off(h);
+        }
+    }
+    for k in &mut report.agent_skills {
+        let scope = hook_scope_for_skill(k);
+        if !k.hooks.is_empty() && mp.silences("claude-code", &scope, k.provenance.as_ref()) {
+            k.hooks.iter_mut().for_each(&mut off);
+        }
     }
 }
 
@@ -1317,14 +1429,8 @@ fn claude_settings_importers(s: &crate::models::AgentSettings) -> Option<&'stati
 /// note.
 fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     use std::collections::BTreeMap;
-    let managed_claude = || report.agent_settings.iter().filter(|s| s.source == "managed" && s.framework == "claude-code");
-    let managed_only = managed_claude().any(|s| s.allow_managed_hooks_only || s.disable_all_hooks);
-    let managed_off = managed_claude().any(|s| s.disable_all_hooks);
-    let policy = if managed_off { "disableAllHooks" } else { "allowManagedHooksOnly" };
-    let forced: BTreeSet<String> = managed_claude().flat_map(|s| s.force_enabled_plugins.iter().cloned()).collect();
-    let plugin_key = |p: Option<&crate::models::SkillProvenance>| {
-        p.and_then(|p| Some(format!("{}@{}", p.plugin.as_deref()?, p.marketplace.as_deref()?)))
-    };
+    let mp = ManagedPolicy::of(&report.agent_settings);
+    let policy = mp.policy();
     // (marketplace, plugin) -> (framework, plugin root, events, hook count, first (path, command))
     type Agg = (String, String, BTreeSet<String>, usize, Option<(String, String)>);
     let mut agg: BTreeMap<(String, String), Agg> = BTreeMap::new();
@@ -1365,14 +1471,7 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             }
         }
     };
-    // Whether a Claude Code hook is silenced by the managed policy: None to grade it,
-    // Some(None) to silence it, Some(Some(others)) never (kept with a note).
-    let silenced = |framework: &str, scope: &HookScope, prov: Option<&crate::models::SkillProvenance>| {
-        framework.starts_with("claude-code")
-            && managed_only
-            && (*scope != HookScope::Managed || managed_off)
-            && !plugin_key(prov).is_some_and(|k| forced.contains(&k))
-    };
+    let silenced = |framework: &str, scope: &HookScope, prov: Option<&crate::models::SkillProvenance>| mp.silences(framework, scope, prov);
     for s in &report.agent_settings {
         let scope = hook_scope_for_settings(s);
         let others = claude_settings_importers(s);
@@ -1380,7 +1479,7 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             let mut note = None;
             if silenced(&s.framework, &scope, s.provenance.as_ref()) {
                 match others {
-                    Some(o) if !claude_only_setting(&h.event) => note = Some(o),
+                    Some(o) if !claude_only_setting(h) => note = Some(o),
                     _ => continue,
                 }
             }
@@ -1402,6 +1501,11 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             grade(h, "claude-code", scope.clone(), &loc, &prefix, None, f);
         }
     }
+    for s in &report.agent_settings {
+        if let Some(f0) = cross_agent_link(s) {
+            f.push(f0);
+        }
+    }
     for ((m, p), (framework, root, events, n, first)) in agg {
         f.push(Finding {
             severity: Severity::Low,
@@ -1415,6 +1519,46 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             evidence: first.map(|(_, c)| c),
         });
     }
+}
+
+/// The user's own hook or settings file that is a symlink into another agent's
+/// directory in the same home (`~/.codex/hooks.json -> ../.claude/codex-hooks.json`):
+/// one hook setup shared across agents, the ordinary multi-agent case. It is not read
+/// (agent configuration is never followed), so it is a Low advisory naming the link,
+/// not a skill-symlink finding (review of 4e3f8c3). Judged lexically; a target named
+/// like a credential is left to the inventory row.
+fn cross_agent_link(s: &crate::models::AgentSettings) -> Option<Finding> {
+    use crate::scanners::agent_settings::AGENT_CONFIG_DIRS;
+    use crate::scanners::persistence::{is_agent_credential_path, is_sensitive_read_name, lexical_join};
+    use std::path::{Component, Path, PathBuf};
+    let l = s.symlink.as_ref()?;
+    if !matches!(s.source.as_str(), "user-global" | "user-local") {
+        return None;
+    }
+    let path = Path::new(&s.path);
+    let comps: Vec<Component> = path.components().collect();
+    let own_at = comps.iter().position(|c| c.as_os_str().to_str().is_some_and(|c| AGENT_CONFIG_DIRS.contains(&c)))?;
+    let home: PathBuf = comps[..own_at].iter().collect();
+    let own = comps[own_at].as_os_str();
+    let target = lexical_join(path.parent()?, Path::new(&l.target));
+    let rel = target.strip_prefix(&home).ok()?;
+    let other = rel.components().next()?.as_os_str();
+    if other == own || !other.to_str().is_some_and(|o| AGENT_CONFIG_DIRS.contains(&o)) {
+        return None;
+    }
+    if is_sensitive_read_name(&target) || is_agent_credential_path(&target, None) {
+        return None;
+    }
+    Some(Finding {
+        severity: Severity::Low,
+        category: "Hook".into(),
+        title: format!(
+            "{} hook file is a symlink into another agent's directory in your home ({}) — not read (advisory)",
+            s.framework, l.target
+        ),
+        location: crate::scanners::sanitize_display(&s.path, 512),
+        evidence: Some(l.target.clone()),
+    })
 }
 
 /// How a non-official plugin is named in a title: Claude Code has an official-marketplace
@@ -2188,7 +2332,10 @@ mod hook_ladder_tests {
         };
         let conv_plain = conv(&[]);
         let conv_weak = conv(&["first read"]);
-        let conv_strong = conv(&["do not mention"]);
+        let conv_strong = conv(&["do not mention (aimed at the user)"]);
+        // Guard wording and a credential path alone are one step lower (review of 4e3f8c3).
+        let conv_soft = conv(&["never reveal", "do not display"]);
+        let conv_cred_soft = conv(&["never reveal", "credential path .env"]);
         let conv_cred = conv(&["credential path ~/.aws/credentials"]);
         let conv_cred_phrase = conv(&["first read", "credential path ~/.aws/credentials"]);
         let undocumented = AgentHook { prompt_target: "undocumented".into(), ..conv(&["<system>"]) };
@@ -2219,7 +2366,9 @@ mod hook_ladder_tests {
             (&conv_plain, [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None]),
             (&conv_weak, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&conv_strong, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
-            (&conv_cred, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
+            (&conv_soft, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&conv_cred, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&conv_cred_soft, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&conv_cred_phrase, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
             (&undocumented, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
         ];

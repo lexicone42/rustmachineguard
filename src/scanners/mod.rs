@@ -442,7 +442,74 @@ pub fn redact_secrets_in_text(text: &str) -> String {
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
-    redact_webhook_urls(&redact_token_shapes(&out))
+    redact_webhook_urls(&redact_token_shapes(&redact_code_authorization(&out)))
+}
+
+/// An `Authorization` header written as code rather than as a shell `-H` word:
+/// `fetch(url,{headers:{Authorization:'Bearer X'}})`, `"Authorization": "Bearer X"`,
+/// `{'Proxy-Authorization': 'Basic X'}`. After the name, an optional closing quote, `:`,
+/// optional space and an optional opening quote, the value is redacted (a known scheme
+/// word is kept, as for the header form) up to its closing quote, or without a quote to
+/// the next space, `,`, `;`, `}` or `)`. A bare variable reference (`$TOKEN`,
+/// `${TOKEN}`) names a value without holding one and is kept; a value that is already
+/// `<redacted>` is left alone (review of 4e3f8c3).
+fn redact_code_authorization(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut from = 0;
+    while let Some(off) = lower[from..].find("authorization") {
+        let name_end = from + off + "authorization".len();
+        from = name_end;
+        let mut k = name_end;
+        if k < b.len() && matches!(b[k], b'"' | b'\'' | b'`') {
+            k += 1;
+        }
+        while k < b.len() && b[k] == b' ' {
+            k += 1;
+        }
+        if k >= b.len() || b[k] != b':' {
+            continue;
+        }
+        k += 1;
+        while k < b.len() && b[k] == b' ' {
+            k += 1;
+        }
+        let quote = (k < b.len() && matches!(b[k], b'"' | b'\'' | b'`')).then(|| b[k]);
+        if quote.is_some() {
+            k += 1;
+        }
+        // A scheme word and its space are kept.
+        let word_end = text[k..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).map_or(text.len(), |o| k + o);
+        let mut v = k;
+        if word_end < b.len() && b[word_end] == b' ' && is_scheme_word(&text[k..word_end]) {
+            v = word_end + 1;
+            while v < b.len() && b[v] == b' ' {
+                v += 1;
+            }
+        }
+        let end = match quote {
+            Some(q) => text[v..].find(q as char).map_or(text.len(), |o| v + o),
+            None => text[v..]
+                .find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '}' | ')' | '"' | '\'' | '`'))
+                .map_or(text.len(), |o| v + o),
+        };
+        let value = &text[v..end];
+        let var_ref = value.strip_prefix('$').is_some_and(|n| {
+            let n = n.strip_prefix('{').and_then(|n| n.strip_suffix('}')).unwrap_or(n);
+            !n.is_empty() && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        });
+        if value.is_empty() || value.starts_with("<redacted>") || var_ref || v < last {
+            continue;
+        }
+        out.push_str(&text[last..v]);
+        out.push_str("<redacted>");
+        last = end;
+        from = end.max(from);
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 /// Webhook URLs whose path IS the credential: Slack incoming webhooks and workflow
@@ -674,8 +741,8 @@ fn redact_entropy_runs_in_token(tok: &str) -> String {
 /// any URL path (`https://example.com/hook/<key>`), judged per segment before the run
 /// rule so the host stays readable.
 pub fn redact_command_text(text: &str) -> String {
-    let base = redact_generic_secret_flags(&redact_stdin_password_feeds(&redact_program_secret_flags(
-        &redact_secrets_in_text(text),
+    let base = redact_config_set_values(&redact_generic_secret_flags(&redact_stdin_password_feeds(
+        &redact_program_secret_flags(&redact_secrets_in_text(text)),
     )));
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
@@ -692,6 +759,7 @@ pub fn redact_command_text(text: &str) -> String {
 /// all secret-shaped (`--pass`, `--user-key`): the next word, or the `=` value.
 const GENERIC_SECRET_FLAGS: &[&str] = &[
     "--pass", "--passwd", "--pw", "--passphrase", "--user-key", "--userkey", "--app-token", "--app-key", "--appkey",
+    "--bearer",
 ];
 
 /// Flags whose value is a webhook URL: its path is the credential, its host is kept.
@@ -773,6 +841,7 @@ fn redact_url_path_keys(tok: &str) -> String {
 
 /// Programs whose password flag takes the NEXT word and is not named like a secret
 /// (`redis-cli -a PASSWORD`): (program, flags).
+// `-p VALUE` after a program not listed here (or in LOGIN_PASSWORD_PROGRAMS) is kept on purpose: a port, path or profile far more often than a password (review of 4e3f8c3).
 const PROGRAM_SECRET_FLAGS: &[(&str, &[&str])] = &[
     ("redis-cli", &["-a", "--pass"]),
     ("valkey-cli", &["-a", "--pass"]),
@@ -785,6 +854,98 @@ const PROGRAM_SECRET_FLAGS: &[(&str, &[&str])] = &[
     ("rabbitmqadmin", &["-p"]),
     ("smbclient", &["-U"]),
 ];
+
+/// Registry logins whose `-p` is the password, not a port (`docker login -p X`,
+/// `podman login -p X`, `helm registry login -p X`): the flag counts only after a
+/// `login` word in the same simple command (`docker run -p 8080:80` is a port).
+const LOGIN_PASSWORD_PROGRAMS: &[&str] = &["docker", "podman", "helm", "nerdctl", "buildah", "skopeo", "oras"];
+
+/// `config set KEY VALUE` forms whose VALUE is a credential when KEY names one:
+/// `npm|yarn|pnpm config set //r.example/:_authToken X`, `yarn config set npmAuthToken X`,
+/// `aws configure set aws_secret_access_key X` (and `KEY=VALUE`). The key is kept.
+const CONFIG_SET_PROGRAMS: &[&str] = &["npm", "yarn", "pnpm", "aws"];
+
+fn secret_config_key(k: &str) -> bool {
+    let l = k.to_ascii_lowercase();
+    ["secret", "token", "password", "passwd"].iter().any(|w| l.contains(w)) || l.ends_with("_auth")
+}
+
+/// The values of a registry login's `-p` / `--password` ([`LOGIN_PASSWORD_PROGRAMS`]) and
+/// of a secret-named `config set` key ([`CONFIG_SET_PROGRAMS`]).
+///
+/// `-p VALUE` after any OTHER program is left as it is: `-p` is a port, a path or a
+/// profile far more often than a password, and redacting it would hide the commands a
+/// reviewer needs to read (review of 4e3f8c3 recorded this choice; mysql's attached
+/// `-pX` and sshpass are handled by [`redact_attached_password`]).
+fn redact_config_set_values(text: &str) -> String {
+    let spans = spans_of(text);
+    let toks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+    let mut redact = vec![false; toks.len()];
+    let mut glued: Vec<Option<String>> = vec![None; toks.len()];
+    let mut start = 0;
+    while start < toks.len() {
+        let end = (start..toks.len()).find(|&k| separator_token(toks[k])).map_or(toks.len(), |k| k + 1);
+        let cmd = &toks[start..end];
+        let clean = |t: &str| t.trim_matches(['"', '\'', '(', '`', ';', '&', '|']).to_string();
+        let words: Vec<String> = cmd.iter().map(|t| clean(t)).collect();
+        if let Some(pi) = words.iter().position(|w| !w.contains('=')) {
+            let prog = words[pi].rsplit('/').next().unwrap_or(&words[pi]).to_string();
+            if LOGIN_PASSWORD_PROGRAMS.contains(&prog.as_str())
+                && let Some(li) = words.iter().position(|w| w == "login")
+            {
+                for k in li + 1..cmd.len() {
+                    let w = &words[k];
+                    if (w == "-p" || w == "--password") && k + 1 < cmd.len() && !words[k + 1].starts_with('-') {
+                        redact[start + k + 1] = true;
+                    } else if let Some((f, v)) = w.split_once('=')
+                        && (f == "-p" || f == "--password")
+                        && !v.is_empty()
+                        && !v.starts_with("<redacted>")
+                    {
+                        glued[start + k] = Some(format!("{f}=<redacted>"));
+                    }
+                }
+            }
+            if CONFIG_SET_PROGRAMS.contains(&prog.as_str())
+                && let Some(si) = words.iter().position(|w| w == "set")
+                && words[pi + 1..si].iter().any(|w| w == "config" || w == "configure")
+                && si + 1 < cmd.len()
+            {
+                let key = &words[si + 1];
+                if let Some((k, v)) = key.split_once('=') {
+                    if secret_config_key(k) && !v.is_empty() && !v.starts_with("<redacted>") {
+                        glued[start + si + 1] = Some(format!("{k}=<redacted>"));
+                    }
+                } else if secret_config_key(key) && si + 2 < cmd.len() && !words[si + 2].starts_with('-') {
+                    redact[start + si + 2] = true;
+                }
+            }
+        }
+        start = end;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (k, &(s, e)) in spans.iter().enumerate() {
+        out.push_str(&text[last..s]);
+        let t = &text[s..e];
+        match &glued[k] {
+            Some(g) => {
+                let keep = t.len() - t.trim_end_matches([';', '&', '|']).len();
+                out.push_str(g);
+                out.push_str(&t[t.len() - keep..]);
+            }
+            None if redact[k] && !t.starts_with("<redacted>") => {
+                let keep = t.len() - t.trim_end_matches([';', '&', '|']).len();
+                out.push_str("<redacted>");
+                out.push_str(&t[t.len() - keep..]);
+            }
+            None => out.push_str(t),
+        }
+        last = e;
+    }
+    out.push_str(&text[last..]);
+    out
+}
 
 /// Whitespace tokens of `text` with their byte spans.
 fn spans_of(text: &str) -> Vec<(usize, usize)> {
@@ -2219,9 +2380,21 @@ pub fn scan_injection_text(text: &str) -> Vec<&'static str> {
     let lower = text.to_lowercase();
     POISONING_PATTERNS
         .iter()
-        .filter(|p| lower.contains(**p))
+        .filter(|p| contains_phrase(&lower, p))
         .copied()
         .collect()
+}
+
+/// Whether `hay` contains the phrase `p` ending on a word boundary: when the phrase ends
+/// in a letter, the character after the match must not be an ASCII letter, so "ignore
+/// previous" matches "Ignore previous instructions" but not "Ignore previously generated
+/// files" (review of 4e3f8c3). A phrase that ends in punctuation (`<system>`) is its own
+/// boundary.
+pub fn contains_phrase(hay: &str, p: &str) -> bool {
+    if !p.ends_with(|c: char| c.is_ascii_alphabetic()) {
+        return hay.contains(p);
+    }
+    hay.match_indices(p).any(|(i, m)| !hay[i + m.len()..].chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
 }
 
 /// The [`POISONING_PATTERNS`] that still mean injection in a prompt- or agent-type
@@ -2279,7 +2452,10 @@ pub fn scan_context_prompt_text(text: &str) -> Vec<&'static str> {
 pub const WEAK_CONTEXT_PHRASES: &[&str] =
     &["first read", "this is very important", "system prompt", "before using this tool", "before you use this tool", "<important>", "</important>"];
 
-fn scan_prompt_phrases(text: &str, list: &[&'static str]) -> Vec<&'static str> {
+/// The three readings a prompt is matched on: lowercased, folded by
+/// [`normalize_for_matching`] with whitespace runs read as one space, and the ASCII that
+/// Unicode tag characters spell.
+fn prompt_readings(text: &str) -> [String; 3] {
     let lower = text.to_lowercase();
     let spaced = |s: &str| s.split(char::is_whitespace).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
     let folded = spaced(&normalize_for_matching(text));
@@ -2288,7 +2464,32 @@ fn scan_prompt_phrases(text: &str, list: &[&'static str]) -> Vec<&'static str> {
         .filter_map(|c| (0xE0020..=0xE007E).contains(&(c as u32)).then(|| char::from_u32(c as u32 - 0xE0000)).flatten())
         .collect();
     let tags = spaced(&tags.to_lowercase());
-    list.iter().filter(|p| lower.contains(**p) || folded.contains(**p) || tags.contains(**p)).copied().collect()
+    [lower, folded, tags]
+}
+
+fn scan_prompt_phrases(text: &str, list: &[&'static str]) -> Vec<&'static str> {
+    let readings = prompt_readings(text);
+    list.iter().filter(|p| readings.iter().any(|r| contains_phrase(r, p))).copied().collect()
+}
+
+/// Concealment phrases that ordinary guard wording also uses ("Never reveal any secret
+/// values you find", "Do not mention internal ticket numbers"): in a prompt the agent
+/// reads they are weak unless the same sentence aims the concealment at the user
+/// ([`concealment_aimed_at_user`]), review of 4e3f8c3.
+pub const SOFT_CONCEALMENT_PHRASES: &[&str] = &["never reveal", "do not display", "do not mention"];
+
+/// The label a [`SOFT_CONCEALMENT_PHRASES`] row gets when its sentence names the user as
+/// the one kept in the dark; it is graded as a strong phrase.
+pub const AIMED_AT_USER_SUFFIX: &str = " (aimed at the user)";
+
+/// Whether a sentence holding the phrase `p` also names "the user" (`from the user`, `to
+/// the user`, `the user`): the concealment is then aimed at the person, not at output
+/// hygiene. Sentences end at `.`, `!`, `?` or a line break; every reading of
+/// [`prompt_readings`] is checked.
+pub fn concealment_aimed_at_user(text: &str, p: &str) -> bool {
+    prompt_readings(text).iter().any(|r| {
+        r.split(['.', '!', '?', '\n']).any(|sentence| contains_phrase(sentence, p) && contains_phrase(sentence, "the user"))
+    })
 }
 
 /// Emoji and pictographic code points a ZWJ sequence joins (with skin-tone modifiers and
@@ -2318,11 +2519,16 @@ fn is_rtl_letter(c: char) -> bool {
 /// isolated, at either end, next to another invisible character or next to ASCII is. A
 /// directional mark (LRM, RLM, ALM) counts only when the text has no right-to-left
 /// letter or the mark sits between two ASCII letters or digits (`ig\u{200f}nore`); the
-/// embedding, override and isolate controls always count.
+/// embedding, override and isolate controls always count. A run of two or more BMP
+/// variation selectors with no emoji base ([`bmp_selector_runs`]) counts as the
+/// supplementary ones do.
 pub fn hook_prompt_hidden_unicode(text: &str) -> Vec<&'static str> {
     let chars: Vec<char> = text.chars().collect();
     let rtl = chars.iter().any(|c| is_rtl_letter(*c));
     let mut cats: Vec<&'static str> = Vec::new();
+    if bmp_selector_runs(&chars).contains(&true) {
+        cats.push("variation-selector-smuggler");
+    }
     for (i, &c) in chars.iter().enumerate() {
         let prev = i.checked_sub(1).map(|j| chars[j]);
         let next = chars.get(i + 1).copied();
@@ -2362,6 +2568,7 @@ pub fn hook_prompt_hidden_unicode(text: &str) -> Vec<&'static str> {
 /// `${HOME}/`) or by its file name alone ([`persistence::is_sensitive_read_name`]).
 /// Nothing is opened or probed. At most 8, deduped, sanitized.
 pub fn prompt_credential_paths(text: &str) -> Vec<String> {
+    const TEMPLATE_SUFFIXES: &[&str] = &[".example", ".sample", ".template", ".dist"];
     let mut out: Vec<String> = Vec::new();
     for w in text.split_whitespace() {
         let w = w.trim_matches(|c: char| {
@@ -2369,6 +2576,12 @@ pub fn prompt_credential_paths(text: &str) -> Vec<String> {
         });
         let w = w.trim_end_matches('.');
         if w.len() < 2 || w.contains("://") {
+            continue;
+        }
+        // A template names variables, not values (`.env.example`, `secrets.json.sample`),
+        // so it is not a credential path.
+        let lw = w.to_ascii_lowercase();
+        if TEMPLATE_SUFFIXES.iter().any(|t| lw.ends_with(t)) {
             continue;
         }
         let rel = w.strip_prefix("~/").or_else(|| w.strip_prefix("$HOME/")).or_else(|| w.strip_prefix("${HOME}/"));
@@ -2400,15 +2613,44 @@ pub fn prompt_credential_paths(text: &str) -> Vec<String> {
 /// that a manifest, a package or a probed server gets to choose.
 pub fn sanitize_display(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max));
-    for c in s.chars() {
+    let chars: Vec<char> = s.chars().collect();
+    let smuggled = bmp_selector_runs(&chars);
+    for (i, &c) in chars.iter().enumerate() {
         if out.chars().count() >= max {
             out.push('…');
             break;
         }
         // Bidi overrides and isolates (Cf, not is_control) can reverse the visible text
-        // of a status line without adding one; they go too.
-        let bad = c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || is_display_hazard(c);
+        // of a status line without adding one; they go too. So does a BMP
+        // variation-selector run with no emoji base ([`bmp_selector_runs`]).
+        let bad = c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || is_display_hazard(c) || smuggled[i];
         out.push(if bad { '?' } else { c });
+    }
+    out
+}
+
+/// For each char, whether it is in a run of two or more BMP variation selectors
+/// (U+FE00-FE0F) that no emoji base precedes (the run starts the text or follows an
+/// ASCII character). One selector after an emoji or another non-ASCII character
+/// (`❤️`) is ordinary text; a run after ASCII is the variation-selector smuggling
+/// encoding, which carries one nibble per selector (review of 4e3f8c3).
+pub(crate) fn bmp_selector_runs(chars: &[char]) -> Vec<bool> {
+    let sel = |c: char| ('\u{fe00}'..='\u{fe0f}').contains(&c);
+    let mut out = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        if !sel(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && sel(chars[i]) {
+            i += 1;
+        }
+        let based = start > 0 && !chars[start - 1].is_ascii();
+        if i - start >= 2 && !based {
+            out[start..i].iter_mut().for_each(|b| *b = true);
+        }
     }
     out
 }

@@ -467,6 +467,7 @@ fn main() {
         let _p = otel::span("phase.dedupe", || vec![Attr::str(Key::Phase, "dedupe")]);
         dedupe_report(&mut report);
     }
+    rustmachineguard::analysis::apply_managed_hook_policy(&mut report);
 
     // Exposure catalog matching — built-in catalog + optional user catalog
     let catalog_phase = otel::span("phase.catalog_load", || vec![Attr::str(Key::Phase, "catalog_load")]);

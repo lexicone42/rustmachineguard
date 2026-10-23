@@ -248,14 +248,20 @@ fn render_sections(report: &ScanReport) -> String {
         card_open(&mut html, "Agent Settings & Hooks", &["File", "Source", "Mode", "Auto-approve", "Hooks"]);
         for s in &report.agent_settings {
             let auto = if s.auto_approve_mcp { r#"<span class="warn">yes</span>"# } else { "no" };
-            let hooks = if s.hooks.is_empty() {
+            let hooks = if let Some(l) = &s.symlink {
+                format!("symlink to {}, not read", html_escape(&l.target))
+            } else if s.hooks.is_empty() {
                 "-".to_string()
             } else {
                 s.hooks.iter().map(|h| {
                     let d = if h.dangerous { " ⚠" } else { "" };
                     let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", html_escape(&h.kind)) };
                     let cond = h.condition.as_deref().map(|c| format!(" if {}", html_escape(c))).unwrap_or_default();
-                    let off = if h.disabled { " (disabled)" } else { "" };
+                    let off = match (h.disabled, &h.disabled_reason) {
+                        (true, Some(r)) => format!(" (disabled: {})", html_escape(r)),
+                        (true, None) => " (disabled)".to_string(),
+                        _ => String::new(),
+                    };
                     format!("{}[{}{}]{}{}{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), cond, kind, off, d)
                 }).collect::<Vec<_>>().join(", ")
             };

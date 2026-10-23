@@ -26,6 +26,17 @@ impl Scanner for AgentSettingsScanner {
             &mut results,
         );
 
+        // The user's own ~/.claude/settings.local.json, wherever the scan runs: Devin CLI
+        // reads it at user level (docs.devin.ai/cli/extensibility/hooks/overview, fetched
+        // 2026-10-23), so it is not only the "local" file of a session run from HOME.
+        parse_settings(
+            &home.join(".claude").join("settings.local.json"),
+            "user-local",
+            "claude-code",
+            &home,
+            &mut results,
+        );
+
         // Managed (organization) settings: highest precedence, machine-wide.
         parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &home, &mut results);
 
@@ -47,15 +58,11 @@ impl Scanner for AgentSettingsScanner {
                 &mut results,
             );
             // Run from HOME, the "project" is the user's own ~/.claude: its
-            // settings.local.json is theirs, not a repository's ("user-local").
+            // settings.local.json is theirs, read above as "user-local".
             let at_home = dir == home || std::fs::canonicalize(&dir).is_ok_and(|d| d == real_home);
-            parse_settings(
-                &dir.join(".claude").join("settings.local.json"),
-                if at_home { "user-local" } else { "local" },
-                "claude-code",
-                &home,
-                &mut results,
-            );
+            if !at_home {
+                parse_settings(&dir.join(".claude").join("settings.local.json"), "local", "claude-code", &home, &mut results);
+            }
         }
 
         // Cursor's control plane: same risks, different filenames and schema.
@@ -256,6 +263,13 @@ pub(crate) fn is_repository_scope(source: &str) -> bool {
 /// repository. The open itself refuses a link at the final component (O_NOFOLLOW) and a
 /// FIFO, and the opened descriptor must be the resolved path, so a swap is refused too.
 fn read_settings(path: &Path, source: &str, scan_home: Option<&Path>) -> SettingsRead {
+    if !is_repository_scope(source) {
+        // A user or managed file goes through the hook-file rule with its own directory
+        // (the agent home, or the managed directory) as containment: a dotfiles link is
+        // read, a link to a credential, key or agent credential file is not
+        // (`~/.cursor/hooks.json -> ~/.ssh/id_ed25519`, review of 4e3f8c3).
+        return read_hook_file(path, source, None, path.parent(), scan_home);
+    }
     read_settings_in(path, source, None, scan_home)
 }
 
@@ -403,10 +417,18 @@ pub(crate) fn read_hook_file(
     containment: Option<&Path>,
     scan_home: Option<&Path>,
 ) -> SettingsRead {
-    use crate::scanners::persistence::{is_sensitive_read_name, lexical_join};
+    use crate::scanners::persistence::{is_agent_credential_path, is_sensitive_read_name, lexical_join};
     if is_repository_scope(source) {
         return read_settings_in(path, source, project_dir, scan_home);
     }
+    let real_containment = containment.map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf()));
+    // An agent credential or state file (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json`,
+    // `~/.copilot/config.json`, ...) is never opened, by name or through a link, even
+    // inside its own agent home (review of 4e3f8c3: `~/.codex/hooks.json -> auth.json`
+    // put the token file's hooks key in the report).
+    let agent_cred = |p: &Path| {
+        is_agent_credential_path(p, containment) || is_agent_credential_path(p, real_containment.as_deref())
+    };
     let homes = Homes::new(scan_home);
     let below = |a: &Path| containment.is_some_and(|c| a.starts_with(c) && a != c);
     let link: Option<&Path> =
@@ -440,7 +462,7 @@ pub(crate) fn read_hook_file(
     }
     let Some(l) = link else {
         let Some(real) = real else { return SettingsRead::Unreadable };
-        if is_sensitive_read_name(path) || is_sensitive_read_name(&real) {
+        if is_sensitive_read_name(path) || is_sensitive_read_name(&real) || agent_cred(path) || agent_cred(&real) {
             return SettingsRead::Unreadable;
         }
         return crate::scanners::read_bounded_nofollow(path, Some(&real))
@@ -454,10 +476,12 @@ pub(crate) fn read_hook_file(
         lexical = lexical.join(rest);
         text = text.join(rest);
     }
-    let real_containment = containment.map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf()));
     let inside = |r: &Path| real_containment.as_ref().is_some_and(|c| r.starts_with(c));
     let sensitive = homes.sensitive(&lexical) || real.as_ref().is_some_and(|r| homes.sensitive(r));
-    let named = is_sensitive_read_name(&lexical) || real.as_ref().is_some_and(|r| is_sensitive_read_name(r));
+    let named = is_sensitive_read_name(&lexical)
+        || real.as_ref().is_some_and(|r| is_sensitive_read_name(r))
+        || agent_cred(&lexical)
+        || real.as_ref().is_some_and(|r| agent_cred(r));
     let link_entry = |sensitive_target: bool| SettingsRead::Link(crate::models::EnvSymlink { target: shown_link(&text), sensitive_target });
     let Some(real) = real else { return link_entry(sensitive) };
     let store = real.starts_with("/nix/store");
@@ -792,7 +816,7 @@ pub(crate) fn url_host(url: &str) -> String {
 /// Agent-config directories a hook command might reference. A hook that runs a script
 /// stored in one of these travels with a repo or a package install, which is what makes
 /// it a persistence surface rather than just a local convenience.
-const AGENT_CONFIG_DIRS: &[&str] =
+pub(crate) const AGENT_CONFIG_DIRS: &[&str] =
     &[".claude", ".vscode", ".cursor", ".codex", ".gemini", ".kiro", ".copilot", ".codeium", ".devin", ".windsurf", ".opencode"];
 
 /// The risk prefix of a reference to another agent's config directory under the user's
@@ -1012,6 +1036,25 @@ fn program_tokens(command: &str) -> Vec<&str> {
     out
 }
 
+/// The script word of each simple command whose program is a shell or interpreter
+/// (`node .claude/fmt.mjs`, `bash -e ~/.claude/x.sh`): the first word after it that is
+/// not a flag. That word is in a program position too: the interpreter runs it.
+fn interpreter_scripts(command: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for simple in command.split([';', '|', '&', '(', ')', '`', '\n']) {
+        let words: Vec<&str> = simple.split_whitespace().map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')')).collect();
+        let Some(&prog) = program_tokens(simple).first() else { continue };
+        if !INTERPRETER_PROGRAMS.contains(&prog.rsplit('/').next().unwrap_or(prog)) {
+            continue;
+        }
+        let Some(at) = words.iter().position(|w| *w == prog) else { continue };
+        if let Some(w) = words[at + 1..].iter().find(|w| !w.starts_with('-')) {
+            out.push(*w);
+        }
+    }
+    out
+}
+
 /// Shells and script interpreters: a command that starts one runs a script.
 const INTERPRETER_PROGRAMS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "node", "deno", "bun", "ruby", "perl",
@@ -1092,6 +1135,7 @@ pub(crate) fn classify_command_with(
     // sees. A token with a redaction in it is never a path to probe.
     let redacted_command = crate::scanners::redact_command_text(command);
     let programs = program_tokens(&redacted_command);
+    let scripts = interpreter_scripts(&redacted_command);
     // Program words first: the on-disk checks stop after MAX_PROBED_PER_COMMAND words of
     // one command and once the scan's probe budget is spent (review of b9cda85: 500
     // hooks of 60 path words each cost a million readlink calls); the agent-directory
@@ -1122,9 +1166,25 @@ pub(crate) fn classify_command_with(
             // reaching into it stays High).
             let home_anchored = ["~/", "$HOME/", "${HOME}/"].iter().any(|p| unquoted.starts_with(p))
                 || home.is_some_and(|h| unquoted.starts_with('/') && Path::new(&unquoted).starts_with(h));
-            let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { &unquoted };
-            if Some(dir) == own_dir {
-                risks.push(format!("runs a script stored in {dir}/ ({token})"));
+            let is_program = programs.contains(&token) || scripts.contains(&token);
+            let token: &str = if program_only && !is_program { &shown_dir } else { &unquoted };
+            // The settings file is itself inside the user's own `~/<dir>/`, so a
+            // home-anchored path to that directory is its own (`~/.claude/hooks/x.sh` from
+            // `~/.claude/settings.json`, or from a plugin cached under it).
+            let own_home_file = home.is_some_and(|h| settings_path.starts_with(h.join(dir)));
+            if Some(dir) == own_dir && home_anchored && !own_home_file {
+                // A repository's (or another root's) hook reaching into the user's own
+                // agent directory (`>> ~/.claude/bash.log` in a project settings file):
+                // worded as that, graded as the plain hook it was (review of 4e3f8c3).
+                risks.push(format!("reaches into your home's {dir}/ directory ({token})"));
+            } else if Some(dir) == own_dir {
+                // Only a program position runs a script; an argument (a log file, a
+                // markdown file it cats) is a reference.
+                if is_program {
+                    risks.push(format!("runs a script stored in {dir}/ ({token})"));
+                } else {
+                    risks.push(format!("references a path in {dir}/ ({token})"));
+                }
             } else if !home_anchored
                 && root_label == "project"
                 && own_dir != Some(".vscode")

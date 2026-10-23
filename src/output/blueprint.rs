@@ -987,7 +987,8 @@ impl BlueprintDocument {
                     .map(|(hi, h)| Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) })
                     .collect(),
             });
-            for h in &skill.hooks {
+            let plugin_off = skill.provenance.as_ref().is_some_and(|p| !p.active);
+            for h in skill.hooks.iter().filter(|h| !h.disabled && !plugin_off) {
                 behaviors.push(
                     hook_behavior(h).into(),
                     vec!["declared".into()],
@@ -1700,6 +1701,9 @@ impl BlueprintDocument {
             for (hi, h) in settings.hooks.iter().enumerate() {
                 props.push(Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) });
             }
+            if let Some(l) = &settings.symlink {
+                props.push(Property { name: "rmg:symlink".into(), value: format!("symlink to {}, not read", l.target) });
+            }
 
             assets.push(Asset {
                 bom_ref: format!("asset:{}", set_ref),
@@ -1723,8 +1727,10 @@ impl BlueprintDocument {
                 properties: props,
             });
 
-            // Each hook command is silent code execution on the agent host.
-            for h in &settings.hooks {
+            // Each hook command is silent code execution on the agent host. A hook that
+            // never runs (disabled, or shipped by an inactive plugin) declares nothing.
+            let plugin_off = settings.provenance.as_ref().is_some_and(|p| !p.active);
+            for h in settings.hooks.iter().filter(|h| !h.disabled && !plugin_off) {
                 behaviors.push(
                     hook_behavior(h).into(),
                     vec!["declared".into()],
@@ -2107,7 +2113,11 @@ fn hook_property(h: &crate::models::AgentHook) -> String {
         h.matcher.as_deref().unwrap_or("*"),
         cond,
         kind,
-        if h.disabled { " (disabled)" } else { "" },
+        match (h.disabled, &h.disabled_reason) {
+            (true, Some(r)) => format!(" (disabled: {r})"),
+            (true, None) => " (disabled)".to_string(),
+            _ => String::new(),
+        },
         if h.dangerous { " DANGEROUS" } else { "" },
         h.command
     )
