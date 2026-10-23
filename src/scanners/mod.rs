@@ -2088,13 +2088,16 @@ fn output_with_cap(
             }
             Some(std::process::Output { status, stdout, stderr: Vec::new() })
         }
+        // On timeout or over-cap the reader is NOT joined: the kill reaches the child
+        // only, and a grandchild (`sh -c 'a; sleep 30'` under dash, which does not exec
+        // its last command) can keep the pipe open; the reader thread ends by itself
+        // when the pipe finally closes. Joining it here stalled a 200 ms timeout for the
+        // grandchild's full 30 s on the Linux CI runner.
         ChildWait::OverCap => {
-            let _ = reader.join();
             x.outcome("output_cap");
             None
         }
         ChildWait::TimedOut => {
-            let _ = reader.join();
             x.outcome("timeout");
             None
         }
@@ -2120,16 +2123,21 @@ mod capped_output_tests {
     /// span lasted an exact multiple of its tick.)
     #[test]
     fn child_waits_do_not_poll() {
+        // macOS ships /usr/bin/true, Linux /bin/true.
+        let truth = ["/bin/true", "/usr/bin/true"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("a true binary");
         let t = std::time::Duration::from_secs(5);
         let start = std::time::Instant::now();
         for _ in 0..10 {
-            let mut c = child_command("/bin/true");
+            let mut c = child_command(truth);
             assert!(output_with_timeout(&mut c, t).is_some());
         }
         let runner = start.elapsed();
         let start = std::time::Instant::now();
         for _ in 0..10 {
-            let _ = get_binary_version("/bin/true");
+            let _ = get_binary_version(truth);
         }
         let probe = start.elapsed();
         assert!(runner < std::time::Duration::from_millis(150), "runner polled: 10 runs took {runner:?}");
