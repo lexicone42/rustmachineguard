@@ -15,17 +15,19 @@ impl Scanner for AgentSettingsScanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
         let home = platform.home_dir();
         let mut results = Vec::new();
+        crate::scanners::hook_sources::reset_scan_budget();
 
         // User-global Claude Code settings.
         parse_settings(
             &home.join(".claude").join("settings.json"),
             "user-global",
             "claude-code",
+            &home,
             &mut results,
         );
 
         // Managed (organization) settings: highest precedence, machine-wide.
-        parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &mut results);
+        parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &home, &mut results);
 
         // Project-scoped settings from known projects + the current directory.
         // ~/.claude.json is read once: its `projects` keys, and its `hooks` for Devin CLI.
@@ -41,6 +43,7 @@ impl Scanner for AgentSettingsScanner {
                 &dir.join(".claude").join("settings.json"),
                 "project",
                 "claude-code",
+                &home,
                 &mut results,
             );
             // Run from HOME, the "project" is the user's own ~/.claude: its
@@ -50,16 +53,17 @@ impl Scanner for AgentSettingsScanner {
                 &dir.join(".claude").join("settings.local.json"),
                 if at_home { "user-local" } else { "local" },
                 "claude-code",
+                &home,
                 &mut results,
             );
         }
 
         // Cursor's control plane: same risks, different filenames and schema.
-        parse_cursor_settings(&home.join(".cursor").join("hooks.json"), "user-global", &mut results);
-        parse_cursor_settings(&home.join(".cursor").join("cli-config.json"), "user-global", &mut results);
+        parse_cursor_settings(&home.join(".cursor").join("hooks.json"), "user-global", &home, &mut results);
+        parse_cursor_settings(&home.join(".cursor").join("cli-config.json"), "user-global", &home, &mut results);
         for dir in &project_dirs {
-            parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &mut results);
-            parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &mut results);
+            parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &home, &mut results);
+            parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &home, &mut results);
         }
 
         // Hook files of every other surface: Claude Code plugins, mods and skills-dir
@@ -71,6 +75,13 @@ impl Scanner for AgentSettingsScanner {
         // the cwd under a symlinked HOME (macOS /var) names ~/.claude/settings.json again.
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(crate::scanners::skills::dedupe_key(Path::new(&r.path))));
+        // The user's own notification hook is graded like the http hook to its host (Low);
+        // its inventory marker says so too, not DANGEROUS (review of b9cda85).
+        for r in results.iter_mut().filter(|r| !matches!(r.source.as_str(), "project" | "local" | "managed" | "plugin")) {
+            for h in r.hooks.iter_mut().filter(|h| crate::scanners::hook_sources::is_event_push(h)) {
+                h.dangerous = false;
+            }
+        }
         results
     }
 }
@@ -86,8 +97,8 @@ fn extract_project_dirs(parsed: &serde_json::Value) -> Option<Vec<PathBuf>> {
     )
 }
 
-fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<AgentSettings>) {
-    if let Some(s) = parse_settings_file(path, source, framework) {
+fn parse_settings(path: &Path, source: &str, framework: &str, scan_home: &Path, out: &mut Vec<AgentSettings>) {
+    if let Some(s) = parse_settings_file_in(path, source, framework, Some(scan_home)) {
         out.push(s);
     }
 }
@@ -95,8 +106,8 @@ fn parse_settings(path: &Path, source: &str, framework: &str, out: &mut Vec<Agen
 /// Managed settings: `managed-settings.json`, then `managed-settings.d/*.json` in
 /// alphabetical order (hidden and non-.json names skipped), each its own entry with
 /// source "managed". code.claude.com/docs/en/settings (managed settings).
-fn parse_managed_settings(dir: &Path, out: &mut Vec<AgentSettings>) {
-    parse_settings(&dir.join("managed-settings.json"), "managed", "claude-code", out);
+fn parse_managed_settings(dir: &Path, scan_home: &Path, out: &mut Vec<AgentSettings>) {
+    parse_settings(&dir.join("managed-settings.json"), "managed", "claude-code", scan_home, out);
     let drop_in = dir.join("managed-settings.d");
     if !crate::scanners::probe_dir(&drop_in) {
         return;
@@ -109,7 +120,7 @@ fn parse_managed_settings(dir: &Path, out: &mut Vec<AgentSettings>) {
         .collect();
     names.sort();
     for n in names.iter().take(200) {
-        parse_settings(&drop_in.join(n), "managed", "claude-code", out);
+        parse_settings(&drop_in.join(n), "managed", "claude-code", scan_home, out);
     }
 }
 
@@ -244,8 +255,46 @@ pub(crate) fn is_repository_scope(source: &str) -> bool {
 /// elsewhere`) is followed only while the real path stays inside the project's
 /// repository. The open itself refuses a link at the final component (O_NOFOLLOW) and a
 /// FIFO, and the opened descriptor must be the resolved path, so a swap is refused too.
-fn read_settings(path: &Path, source: &str) -> SettingsRead {
-    read_settings_in(path, source, None)
+fn read_settings(path: &Path, source: &str, scan_home: Option<&Path>) -> SettingsRead {
+    read_settings_in(path, source, None, scan_home)
+}
+
+/// The homes a link target is judged against: `$HOME` and the home being scanned
+/// (`--search-dirs` scans a platform home that need not be `$HOME`; review of b9cda85:
+/// a user hook file in an alternate home linked to that home's `.docker/config.json` was
+/// opened because only `$HOME` was consulted), each lexically and canonically.
+struct Homes(Vec<(PathBuf, PathBuf)>);
+
+impl Homes {
+    fn new(scan_home: Option<&Path>) -> Self {
+        let mut v: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let env = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        for h in std::iter::once(env).chain(scan_home.map(Path::to_path_buf)) {
+            let real = std::fs::canonicalize(&h).unwrap_or_else(|_| h.clone());
+            if !v.iter().any(|(a, b)| *a == h && *b == real) {
+                v.push((h, real));
+            }
+        }
+        Homes(v)
+    }
+
+    /// The scanned home when there is one, else `$HOME` (for containment roots).
+    fn primary(&self) -> &Path {
+        &self.0.last().expect("at least $HOME").0
+    }
+
+    /// [`crate::scanners::persistence::is_sensitive_read_target`] against any home.
+    fn sensitive(&self, p: &Path) -> bool {
+        self.0.iter().any(|(h, rh)| {
+            crate::scanners::persistence::is_sensitive_read_target(p, h)
+                || crate::scanners::persistence::is_sensitive_read_target(p, rh)
+        })
+    }
+
+    /// The (lexical, canonical) home `p` is under, if any.
+    fn containing(&self, p: &Path) -> Option<&(PathBuf, PathBuf)> {
+        self.0.iter().find(|(h, rh)| !h.as_os_str().is_empty() && (p.starts_with(h) || p.starts_with(rh)))
+    }
 }
 
 fn is_link(p: &Path) -> bool {
@@ -263,17 +312,15 @@ fn shown_link(t: &Path) -> String {
 /// `.codex -> /tmp/elsewhere`) is named by its own link text, and the verdict is made on
 /// both the lexical and the real target. With `project_dir` None the project is the
 /// directory above the file's agent directory, as before.
-pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&Path>) -> SettingsRead {
-    use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&Path>, scan_home: Option<&Path>) -> SettingsRead {
+    use crate::scanners::persistence::lexical_join;
     if !is_repository_scope(source) {
         return read_bounded(path).map_or(SettingsRead::Unreadable, SettingsRead::Content);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    let homes = Homes::new(scan_home);
+    let home = homes.primary().to_path_buf();
     if let Some(project_dir) = project_dir {
-        let sensitive = |lexical: &Path, real: Option<&Path>| {
-            is_sensitive_read_target(lexical, &home) || real.is_some_and(|r| is_sensitive_read_target(r, &real_home))
-        };
+        let sensitive = |lexical: &Path, real: Option<&Path>| homes.sensitive(lexical) || real.is_some_and(|r| homes.sensitive(r));
         let real = std::fs::canonicalize(path).ok();
         if is_link(path) {
             let target = std::fs::read_link(path).unwrap_or_default();
@@ -316,7 +363,7 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
         let lexical = lexical_join(agent_dir, &target);
         return SettingsRead::Link(crate::models::EnvSymlink {
             target: shown(&target),
-            sensitive_target: is_sensitive_read_target(&lexical, &home),
+            sensitive_target: homes.sensitive(&lexical),
         });
     }
     let Ok(real) = std::fs::canonicalize(path) else { return SettingsRead::Unreadable };
@@ -332,7 +379,7 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
         };
         return SettingsRead::Link(crate::models::EnvSymlink {
             target: shown(&text),
-            sensitive_target: is_sensitive_read_target(&lexical, &home) || is_sensitive_read_target(&real, &real_home),
+            sensitive_target: homes.sensitive(&lexical) || homes.sensitive(&real),
         });
     }
     crate::scanners::read_bounded_nofollow(path, Some(&real)).map_or(SettingsRead::Unreadable, SettingsRead::Content)
@@ -349,13 +396,18 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
 /// canonical `containment` is inventoried by its link text, never opened. A credential
 /// NAME is never opened anywhere. A dotfiles-managed `~/.gemini/settings.json` (a link
 /// into the user's own files) and a /nix/store target are read through the real path.
-pub(crate) fn read_hook_file(path: &Path, source: &str, project_dir: Option<&Path>, containment: Option<&Path>) -> SettingsRead {
-    use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
+pub(crate) fn read_hook_file(
+    path: &Path,
+    source: &str,
+    project_dir: Option<&Path>,
+    containment: Option<&Path>,
+    scan_home: Option<&Path>,
+) -> SettingsRead {
+    use crate::scanners::persistence::{is_sensitive_read_name, lexical_join};
     if is_repository_scope(source) {
-        return read_settings_in(path, source, project_dir);
+        return read_settings_in(path, source, project_dir, scan_home);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    let homes = Homes::new(scan_home);
     let below = |a: &Path| containment.is_some_and(|c| a.starts_with(c) && a != c);
     let link: Option<&Path> =
         if is_link(path) { Some(path) } else { path.ancestors().skip(1).take_while(|a| below(a)).find(|a| is_link(a)) };
@@ -365,14 +417,19 @@ pub(crate) fn read_hook_file(path: &Path, source: &str, project_dir: Option<&Pat
     // real path, so `installed-plugins/m/p -> ~/.config/gcloud` is never read through.
     if link.is_none()
         && let Some(c) = containment
-        && (source == "plugin" || c.starts_with(&home))
+        && (source == "plugin" || homes.containing(c).is_some())
         && let Ok(real_c) = std::fs::canonicalize(c)
     {
-        let expected = c.strip_prefix(&home).map_or_else(|_| c.to_path_buf(), |rel| real_home.join(rel));
-        let refused = matches!(
-            crate::scanners::persistence::sensitive_read_kind(&real_c, &real_home),
-            Some("credential" | "other-home" | "system")
-        ) && !real_c.starts_with("/nix/store");
+        let expected = match homes.containing(c) {
+            Some((h, rh)) => c.strip_prefix(h).map_or_else(|_| c.to_path_buf(), |rel| rh.join(rel)),
+            None => c.to_path_buf(),
+        };
+        let refused = homes.0.iter().any(|(_, rh)| {
+            matches!(
+                crate::scanners::persistence::sensitive_read_kind(&real_c, rh),
+                Some("credential" | "other-home" | "system")
+            )
+        }) && !real_c.starts_with("/nix/store");
         if real_c != expected && real_c != c && refused {
             let rest = path.strip_prefix(c).unwrap_or(Path::new(""));
             return SettingsRead::Link(crate::models::EnvSymlink {
@@ -399,8 +456,7 @@ pub(crate) fn read_hook_file(path: &Path, source: &str, project_dir: Option<&Pat
     }
     let real_containment = containment.map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf()));
     let inside = |r: &Path| real_containment.as_ref().is_some_and(|c| r.starts_with(c));
-    let sensitive = is_sensitive_read_target(&lexical, &home)
-        || real.as_ref().is_some_and(|r| is_sensitive_read_target(r, &real_home));
+    let sensitive = homes.sensitive(&lexical) || real.as_ref().is_some_and(|r| homes.sensitive(r));
     let named = is_sensitive_read_name(&lexical) || real.as_ref().is_some_and(|r| is_sensitive_read_name(r));
     let link_entry = |sensitive_target: bool| SettingsRead::Link(crate::models::EnvSymlink { target: shown_link(&text), sensitive_target });
     let Some(real) = real else { return link_entry(sensitive) };
@@ -426,10 +482,15 @@ pub(crate) fn linked_settings(path: &Path, source: &str, framework: &str, link: 
 
 /// Parse one Claude Code settings file. None when it is absent or not JSON.
 pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option<AgentSettings> {
+    parse_settings_file_in(path, source, framework, None)
+}
+
+/// [`parse_settings_file`] for a scan of `scan_home` (see [`Homes`]).
+pub(crate) fn parse_settings_file_in(path: &Path, source: &str, framework: &str, scan_home: Option<&Path>) -> Option<AgentSettings> {
     if !crate::scanners::probe_file(path) {
         return None;
     }
-    let content = match read_settings(path, source) {
+    let content = match read_settings(path, source, scan_home) {
         SettingsRead::Content(c) => c,
         SettingsRead::Link(l) => return Some(linked_settings(path, source, framework, l)),
         SettingsRead::Unreadable => return None,
@@ -534,11 +595,11 @@ pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> V
 /// Parse a Cursor config file (`hooks.json`, `cli-config.json`, or a project `cli.json`)
 /// into the shared AgentSettings shape, so every downstream consumer — findings, --diff
 /// drift, Blueprint assets — covers Cursor without special-casing.
-fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>) {
+fn parse_cursor_settings(path: &Path, source: &str, scan_home: &Path, out: &mut Vec<AgentSettings>) {
     if !crate::scanners::probe_file(path) {
         return;
     }
-    let content = match read_settings(path, source) {
+    let content = match read_settings(path, source, Some(scan_home)) {
         SettingsRead::Content(c) => c,
         SettingsRead::Link(l) => {
             out.push(linked_settings(path, source, "cursor", l));
@@ -739,6 +800,37 @@ const AGENT_CONFIG_DIRS: &[&str] =
 /// "cross-references", so every scope that grades cross-directory references still sees
 /// it; the user's own hooks are graded on it as a Low advisory.
 pub const CROSS_HOME_RISK: &str = "cross-references another agent's config directory in your home";
+
+/// The agent hook directories a repository may share one script between (each of these
+/// agents runs repository hook files): a reference from one to another inside the same
+/// work tree is the repository's own hook. `.vscode/` (a folder-open task) and the other
+/// directories keep the cross-tool grading.
+const SHARED_HOOK_DIRS: &[&str] = &[".claude", ".cursor", ".codex", ".gemini"];
+
+/// Whether a hook's path token (as written, quotes removed) names a file lexically inside
+/// the git work tree that contains `root`: relative to the project root (hooks run there),
+/// `$CLAUDE_PROJECT_DIR`-anchored, or absolute under it. Nothing is opened.
+fn in_same_work_tree(token: &str, root: &Path, home: Option<&Path>) -> bool {
+    use crate::scanners::persistence::lexical_join;
+    let tree = match home {
+        Some(h) => crate::scanners::skills::project_containment_root(root, h),
+        None => root.to_path_buf(),
+    };
+    let t = token
+        .strip_prefix("${CLAUDE_PROJECT_DIR}/")
+        .or_else(|| token.strip_prefix("$CLAUDE_PROJECT_DIR/"))
+        .unwrap_or(token);
+    if t.starts_with('$') || t.starts_with('~') {
+        return false;
+    }
+    let p = if t.starts_with('/') {
+        lexical_join(Path::new("/"), Path::new(t))
+    } else {
+        lexical_join(root, Path::new(t.trim_start_matches("./")))
+    };
+    let tree = lexical_join(Path::new("/"), &tree);
+    p.starts_with(&tree) && p != tree
+}
 
 /// The path-shaped tokens of an already redacted command that may be probed: those of
 /// [`referenced_paths`] with no redaction in them. A token that held a credential
@@ -1000,8 +1092,17 @@ pub(crate) fn classify_command_with(
     // sees. A token with a redaction in it is never a path to probe.
     let redacted_command = crate::scanners::redact_command_text(command);
     let programs = program_tokens(&redacted_command);
-    for token in probe_tokens(&redacted_command) {
+    // Program words first: the on-disk checks stop after MAX_PROBED_PER_COMMAND words of
+    // one command and once the scan's probe budget is spent (review of b9cda85: 500
+    // hooks of 60 path words each cost a million readlink calls); the agent-directory
+    // check above them is lexical and sees every word.
+    let mut tokens = probe_tokens(&redacted_command);
+    tokens.sort_by_key(|t| !programs.contains(t));
+    let mut on_disk_left = crate::scanners::hook_sources::MAX_PROBED_PER_COMMAND;
+    for token in tokens {
         let probe = !program_only || programs.contains(&token);
+        let on_disk = on_disk_left > 0 && crate::scanners::hook_sources::take_probe();
+        on_disk_left = on_disk_left.saturating_sub(1);
         let referenced_dir = token
             .split('/')
             .find(|seg| AGENT_CONFIG_DIRS.contains(seg));
@@ -1024,6 +1125,19 @@ pub(crate) fn classify_command_with(
             let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { &unquoted };
             if Some(dir) == own_dir {
                 risks.push(format!("runs a script stored in {dir}/ ({token})"));
+            } else if !home_anchored
+                && root_label == "project"
+                && own_dir != Some(".vscode")
+                && SHARED_HOOK_DIRS.contains(&dir)
+                && let Some(root) = project_root.filter(|r| home.is_none_or(|h| !h.starts_with(r)))
+                && in_same_work_tree(&unquoted, root, home)
+            {
+                // One repository sharing a hook script between its own agents' directories
+                // (`.cursor/hooks.json` running the repository's `.claude/hooks/x.sh`):
+                // Cursor runs a repository's `.claude` hooks itself
+                // (cursor.com/docs/reference/third-party-hooks, fetched 2026-10-23), so it
+                // is the repository's plain hook, not a cross-tool drop (review of b9cda85).
+                risks.push(format!("runs a script this repository keeps in its {dir}/ directory ({token})"));
             } else if home_anchored {
                 risks.push(format!("{CROSS_HOME_RISK} ({token})"));
             } else {
@@ -1087,6 +1201,7 @@ pub(crate) fn classify_command_with(
         // never read (review round 7: `bin/h -> ~/.config/gh/hosts.yml` as a helper,
         // `cat ./k` with `k -> ~/.ssh/id_ed25519` as a hook).
         if probe
+            && on_disk
             && !interpreter
             && candidates.iter().any(|c| {
                 (!program_only || shipped(c))
@@ -1099,6 +1214,7 @@ pub(crate) fn classify_command_with(
         // A file the project or plugin ships that is a symlink leaving it: named by its
         // link text, never opened (symlink_metadata and read_link only).
         if !program_only
+            && on_disk
             && let Some(root) = project_root.filter(|r| home.is_none_or(|h| !h.starts_with(r)))
             && let Some(link) = candidates.iter().find(|c| {
                 c.starts_with(root) && std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_symlink())

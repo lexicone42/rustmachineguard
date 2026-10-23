@@ -433,6 +433,7 @@ fn main() {
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
+            agent_settings_commands_count: 0,
         },
     };
 

@@ -607,9 +607,18 @@ pub struct AgentHook {
     /// http hooks: the host is an AI provider's own API (the official-host model).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub first_party_host: bool,
-    /// prompt/agent hooks: prompt-injection phrases matched in the prompt text.
+    /// prompt/agent hooks: prompt-injection phrases matched in the prompt text, hidden
+    /// characters (`invisible Unicode (...)`) and, for a prompt the agent itself reads,
+    /// the credential paths it names (`credential path ~/.aws/credentials`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub poisoning: Vec<String>,
+    /// prompt/agent hooks: where the prompt goes. "evaluator": a separate model that
+    /// returns a decision (Claude Code, Cursor); "conversation": submitted into the
+    /// agent's own conversation (Copilot CLI prompt hooks, Kiro agent actions);
+    /// "undocumented": the vendor does not say (Devin CLI and others), graded as
+    /// "conversation". Empty for other kinds and in older reports (read as "evaluator").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt_target: String,
     /// module hooks: event names the module registers (lexical, sorted, deduped).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registers: Vec<String>,
@@ -886,6 +895,11 @@ pub struct Summary {
     /// synced skill copy. They are inventoried, never graded.
     #[serde(default)]
     pub agent_hooks_inactive_count: usize,
+    /// Of `agent_hooks_count`, the settings commands Claude Code runs that are not hooks
+    /// (`statusLine`, `subagentStatusLine`, `fileSuggestion`; code.claude.com/docs/en/statusline):
+    /// inventoried and graded with the hooks, counted apart.
+    #[serde(default)]
+    pub agent_settings_commands_count: usize,
 }
 
 impl ScanReport {
@@ -924,6 +938,12 @@ impl ScanReport {
             persistence_artifacts_count: self.persistence_artifacts.len(),
             agent_hooks_by_framework: self.hooks_by_framework(),
             agent_hooks_inactive_count: self.inactive_hooks(),
+            agent_settings_commands_count: self
+                .agent_settings
+                .iter()
+                .flat_map(|s| &s.hooks)
+                .filter(|h| crate::scanners::hook_sources::SETTINGS_COMMAND_KEYS.contains(&h.event.as_str()))
+                .count(),
         };
     }
 

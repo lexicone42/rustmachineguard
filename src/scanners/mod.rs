@@ -2246,7 +2246,8 @@ pub const HOOK_PROMPT_POISONING_PATTERNS: &[&str] = &[
     "```system",
 ];
 
-/// [`scan_injection_text`] with [`HOOK_PROMPT_POISONING_PATTERNS`], for hook prompts.
+/// [`scan_injection_text`] with [`HOOK_PROMPT_POISONING_PATTERNS`], for the prompts of
+/// hooks whose text goes to a separate evaluator model (Claude Code, Cursor).
 ///
 /// "never reveal" and the XML-tag rows (`<important>`, `<system>`, ...) are left out of
 /// the hook subset: "the agent must never reveal API keys" and
@@ -2259,6 +2260,26 @@ pub const HOOK_PROMPT_POISONING_PATTERNS: &[&str] = &[
 /// a phrase do not hide it), and on the ASCII that Unicode tag characters (U+E0020 to
 /// U+E007E) spell, which a model reads and a reviewer does not see.
 pub fn scan_hook_prompt_text(text: &str) -> Vec<&'static str> {
+    scan_prompt_phrases(text, HOOK_PROMPT_POISONING_PATTERNS)
+}
+
+/// [`scan_hook_prompt_text`] with the whole [`POISONING_PATTERNS`] list, for a prompt the
+/// agent itself reads: a Copilot CLI prompt hook ("Prompt hooks auto-submit text as if
+/// the user typed it", docs.github.com/en/copilot/reference/hooks-configuration) and a
+/// Kiro agent action ("the prompt specified in the hook is appended to the user prompt",
+/// kiro.dev/docs/hooks/actions, both fetched 2026-10-23) are text in the agent's own
+/// context, as an MCP tool description is, so no evaluator wording is exempt.
+pub fn scan_context_prompt_text(text: &str) -> Vec<&'static str> {
+    scan_prompt_phrases(text, POISONING_PATTERNS)
+}
+
+/// The [`POISONING_PATTERNS`] rows that ordinary instructions also use ("First read
+/// CONTRIBUTING.md", "This is very important"): in a prompt the agent reads they are
+/// graded one step below the concealment and override rows.
+pub const WEAK_CONTEXT_PHRASES: &[&str] =
+    &["first read", "this is very important", "system prompt", "before using this tool", "before you use this tool", "<important>", "</important>"];
+
+fn scan_prompt_phrases(text: &str, list: &[&'static str]) -> Vec<&'static str> {
     let lower = text.to_lowercase();
     let spaced = |s: &str| s.split(char::is_whitespace).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
     let folded = spaced(&normalize_for_matching(text));
@@ -2267,23 +2288,110 @@ pub fn scan_hook_prompt_text(text: &str) -> Vec<&'static str> {
         .filter_map(|c| (0xE0020..=0xE007E).contains(&(c as u32)).then(|| char::from_u32(c as u32 - 0xE0000)).flatten())
         .collect();
     let tags = spaced(&tags.to_lowercase());
-    HOOK_PROMPT_POISONING_PATTERNS
-        .iter()
-        .filter(|p| lower.contains(**p) || folded.contains(**p) || tags.contains(**p))
-        .copied()
-        .collect()
+    list.iter().filter(|p| lower.contains(**p) || folded.contains(**p) || tags.contains(**p)).copied().collect()
+}
+
+/// Emoji and pictographic code points a ZWJ sequence joins (with skin-tone modifiers and
+/// the emoji variation selectors that may sit before the joiner).
+fn is_emoji_part(c: char) -> bool {
+    matches!(c as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2300..=0x23FF | 0x2B00..=0x2BFF | 0x2190..=0x21FF
+        | 0x2900..=0x297F | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0x00A9 | 0x00AE | 0x203C | 0x2049
+        | 0x2122 | 0x2139 | 0x24C2 | 0x25A0..=0x25FF | 0xFE0E | 0xFE0F | 0x20E3)
+}
+
+/// Right-to-left letters (Hebrew, Arabic, Syriac, Thaana, NKo and their presentation
+/// forms): a text with any of them has a use for directional marks.
+fn is_rtl_letter(c: char) -> bool {
+    matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF) && c.is_alphabetic()
 }
 
 /// The [`scan_suspicious_unicode`] classes that make a hook prompt a hiding place: the
-/// hook's evaluator model reads tag characters, variation-selector payloads, zero-width
-/// characters and bidi controls that render as nothing (or reorder what renders) for
-/// the person reviewing the hook. Soft hyphens and other controls are left to
+/// model reads tag characters, variation-selector payloads, zero-width characters and
+/// bidi controls that render as nothing (or reorder what renders) for the person
+/// reviewing the hook. Soft hyphens and other controls are left to
 /// [`scan_hook_prompt_text`]'s folding.
+///
+/// Ordinary text is not a hiding place (review of b9cda85): a zero-width joiner between
+/// two emoji parts (the ZWJ of 🧑‍💻, 👨‍👩‍👧, ❤️‍🔥) and a ZWSP, ZWNJ or ZWJ between two
+/// non-ASCII letters (Persian ZWNJ, Thai ZWSP line breaks) are not counted; one that is
+/// isolated, at either end, next to another invisible character or next to ASCII is. A
+/// directional mark (LRM, RLM, ALM) counts only when the text has no right-to-left
+/// letter or the mark sits between two ASCII letters or digits (`ig\u{200f}nore`); the
+/// embedding, override and isolate controls always count.
 pub fn hook_prompt_hidden_unicode(text: &str) -> Vec<&'static str> {
-    scan_suspicious_unicode(text)
-        .into_iter()
-        .filter(|c| matches!(*c, "tag-block" | "variation-selector-smuggler" | "zero-width" | "bidi-control"))
-        .collect()
+    let chars: Vec<char> = text.chars().collect();
+    let rtl = chars.iter().any(|c| is_rtl_letter(*c));
+    let mut cats: Vec<&'static str> = Vec::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|j| chars[j]);
+        let next = chars.get(i + 1).copied();
+        let both = |f: fn(char) -> bool| prev.is_some_and(f) && next.is_some_and(f);
+        let label = match c as u32 {
+            0xE0000..=0xE007F => "tag-block",
+            0xE0100..=0xE01EF => "variation-selector-smuggler",
+            0x200B | 0x200C | 0x200D | 0xFEFF | 0x2060..=0x2064 => {
+                let emoji_join = c == '\u{200d}' && both(is_emoji_part);
+                let script_join =
+                    matches!(c, '\u{200b}' | '\u{200c}' | '\u{200d}') && both(|x| !x.is_ascii() && x.is_alphabetic());
+                if emoji_join || script_join {
+                    continue;
+                }
+                "zero-width"
+            }
+            0x061C | 0x200E | 0x200F => {
+                if rtl && !both(|x| x.is_ascii_alphanumeric()) {
+                    continue;
+                }
+                "bidi-control"
+            }
+            0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
+            _ => continue,
+        };
+        if !cats.contains(&label) {
+            cats.push(label);
+        }
+    }
+    cats
+}
+
+/// The credential paths a prompt names, as written (`~/.aws/credentials`,
+/// `$HOME/.ssh/id_ed25519`, `.env`, `id_rsa`): each whitespace-separated word, trimmed of
+/// quotes, brackets and sentence punctuation, judged lexically by
+/// [`persistence::sensitive_read_kind`] against a placeholder home (`~/`, `$HOME/`,
+/// `${HOME}/`) or by its file name alone ([`persistence::is_sensitive_read_name`]).
+/// Nothing is opened or probed. At most 8, deduped, sanitized.
+pub fn prompt_credential_paths(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in text.split_whitespace() {
+        let w = w.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?' | '*' | '{' | '}')
+        });
+        let w = w.trim_end_matches('.');
+        if w.len() < 2 || w.contains("://") {
+            continue;
+        }
+        let rel = w.strip_prefix("~/").or_else(|| w.strip_prefix("$HOME/")).or_else(|| w.strip_prefix("${HOME}/"));
+        let hit = match rel {
+            Some(r) => {
+                persistence::sensitive_read_kind(&std::path::Path::new("/h").join(r), std::path::Path::new("/h"))
+                    == Some("credential")
+            }
+            // A bare word is a file name only when it is shaped like one (`.env`, `id_rsa`,
+            // `credentials.json`, `secrets/.netrc`), not the English word "credentials".
+            None => {
+                (w.contains('/') || w.contains('.') || w.starts_with("id_"))
+                    && persistence::is_sensitive_read_name(std::path::Path::new(w))
+            }
+        };
+        if hit {
+            let shown = sanitize_display(w, 120);
+            if !out.contains(&shown) && out.len() < 8 {
+                out.push(shown);
+            }
+        }
+    }
+    out
 }
 
 /// Make attacker-controlled free text safe to print: control characters (including ESC,

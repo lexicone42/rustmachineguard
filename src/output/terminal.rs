@@ -144,6 +144,9 @@ fn render_inner(report: &ScanReport) -> String {
     if s.agent_hooks_inactive_count > 0 {
         out.push_str(&format!("  {:>35}  {}\n", "of which inactive (never run) ·".dimmed(), s.agent_hooks_inactive_count));
     }
+    if s.agent_settings_commands_count > 0 {
+        out.push_str(&format!("  {:>35}  {}\n", "of which settings commands ·".dimmed(), s.agent_settings_commands_count));
+    }
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
     summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);

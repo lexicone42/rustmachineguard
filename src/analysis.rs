@@ -1129,6 +1129,27 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
             HttpReach::Lan | HttpReach::Local => return by(Some(Medium), None, None, Some(Aggregate)),
         }
     }
+    if matches!(kind, "prompt" | "agent") && in_conversation(h) {
+        // Text the agent itself reads (a Copilot CLI prompt hook, a Kiro agent action):
+        // graded as an instruction file's text, not with the evaluator cap. A credential
+        // path together with an injection phrase or hidden text is what a dangerous
+        // command is (Critical in every scope); either alone, or a concealment or
+        // override phrase, is High in a repository; phrases ordinary instructions also
+        // use ("first read", "this is very important") are the plain repository row.
+        let (cred, weak, strong) = prompt_signals(h);
+        return if cred && (weak || strong) {
+            match scope {
+                Inactive => None,
+                _ => Some(Finding(Critical)),
+            }
+        } else if cred || strong {
+            by(Some(High), Some(Low), Some(Low), Some(Finding(Medium)))
+        } else if weak {
+            by(Some(Medium), None, None, Some(Aggregate))
+        } else {
+            by(Some(Low), None, None, Some(Aggregate))
+        };
+    }
     if matches!(kind, "prompt" | "agent") {
         return if h.poisoning.is_empty() {
             by(Some(Low), None, None, Some(Aggregate))
@@ -1147,11 +1168,35 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
     by(Some(Medium), None, None, Some(Aggregate))
 }
 
+/// A prompt the agent itself reads ([`crate::models::AgentHook::prompt_target`]
+/// "conversation" or "undocumented"); an evaluator prompt and an older report's
+/// prompt (no target) are not.
+fn in_conversation(h: &crate::models::AgentHook) -> bool {
+    matches!(h.prompt_target.as_str(), "conversation" | "undocumented")
+}
+
+/// (names a credential path, has only-weak phrases, has a concealment/override phrase or
+/// hidden text) for a prompt the agent reads.
+fn prompt_signals(h: &crate::models::AgentHook) -> (bool, bool, bool) {
+    let cred_sig = crate::scanners::hook_sources::CREDENTIAL_PATH_SIGNAL;
+    let cred = h.poisoning.iter().any(|p| p.starts_with(cred_sig));
+    let phrases = h.poisoning.iter().filter(|p| !p.starts_with(cred_sig));
+    let (mut weak, mut strong) = (false, false);
+    for p in phrases {
+        if crate::scanners::WEAK_CONTEXT_PHRASES.contains(&p.as_str()) {
+            weak = true;
+        } else {
+            strong = true;
+        }
+    }
+    (cred, weak, strong)
+}
+
 /// The user's own notification hook: its only hit is the `| curl` / `| wget` row, and the
 /// command is exactly a jq of its own event piped to a sender with a parseable host
 /// (`push_host`), with no other risk.
 fn user_event_push(h: &crate::models::AgentHook) -> bool {
-    h.push_host.is_some() && h.risks.is_empty() && !h.patterns.is_empty() && h.patterns.iter().all(|p| p == "data exfiltration pattern")
+    crate::scanners::hook_sources::is_event_push(h)
 }
 
 /// The finding title for one hook (see [`hook_severity`] for the grade).
@@ -1170,7 +1215,7 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
         String::new()
     } else {
         format!(
-            "; matches {} only inside a guard's test or a loopback send (advisory)",
+            "; matches {} only where it cannot run: a guard's test, a loopback send or the argument of a program that runs none (advisory)",
             h.advisory_patterns.join(", ")
         )
     };
@@ -1180,6 +1225,19 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
             let plain = if h.url_scheme.as_deref() == Some("http") { " over plaintext http" } else { "" };
             let lan = if http_reach(h) == HttpReach::Lan { " (a local-network host)" } else { "" };
             format!("{event} hook [{m}] sends each event's JSON to {host}{lan}{plain}")
+        }
+        "prompt" | "agent" if in_conversation(h) => {
+            let into = if h.prompt_target == "conversation" {
+                "submits a prompt into the agent's conversation".to_string()
+            } else {
+                let who = if framework.is_empty() { "the agent" } else { framework };
+                format!("sends a prompt that {who} does not document the handling of (graded as text in the agent's conversation)")
+            };
+            if h.poisoning.is_empty() {
+                format!("{event} {kind} hook [{m}] {into} on each event (advisory)")
+            } else {
+                format!("{event} {kind} hook [{m}] {into} with prompt-injection signals ({})", h.poisoning.join(", "))
+            }
         }
         "prompt" | "agent" if !h.poisoning.is_empty() => format!(
             "{event} {kind} hook [{m}] gives its {} a prompt containing prompt-injection phrases ({})",
@@ -2122,6 +2180,18 @@ mod hook_ladder_tests {
         let module = hook("module");
         let module_medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], pattern_severity: "medium".into(), ..hook("module") };
         let module_advisory = AgentHook { advisory_patterns: vec!["curl|wget piped to shell".into()], ..hook("module") };
+        // Prompts the agent itself reads (Copilot CLI, Kiro; review of b9cda85).
+        let conv = |sig: &[&str]| AgentHook {
+            poisoning: sig.iter().map(|s| s.to_string()).collect(),
+            prompt_target: "conversation".into(),
+            ..hook("prompt")
+        };
+        let conv_plain = conv(&[]);
+        let conv_weak = conv(&["first read"]);
+        let conv_strong = conv(&["do not mention"]);
+        let conv_cred = conv(&["credential path ~/.aws/credentials"]);
+        let conv_cred_phrase = conv(&["first read", "credential path ~/.aws/credentials"]);
+        let undocumented = AgentHook { prompt_target: "undocumented".into(), ..conv(&["<system>"]) };
         // Columns: repo tracked, repo untracked, user, managed, official, third-party, inactive.
         let table: Vec<(&AgentHook, [Option<HookGrade>; 7])> = vec![
             (&dangerous, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
@@ -2146,6 +2216,12 @@ mod hook_ladder_tests {
             (&module, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&module_medium, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(A), None]),
             (&module_advisory, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&conv_plain, [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None]),
+            (&conv_weak, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&conv_strong, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
+            (&conv_cred, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
+            (&conv_cred_phrase, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
+            (&undocumented, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
         ];
         for (h, row) in &table {
             for (scope, want) in scopes.iter().zip(row.iter()) {

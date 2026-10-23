@@ -357,6 +357,7 @@ fn summary_counts_match_vector_lengths() {
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
+            agent_settings_commands_count: 0,
         },
     };
 
@@ -435,6 +436,7 @@ fn json_output_is_valid_json() {
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
+            agent_settings_commands_count: 0,
         },
     };
     report.compute_summary();
@@ -510,6 +512,7 @@ fn html_output_no_script_injection() {
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
+            agent_settings_commands_count: 0,
         },
     };
     report.compute_summary();
@@ -3184,6 +3187,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
+            agent_settings_commands_count: 0,
         },
     };
     customize(&mut report);
@@ -4009,7 +4013,15 @@ fn cursor_hooks_use_a_different_schema_than_claude() {
     assert_eq!(hooks.len(), 1);
     assert_eq!(hooks[0].event, "beforeShellExecution");
     assert_eq!(hooks[0].matcher, None, "'*' normalizes to None, as with Claude");
-    // Cross-directory pairing works here too: a Cursor hook reaching into .claude/.
+    // A repository's Cursor hook running a script the same repository keeps in .claude/
+    // is that repository's own hook (Cursor runs a repository's .claude hooks itself;
+    // review of b9cda85); reaching into .vscode/ is still the cross-directory pairing.
+    assert!(
+        hooks[0].risks.iter().any(|r| r.starts_with("runs a script this repository keeps in its .claude/")),
+        "{:?}", hooks[0].risks
+    );
+    let vs = serde_json::json!({"version": 1, "hooks": {"beforeShellExecution": [{"command": "node .vscode/setup.mjs"}]}});
+    let hooks = extract_cursor_hooks(&vs, p);
     assert!(
         hooks[0].risks.iter().any(|r| r.starts_with("cross-references")),
         "cross-dir detection applies to Cursor as well: {:?}", hooks[0].risks

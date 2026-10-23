@@ -96,22 +96,24 @@ own docs, fetched 2026-10-23; the URLs are in
 |---|---|---|
 | Claude Code | `~/.claude/settings.json`, project `.claude/settings.json` / `settings.local.json`, managed settings and `managed-settings.d`; `statusLine`, `subagentStatusLine`, `fileSuggestion`; installed plugin versions (`installed_plugins.json` `installPath` under `~/.claude/plugins/cache/`): `hooks/hooks.json` (and its `modules`), `.claude-plugin/plugin.json` `hooks` (a `./path.json`, an inline map or an array of either; a path that does not start with `./` or leaves the plugin root is never read), root `settings.json` `subagentStatusLine`; plugins kept in a skills directory (`~/.claude/skills/<d>/.claude-plugin/plugin.json`, and a project's `.claude/skills/<d>/`); skill, command and subagent frontmatter (`~/.claude/agents/` and `.claude/agents/` walked recursively, as Claude Code scans them: real subfolders only, four levels and 64 folders at most) | command (+ `args`), http, prompt, agent, mcp_tool, module |
 | Cursor | `~/.cursor/hooks.json`, project `.cursor/hooks.json`, enterprise `/etc/cursor/hooks.json` (macOS `/Library/Application Support/Cursor/hooks.json`), local plugins `~/.cursor/plugins/local/<p>/` with `.cursor-plugin/plugin.json` (manifest `hooks`, else `hooks/hooks.json`; a link out of the folder is skipped, as Cursor skips it) | command, prompt; `workspaceOpen` is noted as running outside any agent session |
-| Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` `[hooks]`, project `.codex/hooks.json` and `.codex/config.toml`, `/etc/codex/config.toml` and `/etc/codex/requirements.toml` `[hooks]` (managed), plugins under `~/.codex/plugins` (a directory with `.codex-plugin/plugin.json`, four levels down at most; manifest `hooks` replaces `hooks/hooks.json`); a plugin in the documented cache `cache/<marketplace>/<plugin>/<version>/` is `plugin@marketplace` (never the version directory, so two `local` plugins stay two), and one version per plugin is graded (`local`, else the highest version), the others inventoried inactive; `[features] hooks = false` in the user or system `config.toml` marks every non-managed Codex hook disabled (`requirements.toml` decides when it sets the switch; a project config that sets `hooks = true` keeps them all graded) | command, mcp_tool (Codex parses prompt and agent handlers and never runs them, so they are not inventoried) |
+| Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` `[hooks]`, project `.codex/hooks.json` and `.codex/config.toml`, `/etc/codex/config.toml` and `/etc/codex/requirements.toml` `[hooks]` (managed), plugins under `~/.codex/plugins` (a directory with `.codex-plugin/plugin.json`, four levels down at most; manifest `hooks` replaces `hooks/hooks.json`); a plugin in the documented cache `cache/<marketplace>/<plugin>/<version>/` is `plugin@marketplace` (never the version directory, so two `local` plugins stay two), and one version per plugin is graded (`local`, else the highest version), the others inventoried inactive; `[features] hooks = false` (or the deprecated alias `codex_hooks = false`, which "still works") in the user or system `config.toml` marks every non-managed Codex hook disabled (`requirements.toml` decides when it sets the switch; a project config that sets `hooks = true` keeps them all graded) | command, mcp_tool (Codex parses prompt and agent handlers and never runs them, so they are not inventoried) |
 | GitHub Copilot CLI | project `.github/hooks/*.json`, `.github/copilot/settings.json` / `settings.local.json` `hooks`, `~/.copilot/hooks/*.json`, `~/.copilot/settings.json`, `/etc/github-copilot/policy.d/*.json` (managed), `~/.copilot/installed-plugins/<marketplace>/<plugin>/` `hooks.json` or `hooks/hooks.json`; every hook configuration file must say `version: 1` ("Hook configuration files use JSON format with version `1`"); the settings files' `hooks` are read without a version, because the doc describes them separately as an "Inline `hooks` block in repository settings" and states no version for them (if Copilot does require one there, a versionless settings hook is an over-report); the command is `bash`, else `command`, else `exec` + `args`; a file-level `disableAllHooks: true` marks its hooks disabled, and a repository settings `disableAllHooks: true` marks that repository's hook files disabled too (policy hooks still run) | command, http, prompt |
 | Gemini CLI | `~/.gemini/settings.json`, project `.gemini/settings.json`, `/etc/gemini-cli/{settings,system-defaults}.json` (macOS `/Library/Application Support/GeminiCli/`), extensions `~/.gemini/extensions/<e>/hooks/hooks.json` when `gemini-extension.json` exists; `mcpServers` produce no hooks (Gemini hooks are command-only); `hooksConfig.enabled: false` ("When disabled, no hooks will be executed") in the system settings, or in the user settings or system defaults with no project setting it back to `true`, marks every non-managed Gemini hook disabled | command |
 | Devin Desktop (Windsurf) | project `.devin/hooks.json` (legacy `.windsurf/hooks.json` only when it is absent or empty), `~/.codeium/windsurf/hooks.json`, `~/.codeium/hooks.json`, `/etc/devin/hooks.json` (macOS `/Library/Application Support/Devin/`; legacy Windsurf system file only when the Devin one does not exist) | command |
-| Devin CLI | project `.devin/hooks.v1.json` (the whole file is the map), `.devin/config.json` / `config.local.json` `hooks`, `~/.config/devin/config.json`, `~/.claude.json` `hooks` (Devin CLI reads it; no other key of that file is used) | command, prompt |
+| Devin CLI | project `.devin/hooks.v1.json` (the whole file is the map), `.devin/config.json` / `config.local.json` `hooks`, `~/.config/devin/config.json`, `~/.claude.json` `hooks` (Devin CLI reads it; no other key of that file is used) | command, prompt (handling undocumented: graded as conversation text) |
 | OpenCode | project `.opencode/plugins/*` and `~/.config/opencode/plugins/*` (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.jsx`, `.tsx`; one module hook per file, registered hook names found lexically), `opencode.json` `plugin` npm specs (names only, source not read) | module |
-| Kiro | project `.kiro/hooks/*.json`, `~/.kiro/hooks/*.json` (`version: "v1"` only; `enabled: false` marks a hook disabled; `confirm.confirmCommand` is its own command hook) | command, agent |
+| Kiro | project `.kiro/hooks/*.json`, `~/.kiro/hooks/*.json` (`version: "v1"` only; `enabled: false` marks a hook disabled; `confirm.confirmCommand` is its own command hook) | command, agent (appended to the user prompt: conversation text) |
 
 What is kept: a command hook's text redacted and sanitized (exec-form `args` redacted as
 one line, so `["--token", "x"]` is redacted like `--token x`; a line break inside one
 element is a space first, so it cannot separate a value from its flag); an http hook's
 **host and scheme only** (`POST https://host`; never the path, query, userinfo,
-`headers` or `allowedEnvVars`); a prompt's text redacted and capped, with a prose rule on top (the word after `password`, `passphrase`, `secret`, `apikey`/`api key`, `x-api-key`, `token` or `pin`, past `is`/`:`/`with`/..., and after `login with <user> /`, is `<redacted>`); an MCP tool hook's
+`headers` or `allowedEnvVars`); a prompt's text redacted and capped, with a prose rule on top: after `password`, `passwd`, `passphrase`, `passcode`, `pw`, `pwd`, `secret`, `apikey`/`api key`, `x-api-key`, `token`, `credential(s)`, `Bearer` or `access code/key/token`, within the same clause, the first word after a separator (`is`, `:`, `=`, `(prod):`) is `<redacted>`, else the first value-shaped word (a digit, an inner capital or symbol, 16+ characters), so `the password for prod is X` hides X and `prints a token to the terminal` keeps "terminal"; after the weak words `key`, `pin`, `PAT`, `code` and `basic` the same rule applies; and the word after `login with <user> /` is `<redacted>`. Floor: an all-lowercase short value after a secret word with no separator (`the password hunter`) is kept; an MCP tool hook's
 `server / tool` (never `input`); a module's path or npm spec and the event names it
 registers; Claude Code's `if` handler field (`Bash(git *)`, shown next to the matcher and
-part of `--diff`). Copilot `env` and `cwd` values are never read. Every displayed hook
+part of `--diff`; `if` "is only evaluated on tool events" and a hook with it on any other
+event "never runs", so such a hook is inventoried disabled, except in
+`.claude/settings*.json`, whose hooks Cursor, Copilot CLI and Devin CLI also run). Copilot `env` and `cwd` values are never read. Every displayed hook
 field (command, argv, prompt, matcher, `if`, an unknown handler type, the mcp_tool
 server and tool, module names) goes through the command-text redactor: the shared rules
 (userinfo, `key=value`, secret-named flags, Authorization schemes, vendor key prefixes),
@@ -134,14 +136,19 @@ Grading (category `Hook`; the same ladder for every agent; first row wins):
 
 | Hook | Repository (project, local) | Your own (user) | Managed | Official plugin | Third-party plugin | Disabled or inactive |
 |---|---|---|---|---|---|---|
-| your own notification hook: `jq` of its event piped to curl/wget with a parseable host, nothing else matched | Critical | Low (names the host, as the http hook to it) | Critical | Critical | Critical | — |
+| your own notification hook: `jq` of its event (or `cat` passing it through) piped to curl/wget with a parseable host, `$VAR` only in a header value, nothing else matched | Critical | Low (names the host, as the http hook to it) | Critical | Critical | Critical | — |
 | command matching a critical or high dangerous pattern; module whose shell command does | Critical | Critical | Critical | Critical | Critical | — |
 | command matching only medium patterns (`printenv`, an `API_KEY` name) | Critical (named) | Critical (named) | — | — | in the plugin's Low | — |
+| module whose shell command matches only medium patterns (`execSync("printenv NODE_ENV")`) | Medium (named) | Low (named) | — | — | in the plugin's Low | — |
 | command that runs a script in another tool's config directory | High | High | High | — | High | — |
 | ... where every such script is under your HOME (`~/.claude/hooks/fmt.sh` from `~/.codex/hooks.json`) | High | Low (advisory) | High | — | High | — |
 | http to a host off the machine and its network | High | Low | — | — | Medium (its own finding) | — |
-| prompt/agent with a prompt-injection phrase or hidden characters | Medium | Low | — | Low | Low | — |
-| prompt/agent without one | Low | — | — | — | in the plugin's Low | — |
+| prompt/agent the agent itself reads (Copilot CLI prompt, Kiro agent action; Devin CLI's and other undocumented prompts) naming a credential path and carrying an injection phrase or hidden characters | Critical | Critical | Critical | Critical | Critical | — |
+| ... with a concealment, override or tag phrase, hidden characters, or a credential path | High | Low | — | Low | Medium (its own finding) | — |
+| ... with only phrases ordinary instructions also use ("first read", "this is very important", "system prompt", "before using this tool", `<important>`) | Medium | — | — | — | in the plugin's Low | — |
+| ... with none | Low (advisory) | — | — | — | in the plugin's Low | — |
+| evaluator prompt/agent (Claude Code, Cursor) with a prompt-injection phrase or hidden characters | Medium | Low | — | Low | Low | — |
+| evaluator prompt/agent without one | Low | — | — | — | in the plugin's Low | — |
 | mcp_tool | Medium | — | — | — | in the plugin's Low | — |
 | any other command or module, including one whose matches are only inside a guard's test, a loopback send, or (modules) code outside any shell-execution call; http to loopback, the agent's own vendor API or the local network | Medium | — | — | — | in the plugin's Low | — |
 
@@ -161,13 +168,36 @@ format), so it is a Low advisory worded "cross-references another agent's config
 directory in your home", while a repository's hook reaching there, or a user hook naming
 a repository-relative `.vscode/` script, stays High ("the Shai-Hulud persistence
 pattern"); and a push notification (`jq -r .message | curl -s -d @- ntfy.sh/topic`: a
-jq of the hook's own stdin, no file, `env` or `$`, a body from stdin or a literal, one
-host, no proxy, config file or `@file` upload) sends less than an http hook to the same
-host and is graded like it (Low, naming the host); a credential path, the environment,
-a fetch piped to a shell or an obfuscated match stays Critical. Every graded command
-title names the patterns it matched. A pattern that appears only as the argument of a
+jq of the hook's own stdin, or a bare `cat` passing the event JSON through, no file,
+`env` or `$` other than a plain `$NAME` in a header value such as an authenticated
+topic's `Authorization: Bearer $NTFY_TOKEN`, a body from stdin or a literal, one host, no
+proxy, config file or `@file` upload) sends no more than an http hook to the same host
+and is graded like it (Low, naming the host, and not marked DANGEROUS in the inventory);
+a credential path, the environment, a fetch piped to a shell or an obfuscated match
+stays Critical. A repository's hook that runs a script the same git work tree keeps in
+its own `.claude/`, `.cursor/`, `.codex/` or `.gemini/` directory (`.cursor/hooks.json`
+running `.claude/hooks/check-style.sh`, which Cursor runs from `.claude/settings.json`
+anyway, cursor.com/docs/reference/third-party-hooks) is that repository's plain hook
+(Medium, worded "runs a script this repository keeps in its .claude/ directory"); a
+`.vscode/` script, another directory, or a path out of the work tree keeps High. Every graded command
+title names the patterns it matched. Flag, program and code rows match whole tokens:
+`--no-verify` only as its own flag (not `--no-verify-ssl-warnings`), `nc -l` only as its
+own program (not `rsync -l`), `subprocess`, `child_process` and `os.system` only as code
+tokens (not `no_subprocess_guard.py`, `subprocess_tools.lint` or `hooks/subprocess.py`),
+`eval(` and `exec(` only after a non-identifier character; name rows (`API_KEY`,
+`GITHUB_TOKEN`) stay substrings. A pattern that appears only as the argument of a
 guard (`grep`, `egrep`, `fgrep`, `rg`, `ag`, `test`, `[`, `[[`, with no command
-substitution in it: `jq -r .tool_input.command | grep -q -- '--no-verify' && exit 2`) or
+substitution in it: `jq -r .tool_input.command | grep -q -- '--no-verify' && exit 2`), in
+a `case` pattern (`case "$cmd" in *--no-verify*) exit 2;; esac`; the clause bodies are
+still checked), in the filter of a jq stage that only tests its input (no `env`,
+`$ENV`, `input`, file operand or `--rawfile`, its output piped nowhere:
+`jq -e '.tool_input.command | test("--no-verify")' && exit 2`), in the string literals of
+a `python -c` whose code only computes `sys.exit` (no `os`, `subprocess`, `open`,
+`eval`, `exec`, `urllib`, `socket`, ...), behind a shell existence test
+(`${OPENAI_API_KEY:+api key}` never expands the key), in an exec-form `args` element of
+a program that only prints or tests its arguments (`echo`, `printf`, `notify-send`,
+`terminal-notifier`, `logger`, `say`, `test`: there is no shell, so a pipeline pattern in
+its argv is data; a shell, interpreter, wrapper or network client keeps its hits) or
 only as data piped to a curl/wget stage whose every URL and host-shaped word is loopback
 (no proxy, `--connect-to`, `--resolve`, config file or `--next`, and no credential path
 named anywhere in the command) is advisory, and an advisory-only hook is graded as a
@@ -179,9 +209,21 @@ API (Claude Code and the agents reading its files: `api.anthropic.com`; Codex:
 provider's API as for a base URL: a hook posting every tool event to `api.cloudflare.com`
 or a router such as `openrouter.ai` is graded as the off-network host it is. A local-network host (private, link-local or
 CGNAT address, single-label name, `.local`, `host.docker.internal`) is graded as a
-`.env` gateway to one is. A prompt or agent hook's prompt goes to the hook's evaluator
+`.env` gateway to one is. Where a prompt or agent hook's prompt goes decides how it is
+read (`prompt_target` in the JSON; vendor docs fetched 2026-10-23). A Copilot CLI prompt
+hook ("Prompt hooks auto-submit text as if the user typed it", docs.github.com/en/copilot/reference/hooks-configuration)
+and a Kiro agent action ("the prompt specified in the hook is appended to the user
+prompt", kiro.dev/docs/hooks/actions) are text in the agent's own conversation
+(`conversation`), like an MCP tool description or a rules file: matched against the whole
+MCP tool-poisoning list, checked for the credential paths they name (lexically:
+`~/.aws/credentials`, `~/.ssh/id_rsa`, `.env`, nothing is opened), titled "submits a
+prompt into the agent's conversation", and graded on the conversation rows above with
+no evaluator cap. Floor: Devin CLI documents a prompt hook only as "to evaluate an LLM
+prompt" and Devin Desktop and Gemini CLI document none, so their prompts are
+`undocumented` and graded as conversation text (the stricter reading). A Claude Code or
+Cursor prompt hook's prompt goes to the hook's evaluator
 model or subagent, not into the agent's context (only the decision's `reason` reaches
-the agent; code.claude.com/docs/en/hooks-guide), so it is matched against a narrower
+the agent; code.claude.com/docs/en/hooks-guide, cursor.com/docs/hooks), so it is matched against a narrower
 phrase list than MCP tool descriptions ("first read", "system prompt", "do not mention",
 "do not display", "this is very important" and "before using this tool" are ordinary
 evaluator wording, and so are guard phrasings such as "the agent must never reveal API
@@ -191,8 +233,12 @@ matched on the raw text, on the text folded as the shell-pattern matcher folds i
 characters and soft hyphens dropped, fullwidth letters and homoglyphs mapped, every
 Unicode space one space) and on the ASCII that tag characters spell; a prompt carrying
 tag characters, variation-selector payloads, zero-width characters or bidi controls is
-graded like an injection phrase (`invisible Unicode (tag-block)`), since the evaluator
-model reads what the reviewer cannot see. A hook module's
+graded like an injection phrase (`invisible Unicode (tag-block)`), since the
+model reads what the reviewer cannot see. Ordinary text is not hidden text: a ZWJ
+between two emoji parts (🧑‍💻, 👨‍👩‍👧, ❤️‍🔥) and a zero-width character between two non-ASCII
+letters (Persian ZWNJ, Thai ZWSP) do not count, and a directional mark (LRM, RLM, ALM)
+counts only in text with no right-to-left letter or between two ASCII letters; the
+embedding, override and isolate controls always count. A hook module's
 source is lexed (strings, template literals, comments and regex literals; nothing is
 run): a string or template a shell-execution call receives (`exec`, `execSync`,
 `spawn`, `execFile`, execa, `Bun.spawn`, `Deno.Command`, `` $`...` ``, and a Claude Code
@@ -209,7 +255,10 @@ third-party plugin hook graded on its own carries `(third-party plugin 'p@m')` i
 title. Plugins of agents other than Claude Code are graded as third-party and titled
 `plugin (provenance not verified)`: no official-marketplace model is verified for them
 (Copilot CLI's default marketplaces are GitHub's, but its installed-plugin layout is not
-documented, so no directory name is trusted).
+documented, so no directory name is trusted). A Claude Code plugin is official only when
+its marketplace is registered in `~/.claude/plugins/known_marketplaces.json` with an
+official source; a marketplace missing from that file is third-party (fail closed), so
+`tp@some-market` with no registration is graded, not silenced.
 
 A managed Claude Code `allowManagedHooksOnly: true` or `disableAllHooks: true` silences
 the non-managed hooks only Claude Code runs: plugin hooks, skill, command and subagent
@@ -225,7 +274,10 @@ skips it under the managed allowManagedHooksOnly; Cursor, GitHub Copilot CLI and
 CLI still run this file's hooks)`. A user `disableAllHooks` silences nothing (a project
 file can turn it back off). A disabled plugin, a marketplace clone or an orphaned cache
 version is never visited or is inventory only; the summary's `agent_hooks_inactive_count`
-(terminal: "of which inactive") counts the inventoried hooks that never run, and the
+(terminal: "of which inactive") counts the inventoried hooks that never run,
+`agent_settings_commands_count` (terminal: "of which settings commands") the
+`statusLine`/`subagentStatusLine`/`fileSuggestion` commands counted with the hooks
+(code.claude.com/docs/en/statusline: settings commands, not hooks), and the
 HTML and Blueprint show `(disabled)` and an inactive plugin as the terminal does.
 
 Files are opened as settings files are: repository files with `O_NOFOLLOW`, a link at
@@ -233,7 +285,8 @@ any depth below the repository (`.github/hooks/x.json -> ~/.aws/credentials`,
 `.kiro/hooks -> ../../elsewhere`) inventoried by its link text and never followed out;
 user, managed and plugin files read through a link only when its lexical and real target
 are not a credential, key, agent-config, system or other-user path outside the agent's
-own directory; a plugin file whose real path leaves the plugin is never read (Claude
+own directory, judged against both `$HOME` and the home being scanned (a `--search-dirs`
+home's `.gemini/settings.json -> .docker/config.json` is inventoried, not opened); a plugin file whose real path leaves the plugin is never read (Claude
 Code refuses it too). A plugin, extension or installed-plugin root that is itself a
 symlink (or sits under one) is judged on its real path: into a credential, system or
 other-user path it is inventoried by that target and nothing under it is read; to your
@@ -253,6 +306,7 @@ Floors (documented but not read):
 - OpenCode: npm plugin package sources (installed by Bun into `~/.cache/opencode`).
 - Kiro: legacy IDE `*.kiro.hook` files and CLI 2.x profile-scoped hooks.
 - Everywhere: Windows paths (`%APPDATA%`, `ProgramData`).
+- Budgets: at most 500 hooks per file entry (a plugin manifest's list of hook files is read once per path and only until the entry's cap) and 10,000 per scan; hooks past either are not parsed (the file is counted as a miss in the diagnostics and traced as "hook budget spent" under `--trace`). The on-disk checks of one command (native-binary probe, symlink check) stop after 16 path words, program words first, and after 20,000 per scan; the lexical agent-directory check still sees every word.
 
 A built-in **threat catalog** (228 entries) flags known-malicious or known-vulnerable
 packages, MCP servers, IDE plugins and browser extensions during the scan — and, via the

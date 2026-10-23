@@ -131,6 +131,68 @@ fn is_git_tracked(path: &std::path::Path) -> bool {
     super::is_git_tracked(path)
 }
 
+/// Whether `hay` (lowercased) contains the pattern `needle` (lowercased) where the
+/// pattern means what it names (review of b9cda85: the substring gate made
+/// `--no-verify-ssl-warnings`, `~/.claude/hooks/no_subprocess_guard.py`,
+/// `python3 -m subprocess_tools.lint` and `rsync -lav` Critical):
+/// - a flag (`--no-verify`) only as a whole flag token: not inside a longer word or flag
+///   (`--no-verify-ssl-warnings`, `x--no-verify`); `=`, quotes, `*` and spaces end it;
+/// - a program with a flag (`nc -l`, `ncat -l`) only as its own word (not `rsync -l`);
+/// - a code name (`subprocess`, `child_process`, `os.system`) only as a code token: not
+///   inside an identifier (`subprocess_tools`, `no_subprocess_guard`), not a path
+///   component or file name (`hooks/subprocess.py`);
+/// - a call (`eval(`, `exec(`) only after a non-identifier character (not `retrieval(`).
+///
+/// Every other row is a substring, as before (`API_KEY` is meant to match
+/// `OPENAI_API_KEY`, `| curl` any sender). Linear in `hay`.
+pub(crate) fn contains_pattern(hay: &str, needle: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let word = |c: char| ident(c) || c == '-';
+    enum Rule {
+        Flag,
+        ProgramFlag,
+        Code,
+        Call,
+        Substring,
+    }
+    let rule = match needle {
+        "--no-verify" => Rule::Flag,
+        "nc -l" | "ncat -l" => Rule::ProgramFlag,
+        "subprocess" | "child_process" | "os.system" => Rule::Code,
+        "eval(" | "exec(" => Rule::Call,
+        _ => Rule::Substring,
+    };
+    if matches!(rule, Rule::Substring) {
+        return hay.contains(needle);
+    }
+    let mut from = 0;
+    while let Some(off) = hay[from..].find(needle) {
+        let at = from + off;
+        let end = at + needle.len();
+        from = at + needle.chars().next().map_or(1, char::len_utf8);
+        let before = hay[..at].chars().next_back();
+        let after = hay[end..].chars().next();
+        let ok = match rule {
+            Rule::Flag => !before.is_some_and(word) && !after.is_some_and(word),
+            Rule::ProgramFlag => !before.is_some_and(|c| word(c) || c == '.' || c == '/') ,
+            Rule::Code => {
+                let in_path = before == Some('/') || before == Some('\\');
+                let file_name = after == Some('.') && {
+                    let ext: String = hay[end + 1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                    matches!(ext.as_str(), "py" | "sh" | "js" | "ts" | "mjs" | "cjs" | "rb" | "pl" | "md" | "json" | "txt")
+                };
+                !before.is_some_and(ident) && !after.is_some_and(ident) && !in_path && !file_name
+            }
+            Rule::Call => !before.is_some_and(ident),
+            Rule::Substring => true,
+        };
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFinding> {
     let lower = content.to_lowercase();
     // The same text with homoglyphs folded, shell quoting collapsed and invisible
@@ -141,8 +203,8 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
 
     for (description, pattern, severity) in DANGEROUS_PATTERNS {
         let needle = pattern.to_lowercase();
-        let raw_hit = lower.contains(&needle);
-        let folded_hit = normalized.contains(&needle);
+        let raw_hit = contains_pattern(&lower, &needle);
+        let folded_hit = contains_pattern(&normalized, &needle);
         if !raw_hit && !folded_hit {
             continue;
         }

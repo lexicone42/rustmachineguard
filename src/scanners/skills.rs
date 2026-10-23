@@ -81,7 +81,11 @@ impl PluginContext {
             ["marketplaces", m, _, ..] => (m.to_string(), None),
             _ => return Some(SkillProvenance::default()),
         };
-        let third_party = self.marketplaces.get(&market).is_some_and(|official| !official);
+        // Fail closed (review of b9cda85): a marketplace is official only when
+        // known_marketplaces.json registers it with an official source. One missing from
+        // that file (deleted, or never registered: `installed_plugins.json` naming
+        // `tp@some-market`) is third-party, so its hooks are graded, not silenced.
+        let third_party = !self.marketplaces.get(&market).copied().unwrap_or(false);
         let lexical = crate::scanners::persistence::lexical_join(Path::new("/"), path);
         // Active: inside an installed version's directory, and not disabled. Marketplace
         // clones and orphaned cache versions never load.
@@ -118,6 +122,7 @@ impl Scanner for SkillsScanner {
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
         let home = platform.home_dir();
+        crate::scanners::hook_sources::reset_scan_budget();
         let ctx = PluginContext::load(&home);
         let mut results = Vec::new();
 
