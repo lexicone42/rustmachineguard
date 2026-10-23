@@ -169,7 +169,9 @@ pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -
             // into the terminal report.
             command: crate::scanners::sanitize_display(&crate::scanners::redact_helper_command(cmd), 1000),
             dangerous: helper_dangerous(cmd),
-            risks: classify_claude_command(&crate::scanners::redact_helper_command(cmd), settings_path, true)
+            // Classified on the shape with path arguments kept (never displayed); the risk
+            // text names a helper's argument paths only by their agent directory.
+            risks: classify_claude_command(&crate::scanners::helper_classification_shape(cmd), settings_path, true)
                 .into_iter()
                 .map(|r| crate::scanners::sanitize_display(&r, 400))
                 .collect(),
@@ -196,7 +198,12 @@ pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<c
             // `<unparseable>`, never echoed.
             (
                 (!h.is_empty()).then(|| crate::scanners::env_files::shown_host(u.trim(), &h)),
-                (!scheme.is_empty()).then(|| crate::scanners::sanitize_display(&scheme.to_ascii_lowercase(), 16)),
+                // Only http or https is shown; any other text in the scheme position
+                // (`Hunter2pass://gw`) is `<other>`, never echoed.
+                (!scheme.is_empty()).then(|| match scheme.to_ascii_lowercase().as_str() {
+                    s @ ("http" | "https") => s.to_string(),
+                    _ => "<other>".to_string(),
+                }),
             )
         }
         None => (None, None),
@@ -752,6 +759,10 @@ fn classify_command(
             .find(|seg| AGENT_CONFIG_DIRS.contains(seg));
 
         if let Some(dir) = referenced_dir {
+            // A helper's argument paths are not shown (they routinely name the credential
+            // file); only the agent directory they reach into is.
+            let shown_dir = format!("{dir}/");
+            let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { token };
             if Some(dir) != own_dir {
                 risks.push(format!(
                     "cross-references another tool's config directory ({token}) — the \

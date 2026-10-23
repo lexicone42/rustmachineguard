@@ -711,6 +711,11 @@ pub struct EnvAgentOverride {
     /// inside the project is unknown. `inside_project` is false and means nothing then.
     #[serde(default)]
     pub unresolved: bool,
+    /// agent-home: the resolved home is in a shared temporary location (/tmp, /var/tmp,
+    /// /dev/shm) or under a world-writable directory, where another local user can
+    /// create it first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_temp: bool,
     /// ollama-host only: the bind classification (see OllamaHostSetting).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,

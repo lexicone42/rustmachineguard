@@ -445,7 +445,7 @@ pub fn redact_token_shapes(text: &str) -> String {
     out
 }
 
-pub use helper_redact::redact_helper_command;
+pub use helper_redact::{helper_classification_shape, redact_helper_command};
 
 /// A long run of key-alphabet characters mixing letters and digits that is not a path, a
 /// flag or a word-separated identifier: the shape of an API key with no recognisable
@@ -525,7 +525,7 @@ fn redact_entropy_runs_in_token(tok: &str) -> String {
 /// [`redact_entropy_runs_in_token`]): for command text that is shown as evidence, such as
 /// a skill's dynamic-context command.
 pub fn redact_command_text(text: &str) -> String {
-    let base = redact_secrets_in_text(text);
+    let base = redact_stdin_password_feeds(&redact_program_secret_flags(&redact_secrets_in_text(text)));
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
     for (s, tok) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)) {
@@ -535,6 +535,147 @@ pub fn redact_command_text(text: &str) -> String {
     }
     out.push_str(&base[last..]);
     out
+}
+
+/// Programs whose password flag takes the NEXT word and is not named like a secret
+/// (`redis-cli -a PASSWORD`): (program, flags).
+const PROGRAM_SECRET_FLAGS: &[(&str, &[&str])] = &[
+    ("redis-cli", &["-a", "--pass"]),
+    ("valkey-cli", &["-a", "--pass"]),
+    ("keydb-cli", &["-a", "--pass"]),
+    ("redis-benchmark", &["-a"]),
+    ("mongosh", &["-p"]),
+    ("mongo", &["-p"]),
+    ("mongodump", &["-p"]),
+    ("mongorestore", &["-p"]),
+    ("rabbitmqadmin", &["-p"]),
+    ("smbclient", &["-U"]),
+];
+
+/// Whitespace tokens of `text` with their byte spans.
+fn spans_of(text: &str) -> Vec<(usize, usize)> {
+    text.split_whitespace().map(|t| {
+        let s = t.as_ptr() as usize - text.as_ptr() as usize;
+        (s, s + t.len())
+    }).collect()
+}
+
+fn separator_token(t: &str) -> bool {
+    t.ends_with([';', '&', '|']) || matches!(t, "&&" | "||" | "|" | ";")
+}
+
+/// Rebuild `text` with the tokens at `redact` replaced by `<redacted>` (a glued trailing
+/// separator, `PW;`, is kept).
+fn replace_tokens(text: &str, spans: &[(usize, usize)], redact: &[bool]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (k, &(s, e)) in spans.iter().enumerate() {
+        out.push_str(&text[last..s]);
+        let t = &text[s..e];
+        if redact[k] && !t.starts_with("<redacted>") {
+            let keep = t.len() - t.trim_end_matches([';', '&', '|']).len();
+            out.push_str("<redacted>");
+            out.push_str(&t[t.len() - keep..]);
+        } else {
+            out.push_str(t);
+        }
+        last = e;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// The word after a program's own password flag ([`PROGRAM_SECRET_FLAGS`]).
+fn redact_program_secret_flags(text: &str) -> String {
+    let spans = spans_of(text);
+    let toks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+    let mut redact = vec![false; toks.len()];
+    let mut prog: Option<&[&str]> = None;
+    let mut at_start = true;
+    for k in 0..toks.len() {
+        let t = toks[k];
+        if at_start {
+            let w = t.trim_matches(['"', '\'', '(', '`']);
+            let base = w.rsplit('/').next().unwrap_or(w);
+            if !w.contains('=') {
+                prog = PROGRAM_SECRET_FLAGS.iter().find(|(p, _)| *p == base).map(|(_, f)| *f);
+                at_start = false;
+            }
+        } else if let Some(flags) = prog
+            && k > 0
+            && flags.contains(&toks[k - 1])
+            && !t.starts_with('-')
+        {
+            redact[k] = true;
+        }
+        if separator_token(t) {
+            at_start = true;
+            prog = None;
+        }
+    }
+    replace_tokens(text, &spans, &redact)
+}
+
+/// `echo PW | docker login -u me --password-stdin`: the arguments of an echo/printf
+/// stage piped into a consumer that reads a password or token from stdin
+/// (`--password-stdin`, `--with-token`, `--password-file -`) are the credential.
+fn redact_stdin_password_feeds(text: &str) -> String {
+    let markers = ["--password-stdin", "--with-token", "--password-file", "--token-stdin"];
+    if !markers.iter().any(|m| text.contains(m)) {
+        return text.to_string();
+    }
+    // A pipe glued to a word (`echo PW|docker login`) is split out first.
+    let text: String = {
+        let chars: Vec<char> = text.chars().collect();
+        let mut t = String::with_capacity(text.len() + 8);
+        for (k, &c) in chars.iter().enumerate() {
+            let single = c == '|' && chars.get(k + 1) != Some(&'|') && (k == 0 || chars[k - 1] != '|');
+            if single {
+                if k > 0 && !chars[k - 1].is_whitespace() {
+                    t.push(' ');
+                }
+                t.push('|');
+                if chars.get(k + 1).is_some_and(|n| !n.is_whitespace()) {
+                    t.push(' ');
+                }
+            } else {
+                t.push(c);
+            }
+        }
+        t
+    };
+    let spans = spans_of(&text);
+    let toks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+    let mut redact = vec![false; toks.len()];
+    for p in 0..toks.len() {
+        if toks[p] != "|" {
+            continue;
+        }
+        // The consumer: up to the next separator.
+        let consumer: Vec<&str> = toks[p + 1..].iter().copied().take_while(|t| !separator_token(t)).collect();
+        let reads_secret = consumer.iter().enumerate().any(|(k, t)| {
+            matches!(*t, "--password-stdin" | "--with-token" | "--token-stdin" | "--password-file=-")
+                || (*t == "--password-file" && consumer.get(k + 1) == Some(&"-"))
+        });
+        if !reads_secret {
+            continue;
+        }
+        // The producer: back to the start of its simple command.
+        let start = (0..p).rev().find(|&k| separator_token(toks[k])).map_or(0, |k| k + 1);
+        let Some(prog_at) = (start..p).find(|&k| !toks[k].contains('=') || toks[k].starts_with('-')) else { continue };
+        let w = toks[prog_at].trim_matches(['"', '\'', '(']);
+        if !matches!(w.rsplit('/').next().unwrap_or(w), "echo" | "printf" | "print") {
+            continue;
+        }
+        for k in prog_at + 1..p {
+            let t = toks[k].trim_matches(['"', '\'']);
+            let var = t.strip_prefix('$').is_some_and(|n| n.trim_matches(['{', '}']).bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            if (!toks[k].starts_with('-') || toks[k].len() > 3) && !var {
+                redact[k] = true;
+            }
+        }
+    }
+    replace_tokens(&text, &spans, &redact)
 }
 
 /// What the tokenizer owes the NEXT token(s): nothing, one redaction (the credential
@@ -702,7 +843,12 @@ fn redact_url(url: &str) -> String {
             let query: Vec<String> = query
                 .split('&')
                 .map(|kv| match kv.split_once('=') {
-                    Some((k, v)) if !v.is_empty() && is_secret_key(k) => format!("{k}=<redacted>"),
+                    // A quote or paren closing the surrounding word (`'https://x/?api_key=X'`)
+                    // is the shell's, not the value's: it is kept.
+                    Some((k, v)) if !v.is_empty() && is_secret_key(k) => {
+                        let tail = &v[v.trim_end_matches(['\'', '"', ')', '`']).len()..];
+                        format!("{k}=<redacted>{tail}")
+                    }
                     _ => kv.to_string(),
                 })
                 .collect();
@@ -1810,17 +1956,31 @@ fn output_with_timeout_at(
     timeout: std::time::Duration,
     site: &'static str,
 ) -> Option<std::process::Output> {
-    output_with_timeout_capped(cmd, timeout, site, MAX_CHILD_OUTPUT)
+    output_with_cap(cmd, timeout, site, MAX_CHILD_OUTPUT, false)
 }
 
-/// [`output_with_timeout_at`] with an explicit output cap. A child that writes past the
-/// cap is killed at once (not left to the timeout) and None is returned: its output is
-/// incomplete.
+/// [`output_with_timeout_at`] with an explicit output cap that is ENFORCED, whatever its
+/// size: a child that writes past the cap is killed at once (not left to the timeout)
+/// and None is returned, since its output is incomplete. A cut-off listing is never
+/// returned as complete (review round 6: the old `cap < MAX_CHILD_OUTPUT` test made the
+/// 32 MiB `git ls-files` cap a no-op).
 fn output_with_timeout_capped(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
     site: &'static str,
     cap: usize,
+) -> Option<std::process::Output> {
+    output_with_cap(cmd, timeout, site, cap, true)
+}
+
+/// The shared runner. `strict`: output past `cap` is an incomplete answer (None); without
+/// it the first `cap` bytes are returned (callers that only read a bounded prefix).
+fn output_with_cap(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+    site: &'static str,
+    cap: usize,
+    strict: bool,
 ) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
@@ -1848,7 +2008,7 @@ fn output_with_timeout_capped(
         buf
     });
     let start = std::time::Instant::now();
-    let capped = cap < MAX_CHILD_OUTPUT;
+    let capped = strict;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -1884,3 +2044,27 @@ fn output_with_timeout_capped(
 /// Upper bound on bytes kept from a child's stdout. 8 MiB is a very large repository's
 /// `git ls-files -s`; the callers only ever need a bounded prefix.
 pub const MAX_CHILD_OUTPUT: usize = 8 * 1024 * 1024;
+
+#[cfg(all(test, unix))]
+mod capped_output_tests {
+    use super::*;
+
+    /// Review round 6: a cap above MAX_CHILD_OUTPUT (the 32 MiB `git ls-files` cap) is
+    /// enforced: a child that writes past it is an incomplete answer (None), never a
+    /// silently cut-off listing returned as complete.
+    #[test]
+    fn explicit_caps_above_the_default_are_enforced() {
+        let cap = MAX_CHILD_OUTPUT + 100;
+        let t = std::time::Duration::from_secs(20);
+        let mut over = child_command("/bin/sh");
+        over.args(["-c", &format!("head -c {} /dev/zero", cap + 1000)]);
+        assert!(output_with_timeout_capped(&mut over, t, "test", cap).is_none(), "a cut-off listing was returned as complete");
+        let mut under = child_command("/bin/sh");
+        under.args(["-c", &format!("head -c {} /dev/zero", cap - 1000)]);
+        let out = output_with_timeout_capped(&mut under, t, "test", cap).expect("complete output under the cap");
+        assert_eq!(out.stdout.len(), cap - 1000);
+        let mut small = child_command("/bin/sh");
+        small.args(["-c", "head -c 5000 /dev/zero"]);
+        assert!(output_with_timeout_capped(&mut small, t, "test", 1000).is_none());
+    }
+}

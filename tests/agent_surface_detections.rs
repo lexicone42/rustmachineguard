@@ -425,10 +425,10 @@ fn env_agent_home_gateway_proxy_overrides() {
     }
 
     let fb: Vec<_> = at("/projb/").into_iter().filter(|f| f.category != "Secret exposure" && f.category != "Secret leak").collect();
-    assert_eq!(fb.len(), 1, "official host, loopback gateway/proxy and untracked headers must stay quiet: {dump}");
-    assert_eq!(fb[0].category, "Agent redirection");
-    assert_eq!(fb[0].severity, Severity::Low);
-    assert!(fb[0].title.contains("CODEX_HOME") && fb[0].title.contains("Codex home to /somewhere/.codex-work"), "{dump}");
+    // Review round 6: a home outside the project is inventory only.
+    assert!(fb.is_empty(), "official host, loopback gateway/proxy, untracked headers and an outside home must stay quiet: {dump}");
+    let eb = report.env_files.iter().find(|e| e.path.contains("/projb/")).unwrap();
+    assert!(eb.agent_overrides.iter().any(|o| o.key == "CODEX_HOME" && o.value.as_deref() == Some("/somewhere/.codex-work") && !o.inside_project), "{eb:#?}");
 
     let fc: Vec<_> = at("/projc/").into_iter().filter(|f| f.category != "Secret exposure").collect();
     assert!(fc.is_empty(), "[::1] gateway and loopback OLLAMA_HOST are quiet: {dump}");
@@ -921,7 +921,7 @@ fn helper_literals_and_terminal_escapes_never_reach_the_report() {
     let user = report.agent_settings.iter().find(|s| s.source == "user-global").unwrap();
     let cmd = |k: &str| user.helper_commands.iter().find(|h| h.event == k).map(|h| h.command.clone()).unwrap();
     assert_eq!(cmd("apiKeyHelper"), "echo <redacted>");
-    assert_eq!(cmd("awsAuthRefresh"), "MYPASS=<redacted> aws sso login");
+    assert_eq!(cmd("awsAuthRefresh"), "MYPASS=<redacted> aws <redacted> <redacted>");
     let findings = collect_findings(&report);
     let helpers = of(&findings, "Helper command");
     // settings.local.json untracked: the user's own file, Low.
@@ -2233,14 +2233,17 @@ fn committed_mode_env_files_are_application_config() {
 }
 
 /// A committed CLAUDE_CONFIG_DIR that points outside the project (a devcontainer home)
-/// loads nothing the repository controls: Low, worded as outside the project. Inside
-/// the project it stays High (the CVE-2026-13745 shape).
+/// loads nothing the repository controls: inventory only (review round 6: the finding
+/// said so in its own title). A shared temporary directory outside the project is Low,
+/// worded as such. Inside the project it stays High (the CVE-2026-13745 shape).
 #[test]
-fn committed_agent_home_outside_the_project_is_low() {
+fn committed_agent_home_outside_the_project_is_inventory_only() {
     let home = temp_home("dchome");
     let dc = home.join("dc");
     let have_git = git_repo(&dc, &home);
-    write(&dc.join(".env"), "CLAUDE_CONFIG_DIR=/home/node/.claude\n");
+    write(&dc.join(".env"), "CLAUDE_CONFIG_DIR=/home/node/.claude\nCODEX_HOME=${HOME}/.codex-work\n");
+    let shared = home.join("shared");
+    write(&shared.join(".env"), "CLAUDE_CONFIG_DIR=/tmp/claude\n");
     let inside = home.join("inside");
     let _ = git_repo(&inside, &home);
     write(&inside.join(".env"), "CLAUDE_CONFIG_DIR=./.claude-home\n");
@@ -2250,15 +2253,19 @@ fn committed_agent_home_outside_the_project_is_low() {
             git(p, &home, &["commit", "-q", "-m", "x"]);
         }
     }
-    register_projects(&home, &[&dc, &inside]);
+    register_projects(&home, &[&dc, &inside, &shared]);
     let (_, report) = scan(&home, &["envfiles"]);
     let _ = fs::remove_dir_all(&home);
     let findings = collect_findings(&report);
     let ar = of(&findings, "Agent redirection");
     let dump = format!("{ar:#?}");
-    let out = ar.iter().find(|f| f.location.contains("/dc/")).expect("reported");
-    assert_eq!(out.severity, Severity::Low, "{dump}");
-    assert!(out.title.contains("/home/node/.claude outside the project"), "{dump}");
+    assert!(!ar.iter().any(|f| f.location.contains("/dc/")), "an outside home is inventory only: {dump}");
+    assert!(!ar.iter().any(|f| f.title.contains("nothing the repository controls")), "{dump}");
+    let dce = report.env_files.iter().find(|e| e.path.contains("/dc/")).unwrap();
+    assert_eq!(dce.agent_overrides.len(), 2, "still inventoried: {dce:#?}");
+    let sh = ar.iter().find(|f| f.location.contains("/shared/")).expect("shared temp home reported");
+    assert_eq!(sh.severity, Severity::Low, "{dump}");
+    assert!(sh.title.contains("/tmp/claude, a shared temporary directory"), "{dump}");
     if have_git {
         assert!(ar.iter().any(|f| f.location.contains("/inside/") && f.severity == Severity::High && f.title.contains("inside the project")), "{dump}");
     }
@@ -2691,8 +2698,8 @@ fn unresolved_agent_homes_are_not_called_outside() {
     }
     let u = at(&untracked);
     assert!(u.len() == 1 && u[0].severity == Severity::Low && u[0].title.contains("could not be resolved"), "{dump}");
-    let o = at(&outside);
-    assert!(o.len() == 1 && o[0].severity == Severity::Low && o[0].title.contains("nothing the repository controls"), "{dump}");
+    // A known outside home is inventory only (review round 6).
+    assert!(at(&outside).is_empty(), "{dump}");
     let tracked_s = format!("{}/", tracked.display());
     let env = report.env_files.iter().find(|e| e.path.starts_with(&tracked_s)).unwrap();
     assert!(env.agent_overrides.iter().all(|o| o.unresolved && !o.inside_project), "{env:#?}");
@@ -2935,7 +2942,7 @@ fn quoted_literals_and_here_strings_never_reach_any_output() {
     }
     let u = report.agent_settings.iter().find(|s| s.source == "user-global").unwrap();
     let vault = u.helper_commands.iter().find(|h| h.event == "gcpAuthRefresh").unwrap();
-    assert_eq!(vault.command, "vault kv get -field=<redacted> secret/anthropic", "{u:#?}");
+    assert_eq!(vault.command, "vault <redacted> <redacted> -field=<redacted> <redacted>", "{u:#?}");
     let skill = report.agent_skills.iter().find(|s| s.path.ends_with("tok/SKILL.md")).unwrap();
     assert!(skill.dynamic_commands[0].command.contains("--with-token <<< <redacted>"), "{skill:#?}");
 }
@@ -3006,4 +3013,278 @@ fn login_method_and_pin_values_are_allowlisted() {
     for want in ["sha = <unparseable>", "sha = release/1.2", "sha = abc1234"] {
         assert!(details.contains(&want), "{want}: {details:?}");
     }
+}
+
+// ── Review round 6 fixes: each test below fails on 3b420f7 ───────────────────────
+
+/// The seven `eval` shapes and the quote-concatenation shapes from the review never put
+/// the literal into any output format (each eval word used to be shaped as its own
+/// command, so the literal became a kept program word; `$x"LIT"` read as a reference).
+#[test]
+fn eval_and_quote_concatenated_helper_literals_never_reach_any_output() {
+    const C: &str = "Zq9Hunter2Pw";
+    let home = temp_home("r6eval");
+    let shapes = [
+        format!("eval echo {C}"),
+        format!("command eval echo {C}"),
+        format!("sh -c 'eval echo {C}'"),
+        format!("eval mytool {C}"),
+        format!("true && eval echo {C}"),
+        format!("eval -- echo {C}"),
+        format!("builtin eval echo {C}"),
+        format!("echo $x\"{C}\""),
+        format!("echo \"$x\"{C}"),
+        format!("{C} --flag"),
+    ];
+    let keys = ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh", "otelHeadersHelper"];
+    let mut user = serde_json::Map::new();
+    let mut managed = serde_json::Map::new();
+    for (i, cmd) in shapes.iter().enumerate() {
+        let target = if i < 5 { &mut user } else { &mut managed };
+        target.insert(keys[i % 5].to_string(), serde_json::Value::String(cmd.clone()));
+    }
+    write(&home.join(".claude/settings.json"), &serde_json::Value::Object(user).to_string());
+    write(&managed_dir(&home.join("sysroot")).join("managed-settings.json"), &serde_json::Value::Object(managed).to_string());
+    let mut outs = Vec::new();
+    for fmt in ["json", "terminal", "html", "blueprint"] {
+        outs.push((fmt, scan_format(&home, &["settings"], fmt)));
+    }
+    let report: ScanReport = serde_json::from_str(&outs[0].1).unwrap();
+    let _ = fs::remove_dir_all(&home);
+    for (fmt, out) in &outs {
+        assert!(!out.contains(C) && !out.to_lowercase().contains(&C.to_lowercase()), "{fmt}: a helper literal survived");
+    }
+    let helpers: Vec<_> = report.agent_settings.iter().flat_map(|s| &s.helper_commands).collect();
+    assert_eq!(helpers.len(), shapes.len(), "every shape reached the report: {helpers:#?}");
+    assert!(helpers.iter().any(|h| h.command == "eval 'echo <redacted>'"), "{helpers:#?}");
+    assert!(helpers.iter().any(|h| h.command == "<program> --flag"), "{helpers:#?}");
+}
+
+/// A walk root that is a directory link into a credential directory
+/// (`~/.claude/commands -> ~/.config/gh`, `~/.claude/hooks -> ~/.config/gcloud`) is not
+/// listed or read: one directory-level entry, High, no file and no hash. The same link
+/// from a project is reported for the project, not hidden by the global entry. Negative
+/// control: a dotfiles-managed `~/.claude/commands` is walked, its files hashed and
+/// recorded as reached through the link, and nothing is reported.
+#[test]
+fn linked_walk_roots_into_credential_dirs_are_not_read() {
+    use std::os::unix::fs::symlink;
+    let home = temp_home("r6rootlink");
+    let gh = "github.com:\n    oauth_token: gho_GHCANARYTOKENVALUE0000000000\n";
+    let gcloud = "{\"secret\":\"CANARYSECRET_GCLOUD\",\"type\":\"authorized_user\"}\n";
+    write(&home.join(".config/gh/hosts.yml"), gh);
+    write(&home.join(".config/gh/notes.md"), "GHMDCANARY\n");
+    write(&home.join(".config/gcloud/application_default_credentials.json"), gcloud);
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    symlink(home.join(".config/gh"), home.join(".claude/commands")).unwrap();
+    symlink(home.join(".config/gcloud"), home.join(".claude/hooks")).unwrap();
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    symlink(home.join(".config/gh"), proj.join(".claude/commands")).unwrap();
+    register_projects(&home, &[&proj]);
+    let mut outs = Vec::new();
+    for fmt in ["json", "terminal", "html", "blueprint"] {
+        outs.push((fmt, scan_format(&home, &["skills"], fmt)));
+    }
+    let report: ScanReport = serde_json::from_str(&outs[0].1).unwrap();
+    for (fmt, out) in &outs {
+        for c in [rustmachineguard::scanners::sha256_hex(gh), rustmachineguard::scanners::sha256_hex(gcloud)] {
+            assert!(!out.contains(&c[..16]), "{fmt}: a credential file's hash was reported");
+        }
+        assert!(!out.contains("hosts.yml") && !out.contains("application_default_credentials"), "{fmt}: a credential file was listed");
+    }
+    let dump = format!("{:#?}", report.agent_skills);
+    let dir = |suffix: &str| {
+        report
+            .agent_skills
+            .iter()
+            .find(|s| s.path.ends_with(suffix))
+            .unwrap_or_else(|| panic!("{suffix}: {dump}"))
+    };
+    for (suffix, scope) in [("/.claude/commands", "global"), ("/.claude/hooks", "global"), ("proj/.claude/commands", "project")] {
+        let d = dir(suffix);
+        assert_eq!((d.scope.as_str(), d.file_type.as_str(), d.sha256.as_str(), d.size_bytes), (scope, "directory", "symlink-not-followed", 0), "{dump}");
+        assert!(d.symlink.as_ref().is_some_and(|l| l.sensitive_target && l.through_directory && !l.followed), "{dump}");
+    }
+    assert!(!report.agent_skills.iter().any(|s| s.path.contains("notes.md")), "{dump}");
+    let findings = collect_findings(&report);
+    let sym = of(&findings, "Skill symlink");
+    let fd = format!("{sym:#?}");
+    assert_eq!(sym.iter().filter(|f| f.severity == Severity::High && f.title.starts_with("skill directory")).count(), 3, "{fd}");
+
+    // Negative control: the user's own dotfiles-managed commands directory.
+    let home2 = temp_home("r6rootlink-ok");
+    let review = "Review the diff.\n";
+    write(&home2.join("dotfiles/claude-commands/review.md"), review);
+    fs::create_dir_all(home2.join(".claude")).unwrap();
+    symlink(home2.join("dotfiles/claude-commands"), home2.join(".claude/commands")).unwrap();
+    let (_, report2) = scan(&home2, &["skills"]);
+    let _ = fs::remove_dir_all(&home2);
+    let _ = fs::remove_dir_all(&home);
+    let r = report2.agent_skills.iter().find(|s| s.path.ends_with("commands/review.md")).unwrap_or_else(|| panic!("{:#?}", report2.agent_skills));
+    assert_eq!(r.sha256, rustmachineguard::scanners::sha256_hex(review));
+    assert!(r.symlink.as_ref().is_some_and(|l| l.through_directory && l.followed && !l.escapes && !l.sensitive_target), "{r:#?}");
+    assert!(of(&collect_findings(&report2), "Skill symlink").is_empty());
+}
+
+/// The user's own skill script linked into `~/.local/bin` (the XDG location of user
+/// scripts) is followed and not reported; one linked into `~/.config/<tool>` stays Low
+/// at most.
+#[test]
+fn skill_scripts_linked_into_local_bin_are_the_users_own() {
+    use std::os::unix::fs::symlink;
+    let home = temp_home("r6localbin");
+    write(&home.join(".local/bin/deploy.sh"), "echo deploy\n");
+    write(&home.join(".config/git/hooks/pre.sh"), "echo pre\n");
+    let skill = home.join(".claude/skills/deploy");
+    write(&skill.join("SKILL.md"), "---\nname: deploy\n---\nDeploy.\n");
+    fs::create_dir_all(skill.join("scripts")).unwrap();
+    symlink(home.join(".local/bin/deploy.sh"), skill.join("scripts/deploy.sh")).unwrap();
+    symlink(home.join(".config/git/hooks/pre.sh"), skill.join("scripts/pre.sh")).unwrap();
+    let (_, report) = scan(&home, &["skills"]);
+    let _ = fs::remove_dir_all(&home);
+    let d = report.agent_skills.iter().find(|s| s.path.ends_with("scripts/deploy.sh")).unwrap();
+    assert!(d.symlink.as_ref().is_some_and(|l| l.followed), "{d:#?}");
+    assert_eq!(d.sha256, rustmachineguard::scanners::sha256_hex("echo deploy\n"));
+    let findings = collect_findings(&report);
+    assert!(!findings.iter().any(|f| f.location.ends_with("deploy.sh")), "{findings:#?}");
+    assert!(findings.iter().filter(|f| f.location.ends_with("pre.sh")).all(|f| f.severity == Severity::Low), "{findings:#?}");
+    // The evidence is the bare target: the renderers draw their own arrow.
+    assert!(findings.iter().filter(|f| f.category == "Skill symlink").all(|f| !f.evidence.as_deref().unwrap_or("").starts_with("->")));
+}
+
+/// systemd merges a unit with its drop-ins (last assignment wins, an empty
+/// `Environment=` resets, `UnsetEnvironment=` removes): a `systemctl edit` override that
+/// restores loopback over a packaged unit's 0.0.0.0 is quiet, and an override that opens
+/// a loopback unit to every interface is reported at the drop-in.
+#[test]
+fn systemd_drop_ins_override_the_unit_ollama_host() {
+    let home = temp_home("r6dropin");
+    let sys = home.join("sysroot/etc/systemd/system");
+    write(&sys.join("ollama.service"), "[Service]\nExecStart=/usr/local/bin/ollama serve\nEnvironment=\"OLLAMA_HOST=0.0.0.0:11434\"\n");
+    write(&sys.join("ollama.service.d/override.conf"), "[Service]\nEnvironment=\"OLLAMA_HOST=127.0.0.1:11434\"\n");
+    let user = home.join(".config/systemd/user");
+    write(&user.join("ollama.service"), "[Service]\nExecStart=/usr/bin/ollama serve\nEnvironment=OLLAMA_HOST=0.0.0.0\n");
+    write(&user.join("ollama.service.d/10-local.conf"), "[Service]\nEnvironment=OLLAMA_HOST=\n");
+    write(&user.join("ollama2.service"), "[Service]\nExecStart=/usr/bin/ollama serve\nEnvironment=OLLAMA_HOST=127.0.0.1\n");
+    write(&user.join("ollama2.service.d/override.conf"), "[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0\n");
+    write(&user.join("ollama3.service"), "[Service]\nExecStart=/usr/bin/ollama serve\nEnvironment=OLLAMA_HOST=0.0.0.0\n");
+    write(&user.join("ollama3.service.d/reset.conf"), "[Service]\nEnvironment=\n");
+    write(&user.join("ollama4.service"), "[Service]\nExecStart=/usr/bin/ollama serve\nEnvironment=OLLAMA_HOST=0.0.0.0\n");
+    write(&user.join("ollama4.service.d/unset.conf"), "[Service]\nUnsetEnvironment=OLLAMA_HOST\n");
+    // Lexical order among drop-ins: 20- wins over 10-.
+    write(&user.join("ollama5.service"), "[Service]\nExecStart=/usr/bin/ollama serve\n");
+    write(&user.join("ollama5.service.d/10-open.conf"), "[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0\n");
+    write(&user.join("ollama5.service.d/20-close.conf"), "[Service]\nEnvironment=OLLAMA_HOST=127.0.0.1\n");
+    let (_, report) = scan(&home, &["shell"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    let oe = of(&findings, "Ollama exposure");
+    assert_eq!(oe.len(), 1, "{oe:#?}");
+    assert!(oe[0].location.ends_with("ollama2.service.d/override.conf"), "{oe:#?}");
+    // One entry per unit, at the file that supplies the effective value.
+    let units: Vec<&str> = report.shell_configs.iter().filter(|s| s.shell.starts_with("systemd")).map(|s| s.config_path.as_str()).collect();
+    assert!(!units.iter().any(|p| p.ends_with("system/ollama.service") || p.ends_with("user/ollama.service")), "{units:#?}");
+    assert!(units.iter().any(|p| p.ends_with("system/ollama.service.d/override.conf")), "{units:#?}");
+    assert!(units.iter().any(|p| p.ends_with("ollama5.service.d/20-close.conf")), "{units:#?}");
+    assert!(!units.iter().any(|p| p.contains("ollama3") || p.contains("ollama4")), "{units:#?}");
+}
+
+/// A login gateway on this machine is silent like a loopback base URL in the same file;
+/// the scheme is shown only as http or https.
+#[test]
+fn loopback_login_gateway_is_quiet_and_scheme_is_gated() {
+    let home = temp_home("r6lg");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"forceLoginMethod":"claudeai","forceLoginGatewayUrl":"http://localhost:8443","env":{"ANTHROPIC_BASE_URL":"http://localhost:8443"}}"#,
+    );
+    let (_, report) = scan(&home, &["settings"]);
+    let _ = fs::remove_dir_all(&home);
+    let findings = collect_findings(&report);
+    assert!(of(&findings, "Login gateway").is_empty() && of(&findings, "Gateway routing").is_empty(), "{findings:#?}");
+
+    let home = temp_home("r6lg2");
+    write(&home.join(".claude/settings.json"), r#"{"forceLoginGatewayUrl":"Zq9Hunter2Pw://gw.example.com"}"#);
+    let (json, report) = scan(&home, &["settings"]);
+    let _ = fs::remove_dir_all(&home);
+    assert!(!json.to_lowercase().contains("zq9hunter2pw"), "the scheme position was echoed");
+    let lg = report.agent_settings.iter().find_map(|s| s.login_gateway.as_ref()).unwrap();
+    assert_eq!((lg.scheme.as_deref(), lg.host.as_deref()), (Some("<other>"), Some("gw.example.com")));
+    assert_eq!(of(&collect_findings(&report), "Login gateway").len(), 1, "positive control");
+}
+
+/// Short credential-shaped values in base-URL, proxy, OLLAMA_HOST and agent-home
+/// variables are not echoed; real hosts, service names and paths still are.
+#[test]
+fn credential_shaped_override_values_are_not_echoed() {
+    let home = temp_home("r6vals");
+    let values = [
+        "sk-1234", "sk-litellm-master", "hunter2-pass", "my-secret-pw", "tok_abc-123", "pass.word",
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", "http://gw.example:hunter2pass", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+    ];
+    let mut projects = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        let p = home.join(format!("v{i}"));
+        write(&p.join(".env"), &format!("OPENAI_API_BASE={v}\nOLLAMA_HOST={v}\nHTTPS_PROXY={v}\nCODEX_HOME={v}\n"));
+        projects.push(p);
+    }
+    let ok = home.join("ok");
+    write(&ok.join(".env"), "OPENAI_API_BASE=http://litellm:4000\nOLLAMA_HOST=ollama-1:11434\nHTTPS_PROXY=proxy.corp.example:3128\nCODEX_HOME=./.codex-home\n");
+    projects.push(ok.clone());
+    let refs: Vec<&Path> = projects.iter().map(PathBuf::as_path).collect();
+    register_projects(&home, &refs);
+    let mut outs = Vec::new();
+    for fmt in ["json", "terminal", "html", "blueprint"] {
+        outs.push((fmt, scan_format(&home, &["envfiles"], fmt)));
+    }
+    let report: ScanReport = serde_json::from_str(&outs[0].1).unwrap();
+    let _ = fs::remove_dir_all(&home);
+    for (fmt, out) in &outs {
+        let lower = out.to_lowercase();
+        for v in ["sk-1234", "sk-litellm-master", "hunter2-pass", "my-secret-pw", "tok_abc-123", "pass.word", "a1b2c3d4e5f6a7b8", "hunter2pass", "eyjhbgcioijiuzi1nij9"] {
+            assert!(!lower.contains(v), "{fmt}: {v} was echoed");
+        }
+    }
+    let e = report.env_files.iter().find(|e| e.path.contains("/ok/")).unwrap();
+    let val = |k: &str| e.agent_overrides.iter().find(|o| o.key == k).and_then(|o| o.value.clone());
+    assert_eq!(val("OPENAI_API_BASE").as_deref(), Some("litellm"), "{e:#?}");
+    assert_eq!(val("OLLAMA_HOST").as_deref(), Some("ollama-1:11434"), "{e:#?}");
+    assert_eq!(val("HTTPS_PROXY").as_deref(), Some("proxy.corp.example"), "{e:#?}");
+    assert_eq!(val("CODEX_HOME").as_deref(), Some("./.codex-home"), "{e:#?}");
+}
+
+/// Literal passwords in skill/command dynamic commands: redis-cli's `-a`/`--pass`, and
+/// an echo piped into a `--password-stdin` login. A quoted URL keeps its closing quote.
+#[test]
+fn dynamic_command_password_shapes_are_redacted() {
+    use rustmachineguard::scanners::redact_command_text as r;
+    assert_eq!(r("redis-cli -a Zq9Hunter2Pw ping"), "redis-cli -a <redacted> ping");
+    assert_eq!(r("redis-cli --pass Zq9Hunter2Pw -h db"), "redis-cli --pass <redacted> -h db");
+    assert_eq!(r("echo Zq9Hunter2Pw | docker login -u me --password-stdin"), "echo <redacted> | docker login -u me --password-stdin");
+    assert_eq!(r("printf %s Zq9Hunter2Pw|helm registry login r --password-stdin"), "printf <redacted> <redacted> | helm registry login r --password-stdin");
+    assert_eq!(r("echo -n $TOKEN | gh auth login --with-token"), "echo -n $TOKEN | gh auth login --with-token");
+    assert_eq!(r("curl 'https://x.example/?api_key=Zq9Hunter2Pw'"), "curl 'https://x.example/?api_key=<redacted>'");
+    // Negative controls: other programs' -a, and an echo piped elsewhere.
+    assert_eq!(r("ls -a /tmp"), "ls -a /tmp");
+    assert_eq!(r("echo hello | wc -c"), "echo hello | wc -c");
+    let home = temp_home("r6dyn");
+    write(&home.join(".claude/commands/c1.md"), "Ping: !`redis-cli -a Zq9Hunter2Pw ping`\n");
+    write(&home.join(".claude/commands/c2.md"), "Login: !`echo Zq9Hunter2Pw | docker login -u me --password-stdin`\n");
+    let (json, _) = scan(&home, &["skills"]);
+    let _ = fs::remove_dir_all(&home);
+    assert!(!json.contains("Zq9Hunter2Pw"), "a literal password reached dynamic_commands");
+}
+
+/// --diff keys Shell Configs on the path and the shell, not the path twice.
+#[test]
+fn diff_shell_configs_key_is_not_doubled() {
+    use rustmachineguard::diff::diff_reports;
+    let base = serde_json::json!({"shell_configs": [{"shell": "bash", "config_path": "/h/.bashrc"}]});
+    let mut cur = base.clone();
+    cur["shell_configs"][0]["ollama_host"] = serde_json::json!({"value": "0.0.0.0", "bind": "wildcard"});
+    let d = diff_reports(&base, &cur);
+    let sc = d.sections.iter().find(|s| s.name == "Shell Configs").unwrap();
+    assert_eq!(sc.changed.len(), 1, "{sc:#?}");
+    assert_eq!(sc.changed[0].name, "/h/.bashrc|bash");
 }

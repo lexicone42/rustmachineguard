@@ -294,29 +294,69 @@ pub fn runs_ollama_serve(cmdline: &str) -> bool {
     false
 }
 
-/// The last OLLAMA_HOST in a systemd unit or drop-in, and whether the unit starts the
-/// Ollama server (see [`runs_ollama_serve`]). `EnvironmentFile=` is not followed
-/// (documented floor).
-pub fn systemd_ollama_host(text: &str) -> (Option<String>, bool) {
-    let mut value = None;
-    let mut runs_ollama = false;
+/// The OLLAMA_HOST and server state of one unit as systemd builds it: the unit file,
+/// then its drop-ins in lexical order, each assignment applied in turn.
+#[derive(Default, Clone)]
+struct UnitState {
+    host: Option<String>,
+    runs: bool,
+}
+
+/// Apply one unit file or drop-in to `st`, the way systemd merges them
+/// (systemd.unit(5), systemd.exec(5)): a later `Environment=OLLAMA_HOST=` replaces an
+/// earlier one, an empty `Environment=` resets the list (OLLAMA_HOST unset),
+/// `UnsetEnvironment=OLLAMA_HOST` removes it, and an empty `ExecStart=` clears the
+/// command. Returns true when this file set or cleared OLLAMA_HOST.
+fn systemd_apply(text: &str, st: &mut UnitState) -> bool {
+    let mut touched = false;
     for line in systemd_logical_lines(text) {
         // systemd.syntax(7): the key ends at the first `=`, and whitespace around it is
         // ignored (`Environment = "OLLAMA_HOST=0.0.0.0"` is valid).
         let Some((key, rest)) = line.split_once('=') else { continue };
         match key.trim() {
             "Environment" => {
-                for w in systemd_words(rest.trim()) {
+                let words = systemd_words(rest.trim());
+                if words.is_empty() {
+                    st.host = None;
+                    touched = true;
+                }
+                for w in words {
                     if let Some(v) = w.strip_prefix("OLLAMA_HOST=") {
-                        value = Some(v.to_string());
+                        st.host = Some(v.to_string());
+                        touched = true;
                     }
                 }
             }
-            "ExecStart" if runs_ollama_serve(rest.trim()) => runs_ollama = true,
+            "UnsetEnvironment" => {
+                for w in systemd_words(rest.trim()) {
+                    if w == "OLLAMA_HOST" || st.host.as_ref().is_some_and(|h| w == format!("OLLAMA_HOST={h}")) {
+                        st.host = None;
+                        touched = true;
+                    }
+                }
+            }
+            "ExecStart" => {
+                let r = rest.trim();
+                if r.is_empty() {
+                    st.runs = false;
+                } else if runs_ollama_serve(r) {
+                    st.runs = true;
+                }
+            }
             _ => {}
         }
     }
-    (value, runs_ollama)
+    touched
+}
+
+/// The effective OLLAMA_HOST of a single systemd unit file or drop-in, and whether it
+/// starts the Ollama server (see [`runs_ollama_serve`]). `EnvironmentFile=` is not
+/// followed (documented floor). A unit and its drop-ins are merged by
+/// [`scan_systemd_units`].
+pub fn systemd_ollama_host(text: &str) -> (Option<String>, bool) {
+    let mut st = UnitState::default();
+    systemd_apply(text, &mut st);
+    (st.host, st.runs)
 }
 
 /// A unit file's logical lines, as systemd reads them: a line ending in a backslash is
@@ -404,6 +444,8 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
         names.sort();
         names.truncate(MAX_SERVICE_ENTRIES);
         let wanted = |unit: &str| *all || unit == "ollama.service";
+        // Sorted names put `x.service` before `x.service.d`, so each unit's files are in
+        // the order systemd applies them: the unit file, then its drop-ins (sorted).
         let mut files: Vec<(PathBuf, String)> = Vec::new();
         for n in &names {
             let p = dir.join(n);
@@ -430,16 +472,31 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
                 }
             }
         }
+        // One entry per unit, for the value systemd actually starts it with, at the file
+        // that supplies it: a `systemctl edit` drop-in restoring loopback over a packaged
+        // unit's 0.0.0.0 is the live setting (review round 6).
+        // Grouped by unit (`a.service-x.service` sorts between `a.service` and
+        // `a.service.d`), keeping each unit's file order.
+        let mut by_unit: std::collections::BTreeMap<String, Vec<PathBuf>> = std::collections::BTreeMap::new();
         for (path, unit) in files {
-            // O_NOFOLLOW|O_NONBLOCK + fstat: a unit swapped for a link or FIFO after the
-            // regular-file check is refused, not followed or blocked on.
-            let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else { continue };
-            let (value, runs) = systemd_ollama_host(&text);
-            if let Some(v) = value {
+            by_unit.entry(unit).or_default().push(path);
+        }
+        for (unit, paths) in by_unit {
+            let mut st = UnitState::default();
+            let mut source: Option<PathBuf> = None;
+            for path in paths {
+                // O_NOFOLLOW|O_NONBLOCK + fstat: a unit swapped for a link or FIFO after
+                // the regular-file check is refused, not followed or blocked on.
+                let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else { continue };
+                if systemd_apply(&text, &mut st) {
+                    source = Some(path);
+                }
+            }
+            if let (Some(v), Some(path)) = (st.host.as_deref(), source) {
                 // The server: a unit whose ExecStart is `ollama serve`, or the official
                 // installer's ollama.service (and its drop-ins), whatever it execs.
-                let service = runs || unit == "ollama.service";
-                out.push(ollama_entry(label, &path, &v, service));
+                let service = st.runs || unit == "ollama.service";
+                out.push(ollama_entry(label, &path, v, service));
             }
         }
     }

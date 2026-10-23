@@ -234,7 +234,7 @@ pub fn guidance(category: &str) -> Guidance {
         },
         "Agent redirection" => Guidance {
             what: "A project .env file sets a variable that relocates an AI agent's home directory (CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME, CURSOR_CONFIG_DIR, KIRO_HOME) or reroutes its traffic (HTTPS_PROXY to a non-loopback host, ANTHROPIC_CUSTOM_HEADERS).",
-            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A home outside the repository (a devcontainer home such as /home/node/.claude) loads nothing the repository controls and is advisory. A home that could not be resolved (`${PWD}/.claude-cfg`, `$PWD`) may be the repository itself, so a committed one is Medium. A proxy sees all traffic. Gemini CLI and aider load a project's .env themselves; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader). Per-mode files (.env.local, .env.development, .env.production, .env.test) are application config that no coding agent loads by default, so they are advisory even when committed.",
+            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A home outside the repository (a devcontainer home such as /home/node/.claude) loads nothing the repository controls and is inventory only, unless it is a shared temporary directory (/tmp, /var/tmp, /dev/shm) that another local user could create first (Low). A home that could not be resolved (`${PWD}/.claude-cfg`, `$PWD`) may be the repository itself, so a committed one is Medium. A proxy sees all traffic. Gemini CLI and aider load a project's .env themselves; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader). Per-mode files (.env.local, .env.development, .env.production, .env.test) are application config that no coding agent loads by default, so they are advisory even when committed.",
             fix: "Remove the variable unless you put it there. Never commit agent-home or proxy overrides; set them in your own shell profile. Upgrade Gemini CLI to 0.39.1 or later.",
             reference: "CVE-2026-13745 · EAA-006 · EAA-007",
         },
@@ -577,10 +577,13 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
         // A login gateway in user settings is surfaced for review; managed settings are
         // the organization's own, and project/local files are ignored by Claude Code.
+        // A gateway on this machine (`http://localhost:8443`) is silent, like a loopback
+        // ANTHROPIC_BASE_URL in the same file.
         if let Some(lg) = &s.login_gateway
             && lg.effective
             && s.source == "user-global"
             && let Some(host) = &lg.host
+            && !crate::scanners::is_client_loopback_host(host)
         {
             f.push(Finding {
                 severity: Severity::Low,
@@ -1183,7 +1186,15 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             } else {
                 "its skill directory"
             };
-            let (severity, title) = if l.sensitive_target {
+            let directory = skill.file_type == "directory";
+            let (severity, title) = if directory && l.sensitive_target {
+                (
+                    Severity::High,
+                    format!("skill directory '{}' is a symlink into a credential, key or agent-config path — not listed or read", skill.name),
+                )
+            } else if directory {
+                (Severity::Low, format!("skill directory '{}' is a symlink that resolves outside {within} — not listed or read", skill.name))
+            } else if l.sensitive_target {
                 (
                     Severity::High,
                     format!("skill file '{}' {via} into a credential, key, shell-rc or agent-config path — not read", skill.name),
@@ -1198,7 +1209,8 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 category: "Skill symlink".into(),
                 title,
                 location: loc.clone(),
-                evidence: Some(format!("-> {}", l.target)),
+                // The bare target: the renderers draw their own arrow.
+                evidence: Some(l.target.clone()),
             });
         }
         let prov = skill.provenance.as_ref();
@@ -1368,8 +1380,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 // Graded by where the home points. Inside the repository, the repository
                 // author writes the settings, hooks and MCP servers the agent loads
                 // (CVE-2026-13745). Outside it (a devcontainer home such as
-                // /home/node/.claude, a shared team directory) nothing the repository
-                // controls is loaded from it, committed or not.
+                // /home/node/.claude, the user's own directory) nothing the repository
+                // controls is loaded from it, committed or not: inventory only. The one
+                // outside home that carries risk is a shared temporary directory
+                // (/tmp/claude): another local user can create it first and plant the
+                // settings, hooks and MCP servers the agent loads.
                 // A value that could not be resolved (`${PWD}/.claude-cfg`,
                 // `GEMINI_CLI_HOME=$PWD`) may point at the repository itself, so it is not
                 // given the "outside" reassurance: Medium in a committed .env, Low otherwise.
@@ -1378,6 +1393,16 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     "Agent redirection",
                     format!(
                         "{} in a{tracked} .env relocates the {} home to a value that could not be resolved ({value}); check where it points (inside the repository, the repository controls the agent's settings, hooks and MCP servers){gemini_note}",
+                        o.key,
+                        crate::scanners::env_files::agent_for_home_key(&o.key),
+                    ),
+                )),
+                "agent-home" if !o.inside_project && !o.shared_temp => None,
+                "agent-home" if !o.inside_project => Some((
+                    Severity::Low,
+                    "Agent redirection",
+                    format!(
+                        "{} in a{tracked} .env relocates the {} home to {value}, a shared temporary directory outside the project — another local user can create it first and plant the settings, hooks and MCP servers the agent loads{gemini_note}",
                         o.key,
                         crate::scanners::env_files::agent_for_home_key(&o.key),
                     ),
@@ -1395,11 +1420,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         "{} in a{tracked} .env relocates the {} home to {value}{}{gemini_note}",
                         o.key,
                         crate::scanners::env_files::agent_for_home_key(&o.key),
-                        if o.inside_project {
-                            " inside the project"
-                        } else {
-                            " outside the project (nothing the repository controls is loaded from it)"
-                        },
+                        " inside the project",
                     ),
                 )),
                 // A tracked .env is repository-controlled redirection. An untracked one is

@@ -90,9 +90,9 @@ fn surfaces() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Credential helpers print a credential, so only their SHAPE is recorded: the program,
-/// flags, $VAR references, paths, a URL's host and known subcommand words. Every other
-/// literal goes, wherever the shell grammar puts it: echo/printf arguments, heredoc
+/// Credential helpers print a credential, so only their SHAPE is recorded: the program
+/// (a path or a known tool), flag names and exact $VAR references. Every other literal
+/// goes, wherever the shell grammar puts it: echo/printf arguments, heredoc
 /// bodies, NAME=value values, `sh -c` strings (redacted as nested commands), subshells
 /// and brace groups, wrapper prefixes (exec, sudo, command, builtin, time, env) and
 /// interpreter code passed to -c / -e.
@@ -138,25 +138,47 @@ fn helper_command_literals_are_redacted() {
         ("correcthorsebatterystaple", "printf '%s\\n' correcthorsebatterystaple"),
         ("Hunter2Pass", "curl -s https://u:Hunter2Pass@vault.internal/v1/x"),
         ("Hunter2Pass", "curl -s https://vault.internal/v1/x?token=Hunter2Pass"),
+        // Review round 6: eval words shaped one by one, quote-concatenated references,
+        // literals in program, long-flag, host and path positions.
+        ("Zq9Hunter2Pw", "eval echo Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "command eval echo Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "sh -c 'eval echo Zq9Hunter2Pw'"),
+        ("Zq9Hunter2Pw", "eval mytool Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "true && eval echo Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "eval -- echo Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "builtin eval echo Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "echo $x\"Zq9Hunter2Pw\""),
+        ("Zq9Hunter2Pw", "echo \"$x\"Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool --Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool https://Zq9Hunter2Pw.example.com/"),
+        ("Zq9Hunter2Pw", "Zq9Hunter2Pw --flag"),
+        ("Zq9Hunter2Pw", "(cd /tmp && Zq9Hunter2Pw)"),
+        ("Zq9Hunter2Pw", "cat /tmp/Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool ./Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool ~/Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool <<< Zq9Hunter2Pw"),
+        ("Zq9Hunter2Pw", "mytool $'Zq9Hunter2Pw'"),
     ] {
         let out = h(raw);
         assert!(!out.contains(canary), "{raw:?} -> {out:?}");
-        assert!(out.contains("<redacted>"), "{raw:?} -> {out:?}");
+        assert!(out.contains("<redacted>") || out.contains("<program>"), "{raw:?} -> {out:?}");
     }
-    // The shape stays reviewable: programs, flags, subcommands, $VARs, paths, hosts.
+    // Shape only (review round 6): known programs and program paths, flag names, exact
+    // $VAR references, operators. Subcommands, paths, hosts and every other word go.
     for (raw, want) in [
-        ("op read op://vault/anthropic/key", "op read op://vault/<redacted>"),
-        ("aws sso login --profile dev", "aws sso login --profile <redacted>"),
-        ("security find-generic-password -s ANTHROPIC_API_KEY -w", "security find-generic-password -s <redacted> -w"),
+        ("op read op://vault/anthropic/key", "op <redacted> <redacted>"),
+        ("aws sso login --profile dev", "aws <redacted> <redacted> --profile <redacted>"),
+        ("security find-generic-password -s ANTHROPIC_API_KEY -w", "security <redacted> -s <redacted> -w"),
         ("echo $ANTHROPIC_API_KEY", "echo $ANTHROPIC_API_KEY"),
-        ("printenv ANTHROPIC_API_KEY", "printenv ANTHROPIC_API_KEY"),
+        ("printenv ANTHROPIC_API_KEY", "printenv <redacted>"),
         ("/usr/local/bin/key-helper-2024 --region us-east-1", "/usr/local/bin/key-helper-2024 --region <redacted>"),
-        ("echo $KEY | curl -d @- https://x.example", "echo $KEY | curl -d @- https://x.example"),
-        ("gcloud auth print-access-token", "gcloud auth print-access-token"),
-        ("cat ~/.config/anthropic/key 2>/dev/null", "cat ~/.config/anthropic/key 2>/dev/null"),
+        ("echo $KEY | curl -d @- https://x.example", "echo $KEY | curl -d <redacted> <redacted>"),
+        ("gcloud auth print-access-token", "gcloud <redacted> <redacted>"),
+        ("cat ~/.config/anthropic/key 2>/dev/null", "cat <redacted> 2>/dev/null"),
         ("sh -c 'echo $KEY'", "sh -c 'echo $KEY'"),
         ("sudo -u svc /opt/bin/get-key", "sudo -u <redacted> /opt/bin/get-key"),
         ("cat <<EOF\nHEREDOCKEY\nEOF", "cat <<EOF\n<redacted>\nEOF"),
+        ("mytool --profile=\"$P\"", "<program> --profile=\"$P\""),
     ] {
         assert_eq!(h(raw), want, "{raw:?}");
     }
@@ -516,8 +538,8 @@ fn no_canary_reaches_any_output_format_end_to_end() {
                 "deploy.internal", "tasks.internal", "npm.internal", "pypi.internal",
                 "yarn.internal", "bun.internal", "gitlab.internal",
                 "Hugging Face", "Continue", "Aider",
-                "skill.internal", "helper.internal", "proxy.internal", "0.0.0.0:11434",
-                "aws sso login",
+                "skill.internal", "./key.sh --token <redacted> <redacted>", "proxy.internal", "0.0.0.0:11434",
+                "MYPASS=<redacted> aws <redacted> <redacted>",
             ] {
                 assert!(
                     text.contains(host),

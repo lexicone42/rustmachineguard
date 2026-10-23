@@ -8,33 +8,24 @@
 //! password has no shape), so this records only the command's SHAPE and drops every
 //! argument it cannot prove harmless.
 //!
-//! Kept: each simple command's program word (after `NAME=value` prefixes, `{`/`(`,
-//! and wrappers such as exec, sudo, env, command, builtin, time, nohup, timeout), flags
-//! (`--long`, short clusters of up to two letters; an attached value is redacted),
-//! `$VAR`/`${VAR}` references, file paths (`/x`, `./x`, `~/x`, `$HOME/x`, `@file`),
-//! a URL's scheme and host (userinfo, path and query dropped), shell operators and
-//! redirections, `printenv NAME`, and a fixed vocabulary of subcommand words
-//! (`aws sso login`, `op read`, `gcloud auth print-access-token`). The string given to
-//! `sh|bash|zsh ... -c` and the arguments of `eval` are redacted as nested commands.
-//! Everything else, including every argument of echo/printf/print, interpreter code
-//! passed to `-c`/`-e`, heredoc bodies and here-strings, becomes `<redacted>`.
+//! Kept: each simple command's program word when it is a path (key- and
+//! password-shaped components redacted), a `$VAR`, or a known tool or interpreter name
+//! (any other program word is `<program>`); wrapper words (exec, sudo, env, command,
+//! builtin, time, nohup, timeout, ...); flag NAMES (`--long` in lower case, short
+//! clusters of up to two letters, `-name=`), with any attached value `<redacted>`; a
+//! word whose RAW text is exactly `$NAME`, `${NAME}`, `"$NAME"` or `"${NAME}"`;
+//! `NAME=` assignment names; shell operators, reserved words, fd numbers and
+//! `/dev/null`-style redirection targets. The string given to `sh|bash|zsh ... -c` is
+//! shaped as a nested command, and so are the arguments of `eval`, joined into one
+//! command the way the shell joins them. Every other word, in every position (paths,
+//! URLs, subcommands, here-strings, heredoc bodies, quote-concatenations, ANSI-C and
+//! locale strings), is `<redacted>`. The display is for a human to recognise the
+//! helper, not to reproduce it.
 
-use super::{looks_high_entropy, split_url_authority};
+use super::looks_high_entropy;
 
 /// Nested `sh -c` / `eval` levels expanded before the rest is redacted whole.
 const MAX_DEPTH: usize = 4;
-
-/// Subcommand and argument words of common secret-store and cloud CLIs. A credential is
-/// never one of these words, so they are kept and the command stays reviewable.
-const VOCAB: &[&str] = &[
-    "access-token", "account", "api-key", "application-default", "assume-role", "auth",
-    "configure", "credential", "credentials", "creds", "export-credentials", "fetch",
-    "find-generic-password", "find-internet-password", "get", "get-caller-identity",
-    "get-parameter", "get-secret-value", "get-session-token", "inject", "item", "key",
-    "keys", "kv", "list", "login", "lookup", "print", "print-access-token",
-    "print-identity-token", "read", "refresh", "run", "secret", "secrets", "secretsmanager",
-    "show", "signin", "ssm", "sso", "sts", "token", "view", "whoami",
-];
 
 /// Words that start a simple command without being its program, with the flags of
 /// theirs that take a value (that value is redacted and is not the program).
@@ -65,7 +56,6 @@ const RESERVED: &[&str] = &[
 ];
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "busybox"];
-const ECHOES: &[&str] = &["echo", "printf", "print", "yes"];
 
 /// Shell operators, longest first.
 const OPERATORS: &[&str] = &[
@@ -91,16 +81,6 @@ struct Word {
     value: String,
     /// The quote character, when the whole word is a single quoted string.
     whole_quote: Option<char>,
-    /// A `$` in `value` came from single quotes or ANSI-C `$'...'` quoting: `'$Hunter2'`
-    /// is the literal text `$Hunter2`, never a variable reference.
-    literal_dollar: bool,
-}
-
-impl Word {
-    /// A `$VAR` / `${VAR}` reference the shell expands (not literal quoted text).
-    fn var_ref(&self) -> bool {
-        !self.literal_dollar && is_var_ref(&self.value)
-    }
 }
 
 fn lex(cmd: &str) -> Vec<Tok> {
@@ -196,7 +176,6 @@ fn lex_word(chars: &[char], mut i: usize) -> (Word, usize) {
             '\'' => {
                 let end = (i + 1..n).find(|&j| chars[j] == '\'').unwrap_or(n);
                 w.value.extend(&chars[i + 1..end]);
-                w.literal_dollar |= chars[i + 1..end].contains(&'$');
                 if i == start {
                     first_quote_end = Some(end + 1);
                 }
@@ -212,7 +191,6 @@ fn lex_word(chars: &[char], mut i: usize) -> (Word, usize) {
                 }
                 let end = j.min(n);
                 w.value.extend(&chars[i + 2..end]);
-                w.literal_dollar = true;
                 i = end + 1;
             }
             // Locale quoting, `$"..."`: a double-quoted string; the `$` is not part of it.
@@ -278,8 +256,6 @@ fn lex_word(chars: &[char], mut i: usize) -> (Word, usize) {
 enum Kind {
     Shell,
     Eval,
-    Echo,
-    Printenv,
     Other,
 }
 
@@ -290,9 +266,9 @@ enum State {
     Wrapper(&'static [&'static str], bool),
     Args(Kind),
     /// The next word is a nested command (`sh -c STRING`).
-    Nested(Kind),
-    /// The next word is a value (redacted), then back to Args.
-    Value(Kind),
+    Nested,
+    /// The next word is a value (redacted), then back to the saved state.
+    Value,
     /// The next word is a redirection target; then back to the saved state.
     Redir,
     /// The next word is a heredoc delimiter.
@@ -300,24 +276,42 @@ enum State {
 }
 
 pub fn redact_helper_command(cmd: &str) -> String {
-    super::redact_secrets_in_text(&shape(cmd, 0))
+    super::redact_secrets_in_text(&shape(cmd, 0, false))
 }
 
-/// A conventional heredoc delimiter (`EOF`, `END_KEY`): shown; anything else is not.
-fn delimiter_ok(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 16 && v.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+/// The shape with path ARGUMENTS kept (key- and password-shaped components still
+/// redacted), for the risk classifier only: it looks for agent-config directories in
+/// the paths a helper names (`node .vscode/key.mjs`). Never displayed; the classifier's
+/// risk text names the directory, not the path.
+pub fn helper_classification_shape(cmd: &str) -> String {
+    super::redact_secrets_in_text(&shape(cmd, 0, true))
 }
+
+/// Heredoc delimiters shown as written; any other delimiter word is `<redacted>`.
+const DELIMITERS: &[&str] = &["EOF", "END", "EOT", "EOM", "EOS", "HEREDOC", "SCRIPT", "DATA", "JSON"];
+
+/// Redirection targets shown as written (fixed device paths).
+const DEVICES: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/stdin"];
 
 fn basename(v: &str) -> &str {
     v.rsplit('/').next().unwrap_or(v)
 }
 
+/// `$NAME` / `${NAME}` (or `$@`, `$*`, `$#`, `$?`, `$1`) and nothing else.
 fn is_var_ref(v: &str) -> bool {
     let name = v.strip_prefix("${").and_then(|r| r.strip_suffix('}')).or_else(|| v.strip_prefix('$'));
     name.is_some_and(|n| {
         !n.is_empty()
             && (n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || matches!(n, "@" | "*" | "#" | "?"))
     })
+}
+
+/// The RAW word is exactly one variable reference: `$NAME`, `${NAME}`, `"$NAME"` or
+/// `"${NAME}"`. Decided on the raw text, so `$x"LITERAL"`, `"$x"LITERAL` and
+/// `'$LITERAL'` (quote-concatenation, single-quoted text) are never references.
+fn raw_var_ref(raw: &str) -> bool {
+    let inner = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(raw);
+    is_var_ref(inner)
 }
 
 fn is_assignment(raw: &str) -> Option<(&str, &str)> {
@@ -327,100 +321,111 @@ fn is_assignment(raw: &str) -> Option<(&str, &str)> {
     .then_some((k, v))
 }
 
-/// A path argument, shown with any key-shaped component redacted.
-fn path_shape(v: &str) -> Option<String> {
-    let body = v.strip_prefix('@').unwrap_or(v);
-    if body == "-" && v.starts_with('@') {
-        return Some(v.to_string());
-    }
-    let pathy = body.starts_with('/')
-        || body.starts_with("./")
-        || body.starts_with("../")
-        || body.starts_with("~/")
-        || body == "~"
-        || body.starts_with("$HOME/")
-        || body.starts_with("${HOME}/")
-        || relative_path(body);
-    if !pathy || body.contains("$(") || body.contains('`') || body.contains("//") {
+fn assignment(raw: &str) -> Option<String> {
+    let (k, v) = is_assignment(raw)?;
+    Some(if v.is_empty() || raw_var_ref(v) { raw.to_string() } else { format!("{k}=<redacted>") })
+}
+
+/// A run of 10+ letters and digits with upper case, lower case and a digit
+/// (`Zq9Hunter2Pw`): a password shape, never a real path component or tool name.
+fn mixed_case_run(s: &str) -> bool {
+    s.split(|c: char| !c.is_ascii_alphanumeric()).any(|r| {
+        r.len() >= 10
+            && r.bytes().any(|b| b.is_ascii_uppercase())
+            && r.bytes().any(|b| b.is_ascii_lowercase())
+            && r.bytes().any(|b| b.is_ascii_digit())
+    })
+}
+
+/// Tools and interpreters whose name is shown as the program word. Any other plain
+/// word in program position is `<program>`: a literal written where the program goes
+/// (`Hunter2pass --flag`, `(cd /tmp && Hunter2pass)`) never reaches the report.
+const KNOWN_PROGRAMS: &[&str] = &[
+    // shells, builtins and coreutils
+    "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "busybox", "eval", "echo", "printf", "print",
+    "printenv", "cat", "head", "tail", "tr", "cut", "sed", "awk", "gawk", "grep", "jq", "yq", "base64", "xxd",
+    "cd", "test", "[", "true", "false", "read", "set", "unset", "source", ".", "trap", "exit", "return",
+    "yes", "tee", "sort", "uniq", "wc", "date", "sleep", "mktemp", "rm", "ls", "mkdir", "chmod", "id", "whoami",
+    "hostname", "uname", "which", "type", "dirname", "basename", "realpath", "readlink", "stat", "touch",
+    // interpreters and runtimes
+    "node", "nodejs", "deno", "bun", "npx", "npm", "pnpm", "yarn", "ruby", "perl", "php", "pwsh", "powershell",
+    "osascript", "uv", "uvx", "pipx", "pip", "go", "java", "dotnet", "lua",
+    // network and crypto
+    "curl", "wget", "http", "https", "xh", "openssl", "gpg", "gpg2", "age", "sops", "ssh", "nc", "socat",
+    // secret stores and cloud CLIs
+    "aws", "aws-vault", "gcloud", "az", "gh", "glab", "vault", "op", "pass", "gopass", "security",
+    "secret-tool", "keyring", "bw", "lpass", "doppler", "infisical", "chamber", "akeyless", "kubectl",
+    "terraform", "saml2aws", "granted", "assume", "gimme-aws-creds", "keepassxc-cli", "ykman", "conjur",
+    "claude",
+];
+
+fn known_program(v: &str) -> bool {
+    KNOWN_PROGRAMS.contains(&v)
+        || v.strip_prefix("python").is_some_and(|r| r.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        || WRAPPERS.iter().any(|(name, _)| *name == v)
+}
+
+/// A program path (`/usr/local/bin/key-helper`, `./k.sh`, `~/bin/x`, `$HOME/bin/x`,
+/// `scripts/get-key.sh`), with any key- or password-shaped component redacted. `None`
+/// when `v` is not a plain path.
+fn path_display(v: &str) -> Option<String> {
+    let pathy = v.starts_with('/')
+        || v.starts_with("./")
+        || v.starts_with("../")
+        || v.starts_with("~/")
+        || v.starts_with("$HOME/")
+        || v.starts_with("${HOME}/")
+        || (v.contains('/') && !v.starts_with('-'));
+    let chars_ok = v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '~' | '@' | '$' | '{' | '}'));
+    if !pathy || !chars_ok || v.contains("//") || v.len() > 300 {
         return None;
     }
-    let comps: Vec<String> = v
+    let comps: Vec<&str> = v
         .split('/')
-        .map(|c| if looks_high_entropy(c) { "<redacted>".to_string() } else { c.to_string() })
+        .map(|c| if looks_high_entropy(c) || mixed_case_run(c) { "<redacted>" } else { c })
         .collect();
     Some(comps.join("/"))
 }
 
-/// A relative path written without `./`: `.vscode/key.mjs`, `scripts/get-key.sh`, or a
-/// bare script name (`key.mjs`). Path characters only, and no key-shaped component.
-fn relative_path(v: &str) -> bool {
-    const SCRIPT_EXTS: &[&str] = &["sh", "bash", "zsh", "py", "js", "mjs", "cjs", "ts", "rb", "pl", "ps1", "php"];
-    let comps: Vec<&str> = v.split('/').collect();
-    let chars_ok = !v.starts_with('-')
-        && comps.iter().all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@')))
-        && !comps.iter().any(|c| looks_high_entropy(c));
-    let script = v.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && SCRIPT_EXTS.contains(&ext));
-    chars_ok && (comps.len() > 1 || script)
-}
-
-/// `scheme://host` for a URL argument (userinfo, path, query and fragment dropped).
-fn url_shape(v: &str) -> Option<String> {
-    let (scheme, rest) = v.split_once("://")?;
-    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
-        return None;
-    }
-    let (_, host) = split_url_authority(v);
-    let host_ok = host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
-    let host = if host_ok && !looks_high_entropy(host) { host } else { "<redacted>" };
-    let tail = rest.find(['/', '?', '#']).map(|i| &rest[i..]).unwrap_or("");
-    let tail = if tail.is_empty() || tail == "/" { tail } else { "/<redacted>" };
-    Some(format!("{scheme}://{host}{tail}"))
-}
-
-/// `literal_dollar`: a `$` in the word came from single or ANSI-C quotes, so `$X` there is
-/// literal text, not a variable reference.
-fn flag_shape(raw: &str, v: &str, literal_dollar: bool) -> String {
+/// A flag keeps its NAME only; any value attached to it is `<redacted>` (a `$NAME`
+/// reference excepted, decided on the raw text).
+fn flag_shape(raw: &str, v: &str) -> String {
+    let raw_val = raw.split_once('=').map(|(_, r)| r).unwrap_or("");
+    let shown = if raw_var_ref(raw_val) { raw_val.to_string() } else { "<redacted>".to_string() };
     if let Some(long) = v.strip_prefix("--") {
-        if let Some((name, val)) = long.split_once('=') {
-            let name_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-            let shown = if (is_var_ref(val) && !literal_dollar) || path_shape(val).is_some() {
-                val.to_string()
-            } else {
-                "<redacted>".into()
-            };
-            return if name_ok { format!("--{name}={shown}") } else { "<redacted>".into() };
-        }
-        return if long.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && long.len() <= 40 {
-            raw.to_string()
-        } else {
-            "<redacted>".into()
+        let lower_name = |n: &str| {
+            !n.is_empty()
+                && n.len() <= 40
+                && n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        };
+        return match long.split_once('=') {
+            Some((name, _)) if lower_name(name) => format!("--{name}={shown}"),
+            Some(_) => "<redacted>".into(),
+            None if lower_name(long) => format!("--{long}"),
+            None => "<redacted>".into(),
         };
     }
     let short = &v[1..];
     // Single-dash long options with an attached value (`vault kv get -field=api_key`,
     // Go's flag package): the name is kept like a `--name=value`, the value redacted.
-    if let Some((name, val)) = short.split_once('=')
-        && name.len() >= 2
-        && name.len() <= 40
-        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        && !looks_high_entropy(name)
-    {
-        let shown = if (is_var_ref(val) && !literal_dollar) || path_shape(val).is_some() {
-            val.to_string()
-        } else {
-            "<redacted>".into()
-        };
-        return format!("-{name}={shown}");
+    if let Some((name, _)) = short.split_once('=') {
+        let name_ok = name.len() >= 2
+            && name.len() <= 40
+            && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !looks_high_entropy(name)
+            && !mixed_case_run(name);
+        return if name_ok { format!("-{name}={shown}") } else { "<redacted>".into() };
     }
-    if short.chars().all(|c| c.is_ascii_alphabetic()) && short.len() <= 2 {
-        return raw.to_string();
+    if (short.chars().all(|c| c.is_ascii_alphabetic()) || short.chars().all(|c| c.is_ascii_digit())) && short.len() <= 2 {
+        return format!("-{short}");
     }
-    if short.chars().all(|c| c.is_ascii_digit()) && short.len() <= 3 {
-        return raw.to_string();
-    }
+    // `-pHunter2pass`: the flag letter, then its value as a separate redacted word.
     match short.chars().next() {
-        Some(c) if c.is_ascii_alphabetic() => format!("-{c}<redacted>"),
+        Some(c) if c.is_ascii_alphabetic() => format!("-{c} <redacted>"),
         _ => "<redacted>".into(),
     }
 }
@@ -428,13 +433,19 @@ fn flag_shape(raw: &str, v: &str, literal_dollar: bool) -> String {
 /// A shell flag cluster that ends in `c` (`-c`, `-lc`, `-ec`, `-euxc`): the next word
 /// is the command string.
 fn is_shell_c(v: &str) -> bool {
-    v.len() >= 2 && v.len() <= 6 && v.starts_with('-') && !v.starts_with("--")
-        && v[1..].chars().all(|c| c.is_ascii_alphabetic()) && v.ends_with('c')
+    v.len() >= 2
+        && v.len() <= 6
+        && v.starts_with('-')
+        && !v.starts_with("--")
+        && v[1..].chars().all(|c| c.is_ascii_alphabetic())
+        && v.ends_with('c')
 }
 
-fn nested(w: &Word, depth: usize) -> String {
-    let inner = shape(&w.value, depth + 1);
-    match w.whole_quote {
+/// A command string the shell parses again (`sh -c STRING`, `eval WORDS`), shaped as a
+/// nested command; `quote` re-wraps it the way it was written.
+fn nested(text: &str, quote: Option<char>, depth: usize, keep_paths: bool) -> String {
+    let inner = shape(text, depth + 1, keep_paths);
+    match quote {
         Some(q) => format!("{q}{inner}{q}"),
         None if inner.contains(char::is_whitespace) => format!("'{inner}'"),
         None => inner,
@@ -443,75 +454,61 @@ fn nested(w: &Word, depth: usize) -> String {
 
 fn program(w: &Word, st: &mut State) -> String {
     let v = w.value.as_str();
-    if let Some((_, flags)) = WRAPPERS.iter().find(|(name, _)| *name == basename(v)) {
+    let base = basename(v);
+    if let Some((_, flags)) = WRAPPERS.iter().find(|(name, _)| *name == base) {
         *st = State::Wrapper(flags, false);
+    } else {
+        let kind = if SHELLS.contains(&base) {
+            Kind::Shell
+        } else if base == "eval" {
+            Kind::Eval
+        } else {
+            Kind::Other
+        };
+        *st = State::Args(kind);
+    }
+    if raw_var_ref(&w.raw) {
         return w.raw.clone();
     }
-    let base = basename(v);
-    let kind = if SHELLS.contains(&base) {
-        Kind::Shell
-    } else if base == "eval" {
-        Kind::Eval
-    } else if ECHOES.contains(&base) {
-        Kind::Echo
-    } else if base == "printenv" {
-        Kind::Printenv
-    } else {
-        Kind::Other
-    };
-    *st = State::Args(kind);
-    let program_like = !v.is_empty()
-        && v.len() <= 200
-        && !v.contains(char::is_whitespace)
-        && !looks_high_entropy(v)
-        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '~' | '$' | '{' | '}' | '@' | ':'));
-    if program_like { w.raw.clone() } else { "<redacted>".into() }
+    if let Some(p) = path_display(v) {
+        return p;
+    }
+    if known_program(v) { v.to_string() } else { "<program>".into() }
 }
 
-fn argument(w: &Word, kind: Kind, st: &mut State, depth: usize) -> String {
+fn argument(w: &Word, kind: Kind, st: &mut State, keep_paths: bool) -> String {
     let v = w.value.as_str();
-    if v == "--" {
-        return w.raw.clone();
+    if w.raw == "--" {
+        return "--".into();
     }
-    if kind == Kind::Eval {
-        return nested(w, depth);
-    }
-    if w.var_ref() {
+    if raw_var_ref(&w.raw) {
         return w.raw.clone();
     }
     if v.starts_with('-') && v.len() > 1 {
         if kind == Kind::Shell && is_shell_c(v) {
-            *st = State::Nested(kind);
-            return w.raw.clone();
+            *st = State::Nested;
+            return v.to_string();
         }
-        return flag_shape(&w.raw, v, w.literal_dollar);
+        return flag_shape(&w.raw, v);
     }
-    if kind == Kind::Echo {
-        return "<redacted>".into();
-    }
-    if kind == Kind::Printenv && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !v.is_empty() {
-        return w.raw.clone();
-    }
-    if let Some(p) = path_shape(v) {
+    if keep_paths && let Some(p) = path_display(v) {
         return p;
-    }
-    if let Some(u) = url_shape(v) {
-        return u;
-    }
-    if VOCAB.contains(&v) {
-        return w.raw.clone();
     }
     "<redacted>".into()
 }
 
-fn shape(cmd: &str, depth: usize) -> String {
+fn shape(cmd: &str, depth: usize, keep_paths: bool) -> String {
     if depth > MAX_DEPTH {
         return "<redacted>".into();
     }
+    let toks = lex(cmd);
     let mut out = String::with_capacity(cmd.len());
     let mut st = State::Start;
     let mut saved = State::Start;
-    for t in lex(cmd) {
+    let mut i = 0;
+    while i < toks.len() {
+        let t = &toks[i];
+        i += 1;
         match t {
             Tok::Space => {
                 if !out.is_empty() && !out.ends_with(char::is_whitespace) {
@@ -524,21 +521,21 @@ fn shape(cmd: &str, depth: usize) -> String {
             }
             Tok::Heredoc(closed) => {
                 out.push_str("<redacted>");
-                if let Some(d) = closed.filter(|d| delimiter_ok(d)) {
+                if let Some(d) = closed.as_deref().filter(|d| DELIMITERS.contains(d)) {
                     out.push('\n');
-                    out.push_str(&d);
+                    out.push_str(d);
                 }
             }
             Tok::Comment => out.push_str("# <redacted>"),
             Tok::Op(op) => {
-                out.push_str(&op);
+                out.push_str(op);
                 let bare = op.trim_start_matches(|c: char| c.is_ascii_digit());
                 if matches!(bare, "<<<") {
                     if st != State::Redir {
                         saved = st;
                     }
                     // The here-string word is always redacted, then the command resumes.
-                    st = State::Value(Kind::Other);
+                    st = State::Value;
                 } else if matches!(bare, "<<" | "<<-") {
                     if st != State::Redir {
                         saved = st;
@@ -557,29 +554,25 @@ fn shape(cmd: &str, depth: usize) -> String {
                 let rendered = match st {
                     State::Delim => {
                         st = saved;
-                        let v = w.value.as_str();
-                        if delimiter_ok(v) { w.raw.clone() } else { "<redacted>".into() }
+                        if DELIMITERS.contains(&w.value.as_str()) { w.value.clone() } else { "<redacted>".into() }
                     }
                     State::Redir => {
                         st = saved;
                         let v = w.value.as_str();
-                        if v == "-" || v.chars().all(|c| c.is_ascii_digit()) || w.var_ref() {
+                        let fd = !v.is_empty() && v.len() <= 2 && v.chars().all(|c| c.is_ascii_digit());
+                        if v == "-" || fd || DEVICES.contains(&v) || raw_var_ref(&w.raw) {
                             w.raw.clone()
                         } else {
-                            path_shape(v).unwrap_or_else(|| "<redacted>".into())
+                            "<redacted>".into()
                         }
                     }
                     State::Start => {
-                        if RESERVED.contains(&w.value.as_str()) {
+                        if RESERVED.contains(&w.value.as_str()) && w.raw == w.value {
                             w.raw.clone()
-                        } else if let Some((k, v)) = is_assignment(&w.raw) {
-                            if v.is_empty() || (!v.contains('\'') && is_var_ref(v.trim_matches('"'))) {
-                                w.raw.clone()
-                            } else {
-                                format!("{k}=<redacted>")
-                            }
+                        } else if let Some(a) = assignment(&w.raw) {
+                            a
                         } else {
-                            program(&w, &mut st)
+                            program(w, &mut st)
                         }
                     }
                     State::Wrapper(flags, expect_value) => {
@@ -593,26 +586,59 @@ fn shape(cmd: &str, depth: usize) -> String {
                             if flags.contains(&v) {
                                 st = State::Wrapper(flags, true);
                             }
-                            flag_shape(&w.raw, v, w.literal_dollar)
-                        } else if let Some((k, val)) = is_assignment(&w.raw) {
-                            if val.is_empty() || (!val.contains('\'') && is_var_ref(val.trim_matches('"'))) {
-                                w.raw.clone()
-                            } else {
-                                format!("{k}=<redacted>")
-                            }
+                            flag_shape(&w.raw, v)
+                        } else if let Some(a) = assignment(&w.raw) {
+                            a
                         } else if duration {
-                            w.raw.clone()
+                            "<redacted>".into()
                         } else {
-                            program(&w, &mut st)
+                            program(w, &mut st)
                         }
                     }
-                    State::Args(kind) => argument(&w, kind, &mut st, depth),
-                    State::Nested(_) => {
-                        // Words after the -c string are $0, $1, ...: redacted like echo's.
-                        st = State::Args(Kind::Echo);
-                        nested(&w, depth)
+                    State::Args(Kind::Eval) => {
+                        // `eval` joins its arguments with spaces and parses the result as
+                        // ONE command, so the words are shaped together: the first is the
+                        // program, the rest its arguments (`eval echo LITERAL`).
+                        let mut words: Vec<&Word> = vec![w];
+                        let mut trailing_space = false;
+                        while let Some(next) = toks.get(i) {
+                            match next {
+                                Tok::Space => {
+                                    trailing_space = true;
+                                    i += 1;
+                                }
+                                Tok::Word(nw) => {
+                                    trailing_space = false;
+                                    words.push(nw);
+                                    i += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        let mut prefix = String::new();
+                        if words.first().is_some_and(|w| w.raw == "--") {
+                            words.remove(0);
+                            prefix.push_str("--");
+                        }
+                        st = State::Args(Kind::Other);
+                        let body = if words.is_empty() {
+                            String::new()
+                        } else {
+                            let joined = words.iter().map(|w| w.value.as_str()).collect::<Vec<_>>().join(" ");
+                            let quote = if words.len() == 1 { words[0].whole_quote } else { None };
+                            nested(&joined, quote, depth, keep_paths)
+                        };
+                        let sep = if !prefix.is_empty() && !body.is_empty() { " " } else { "" };
+                        let tail = if trailing_space { " " } else { "" };
+                        format!("{prefix}{sep}{body}{tail}")
                     }
-                    State::Value(_) => {
+                    State::Args(kind) => argument(w, kind, &mut st, keep_paths),
+                    State::Nested => {
+                        // Words after the -c string are $0, $1, ...: redacted like any argument.
+                        st = State::Args(Kind::Other);
+                        nested(&w.value, w.whole_quote, depth, keep_paths)
+                    }
+                    State::Value => {
                         st = saved;
                         "<redacted>".into()
                     }
@@ -633,14 +659,14 @@ mod tests {
         // ANSI-C and locale quoting are literal strings, not `$VAR` references.
         assert_eq!(r("printf %s $'Hunter2pass'"), "printf <redacted> <redacted>");
         assert_eq!(r("echo $\"Tr0ub4dor3\""), "echo <redacted>");
-        assert_eq!(r("mytool $'Hunter2pass'"), "mytool <redacted>");
-        assert_eq!(r("mytool $\"Hunter2pass\""), "mytool <redacted>");
+        assert_eq!(r("mytool $'Hunter2pass'"), "<program> <redacted>");
+        assert_eq!(r("mytool $\"Hunter2pass\""), "<program> <redacted>");
         // Single-quoted `$` text is literal too; a double-quoted reference is not.
-        assert_eq!(r("mytool '$Hunter2pass'"), "mytool <redacted>");
-        assert_eq!(r("mytool --flag='$Hunter2pass'"), "mytool --flag=<redacted>");
-        assert_eq!(r("K='$Hunter2pass' mytool"), "K=<redacted> mytool");
-        assert_eq!(r("mytool \"$ANTHROPIC_API_KEY\""), "mytool \"$ANTHROPIC_API_KEY\"");
-        assert_eq!(r("mytool $ANTHROPIC_API_KEY"), "mytool $ANTHROPIC_API_KEY");
+        assert_eq!(r("mytool '$Hunter2pass'"), "<program> <redacted>");
+        assert_eq!(r("mytool --flag='$Hunter2pass'"), "<program> --flag=<redacted>");
+        assert_eq!(r("K='$Hunter2pass' mytool"), "K=<redacted> <program>");
+        assert_eq!(r("mytool \"$ANTHROPIC_API_KEY\""), "<program> \"$ANTHROPIC_API_KEY\"");
+        assert_eq!(r("mytool $ANTHROPIC_API_KEY"), "<program> $ANTHROPIC_API_KEY");
         // Nested: inside `sh -c '...'` the inner shell expands `$X`.
         assert_eq!(r("sh -c 'echo $X'"), "sh -c 'echo $X'");
         assert!(!r("bash -c $'echo Hunter2pass'").contains("Hunter2pass"));
@@ -648,10 +674,81 @@ mod tests {
 
     #[test]
     fn single_dash_name_value_flags_keep_their_name() {
-        assert_eq!(r("vault kv get -field=api_key secret/anthropic"), "vault kv get -field=<redacted> secret/anthropic");
-        assert_eq!(r("vault kv get -field=$FIELD secret/x"), "vault kv get -field=$FIELD secret/x");
-        assert_eq!(r("tool -token=Hunter2pass"), "tool -token=<redacted>");
+        assert_eq!(r("vault kv get -field=api_key secret/anthropic"), "vault <redacted> <redacted> -field=<redacted> <redacted>");
+        assert_eq!(r("vault kv get -field=$FIELD secret/x"), "vault <redacted> <redacted> -field=$FIELD <redacted>");
+        assert_eq!(r("tool -token=Hunter2pass"), "<program> -token=<redacted>");
         // A short flag with an attached value keeps only its letter.
-        assert_eq!(r("mysqlx -pHunter2pass"), "mysqlx -p<redacted>");
+        assert_eq!(r("mysqlx -pHunter2pass"), "<program> -p <redacted>");
+    }
+
+    /// Review round 6: each `eval` argument used to be shaped as its own command, so the
+    /// literal became a kept program word.
+    #[test]
+    fn eval_arguments_are_one_nested_command() {
+        const C: &str = "Zq9Hunter2Pw";
+        for (cmd, want) in [
+            ("eval echo Zq9Hunter2Pw", "eval 'echo <redacted>'"),
+            ("command eval echo Zq9Hunter2Pw", "command eval 'echo <redacted>'"),
+            ("sh -c 'eval echo Zq9Hunter2Pw'", "sh -c 'eval 'echo <redacted>''"),
+            ("eval mytool Zq9Hunter2Pw", "eval '<program> <redacted>'"),
+            ("true && eval echo Zq9Hunter2Pw", "true && eval 'echo <redacted>'"),
+            ("eval -- echo Zq9Hunter2Pw", "eval -- 'echo <redacted>'"),
+            ("builtin eval echo Zq9Hunter2Pw", "builtin eval 'echo <redacted>'"),
+            ("eval \"echo Zq9Hunter2Pw\"", "eval \"echo <redacted>\""),
+            ("eval echo Zq9Hunter2Pw; date", "eval 'echo <redacted>'; date"),
+            ("eval $CMD", "eval $CMD"),
+        ] {
+            let out = r(cmd);
+            assert!(!out.contains(C), "{cmd} -> {out}");
+            assert_eq!(out, want, "{cmd}");
+        }
+    }
+
+    /// Review round 6: a quote-concatenated word is a literal next to an expansion, not a
+    /// variable reference.
+    #[test]
+    fn quote_concatenation_is_not_a_reference() {
+        for cmd in [
+            "echo $x\"Zq9Hunter2Pw\"",
+            "echo \"$x\"Zq9Hunter2Pw",
+            "echo ${x}Zq9Hunter2Pw",
+            "echo $x'Zq9Hunter2Pw'",
+            "mytool --t=$x\"Zq9Hunter2Pw\"",
+            "K=$x\"Zq9Hunter2Pw\" mytool",
+            "cat > $x\"Zq9Hunter2Pw\"",
+            "cat <<< \"$x\"Zq9Hunter2Pw",
+        ] {
+            let out = r(cmd);
+            assert!(!out.contains("Zq9Hunter2Pw"), "{cmd} -> {out}");
+        }
+        assert_eq!(r("echo \"${KEY}\" $KEY ${KEY} \"$KEY\""), "echo \"${KEY}\" $KEY ${KEY} \"$KEY\"");
+    }
+
+    /// Review round 6: long flags, URL hosts, program words and path arguments no longer
+    /// carry a literal through.
+    #[test]
+    fn every_other_position_is_shape_only() {
+        for cmd in [
+            "mytool --Zq9Hunter2Pw",
+            "mytool https://Zq9Hunter2Pw.example.com/",
+            "Zq9Hunter2Pw --flag",
+            "(cd /tmp && Zq9Hunter2Pw)",
+            "cat /tmp/Zq9Hunter2Pw",
+            "mytool ./Zq9Hunter2Pw",
+            "mytool ~/Zq9Hunter2Pw",
+            "/opt/Zq9Hunter2Pw/get-key",
+            "printenv Zq9Hunter2Pw",
+            "cat <<Zq9Hunter2Pw\nx\nZq9Hunter2Pw",
+            "timeout Zq9Hunter2Pw mytool",
+            "mytool 2>Zq9Hunter2Pw",
+            "aws Zq9Hunter2Pw",
+        ] {
+            let out = r(cmd);
+            assert!(!out.contains("Zq9Hunter2Pw"), "{cmd} -> {out}");
+        }
+        assert_eq!(r("Zq9Hunter2Pw --flag"), "<program> --flag");
+        assert_eq!(r("mytool --Zq9Hunter2Pw"), "<program> <redacted>");
+        assert_eq!(r("/usr/bin/op read op://v/i/f 2>/dev/null"), "/usr/bin/op <redacted> <redacted> 2>/dev/null");
+        assert_eq!(r("python3.12 -c x"), "python3.12 -c <redacted>");
     }
 }

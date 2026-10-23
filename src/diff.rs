@@ -260,10 +260,14 @@ fn diff_array_section(
     // avoid collisions when multiple items share the same primary key.
     let composite_key = |v: &Value| -> Option<String> {
         let primary = v.get(key_field)?.as_str()?.to_string();
-        let secondary = v
-            .get("config_source")
-            .or_else(|| v.get("config_path"))
-            .and_then(|s| s.as_str());
+        // Keyed on config_path itself (Shell Configs), the secondary is the shell: the
+        // path again would print `<path>|<path>`.
+        let secondary = if key_field == "config_path" {
+            v.get("shell")
+        } else {
+            v.get("config_source").or_else(|| v.get("config_path"))
+        }
+        .and_then(|s| s.as_str());
         match secondary {
             Some(s) => Some(format!("{}|{}", primary, s)),
             None => Some(primary),

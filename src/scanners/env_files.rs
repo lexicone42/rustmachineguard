@@ -241,22 +241,53 @@ fn is_unresolved(v: &str) -> bool {
     v.contains('$') || v.contains('`') || v.contains("{{") || (v.contains('<') && v.contains('>'))
 }
 
-/// The host of a gateway/proxy value as it may be shown, or a marker. A value with no
-/// scheme and no dot (`OPENAI_API_BASE=Hunter2Pass`) is a host only when it reads like a
-/// service name (lowercase, with a `-`, or a common local-stack name); anything else
-/// could be a credential pasted into the wrong variable and is not echoed.
+/// Key prefixes of common API tokens (`sk-1234`, LiteLLM's master-key form), compared
+/// in lower case.
+const KEY_PREFIXES: &[&str] = &[
+    "sk-", "sk_", "gsk_", "xai-", "pplx-", "hf_", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "glpat-",
+    "xoxb-", "xoxp-", "akia", "asia", "eyj", "tok_", "key-", "api-key", "apikey",
+];
+/// Words a password or token carries (`hunter2-pass`, `my-secret-pw`).
+const CREDENTIAL_WORDS: &[&str] = &["pass", "pwd", "token", "secret", "key", "cred"];
+
+/// True when a scheme-less value reads as a credential pasted into the wrong variable: a
+/// known key prefix, a JWT, or a label carrying a password/token word.
+fn credential_shaped(v: &str, host: &str) -> bool {
+    let lower = v.to_ascii_lowercase();
+    KEY_PREFIXES.iter().any(|p| lower.starts_with(p))
+        || host
+            .split('.')
+            .any(|l| l.starts_with("eyj") || CREDENTIAL_WORDS.iter().any(|w| l.contains(w)))
+}
+
+/// The host of a gateway/proxy value as it may be shown, or a marker. With a scheme
+/// (`https://host/...`) the host is shown when it reads as a hostname or an IP (never
+/// downgraded by its name: the grading depends on it). A scheme-less value is not a URL
+/// a client dials as written, and is the shape of a credential pasted into the wrong
+/// variable, so it is shown only when it cannot be one: never with a key prefix
+/// (`sk-1234`), a JWT or a password/token word (`hunter2-pass`, `pass.word`); a bare
+/// (dotless) name only when it is a common local-stack service name or `name-<digits>`.
 pub(crate) fn shown_host(v: &str, host: &str) -> String {
     if is_unresolved(v) {
         return UNRESOLVED_VALUE.to_string();
     }
-    let bare = !v.contains("://") && !host.contains('.') && host.parse::<std::net::IpAddr>().is_err();
+    let schemeless = !v.contains("://");
+    let ip = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok();
+    if schemeless && !ip && credential_shaped(v, &host.to_ascii_lowercase()) {
+        return UNPARSEABLE_VALUE.to_string();
+    }
+    let bare = schemeless && !host.contains('.') && !ip;
     if bare {
         const SERVICE_NAMES: &[&str] =
             &["localhost", "ollama", "litellm", "gateway", "proxy", "vllm", "llm", "openai", "router", "api"];
-        let service = !host.is_empty()
-            && !v.bytes().any(|b| b.is_ascii_uppercase())
-            && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
-            && (host.contains('-') || SERVICE_NAMES.contains(&host));
+        // `ollama-1`, `gpu_2`: a lowercase name and a number.
+        let numbered = host.split_once(['-', '_']).is_some_and(|(name, n)| {
+            !name.is_empty()
+                && name.bytes().all(|b| b.is_ascii_lowercase())
+                && !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+        });
+        let service = !v.bytes().any(|b| b.is_ascii_uppercase()) && (SERVICE_NAMES.contains(&host) || numbered);
         if !service {
             return UNPARSEABLE_VALUE.to_string();
         }
@@ -266,23 +297,45 @@ pub(crate) fn shown_host(v: &str, host: &str) -> String {
 
 /// An agent-home value as it may be shown. `~`, `$HOME` and `${HOME}` prefixes are the
 /// one expansion read here (resolved against HOME); any other `$`/backtick expansion is
-/// `<unresolved>` (its text, `$(cat ~/.ssh/id_ed25519)`, is not echoed). A value with no
-/// `/` that does not read as a directory name (lowercase, digits, `.`, `-`, `_`) is
-/// `<unparseable>`: it could be a credential pasted into the wrong variable.
+/// `<unresolved>` (its text, `$(cat ~/.ssh/id_ed25519)`, is not echoed). Only a path is
+/// shown: a value with a `/` or a leading `.` (`./.claude-home`, `.codex`), and never
+/// one with `://` (a URL with a password in the port position is not a directory);
+/// anything else (`a1b2c3...`, `hunter2-pass`) is `<unparseable>`: it could be a
+/// credential pasted into the wrong variable.
 fn shown_home(v: &str) -> String {
     let home_prefixed = expand_home(v, Path::new("/")).is_some();
     let rest = ["~/", "$HOME/", "${HOME}/"].iter().find_map(|p| v.strip_prefix(p)).unwrap_or(v);
     if (!home_prefixed && is_unresolved(v)) || (home_prefixed && is_unresolved(rest)) {
         return UNRESOLVED_VALUE.to_string();
     }
-    let plausible_dir = v.contains('/')
-        || matches!(v, "~" | "$HOME" | "${HOME}")
-        || (v.len() <= 64
-            && v.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')));
+    let plausible_dir = !v.contains("://")
+        && (v.contains('/') || v.starts_with('.') || matches!(v, "~" | "$HOME" | "${HOME}"));
     if !plausible_dir {
         return UNPARSEABLE_VALUE.to_string();
     }
     sanitize_display(&redact_secrets_in_text(v), 256)
+}
+
+/// A shared temporary location (`/tmp/claude`, `/var/tmp/x`, `/dev/shm/x`), or a path
+/// whose nearest existing ancestor is a world-writable directory: another local user
+/// can create the directory first. Metadata only (lstat), nothing is opened or followed.
+/// A path under HOME is judged by the world-writable rule only (a HOME that itself lives
+/// under /tmp is not shared).
+fn shared_temp_path(p: &Path, home: &Path) -> bool {
+    const SHARED: &[&str] = &["/tmp", "/var/tmp", "/dev/shm", "/private/tmp", "/private/var/tmp"];
+    if !p.starts_with(home) && SHARED.iter().any(|r| p.starts_with(r)) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for a in p.ancestors() {
+            if let Ok(m) = std::fs::symlink_metadata(a) {
+                return m.is_dir() && m.permissions().mode() & 0o002 != 0;
+            }
+        }
+    }
+    false
 }
 
 fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) -> Vec<EnvAgentOverride> {
@@ -321,7 +374,8 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
                 // inside nor outside the project.
                 o.unresolved = abs.is_none() || o.value.as_deref() == Some(UNRESOLVED_VALUE);
                 let project = lexical_join(Path::new("/"), project_dir);
-                o.inside_project = !o.unresolved && abs.is_some_and(|p| p.starts_with(&project));
+                o.inside_project = !o.unresolved && abs.as_ref().is_some_and(|p| p.starts_with(&project));
+                o.shared_temp = !o.unresolved && !o.inside_project && abs.as_deref().is_some_and(|p| shared_temp_path(p, home));
             }
             "gateway" => {
                 let (host, _) = crate::scanners::host_of(v);
