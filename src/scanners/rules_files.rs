@@ -197,6 +197,22 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
         });
     }
 
+    // A credential FILE handed to a network sender by substitution, `@` upload, redirection,
+    // --post-file, or a URL query (see skills::sends_credential_file). Shared by hooks,
+    // helpers, skill dynamic commands, VS Code tasks and rules files.
+    let sends_cred = |text: &str| crate::scanners::skills::sends_credential_file(text);
+    if (sends_cred(&lower) || sends_cred(&normalized)) && seen.insert("credential file sent by a network client") {
+        let obfuscated = !sends_cred(&lower);
+        findings.push(crate::models::RulesFileFinding {
+            severity: "critical".to_string(),
+            pattern: if obfuscated {
+                "data exfiltration pattern (a credential file sent by a network client) (obfuscated — only visible after de-obfuscation)".to_string()
+            } else {
+                "data exfiltration pattern (a credential file sent by a network client)".to_string()
+            },
+        });
+    }
+
     // Cross-channel detection: encoding + network access (SkillFortify information flow check)
     let has_encoding = lower.contains("base64") || lower.contains("encode");
     let has_network = lower.contains("curl")

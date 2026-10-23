@@ -604,6 +604,43 @@ pub(crate) fn is_sensitive_read_target(resolved: &Path, home: &Path) -> bool {
     ["/home", "/Users"].iter().any(|b| resolved.starts_with(b))
 }
 
+/// HOME-relative agent homes in SENSITIVE_READ_PATHS: agent configuration rather than a
+/// credential store (their credential files are judged by name).
+const AGENT_CONFIG_READ_PATHS: &[&str] = &[".claude", ".claude.json", ".codex", ".gemini", ".cursor", ".kiro", ".config/claude"];
+
+/// Why [`is_sensitive_read_target`] refuses `resolved`, for wording and grading:
+/// `"credential"` (a credential, key, `.env` or shell-rc/history name, or a credential
+/// store under HOME), `"agent-config"` (an agent home such as `~/.claude`),
+/// `"other-home"` (another user's home) or `"system"` (/etc, /var, /run, ...). None when
+/// it is not refused.
+pub(crate) fn sensitive_read_kind(resolved: &Path, home: &Path) -> Option<&'static str> {
+    if is_sensitive_read_name(resolved) {
+        return Some("credential");
+    }
+    if let Ok(rel) = resolved.strip_prefix(home) {
+        if AGENT_CONFIG_READ_PATHS.iter().any(|p| rel.starts_with(p)) {
+            return Some("agent-config");
+        }
+        return SENSITIVE_READ_PATHS.iter().any(|p| rel.starts_with(p)).then_some("credential");
+    }
+    if SENSITIVE_SYSTEM_ROOTS.iter().any(|r| resolved.starts_with(r)) {
+        return Some("system");
+    }
+    ["/home", "/Users"].iter().any(|b| resolved.starts_with(b)).then_some("other-home")
+}
+
+/// The most specific of several [`sensitive_read_kind`] verdicts: credential, then
+/// agent-config, other-home, system.
+pub(crate) fn worst_read_kind(kinds: impl IntoIterator<Item = Option<&'static str>>) -> Option<&'static str> {
+    let rank = |k: &str| match k {
+        "credential" => 3,
+        "agent-config" => 2,
+        "other-home" => 1,
+        _ => 0,
+    };
+    kinds.into_iter().flatten().max_by_key(|k| rank(k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +669,15 @@ mod tests {
         ] {
             assert!(!is_sensitive_read_target(Path::new(p), home), "{p}");
         }
+        // The kind agrees with the verdict and names it honestly.
+        for p in ["/home/u/.ssh/id_ed25519", "/home/u/.config/gh/hosts.yml", "/srv/proj/.env.production", "/home/u/.zshrc"] {
+            assert_eq!(sensitive_read_kind(Path::new(p), home), Some("credential"), "{p}");
+        }
+        assert_eq!(sensitive_read_kind(Path::new("/home/u/.claude/skills-archive/x/SKILL.md"), home), Some("agent-config"));
+        assert_eq!(sensitive_read_kind(Path::new("/var/tmp/x/SKILL.md"), home), Some("system"));
+        assert_eq!(sensitive_read_kind(Path::new("/home/other/notes.md"), home), Some("other-home"));
+        assert_eq!(sensitive_read_kind(Path::new("/home/u/dotfiles/SKILL.md"), home), None);
+        assert_eq!(worst_read_kind([Some("system"), None, Some("credential")]), Some("credential"));
         // A home under /var is judged by the HOME rules only.
         let mac = Path::new("/private/var/folders/x/T/h");
         assert!(!is_sensitive_read_target(&mac.join("dotfiles/a.md"), mac));

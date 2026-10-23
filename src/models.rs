@@ -406,6 +406,10 @@ pub struct SkillSymlink {
     /// The real or lexical target is a credential, key, shell-rc/history, agent-config
     /// or system path. Such a target is never read.
     pub sensitive_target: bool,
+    /// Why a sensitive target was refused: "credential" (a credential, key, `.env` or
+    /// shell-rc path), "agent-config", "other-home" or "system". Absent when not sensitive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitive_kind: Option<String>,
     /// True when the target was read.
     pub followed: bool,
     /// The real path is in a read-only content-addressed store (/nix/store).

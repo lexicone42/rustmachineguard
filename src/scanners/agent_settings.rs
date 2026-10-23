@@ -623,13 +623,83 @@ fn referenced_paths(command: &str) -> Vec<&str> {
 
 /// True if `path` is a native executable rather than a script, by magic bytes.
 /// A hook is normally a shell command or a script; a shipped binary is not normal.
+///
+/// `path` must be a canonical path from [`probe_target`]: the open does not follow a
+/// symlink and is refused when the descriptor's real path is not `path`, so a link
+/// swapped in after the check cannot redirect it.
 pub(crate) fn is_native_binary(path: &std::path::Path) -> bool {
+    use std::io::Read;
     // Raw bytes: a binary is not valid UTF-8, so the String-returning read_head()
     // would silently return None here and the check would never fire.
-    let Some(b) = crate::scanners::read_head_bytes(path, 64) else {
+    let Some((file, _)) = crate::scanners::open_regular_nofollow(path, Some(path)) else {
+        crate::scanners::telemetry::note_read(path, "refused");
         return false;
     };
+    crate::scanners::telemetry::note_read(path, "ok");
+    let mut b = Vec::with_capacity(64);
+    if file.take(64).read_to_end(&mut b).is_err() {
+        return false;
+    }
     is_native_head(&b)
+}
+
+/// File extensions of the state an agent keeps next to its hooks (`~/.codex/auth.json`,
+/// `~/.gemini/oauth_creds.json`, `~/.claude/.credentials.json`): never a hook binary.
+const AGENT_STATE_EXTS: &[&str] = &["json", "jsonl", "toml", "yml", "yaml", "db", "sqlite", "env", "txt", "log"];
+
+/// The path the native-binary probe may open for a hook or helper candidate `c`, or
+/// None when it must not be opened at all.
+///
+/// The candidate is resolved first (`canonicalize` opens nothing) and the probe reads the
+/// resolved path without following links. A path the project ships (lexically under the
+/// project root) is probed only when its real path stays inside the project: a committed
+/// `bin/h -> ~/.config/gh/hosts.yml` used as `apiKeyHelper`, or `k -> ~/.ssh/id_ed25519`
+/// named by a hook `cat ./k`, read the first 64 bytes of the target before. Any other
+/// path is refused when its lexical or real form is a credential, key, `.env`, shell-rc,
+/// agent-settings, system or other-user path (the rule
+/// [`crate::scanners::persistence::is_sensitive_read_target`] applies to skill links),
+/// except a non-state file in the agent's own HOME config directory
+/// (`~/.claude/hooks/x`), which is where user-global hooks live. A credential or key
+/// NAME (`.env`, `id_ed25519`, `credentials`) is refused everywhere.
+fn probe_target(c: &Path, project_root: Option<&Path>, home: Option<&Path>) -> Option<std::path::PathBuf> {
+    use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
+    let lexical = lexical_join(Path::new("/"), c);
+    if is_sensitive_read_name(&lexical) {
+        return None;
+    }
+    let real = std::fs::canonicalize(c).ok()?;
+    if is_sensitive_read_name(&real) {
+        return None;
+    }
+    // A "project" that is HOME or contains it (~/.claude/settings.json) ships nothing.
+    let root = project_root.filter(|r| home.is_none_or(|h| !h.starts_with(r)));
+    if let Some(r) = root
+        && lexical.starts_with(lexical_join(Path::new("/"), r))
+    {
+        let real_root = std::fs::canonicalize(r).ok()?;
+        return real.starts_with(&real_root).then_some(real);
+    }
+    let fallback_home = Path::new("/nonexistent-home");
+    let lex_home = home.unwrap_or(fallback_home);
+    let real_home = home.and_then(|h| std::fs::canonicalize(h).ok()).unwrap_or_else(|| lex_home.to_path_buf());
+    let agent_own = |p: &Path, h: &Path| {
+        let Ok(rel) = p.strip_prefix(h) else { return false };
+        let mut comps = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
+        let Some(first) = comps.next() else { return false };
+        let rest: Vec<String> = comps.collect();
+        AGENT_CONFIG_DIRS.contains(&first.as_str())
+            && !rest.is_empty()
+            && rest.iter().all(|c| !c.starts_with('.'))
+            && !p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| AGENT_STATE_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+    };
+    let refused = |p: &Path, h: &Path| !agent_own(p, h) && is_sensitive_read_target(p, h);
+    if refused(&lexical, lex_home) || refused(&real, &real_home) {
+        return None;
+    }
+    Some(real)
 }
 
 /// [`is_native_binary`] on the first bytes of a file already read.
@@ -713,7 +783,9 @@ const INTERPRETER_PROGRAMS: &[&str] = &[
 #[cfg(unix)]
 fn has_exec_bit(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    // symlink_metadata: `p` is a canonical path from probe_target, and a link swapped in
+    // since is not followed (its own mode is 0777 and it is not a file).
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
@@ -818,11 +890,17 @@ fn classify_command(
         let interpreter = INTERPRETER_PROGRAMS.contains(&token.rsplit('/').next().unwrap_or(token));
         // (~/.claude/settings.json's "project root" is HOME, which ships nothing.)
         let shipped = |c: &Path| project_root.is_some_and(|r| c.starts_with(r) && home.is_none_or(|h| r != h));
+        // Every candidate goes through probe_target before anything is opened or stat'ed
+        // through a link: a symlink out of the project or into a credential path is
+        // never read (review round 7: `bin/h -> ~/.config/gh/hosts.yml` as a helper,
+        // `cat ./k` with `k -> ~/.ssh/id_ed25519` as a hook).
         if probe
             && !interpreter
-            && candidates
-                .iter()
-                .any(|c| (!program_only || (has_exec_bit(c) && shipped(c))) && is_native_binary(c))
+            && candidates.iter().any(|c| {
+                (!program_only || shipped(c))
+                    && probe_target(c, project_root, home)
+                        .is_some_and(|real| (!program_only || has_exec_bit(&real)) && is_native_binary(&real))
+            })
         {
             risks.push(format!("executes a native binary, not a script ({token})"));
         }

@@ -215,7 +215,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "CVE-2026-86063 · Plugin4Shell (Air Security) · EAA-009",
         },
         "Skill symlink" => Guidance {
-            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, .env, shell-rc or history, agent-config or system path, or a file that is not a skill-file type; a repository's or plugin's link that leaves it is inventoried without being read. Links that are read (inside the repository or plugin, into your own skill areas including other agents' skills/ and commands/ directories, or your own links into a dotfiles checkout) stay in the inventory and are not reported.",
+            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, .env, shell-rc or history, agent-config or system path, or a file that is not a skill-file type; a repository's or plugin's link that leaves it is inventoried without being read. Links that are read (inside the repository or plugin, into your own skill areas including other agents' skills/ and commands/ directories, or your own links into a dotfiles checkout) stay in the inventory and are not reported. Your own link (outside a repository or plugin) to a skill directory or a .md file under a system path or agent config is Low; a target named like a credential, key, .env or shell-rc file is High.",
             why: "Claude Code loads the link's target as the skill. A SKILL.md that points at ~/.ssh or a settings file puts that file into the model's context. An edit the agent makes to the skill writes through the link: the write-time symlink-following class behind CVE-2026-103435. A link into a dotfiles checkout is common and benign.",
             fix: "If you did not create the link, replace it with a regular file or remove the skill. Keep skill bundles self-contained; dotfile managers can copy instead of linking.",
             reference: "CVE-2026-103435 · write-time symlink following · AST02",
@@ -257,7 +257,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "GlassWorm theme loaders (Socket) · GlassWorm Zig dropper (Aikido) · OWASP ASI04",
         },
         "Ollama exposure" => Guidance {
-            what: "OLLAMA_HOST tells the Ollama server where to listen (and clients where to connect). It is set to every interface (0.0.0.0, [::], or a bare :port) in a shell profile, .env, systemd unit or launchd job, or to a non-loopback address in the Ollama server's own unit or job. A remote address in a profile or .env is a client target and is not reported.",
+            what: "OLLAMA_HOST tells the Ollama server where to listen (and clients where to connect). It is set to every interface (0.0.0.0, [::], or a bare :port) in a shell profile, .env, systemd unit or launchd job, or to a non-loopback address in the Ollama server's own unit or job. A remote address in a profile or .env is a client target and is not reported. A wildcard in a unit or job that does not itself run ollama (an Open WebUI container, a client agent) reaches only that unit's processes, so it is Low: it matters only if the unit starts `ollama serve` some way the scanner cannot see.",
             why: "Ollama's API has no authentication. Bound beyond 127.0.0.1, anyone who can reach the port can run, pull, push and delete models.",
             fix: "Bind to 127.0.0.1 (the default) and reach it remotely through an authenticating reverse proxy or an SSH tunnel. Inside a container, publish the port on 127.0.0.1 only.",
             reference: "Ollama FAQ (OLLAMA_HOST) · unauthenticated local API",
@@ -1187,18 +1187,39 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 "its skill directory"
             };
             let directory = skill.file_type == "directory";
-            let (severity, title) = if directory && l.sensitive_target {
-                (
-                    Severity::High,
-                    format!("skill directory '{}' is a symlink into a credential, key or agent-config path — not listed or read", skill.name),
-                )
+            // What the refused target is, in words that are true of it: a /var/tmp
+            // SKILL.md is "a system path", not "a credential, key or shell-rc path".
+            let into = match l.sensitive_kind.as_deref() {
+                Some("credential") => "a credential, key, .env or shell-rc path",
+                Some("agent-config") => "agent config",
+                Some("other-home") => "another user's home",
+                Some("system") => "a system path",
+                // Reports written before sensitive_kind existed.
+                _ => "a credential, key, shell-rc, agent-config or system path",
+            };
+            let credential = l.sensitive_kind.as_deref().is_none_or(|k| k == "credential");
+            // The user's own global-scope link to a skill (a directory, or a SKILL.md / *.md
+            // file) under /var, /run or ~/.claude is how people keep skills elsewhere
+            // (/var/home on Silverblue, a skills-archive). Nothing is read, so Low; High
+            // stays for credential-named targets and for repository and plugin links.
+            let own_global = skill.scope != "project" && skill.provenance.as_ref().is_none_or(|p| p.marketplace.is_none());
+            let md_target = l
+                .target
+                .rsplit('/')
+                .next()
+                .is_some_and(|n| n.to_ascii_lowercase().ends_with(".md"));
+            // A link reached through a symlinked directory names that directory.
+            let skill_shaped = directory || l.through_directory || md_target;
+            let (severity, title) = if directory && l.sensitive_target && own_global && skill_shaped && !credential {
+                (Severity::Low, format!("skill directory '{}' points outside the skills directory (into {into}) — not listed or read", skill.name))
+            } else if directory && l.sensitive_target {
+                (Severity::High, format!("skill directory '{}' is a symlink into {into} — not listed or read", skill.name))
             } else if directory {
                 (Severity::Low, format!("skill directory '{}' is a symlink that resolves outside {within} — not listed or read", skill.name))
+            } else if l.sensitive_target && own_global && skill_shaped && !credential {
+                (Severity::Low, format!("skill file '{}' points outside the skills directory (into {into}) — not read", skill.name))
             } else if l.sensitive_target {
-                (
-                    Severity::High,
-                    format!("skill file '{}' {via} into a credential, key, shell-rc or agent-config path — not read", skill.name),
-                )
+                (Severity::High, format!("skill file '{}' {via} into {into} — not read", skill.name))
             } else if l.dangling {
                 (Severity::Low, format!("skill file '{}' is a dangling symlink that points outside {within} — nothing to read", skill.name))
             } else {
@@ -1575,23 +1596,36 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         // connect). A wildcard means "listen everywhere" either way. A specific address
         // or host is a server bind only in the server's own unit or job; in a shell
         // profile it is how a client reaches a remote GPU box, and stays quiet.
-        let title = match (o.bind.as_str(), o.service) {
-            ("wildcard", true) => format!(
+        //
+        // A systemd unit's Environment= and a launchd job's EnvironmentVariables reach only
+        // that unit's or job's own process tree. When it does not run Ollama (service=false:
+        // an open-webui container, a client agent), a wildcard there is a client dial to
+        // this machine unless the unit starts `ollama serve` some way the scanner cannot
+        // see, so it is Low and says so (review round 7). A shell profile is where the user
+        // runs `ollama serve` by hand: Medium.
+        let unit = c.shell.starts_with("systemd") || c.shell == "launchd";
+        let unit_word = if c.shell == "launchd" { "job" } else { "unit" };
+        let (severity, title) = match (o.bind.as_str(), o.service) {
+            ("wildcard", true) => (Severity::Medium, format!(
                 "OLLAMA_HOST={} in {} config makes the Ollama server listen on every interface — the Ollama API has no authentication",
                 o.value, c.shell
-            ),
-            ("wildcard", false) => format!(
+            )),
+            ("wildcard", false) if unit => (Severity::Low, format!(
+                "OLLAMA_HOST={} in a {} {unit_word} that does not run ollama: if this {unit_word} starts `ollama serve` (directly or through a script) it will listen on every interface — the Ollama API has no authentication",
+                o.value, c.shell
+            )),
+            ("wildcard", false) => (Severity::Medium, format!(
                 "OLLAMA_HOST={} in {} config makes `ollama serve` started from this environment listen on every interface — the Ollama API has no authentication",
                 o.value, c.shell
-            ),
-            ("non-loopback-ip" | "hostname", true) => format!(
+            )),
+            ("non-loopback-ip" | "hostname", true) => (Severity::Medium, format!(
                 "OLLAMA_HOST={} in {} config makes the Ollama server listen on a non-loopback address — the Ollama API has no authentication",
                 o.value, c.shell
-            ),
+            )),
             _ => continue,
         };
         f.push(Finding {
-            severity: Severity::Medium,
+            severity,
             category: "Ollama exposure".into(),
             title,
             location: c.config_path.clone(),
