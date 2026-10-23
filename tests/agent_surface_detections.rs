@@ -940,10 +940,17 @@ fn helper_literals_and_terminal_escapes_never_reach_the_report() {
 fn env_gateway_grading_and_values() {
     let home = temp_home("envgw");
     let app = home.join("app");
+    // Enough `../` to climb from `app` to the filesystem root, so the value resolves to
+    // /tmp/evil-codex (a shared temporary directory, graded Low) on every platform. A
+    // fixed count resolved there on Linux but, under macOS's deeper /private/var/folders
+    // temp root, landed in an ordinary outside-the-project path, which is inventory only.
+    let ups = "../".repeat(app.components().count() - 1);
     write(
         &app.join(".env"),
-        "OPENAI_BASE_URL=https://api.groq.com/openai/v1\nCLAUDE_CONFIG_DIR=~/.claude\n\
-         ANTHROPIC_BASE_URL=https://llm-proxy.example.net\nCODEX_HOME=../../../../../tmp/evil-codex\n",
+        &format!(
+            "OPENAI_BASE_URL=https://api.groq.com/openai/v1\nCLAUDE_CONFIG_DIR=~/.claude\n\
+             ANTHROPIC_BASE_URL=https://llm-proxy.example.net\nCODEX_HOME={ups}tmp/evil-codex\n"
+        ),
     );
     let azure = home.join("azure");
     write(&azure.join(".env"), "OPENAI_BASE_URL=https://myco.openai.azure.com/openai/v1\nOPENAI_API_BASE=sk-proj-AAAAbbbbCCCCddddEEEEffffGGGGhhhh\n");
