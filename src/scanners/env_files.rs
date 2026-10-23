@@ -245,7 +245,7 @@ fn is_unresolved(v: &str) -> bool {
 /// scheme and no dot (`OPENAI_API_BASE=Hunter2Pass`) is a host only when it reads like a
 /// service name (lowercase, with a `-`, or a common local-stack name); anything else
 /// could be a credential pasted into the wrong variable and is not echoed.
-fn shown_host(v: &str, host: &str) -> String {
+pub(crate) fn shown_host(v: &str, host: &str) -> String {
     if is_unresolved(v) {
         return UNRESOLVED_VALUE.to_string();
     }
@@ -264,6 +264,27 @@ fn shown_host(v: &str, host: &str) -> String {
     displayable_host(host)
 }
 
+/// An agent-home value as it may be shown. `~`, `$HOME` and `${HOME}` prefixes are the
+/// one expansion read here (resolved against HOME); any other `$`/backtick expansion is
+/// `<unresolved>` (its text, `$(cat ~/.ssh/id_ed25519)`, is not echoed). A value with no
+/// `/` that does not read as a directory name (lowercase, digits, `.`, `-`, `_`) is
+/// `<unparseable>`: it could be a credential pasted into the wrong variable.
+fn shown_home(v: &str) -> String {
+    let home_prefixed = expand_home(v, Path::new("/")).is_some();
+    let rest = ["~/", "$HOME/", "${HOME}/"].iter().find_map(|p| v.strip_prefix(p)).unwrap_or(v);
+    if (!home_prefixed && is_unresolved(v)) || (home_prefixed && is_unresolved(rest)) {
+        return UNRESOLVED_VALUE.to_string();
+    }
+    let plausible_dir = v.contains('/')
+        || matches!(v, "~" | "$HOME" | "${HOME}")
+        || (v.len() <= 64
+            && v.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')));
+    if !plausible_dir {
+        return UNPARSEABLE_VALUE.to_string();
+    }
+    sanitize_display(&redact_secrets_in_text(v), 256)
+}
+
 fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) -> Vec<EnvAgentOverride> {
     let mut out = Vec::new();
     for (key, v) in pairs {
@@ -277,7 +298,7 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
         match kind {
             "agent-home" => {
                 use crate::scanners::persistence::lexical_join;
-                o.value = Some(sanitize_display(&redact_secrets_in_text(v), 256));
+                o.value = Some(shown_home(v));
                 let relative = !v.is_empty() && !v.starts_with(['/', '~', '$']);
                 // A relative value resolves against the project (where the .env is
                 // loaded); `../../x` climbs out of it and is not "inside".

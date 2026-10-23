@@ -179,8 +179,11 @@ pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<c
         Some(u) => {
             let (scheme, _) = crate::scanners::split_url_authority(u.trim());
             let h = url_host(u.trim());
+            // Shown only when it reads as a host: a credential pasted into the wrong
+            // field (`"forceLoginGatewayUrl": "Hunter2..."`, a token as the host) is
+            // `<unparseable>`, never echoed.
             (
-                (!h.is_empty()).then(|| crate::scanners::sanitize_display(&h, 128)),
+                (!h.is_empty()).then(|| crate::scanners::env_files::shown_host(u.trim(), &h)),
                 (!scheme.is_empty()).then(|| crate::scanners::sanitize_display(&scheme.to_ascii_lowercase(), 16)),
             )
         }
@@ -406,27 +409,53 @@ pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::Gatewa
     // sent to the provider that issued it goes nowhere new.
     let official = GATEWAY_VARS.iter().any(|(_, h)| host.eq_ignore_ascii_case(h))
         || (var.starts_with("OPENAI_") && is_openai_compatible_provider(&host));
-    // The host is attacker-chosen text in a project settings file (ESC, OSC, newlines):
-    // sanitized once here, after the official comparison on the raw value.
-    let host = crate::scanners::sanitize_display(&host, 256);
+    // The host is attacker-chosen text in a project settings file (ESC, OSC, newlines),
+    // and a credential pasted into a base-URL variable must not be echoed: shown only
+    // when it reads as a host (redacted and sanitized), after the official comparison
+    // on the raw value.
+    let host = crate::scanners::env_files::shown_host(value.trim(), &host);
     Some(crate::models::GatewayOverride { var: var.to_string(), official, host })
 }
 
 /// First-party providers whose documented API is OpenAI-compatible, so an OPENAI_BASE_URL
 /// pointing at them is the provider's own endpoint, not a third-party gateway: Groq
 /// (api.groq.com/openai/v1), Mistral, Google Gemini (generativelanguage.googleapis.com
-/// /v1beta/openai), Together, DeepSeek, Fireworks, xAI, OpenRouter, Perplexity, and Azure
-/// OpenAI resources (`<resource>.openai.azure.com`).
+/// /v1beta/openai), Together, DeepSeek, Fireworks, xAI, OpenRouter, Perplexity, NVIDIA NIM
+/// (integrate.api.nvidia.com/v1), Cerebras, SambaNova, Hugging Face Inference Providers
+/// (router.huggingface.co/v1), Cloudflare Workers AI (api.cloudflare.com/client/v4/
+/// accounts/<id>/ai/v1), Azure OpenAI and Azure AI Foundry resources
+/// (`<resource>.openai.azure.com`, `<resource>.cognitiveservices.azure.com`,
+/// `<resource>.services.ai.azure.com`), Vertex AI (`<region>-aiplatform.googleapis.com`)
+/// and Amazon Bedrock (`bedrock-runtime.<region>.amazonaws.com/openai/v1`).
 const OPENAI_COMPATIBLE_HOSTS: &[&str] = &[
     "api.groq.com", "api.mistral.ai", "generativelanguage.googleapis.com", "api.together.xyz",
     "api.deepseek.com", "api.fireworks.ai", "api.x.ai", "openrouter.ai", "api.perplexity.ai",
+    "integrate.api.nvidia.com", "api.cerebras.ai", "api.sambanova.ai", "router.huggingface.co",
+    "api.cloudflare.com", "aiplatform.googleapis.com",
 ];
-const OPENAI_COMPATIBLE_SUFFIXES: &[&str] = &[".openai.azure.com"];
+const OPENAI_COMPATIBLE_SUFFIXES: &[&str] = &[
+    ".openai.azure.com",
+    ".cognitiveservices.azure.com",
+    ".services.ai.azure.com",
+    "-aiplatform.googleapis.com",
+];
 
 pub fn is_openai_compatible_provider(host: &str) -> bool {
     let h = host.trim_end_matches('.').to_ascii_lowercase();
+    // `bedrock-runtime.<region>.amazonaws.com`: exactly one region label in between.
+    let bedrock = h
+        .strip_prefix("bedrock-runtime.")
+        .and_then(|r| r.strip_suffix(".amazonaws.com"))
+        .is_some_and(|region| !region.is_empty() && region.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
     OPENAI_COMPATIBLE_HOSTS.contains(&h.as_str())
-        || OPENAI_COMPATIBLE_SUFFIXES.iter().any(|s| h.len() > s.len() && h.ends_with(s))
+        || bedrock
+        || OPENAI_COMPATIBLE_SUFFIXES.iter().any(|s| {
+            h.len() > s.len()
+                && h.ends_with(s)
+                // One resource label (`my-foundry`), never a deeper name a third party
+                // could hang under someone else's label.
+                && h[..h.len() - s.len()].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 /// Extract the host from a URL-ish string (scheme optional), lowercased.

@@ -414,6 +414,10 @@ pub struct SkillSymlink {
     /// The file itself is not a link; a directory above it is.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub through_directory: bool,
+    /// The link resolves to nothing (dangling or looping); `escapes` is judged on the
+    /// lexical target.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dangling: bool,
 }
 
 /// One dynamic-context command (`!`cmd`` or a ```! block) in a skill or command file.

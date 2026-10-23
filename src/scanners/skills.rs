@@ -160,6 +160,11 @@ impl Scanner for SkillsScanner {
         // symlinked HOME (macOS /var -> /private/var), keeps scope "global".
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(dedupe_key(Path::new(&r.path))));
+        // Deduped on the raw path above; the report carries it sanitized (skill and
+        // project directory names are attacker-chosen text: ESC, OSC, newlines).
+        for r in &mut results {
+            r.path = sanitize_display(&r.path, 512);
+        }
 
         results
     }
@@ -265,14 +270,36 @@ fn has_skill_ext(p: &Path) -> bool {
 /// a directory that itself holds a SKILL.md (a dotfiles or XDG skill bundle), or a path
 /// under HOME with no dot-directory in it (`~/dotfiles/claude/notes.md`). Dot-directories
 /// (`~/.cache`, `~/.config/<tool>`, `~/.local/share`) are where tools keep their state and
-/// tokens, so a link into one is not followed unless it is a skill bundle.
+/// tokens, so a link into one is not followed unless it is a skill bundle, a dotfile
+/// manager's source tree, or a git checkout.
+///
+/// Dotfile managers keep the real files under a dot-directory and link them into place:
+/// GNU stow in `~/.dotfiles/<pkg>/.claude/commands/review.md`, chezmoi in
+/// `~/.local/share/chezmoi/dot_claude/...`, homeshick in `~/.homesick/repos/...`. A
+/// command file or bundled script there has no SKILL.md beside it, so those roots, and
+/// any directory under HOME inside a git checkout (a `.git` entry on the way up, checked
+/// by existence only), count as the user's own skill files. The credential and
+/// agent-config rules have already refused anything sensitive before this is asked.
 fn user_link_target_ok(real: &Path, real_home: &Path) -> bool {
     if real.parent().is_some_and(|d| std::fs::symlink_metadata(d.join("SKILL.md")).is_ok()) {
         return true;
     }
     let Ok(rel) = real.strip_prefix(real_home) else { return false };
     let dirs: Vec<_> = rel.parent().map(|p| p.components().collect()).unwrap_or_default();
-    !dirs.iter().any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.')))
+    if !dirs.iter().any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.'))) {
+        return true;
+    }
+    const DOTFILE_ROOTS: &[&str] = &[
+        ".dotfiles", ".dots", ".local/share/chezmoi", ".homesick/repos", ".config/dotfiles", ".config/yadm",
+        ".local/share/yadm",
+    ];
+    if DOTFILE_ROOTS.iter().any(|r| rel.starts_with(r)) {
+        return true;
+    }
+    real.ancestors()
+        .skip(1)
+        .take_while(|d| *d != real_home && d.starts_with(real_home))
+        .any(|d| std::fs::symlink_metadata(d.join(".git")).is_ok())
 }
 
 /// Read a skill file without letting a symlink take the read somewhere it must not go.
@@ -372,8 +399,25 @@ fn read_skill_file(
             }),
         });
     }
-    // Dangling, looping, or not a regular file (a link to a directory): not a skill file.
-    let real = real?;
+    // Dangling or looping: nothing to read, but the link itself is inventoried with its
+    // text, and whether it leaves its skill directory is judged lexically.
+    let Some(real) = real else {
+        let within = lexical.starts_with(lexical_join(Path::new("/"), containment));
+        let in_repo = repo_root.is_some_and(|r| lexical.starts_with(lexical_join(Path::new("/"), r)));
+        return Some(SkillRead {
+            content: None,
+            symlink: Some(SkillSymlink {
+                target: shown,
+                escapes: !(within || in_repo),
+                sensitive_target: false,
+                followed: false,
+                store: lexical.starts_with("/nix/store"),
+                through_directory: false,
+                dangling: true,
+            }),
+        });
+    };
+    // Not a regular file (a link to a directory): not a skill file.
     if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
         return None;
     }
@@ -395,6 +439,7 @@ fn read_skill_file(
             followed,
             store,
             through_directory: false,
+            dangling: false,
         }),
     })
 }
@@ -688,6 +733,7 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
         followed,
         store: real.starts_with("/nix/store"),
         through_directory: true,
+        dangling: false,
     };
     if sensitive {
         return DirLink::Refuse(info(true, true, false));
@@ -751,6 +797,14 @@ fn scan_skill_dir(
         if !matches!(ext, "md" | "txt" | "yaml" | "yml" | "json" | "sh" | "bash" | "py" | "js" | "ts") {
             continue;
         }
+        // ~/.codex holds the Codex credential and state files beside its hook files:
+        // auth.json (the OpenAI API key and OAuth tokens), internal_storage.json, the
+        // models cache. Opening one would put its size and hash in the report. Only the
+        // instruction and hook files Codex defines there (AGENTS.md and other markdown,
+        // hooks.json, scripts) are read.
+        if framework == "codex" && !codex_skill_file(&path) {
+            continue;
+        }
 
         // A project's commands may link anywhere inside the repository (monorepos share
         // prompt files between .claude/commands and other agents' rule directories).
@@ -778,6 +832,20 @@ fn scan_skill_dir(
             ctx,
         ));
     }
+}
+
+/// A top-level `~/.codex` file the skills walk may open: markdown, a script, or
+/// `hooks.json`; never a credential name ([`is_sensitive_read_name`]) and never any
+/// other JSON/YAML/text file (auth.json, internal_storage.json, config files).
+///
+/// [`is_sensitive_read_name`]: crate::scanners::persistence::is_sensitive_read_name
+fn codex_skill_file(path: &Path) -> bool {
+    if crate::scanners::persistence::is_sensitive_read_name(path) {
+        return false;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    name.eq_ignore_ascii_case("hooks.json") || matches!(ext, "md" | "sh" | "bash" | "py" | "js" | "ts")
 }
 
 /// The YAML frontmatter text (between a leading `---` line and the next `---` line),
@@ -922,14 +990,44 @@ pub fn sends_encoded_data(cmd: &str) -> bool {
     let has_sender = lower
         .split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|' || c == '(')
         .any(|w| SENDERS.contains(&w.rsplit('/').next().unwrap_or(w)));
-    let mut subst = String::new();
-    for (i, _) in lower.match_indices("$(") {
-        subst.push_str(&lower[i..]);
+    if !has_sender {
+        return false;
     }
-    for part in lower.split('`').skip(1).step_by(2) {
-        subst.push_str(part);
+    let inside = substitution_mask(&lower);
+    ENCODERS
+        .iter()
+        .any(|e| lower.match_indices(e).any(|(i, _)| inside[i]))
+}
+
+/// For each byte of `s`: whether it lies inside a command substitution, `$( ... )`
+/// (nesting and plain parentheses inside it counted, an unclosed one running to the
+/// end) or `` `...` ``. One pass, one byte of memory per input byte: a file of nothing
+/// but `$(` costs what its length costs. (An earlier version concatenated the rest of
+/// the string once per `$(`, which is quadratic: an 80 KB skill took 1.5 GB.)
+fn substitution_mask(s: &str) -> Vec<bool> {
+    let b = s.as_bytes();
+    let mut out = vec![false; b.len()];
+    let mut depth = 0usize;
+    let mut in_tick = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'$' if b.get(i + 1) == Some(&b'(') => {
+                depth += 1;
+                out[i] = true;
+                out[i + 1] = true;
+                i += 2;
+                continue;
+            }
+            b'(' if depth > 0 => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b'`' => in_tick = !in_tick,
+            _ => {}
+        }
+        out[i] = depth > 0 || in_tick;
+        i += 1;
     }
-    has_sender && ENCODERS.iter().any(|e| subst.contains(e))
+    out
 }
 
 /// JavaScript's `\s` (what Claude Code's lookbehind tests), which unlike Rust's

@@ -387,7 +387,13 @@ fn sha_shaped_refs_with_source(git_dir: &Path) -> BTreeMap<String, (Option<Strin
             }
         }
     }
-    let mut stack = vec![git_dir.join("refs")];
+    // The walk root is checked like every entry below it: a `.git/refs` that is a link
+    // (to a directory outside the clone) is not walked.
+    let refs = git_dir.join("refs");
+    let mut stack: Vec<PathBuf> = Vec::new();
+    if std::fs::symlink_metadata(&refs).is_ok_and(|m| m.is_dir()) {
+        stack.push(refs);
+    }
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
@@ -546,9 +552,32 @@ pub(crate) fn is_official(source_type: &str, source_ref: &str) -> bool {
     let r = source_ref.to_ascii_lowercase();
     match source_type {
         "github" => r.starts_with("anthropics/"),
-        "git" => r.contains("github.com/anthropics/") || r.contains("github.com:anthropics/"),
+        "git" => anthropic_github_url(&r),
         _ => false,
     }
+}
+
+/// A git URL whose HOST is github.com and whose path is under `/anthropics/`:
+/// `https://github.com/anthropics/x.git`, `ssh://git@github.com/anthropics/x`,
+/// `git@github.com:anthropics/x.git`. A substring test would also accept
+/// `https://evil.example/github.com/anthropics/x.git`.
+fn anthropic_github_url(url: &str) -> bool {
+    let url = url.trim();
+    if let Some(i) = url.find("://") {
+        let (_, host_port) = crate::scanners::split_url_authority(url);
+        let host = host_port.split(':').next().unwrap_or(host_port);
+        let after = &url[i + 3..];
+        // The path starts where the authority ends (`/`), never at a `?`, `#` or `\`.
+        let path = match after.find(['/', '?', '#', '\\']) {
+            Some(j) if after[j..].starts_with('/') => &after[j..],
+            _ => "",
+        };
+        return host == "github.com" && path.starts_with("/anthropics/");
+    }
+    // scp-like `[user@]host:path`.
+    let Some((authority, path)) = url.split_once(':') else { return false };
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    !authority.contains('/') && host == "github.com" && path.starts_with("anthropics/")
 }
 
 #[cfg(test)]
@@ -584,6 +613,20 @@ mod tests {
         assert!(is_official("github", "anthropics/claude-plugins-official"));
         assert!(!is_official("github", "evil/anthropics-lookalike"));
         assert!(!is_official("git", "https://gitlab.com/x/y.git"));
+        assert!(is_official("git", "git@github.com:anthropics/claude-code.git"));
+        assert!(is_official("git", "ssh://git@github.com/anthropics/claude-code"));
+        // The host decides, not a substring of the URL.
+        for evil in [
+            "https://evil.example/github.com/anthropics/x.git",
+            "https://github.com.evil.example/anthropics/x.git",
+            "https://github.com@evil.example/anthropics/x.git",
+            "https://evil.example/?github.com/anthropics/",
+            "https://github.com/anthropics-lookalike/x.git",
+            "evil.example:github.com/anthropics/x",
+            "https://github.com?/anthropics/x",
+        ] {
+            assert!(!is_official("git", evil), "{evil}");
+        }
     }
 
     #[test]
@@ -682,6 +725,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(got.is_empty(), "followed a symlinked refs/heads: {got:?}");
         assert_eq!(got2, vec![(format!("refs/tags/{H40}"), Some(H40.to_string()))]);
+    }
+
+    #[test]
+    fn ref_walk_does_not_follow_a_symlinked_refs_root() {
+        let base = std::env::temp_dir().join(format!("rmg-mkt-refroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("heads")).unwrap();
+        std::fs::write(elsewhere.join("heads").join(H40), format!("{H40}\n")).unwrap();
+        let git = base.join("clone/.git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, git.join("refs")).unwrap();
+        let got = sha_shaped_refs(&git);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(got.is_empty(), "followed a symlinked .git/refs: {got:?}");
     }
 
     #[test]

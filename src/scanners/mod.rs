@@ -336,18 +336,68 @@ pub fn redact_secrets_in_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     let mut pending = Pending::None;
+    // The program of the current simple command takes an attached `-p<password>`
+    // (mysql and its tools, sshpass): set by its name, cleared at a command separator.
+    let mut attached_p: Option<&str> = None;
     for i in 0..spans.len() {
         out.push_str(&text[last..spans[i].0]);
         let prev = i.checked_sub(1).map(tok);
         let prev2 = i.checked_sub(2).map(tok);
         let next = (i + 1 < spans.len()).then(|| tok(i + 1));
-        let (rendered, next_state) = redact_token(tok(i), prev, prev2, next, pending);
-        pending = next_state;
+        let t = tok(i);
+        let attached = if pending == Pending::None {
+            attached_p.and_then(|prog| redact_attached_password(prog, t, prev))
+        } else {
+            None
+        };
+        let rendered = match attached {
+            Some(shown) => shown,
+            None => {
+                let (rendered, next_state) = redact_token(t, prev, prev2, next, pending);
+                pending = next_state;
+                rendered
+            }
+        };
+        let word = t.trim_matches(['"', '\'', '(', '`']);
+        let base = word.rsplit('/').next().unwrap_or(word);
+        if let Some(p) = ATTACHED_PASSWORD_PROGRAMS.iter().find(|p| **p == base) {
+            attached_p = Some(p);
+        } else if t.ends_with([';', '&', '|']) {
+            attached_p = None;
+        }
         out.push_str(&rendered);
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
     redact_token_shapes(&out)
+}
+
+/// Programs whose `-p` takes the password attached (`mysql -uroot -pHunter2`), or as
+/// the next word (`sshpass -p Hunter2 ssh host`).
+const ATTACHED_PASSWORD_PROGRAMS: &[&str] = &[
+    "mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlshow", "mysqlcheck", "mysqlpump", "mysqlsh",
+    "mariadb", "mariadb-dump", "mariadb-admin", "mariadb-import", "mariadb-check", "sshpass",
+];
+
+/// `-p<value>` after any of [`ATTACHED_PASSWORD_PROGRAMS`], or the word after a bare
+/// `-p` for sshpass, redacted. (mysql's bare `-p` prompts; the next word there is the
+/// database name.)
+fn redact_attached_password(prog: &str, tok: &str, prev: Option<&str>) -> Option<String> {
+    // A command separator glued to the value (`-pX;`, `-pX&&`) is the next command's,
+    // not the password's.
+    let split = |v: &str| v.find([';', '&', '|']).map_or(String::new(), |i| v[i..].to_string());
+    if let Some(v) = tok.strip_prefix("-p")
+        && !v.is_empty()
+        && !tok.starts_with("--")
+        && !v.starts_with("<redacted>")
+        && !v.starts_with([';', '&', '|'])
+    {
+        return Some(format!("-p<redacted>{}", split(v)));
+    }
+    if prog == "sshpass" && prev == Some("-p") && !tok.starts_with(['-', ';', '&', '|']) && !tok.starts_with("<redacted>") {
+        return Some(format!("<redacted>{}", split(tok)));
+    }
+    None
 }
 
 /// Vendor credential prefixes and the minimum tail length that makes a match a key
@@ -962,6 +1012,56 @@ pub fn is_world_or_group_writable(path: &std::path::Path) -> bool {
     }
 }
 
+/// PATH with every entry that is not absolute removed: no empty entry, no `.`, no
+/// `node_modules/.bin`. None when PATH is unset. A relative entry is resolved against
+/// whatever directory the lookup happens in, and rmguard runs git with its working
+/// directory inside repositories it is inspecting (on Linux the child chdirs before it
+/// searches PATH), so a relative entry would find the repository's own `git`.
+pub fn absolute_path_entries() -> Option<std::ffi::OsString> {
+    let path = std::env::var_os("PATH")?;
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(&path).filter(|p| p.is_absolute()).collect();
+    std::env::join_paths(kept).ok()
+}
+
+/// The absolute path of the `git` rmguard runs, found once per process in the absolute
+/// PATH entries only ([`absolute_path_entries`]). None when no absolute entry holds an
+/// executable `git`; every git spawn then fails and its answer is "unknown".
+pub fn git_program() -> Option<&'static std::path::Path> {
+    static GIT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    GIT.get_or_init(|| {
+        let path = absolute_path_entries()?;
+        let names: &[&str] = if cfg!(windows) { &["git.exe", "git.cmd", "git.bat"] } else { &["git"] };
+        std::env::split_paths(&path).find_map(|dir| names.iter().map(|n| dir.join(n)).find(|c| is_executable_file(c)))
+    })
+    .as_deref()
+}
+
+#[cfg(unix)]
+fn is_executable_file(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(p: &std::path::Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// A `git` command by absolute path ([`git_program`]) whose PATH holds only absolute
+/// entries, so neither rmguard's own lookup nor any program git (or a git wrapper)
+/// starts in turn can resolve to a binary in the directory it runs in. With no git
+/// found the program is a path that cannot exist, so the spawn fails cleanly.
+pub fn git_command() -> std::process::Command {
+    let program = git_program()
+        .map_or_else(|| std::path::PathBuf::from("/nonexistent/rmguard-no-git"), std::path::Path::to_path_buf);
+    let mut cmd = child_command(program);
+    match absolute_path_entries() {
+        Some(p) => cmd.env("PATH", p),
+        None => cmd.env_remove("PATH"),
+    };
+    cmd
+}
+
 /// A `git` command that cannot be turned against the scanner by the repository it runs
 /// in. rmguard runs git inside project directories it does not trust — that is the
 /// GitSpawn shape it catalogues (Codex CVE-2026-19592, goose CVE-2026-72718, Claude Code
@@ -970,9 +1070,10 @@ pub fn is_world_or_group_writable(path: &std::path::Path) -> bool {
 /// through here. `-c` overrides repository config; the environment scrub stops an
 /// inherited GIT_DIR/GIT_WORK_TREE from redirecting the command elsewhere. Reading
 /// config (`git config --list`) does not go through this, since the `-c` values would
-/// appear in its own output.
+/// appear in its own output. The program is [`git_command`]'s absolute path: `-c`
+/// overrides are no help when the binary itself is the repository's (`PATH=.:...`).
 pub fn hardened_git() -> std::process::Command {
-    let mut cmd = child_command("git");
+    let mut cmd = git_command();
     cmd.args([
         "-c", "core.fsmonitor=false",
         "-c", "core.hooksPath=/dev/null",
@@ -1010,6 +1111,47 @@ fn not_regular(p: &std::path::Path) -> bool {
         telemetry::note_read(p, "not a regular file");
     }
     bad
+}
+
+/// Every file a git config pulls in through `[include]` / `[includeIf]`, followed
+/// transitively the way git does (each path relative to the file that names it), at
+/// most 8 levels and 64 files. A nested include of a FIFO blocks git like a direct one.
+fn config_include_closure(config: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    let mut frontier = vec![config.to_path_buf()];
+    for _ in 0..8 {
+        let mut next = Vec::new();
+        for f in &frontier {
+            // A non-regular include is reported by the caller; it is never opened here.
+            if not_regular_quiet(f) {
+                continue;
+            }
+            for p in config_include_paths(f) {
+                if out.len() >= 64 {
+                    return out;
+                }
+                if !out.contains(&p) && p != config {
+                    out.push(p.clone());
+                    next.push(p);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    out
+}
+
+/// [`not_regular`] without the telemetry note (the closure walk checks before reading).
+fn not_regular_quiet(p: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(p) {
+        Err(_) => false,
+        Ok(m) if m.is_file() => false,
+        Ok(m) if m.file_type().is_symlink() => !std::fs::metadata(p).is_ok_and(|t| t.is_file()),
+        Ok(_) => true,
+    }
 }
 
 /// `[include]` / `[includeIf ...]` `path = X` values in a git config file. Bounded
@@ -1087,9 +1229,23 @@ fn git_dir_unsafe_to_spawn(dot_git: &std::path::Path) -> bool {
         dirs.push(persistence::lexical_join(&gd, std::path::Path::new(line.trim())));
     }
     dirs.iter().any(|d| {
-        ["HEAD", "index", "config", "commondir"].iter().any(|f| not_regular(&d.join(f)))
-            || config_include_paths(&d.join("config")).iter().any(|p| not_regular(p))
+        ["HEAD", "index", "config", "commondir", "config.worktree"].iter().any(|f| not_regular(&d.join(f)))
+            || ["config", "config.worktree"]
+                .iter()
+                .any(|c| config_include_closure(&d.join(c)).iter().any(|p| not_regular(p)))
+            || shared_index_unsafe(d)
     })
+}
+
+/// A split index (`core.splitIndex`) names a `sharedindex.<sha>` file that git opens
+/// beside the index; one that is not a regular file blocks it the same way.
+fn shared_index_unsafe(git_dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(git_dir) else { return false };
+    entries
+        .flatten()
+        .take(4096)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("sharedindex.")))
+        .any(|e| not_regular(&e.path()))
 }
 
 /// The repository root governing `path`: the nearest ancestor of its directory holding
@@ -1212,7 +1368,7 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
         telemetry::note_read(path, "too large");
         eprintln!(
             "warning: skipping {} ({} bytes exceeds {} byte limit)",
-            path.display(),
+            sanitize_display(&path.display().to_string(), 512),
             meta.len(),
             MAX_CONFIG_SIZE
         );

@@ -90,7 +90,7 @@ fn run_git_config(top_args: &[String], config_args: &[String]) -> Option<String>
     // `config`, whereas `--local` / `--file` are `git config` options and must follow
     // it. Passing them in the wrong position makes git error out and the scanner
     // silently report nothing.
-    let mut cmd = crate::scanners::child_command("git");
+    let mut cmd = crate::scanners::git_command();
     cmd.arg("--no-pager")
         .args(top_args)
         .arg("config")

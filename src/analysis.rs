@@ -137,8 +137,8 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP Agentic Apps Top 10 (excessive agency)",
         },
         "Gateway routing" => Guidance {
-            what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not the provider's own API, so requests (and the API key) route through it. Named OpenAI-compatible providers (Groq, Azure OpenAI, Mistral, Gemini, ...) and loopback proxies are not reported.",
-            why: "Whoever controls that host sees every prompt and can capture the API key. In Claude Code project settings this is the exfiltration vector behind CVE-2026-21852. A .env applies only to tools that load it (Gemini CLI loads project .env files itself; other agents need direnv, an IDE or a dotenv loader), and a git-tracked one is the repository choosing the host for everyone. A legitimate proxy looks identical, so this needs a human check.",
+            what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not the provider's own API, so requests (and the API key) route through it. Named OpenAI-compatible providers (Groq, Azure OpenAI and AI Foundry, Mistral, Gemini, NVIDIA NIM, Bedrock, ...) and loopback proxies are not reported.",
+            why: "Whoever controls that host sees every prompt and can capture the API key. In Claude Code project settings this is the exfiltration vector behind CVE-2026-21852. A .env applies only to tools that load it (Gemini CLI loads project .env files itself; other agents need direnv, an IDE or a dotenv loader), and a git-tracked .env is the repository choosing the host for everyone. A committed per-mode file (.env.development, .env.production) is the application's own build config, which no coding agent loads by default, so it is advisory. A legitimate proxy looks identical, so this needs a human check.",
             fix: "Confirm the host is a gateway you deliberately configured and trust. If it is not, remove the override, and rotate the API key if a tool already sent requests there.",
             reference: "EAA-007 · CVE-2026-21852",
         },
@@ -222,19 +222,19 @@ pub fn guidance(category: &str) -> Guidance {
         },
         "Skill command" => Guidance {
             what: "A skill or custom command contains dynamic context injection: an inline !`command` placeholder or a ```! block. Claude Code runs it in your shell before the skill text reaches the model, every time the skill is invoked.",
-            why: "The command runs with your privileges on invocation, and Claude can invoke a skill on its own unless the skill sets disable-model-invocation. So a third-party plugin or a repository can ship code that runs when its skill loads, with no tool-approval prompt. Read-only context commands (git status, gh pr view) are the documented use.",
+            why: "The command runs with your privileges on invocation, and Claude can invoke a skill on its own unless the skill sets disable-model-invocation. So a third-party plugin or a repository can ship code that runs when its skill loads, with no tool-approval prompt. Read-only context commands (git status, gh pr view) are the documented use; a committed project skill whose commands are all of that kind (one program and subcommand, no pipes, redirection or substitution) stays in the inventory and is not reported.",
             fix: "Read the command shown below. Remove the skill if you did not expect it. To stop all skills running inline shell, set \"disableSkillShellExecution\": true in user or managed settings.",
             reference: "Claude Code skills: dynamic context injection · AST02 · EAA-003",
         },
         "Skill grant" => Guidance {
             what: "A skill's or command's allowed-tools frontmatter pre-approves unrestricted Bash (Bash or Bash(*)). Every shell command Claude runs during the invoking turn then executes without a permission prompt.",
-            why: "The grant opts the skill out of human review of the shell. Claude Code does not gate this field on workspace trust, so the repository or third-party plugin that ships the skill decides it for you. Scoped grants such as Bash(git diff:*) are the documented alternative.",
-            fix: "Narrow the grant to the commands the skill needs, or remove the skill. Organizations can set allowManagedPermissionRulesOnly so allowed-tools is ignored.",
+            why: "The grant opts the skill out of human review of the shell. Claude Code does not gate this field on workspace trust, so the third-party plugin that ships the skill decides it for you. A project skill is reported only when it is not committed (untracked or ignored): it was put there locally, by you or by a tool, and nobody reviewed it with the repository. Scoped grants such as Bash(git diff:*) are the documented alternative.",
+            fix: "Confirm you meant to pre-approve every shell command for this skill. Narrow the grant to the commands the skill needs, or remove the skill. Organizations can set allowManagedPermissionRulesOnly so allowed-tools is ignored.",
             reference: "Claude Code skills: allowed-tools · AST02 · EAA-002 (permissive execution)",
         },
         "Agent redirection" => Guidance {
             what: "A project .env file sets a variable that relocates an AI agent's home directory (CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME, CURSOR_CONFIG_DIR, KIRO_HOME) or reroutes its traffic (HTTPS_PROXY to a non-loopback host, ANTHROPIC_CUSTOM_HEADERS).",
-            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A proxy sees all traffic. Gemini CLI loads project .env files itself; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader).",
+            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A home outside the repository (a devcontainer home such as /home/node/.claude) loads nothing the repository controls and is advisory. A proxy sees all traffic. Gemini CLI and aider load a project's .env themselves; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader). Per-mode files (.env.local, .env.development, .env.production, .env.test) are application config that no coding agent loads by default, so they are advisory even when committed.",
             fix: "Remove the variable unless you put it there. Never commit agent-home or proxy overrides; set them in your own shell profile. Upgrade Gemini CLI to 0.39.1 or later.",
             reference: "CVE-2026-13745 · EAA-006 · EAA-007",
         },
@@ -279,6 +279,32 @@ pub fn guidance(category: &str) -> Guidance {
 
 /// Collect and rank the actionable findings in a scan. Highest severity first.
 /// This is the risk-first view that HTML/fleet reports lead with.
+/// A read-only context command, the documented use of dynamic context: one simple
+/// command (no pipe, redirection, separator or substitution) whose program and
+/// subcommand only read: `git status|diff|log|show|branch|rev-parse|describe|ls-files`
+/// (without `--output`/`--ext-diff`), `gh pr|issue|repo|run view|list|diff|status|
+/// checks`, `date`, `pwd`, `ls`, `whoami`, `uname`.
+pub fn is_read_only_context_command(cmd: &str) -> bool {
+    if cmd.contains(['|', '>', '<', ';', '&', '$', '`', '(', ')', '\n', '\\']) {
+        return false;
+    }
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let Some((prog, args)) = words.split_first() else { return false };
+    if args.iter().any(|a| a.starts_with("--output") || a.starts_with("--ext-diff") || a.starts_with("-c")) {
+        return false;
+    }
+    let sub = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
+    match *prog {
+        "git" => matches!(sub, "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "describe" | "ls-files" | "shortlog"),
+        "gh" => {
+            let verb = args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("");
+            matches!(sub, "pr" | "issue" | "repo" | "run") && matches!(verb, "view" | "list" | "diff" | "status" | "checks")
+        }
+        "date" | "pwd" | "ls" | "whoami" | "uname" => true,
+        _ => false,
+    }
+}
+
 pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     let mut f = Vec::new();
 
@@ -1047,6 +1073,12 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         if let Some(l) = &skill.symlink
             && !l.store
             && (l.sensitive_target || (l.escapes && !l.followed))
+            // The user's own broken link loads nothing and exposes nothing: inventory
+            // only. A repository's or plugin's dangling link out of its tree is reported
+            // (it goes live the moment its target appears).
+            && (!l.dangling
+                || skill.scope == "project"
+                || skill.provenance.as_ref().is_some_and(|p| p.marketplace.is_some()))
         {
             let via = if l.through_directory { "is reached through a symlinked directory" } else { "is a symlink" };
             let within = if skill.scope == "project" {
@@ -1061,6 +1093,8 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     Severity::High,
                     format!("skill file '{}' {via} into a credential, key, shell-rc or agent-config path — not read", skill.name),
                 )
+            } else if l.dangling {
+                (Severity::Low, format!("skill file '{}' is a dangling symlink that points outside {within} — nothing to read", skill.name))
             } else {
                 (Severity::Low, format!("skill file '{}' {via} that resolves outside {within} — not read", skill.name))
             };
@@ -1109,10 +1143,15 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 if e.2.as_ref().is_none_or(|(p, _)| cand.0 < *p) {
                     e.2 = Some(cand);
                 }
-            } else if project {
+            } else if project
+                && !(git == Some("tracked")
+                    && skill.dynamic_commands.iter().all(|d| d.patterns.is_empty() && is_read_only_context_command(&d.command)))
+            {
+                // A committed skill whose every command is a read-only context command
+                // (git status, gh pr view: the documented use) stays in the inventory.
                 let origin = match git {
                     Some("tracked") => "project (git-tracked)",
-                    Some(_) => "project (untracked in a git repository)",
+                    Some(_) => "project (not committed to its git repository)",
                     None => "project",
                 };
                 // Medium-only pattern hits (printenv, an API_KEY name) are named but do not
@@ -1154,7 +1193,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     severity: Severity::Low,
                     category: "Skill grant".into(),
                     title: format!(
-                        "project skill '{}' pre-approves unrestricted Bash (untracked in a git repository)",
+                        "project skill '{}' pre-approves unrestricted Bash and is not committed to its git repository (added locally, by you or a tool)",
                         skill.name
                     ),
                     location: loc.clone(),
@@ -1188,21 +1227,54 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
 
     // ── C. .env agent-home / gateway / proxy / headers / OLLAMA_HOST ──
     for e in &report.env_files {
-        let t = e.git_tracked;
-        let tracked = if t { " git-tracked" } else { "" };
+        // Coding agents load a project's `.env` (Gemini CLI, aider) and nothing else:
+        // `.env.local`, `.env.development`, `.env.production` and `.env.test` are an
+        // application framework's per-mode config (Next.js, Vite, dotenv-flow). A
+        // committed one is the app's build config, not repository-controlled agent
+        // redirection, so it is advisory and worded as such.
+        let file_name = e.path.rsplit(['/', '\\']).next().unwrap_or("");
+        let mode_file = file_name != ".env";
+        let t = e.git_tracked && !mode_file;
+        let tracked = if e.git_tracked { " git-tracked" } else { "" };
+        let app_note = if mode_file {
+            format!(" ({file_name} is application config; coding agents do not load it by default)")
+        } else {
+            String::new()
+        };
         for o in &e.agent_overrides {
             let value = o.value.as_deref().unwrap_or("");
             let gemini = o.key.starts_with("GEMINI") || o.key.starts_with("GOOGLE_GEMINI");
-            let gemini_note = if gemini { " (Gemini CLI loads project .env files itself)" } else { "" };
+            let gemini_note = if mode_file {
+                app_note.clone()
+            } else if gemini {
+                " (Gemini CLI loads project .env files itself)".to_string()
+            } else {
+                String::new()
+            };
             let finding = match o.kind.as_str() {
+                // Graded by where the home points. Inside the repository, the repository
+                // author writes the settings, hooks and MCP servers the agent loads
+                // (CVE-2026-13745). Outside it (a devcontainer home such as
+                // /home/node/.claude, a shared team directory) nothing the repository
+                // controls is loaded from it, committed or not.
                 "agent-home" => Some((
-                    if t { Severity::High } else if o.inside_project { Severity::Medium } else { Severity::Low },
+                    if t && o.inside_project {
+                        Severity::High
+                    } else if o.inside_project && !mode_file {
+                        Severity::Medium
+                    } else {
+                        Severity::Low
+                    },
                     "Agent redirection",
                     format!(
                         "{} in a{tracked} .env relocates the {} home to {value}{}{gemini_note}",
                         o.key,
                         crate::scanners::env_files::agent_for_home_key(&o.key),
-                        if o.inside_project { " inside the project" } else { "" },
+                        if o.inside_project {
+                            " inside the project"
+                        } else {
+                            " outside the project (nothing the repository controls is loaded from it)"
+                        },
                     ),
                 )),
                 // A tracked .env is repository-controlled redirection. An untracked one is
@@ -1254,6 +1326,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                             "{} points to non-official host {value} in a git-tracked .env — every clone routes requests (and the API key) there when the .env is loaded (EAA-007){gemini_note}",
                             o.key
                         )
+                    } else if mode_file {
+                        format!(
+                            "{} points to non-official host {value} in a{tracked} {file_name} — when the app (or anything exporting this file) loads it, requests and the API key go there; verify the host (EAA-007){gemini_note}",
+                            o.key
+                        )
                     } else {
                         format!(
                             "{} points to non-official host {value} in a .env — when the .env is loaded, requests and the API key go there; verify the host (EAA-007){gemini_note}",
@@ -1265,6 +1342,13 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     Severity::Medium,
                     "Agent redirection",
                     "ANTHROPIC_CUSTOM_HEADERS is set in a git-tracked .env — adds request headers (often a credential) to every Claude Code request when loaded".to_string(),
+                )),
+                "headers" if e.git_tracked => Some((
+                    Severity::Low,
+                    "Agent redirection",
+                    format!(
+                        "ANTHROPIC_CUSTOM_HEADERS is set in a git-tracked {file_name} — adds request headers to Claude Code requests if something exports this file{app_note}"
+                    ),
                 )),
                 "proxy" if !o.loopback => Some((
                     if t { Severity::Medium } else { Severity::Low },

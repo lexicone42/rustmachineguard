@@ -166,6 +166,14 @@ pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
     } else {
         "hostname"
     };
+    // A hostname is shown only when it reads as one (dotted, an IP, or a service name):
+    // a password pasted into OLLAMA_HOST is `<unparseable>`, never echoed.
+    if bind == "hostname" {
+        let gated = crate::scanners::env_files::shown_host(s, &host.to_ascii_lowercase());
+        if gated.starts_with('<') {
+            return (gated, bind);
+        }
+    }
     let shown = match port {
         Some(p) if host.contains(':') => format!("[{host}]:{p}"),
         Some(p) => format!("{host}:{p}"),
