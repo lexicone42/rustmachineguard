@@ -203,6 +203,28 @@ const MAX_DYNAMIC_COMMANDS: usize = 50;
 /// reusing another, a plugin's own files): not "sensitive" for the symlink check.
 const SKILL_LINK_OK_DIRS: &[&str] = &["skills", "commands", "plugins", "agents", "hooks"];
 
+/// Other agents' homes whose skill, command and prompt directories hold skills, not
+/// agent configuration. Keeping one skill set and linking it into each agent
+/// (`~/.claude/skills/x -> ~/.codex/skills/x`) is a common setup: the target is another
+/// SKILL.md, so the rest of these homes (settings, auth files) stays sensitive but these
+/// subdirectories do not.
+const OTHER_AGENT_HOMES: &[&str] = &[
+    ".codex", ".cursor", ".gemini", ".kiro", ".windsurf", ".codeium/windsurf", ".agents", ".copilot",
+    ".config/opencode", ".opencode", ".continue", ".roo", ".cline", ".factory", ".config/amp",
+    ".config/goose", ".qwen", ".augment",
+];
+const OTHER_AGENT_SKILL_DIRS: &[&str] = &["skills", "commands", "prompts"];
+
+/// The user's skill areas, lexical and canonical: `~/.claude/{skills,commands,plugins,
+/// agents,hooks}` and the skill/command/prompt directories of other agents' homes.
+fn skill_areas(home: &Path) -> Vec<PathBuf> {
+    let claude = SKILL_LINK_OK_DIRS.iter().map(|d| home.join(".claude").join(d));
+    let others = OTHER_AGENT_HOMES
+        .iter()
+        .flat_map(|a| OTHER_AGENT_SKILL_DIRS.iter().map(move |d| home.join(a).join(d)));
+    claude.chain(others).flat_map(|l| [canon_or_lexical(&l), l]).collect()
+}
+
 /// What reading one skill file produced.
 struct SkillRead {
     content: Option<String>,
@@ -271,7 +293,8 @@ fn user_link_target_ok(real: &Path, real_home: &Path) -> bool {
 /// - a target that is not a skill-file type (SKILL_TARGET_EXTS) is never read;
 /// - inside the skill's own directory (for a project: the repository; for a plugin: its
 ///   install or clone root), or inside the user's own skill areas
-///   (`~/.claude/{skills,commands,plugins,agents,hooks}`): read;
+///   (`~/.claude/{skills,commands,plugins,agents,hooks}`, and the skills/commands/prompts
+///   directories of other agents' homes, see [`skill_areas`]): read;
 /// - the user's own links (`repo_root` None) may also point at their own files under HOME
 ///   where skills plausibly live (see [`user_link_target_ok`]);
 /// - `/nix/store` (home-manager): read, inventory only;
@@ -288,13 +311,7 @@ fn read_skill_file(
 ) -> Option<SkillRead> {
     use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
     let real_home = canon_or_lexical(home);
-    let areas: Vec<PathBuf> = SKILL_LINK_OK_DIRS
-        .iter()
-        .flat_map(|d| {
-            let l = home.join(".claude").join(d);
-            [canon_or_lexical(&l), l]
-        })
-        .collect();
+    let areas = skill_areas(home);
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     // The content's own tree: the skill directory, plus the repository or plugin root. A
     // tree that contains HOME is never "own" (a project registered at ~ would otherwise
@@ -418,14 +435,18 @@ fn build_skill(
         // Claude Code runs these in the user's shell before the skill text reaches the
         // model: code.claude.com/docs/en/skills#dynamic-context-injection
         for (raw, block) in extract_dynamic_commands(text) {
-            let hits = crate::scanners::rules_files::check_dangerous_patterns(&raw);
+            // One command: matched with its whitespace (line breaks included) collapsed, so
+            // `curl x |\n  sh` (a pipe continued on the next line) is seen as the pipe it is.
+            let hits = dynamic_command_hits(&raw.split_whitespace().collect::<Vec<_>>().join(" "));
             // Graded by the matched pattern's own severity: a fetch piped to a shell, an
             // exfiltration pipe or anything obfuscated (escalated to high by the matcher)
             // is dangerous; a medium-only match (`printenv NODE_ENV`, a check that
             // $OPENAI_API_KEY is set) is listed but stays advisory.
             let dangerous = hits.iter().any(|f| matches!(f.severity.as_str(), "critical" | "high"));
+            // A multi-line block or inline command is shown one line per statement.
+            let shown = raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
             dynamic_commands.push(SkillDynamicCommand {
-                command: sanitize_display(&crate::scanners::redact_command_text(&raw), 300),
+                command: sanitize_display(&crate::scanners::redact_command_text(&shown), 300),
                 dangerous,
                 patterns: hits.into_iter().map(|f| f.pattern).collect(),
                 block,
@@ -441,8 +462,12 @@ fn build_skill(
         && let Some(root) = project_root
         && crate::scanners::probe_exists(&root.join(".git"))
     {
-        let git = if crate::scanners::is_git_tracked(path) { "tracked" } else { "untracked" };
-        provenance.get_or_insert_with(SkillProvenance::default).git = Some(git.into());
+        // Unknown (git timed out, the repository is unsafe to spawn git in, or the scan's
+        // git budget is spent) records nothing rather than a guess.
+        if let Some(tracked) = crate::scanners::git_tracked_state(path) {
+            let git = if tracked { "tracked" } else { "untracked" };
+            provenance.get_or_insert_with(SkillProvenance::default).git = Some(git.into());
+        }
     }
     // An all-default provenance (a skill outside the plugin tree) says nothing.
     if provenance.as_ref().is_some_and(|p| {
@@ -650,13 +675,7 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
     let shown = sanitize_display(&target.to_string_lossy(), 300);
     let real_home = canon_or_lexical(home);
     let lexical = lexical_join(link.parent().unwrap_or(root), &target);
-    let areas: Vec<PathBuf> = SKILL_LINK_OK_DIRS
-        .iter()
-        .flat_map(|d| {
-            let l = home.join(".claude").join(d);
-            [canon_or_lexical(&l), l]
-        })
-        .collect();
+    let areas = skill_areas(home);
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     let repo = project_root.filter(|_| scope == "project").map(canon_or_lexical);
     let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
@@ -688,7 +707,10 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
     };
     if follow {
         // A whole skill directory linked in is self-contained at its target: inventory.
-        DirLink::Follow(info(false, false, true))
+        // `escapes` means what it means for a linked file: the real path is outside the
+        // skills root (and, for a project, outside the repository).
+        let escapes = !(real.starts_with(&real_root) || in_repo(&real));
+        DirLink::Follow(info(escapes, false, true))
     } else {
         DirLink::Refuse(info(true, false, false))
     }
@@ -799,112 +821,223 @@ fn body_after_frontmatter(text: &str) -> &str {
     t
 }
 
-/// Claude Code dynamic context injection: inline `` !`cmd` `` placeholders (at line
-/// start or after whitespace) and ```` ```! ```` fenced blocks, which Claude Code runs
-/// in the user's shell when the skill or command loads. Returns `(raw command, block)`,
-/// at most 50.
-///
-/// Ordinary fenced blocks are skipped (documentation teaching the syntax shows it inside
-/// ```` ```markdown ```` fences), as are inline code spans: a backtick run of length n
-/// opens a span closed only by a run of exactly n, so `` `` !`cmd` `` `` is not a
-/// command. `KEY=!`cmd`` and `fuzz_target!`` are not matches either: the `!` has to
-/// follow whitespace or start the line.
-pub fn extract_dynamic_commands(text: &str) -> Vec<(String, bool)> {
-    let mut out = Vec::new();
-    let body = body_after_frontmatter(text);
-    // (fence char, run length, is a ! block, collected body lines)
-    let mut fence: Option<(char, usize, bool, Vec<String>)> = None;
-    for line in body.lines() {
-        if out.len() >= MAX_DYNAMIC_COMMANDS {
-            break;
-        }
-        let t = line.trim_start();
-        let run_char = t.chars().next().filter(|c| *c == '`' || *c == '~');
-        let run_len = run_char.map(|c| t.chars().take_while(|x| *x == c).count()).unwrap_or(0);
-        if let Some((fc, flen, is_bang, lines)) = fence.as_mut() {
-            if run_char == Some(*fc) && run_len >= *flen && t[run_len..].trim().is_empty() {
-                if *is_bang {
-                    let joined = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
-                    if !joined.is_empty() {
-                        out.push((joined, true));
-                    }
-                }
-                fence = None;
-            } else if *is_bang {
-                lines.push(line.to_string());
+/// The dangerous-pattern hits for one dynamic-context command, with the two
+/// substring-only rows of the shared rules-file matcher replaced by the shapes they are
+/// named after. The GitHub contents API returns base64, so `gh api ... | base64 -d | head`
+/// is the ordinary way to read a file, and `curl --data-urlencode` is a query, not an
+/// encoder: "base64 decode to shell" is kept only when the decode feeds a shell or
+/// interpreter, and "cross-channel: encoding + network" only when encoded output is
+/// what a network client sends. Obfuscated matches are kept as they are.
+fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
+    crate::scanners::rules_files::check_dangerous_patterns(cmd)
+        .into_iter()
+        .filter(|f| {
+            if f.pattern.contains("(obfuscated") {
+                return true;
             }
-            continue;
-        }
-        if run_len >= 3 {
-            let info = t[run_len..].trim_start();
-            // A backtick fence's info string may not contain a backtick (CommonMark).
-            if !(run_char == Some('`') && info.contains('`')) {
-                fence = Some((run_char.unwrap_or('`'), run_len, info.starts_with('!'), Vec::new()));
+            if f.pattern.starts_with("base64 decode to shell") {
+                return decodes_into_shell(cmd);
+            }
+            if f.pattern.starts_with("cross-channel: encoding + network") {
+                return sends_encoded_data(cmd);
+            }
+            true
+        })
+        .collect()
+}
+
+/// Pipeline stages, split on `|` (not `||`).
+fn pipe_stages(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '|' {
+            if chars.get(i + 1) == Some(&'|') {
+                cur.push_str("||");
+                i += 2;
                 continue;
             }
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(chars[i]);
         }
-        inline_commands(line, &mut out);
+        i += 1;
     }
-    // An unterminated ```! block still runs up to the end of the file.
-    if let Some((_, _, true, lines)) = fence {
-        let joined = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
-        if !joined.is_empty() && out.len() < MAX_DYNAMIC_COMMANDS {
-            out.push((joined, true));
+    out.push(cur);
+    out
+}
+
+/// The program a pipeline stage runs: its first word, basename, wrappers skipped.
+fn stage_program(stage: &str) -> String {
+    stage
+        .split_whitespace()
+        .map(|w| w.trim_matches(['(', ')', '{', '}', '"', '\'', '&', ';']))
+        .find(|w| !w.is_empty() && !matches!(*w, "sudo" | "exec" | "command" | "env" | "nohup") && !w.contains('='))
+        .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
+        .unwrap_or_default()
+}
+
+const INTERPRETERS: &[&str] =
+    &["sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "python", "python3", "perl", "node", "ruby", "php"];
+
+fn is_b64_decode(s: &str) -> bool {
+    ["base64 -d", "base64 --decode", "base64 -D", "base64 -di"].iter().any(|p| s.contains(p))
+}
+
+/// A base64 decode whose output a shell or interpreter executes: `... | base64 -d | sh`,
+/// `eval "$(... | base64 -d)"`, `bash -c "$(... base64 -d)"`, `bash <(... base64 -d)`.
+pub fn decodes_into_shell(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    if !is_b64_decode(&lower) {
+        return false;
+    }
+    let stages = pipe_stages(&lower);
+    if let Some(i) = stages.iter().position(|s| is_b64_decode(s))
+        && stages[i + 1..].iter().any(|s| INTERPRETERS.contains(&stage_program(s).as_str()))
+    {
+        return true;
+    }
+    let substitutes = lower.contains("$(") || lower.contains("<(") || lower.contains('`');
+    let runs = lower.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '(').any(|w| matches!(w, "eval" | "source" | "."))
+        || [" -c ", " -c\"", " -c'", "sh <(", "bash <("].iter().any(|p| lower.contains(p));
+    substitutes && runs
+}
+
+const ENCODERS: &[&str] = &["base64", "xxd", "od -", "hexdump", "gzip", "openssl enc", "uuencode"];
+const SENDERS: &[&str] = &["curl", "wget", "nc", "ncat", "socat", "telnet", "http", "xh"];
+
+/// Encoded local data sent by a network client: an encoder stage piped into curl/wget/nc,
+/// or a client whose arguments embed an encoder's output (`curl -d "$(... | base64)"`).
+pub fn sends_encoded_data(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    let stages = pipe_stages(&lower);
+    if let Some(i) = stages.iter().position(|s| ENCODERS.iter().any(|e| s.contains(e)))
+        && stages[i + 1..].iter().any(|s| SENDERS.contains(&stage_program(s).as_str()))
+    {
+        return true;
+    }
+    // Command substitutions inside a sender's arguments.
+    let has_sender = lower
+        .split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|' || c == '(')
+        .any(|w| SENDERS.contains(&w.rsplit('/').next().unwrap_or(w)));
+    let mut subst = String::new();
+    for (i, _) in lower.match_indices("$(") {
+        subst.push_str(&lower[i..]);
+    }
+    for part in lower.split('`').skip(1).step_by(2) {
+        subst.push_str(part);
+    }
+    has_sender && ENCODERS.iter().any(|e| subst.contains(e))
+}
+
+/// JavaScript's `\s` (what Claude Code's lookbehind tests), which unlike Rust's
+/// `char::is_whitespace` includes U+FEFF.
+fn js_space(c: char) -> bool {
+    c.is_whitespace() || c == '\u{feff}'
+}
+
+/// Claude Code's `dze`: blank the inside of every single-backtick code span
+/// (`` /`[^`\n]+`/g ``, left to right, non-overlapping) unless the span is preceded by
+/// `!` or a backtick, so an inline command quoted inside ordinary code is not run.
+fn mask_code_spans(chars: &[char]) -> Vec<char> {
+    let mut out = chars.to_vec();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if chars[i] != '`' {
+            i += 1;
+            continue;
+        }
+        let end = (i + 1..n).find(|&j| chars[j] == '`' || chars[j] == '\n');
+        match end {
+            Some(j) if chars[j] == '`' && j > i + 1 => {
+                let prev = i.checked_sub(1).map(|k| chars[k]);
+                if !matches!(prev, Some('!') | Some('`')) {
+                    for c in &mut out[i + 1..j] {
+                        *c = ' ';
+                    }
+                }
+                i = j + 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Claude Code dynamic context injection, extracted the way Claude Code itself does
+/// (`CEr` in the 2.1.308 bundle), so a skill cannot hide a command from this scan by
+/// formatting it:
+///
+/// - blocks: `` /```!\s*\n?([\s\S]*?)\n?```/g `` over the raw text. Any ```` ```! ````
+///   opens one, anywhere (inside another fence, mid-line, nested in a longer fence), and
+///   the next ```` ``` ```` closes it. Tilde fences (`~~~!`) are not blocks.
+/// - inline: `` /(?<=^|\s)!`([^`]+)`/gm `` over the text with single-backtick code spans
+///   blanked (see [`mask_code_spans`]), so `` !`cmd` `` runs inside ordinary fenced
+///   blocks, inside double-backtick spans and across line breaks, but not inside a
+///   single-backtick span that is not itself preceded by `!`. `KEY=!`cmd`` and
+///   `fuzz_target!`` are not matches: the `!` has to start a line or follow whitespace.
+///
+/// The body after the frontmatter is searched: Claude Code parses the frontmatter off
+/// and runs the commands of the content it returns (`PEe(s.content, ...)`). Returns
+/// `(command, block)` exactly as Claude Code would run them (trimmed, CRLF folded),
+/// blocks first, at most 50. Documentation that shows the syntax inside a fence is
+/// reported like a live command: Claude Code runs it too.
+pub fn extract_dynamic_commands(text: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let text = body_after_frontmatter(text);
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let fence_at = |k: usize| k + 3 <= n && chars[k] == '`' && chars[k + 1] == '`' && chars[k + 2] == '`';
+    let mut i = 0;
+    while i + 4 <= n && out.len() < MAX_DYNAMIC_COMMANDS {
+        if !(fence_at(i) && chars[i + 3] == '!') {
+            i += 1;
+            continue;
+        }
+        let mut start = i + 4;
+        while start < n && js_space(chars[start]) {
+            start += 1;
+        }
+        let Some(close) = (start..n).find(|&k| fence_at(k)) else {
+            // No closing fence: no match here, and none later (a later ```! would itself
+            // supply the closing fence for this one).
+            break;
+        };
+        let end = if close > start && chars[close - 1] == '\n' { close - 1 } else { close };
+        let cmd: String = chars[start..end.max(start)].iter().collect();
+        let cmd = cmd.trim().replace("\r\n", "\n");
+        if !cmd.is_empty() {
+            out.push((cmd, true));
+        }
+        i = close + 3;
+    }
+    if text.contains("!`") {
+        let masked = mask_code_spans(&chars);
+        let mut i = 0;
+        while i + 1 < n && out.len() < MAX_DYNAMIC_COMMANDS {
+            let at_start = i == 0 || js_space(masked[i - 1]);
+            if !(masked[i] == '!' && masked[i + 1] == '`' && at_start) {
+                i += 1;
+                continue;
+            }
+            match (i + 2..n).find(|&k| masked[k] == '`') {
+                Some(close) if close > i + 2 => {
+                    let cmd: String = masked[i + 2..close].iter().collect();
+                    let cmd = cmd.trim().replace("\r\n", "\n");
+                    if !cmd.is_empty() {
+                        out.push((cmd, false));
+                    }
+                    i = close + 1;
+                }
+                _ => i += 1,
+            }
         }
     }
     out.truncate(MAX_DYNAMIC_COMMANDS);
     out
-}
-
-fn inline_commands(line: &str, out: &mut Vec<(String, bool)>) {
-    let chars: Vec<char> = line.chars().collect();
-    let n = chars.len();
-    let mut i = 0;
-    while i < n {
-        if out.len() >= MAX_DYNAMIC_COMMANDS {
-            return;
-        }
-        let c = chars[i];
-        if c == '!'
-            && (i == 0 || chars[i - 1].is_whitespace())
-            && i + 1 < n
-            && chars[i + 1] == '`'
-            && (i + 2 >= n || chars[i + 2] != '`')
-        {
-            if let Some(end) = (i + 2..n).find(|&j| chars[j] == '`') {
-                let cmd: String = chars[i + 2..end].iter().collect();
-                if !cmd.trim().is_empty() {
-                    out.push((cmd, false));
-                }
-                i = end + 1;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '`' {
-            let run = chars[i..].iter().take_while(|x| **x == '`').count();
-            // Find a closing run of exactly `run` backticks.
-            let mut j = i + run;
-            let mut closed = None;
-            while j < n {
-                if chars[j] == '`' {
-                    let r = chars[j..].iter().take_while(|x| **x == '`').count();
-                    if r == run {
-                        closed = Some(j + r);
-                        break;
-                    }
-                    j += r;
-                } else {
-                    j += 1;
-                }
-            }
-            // An unmatched run is literal text.
-            i = closed.unwrap_or(i + run);
-            continue;
-        }
-        i += 1;
-    }
 }
 
 /// Split an allowed-tools string on commas/whitespace outside parentheses.

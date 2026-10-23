@@ -78,6 +78,7 @@ fn scan_vscode_style_extensions(
                 contributes_commands: manifest.contributes_commands,
                 declarative_claim: manifest.declarative_claim,
                 native_addons,
+                path: crate::scanners::sanitize_display(&path.display().to_string(), 512),
             });
         }
     }
@@ -188,7 +189,10 @@ pub fn find_native_addons(dir: &std::path::Path) -> Vec<String> {
                 stack.push(p);
             } else if meta.is_file()
                 && p.extension().is_some_and(|x| x == "node")
-                && crate::scanners::agent_settings::is_native_binary(&p)
+                // Opened O_NOFOLLOW|O_NONBLOCK with an fstat check: a .node swapped for a
+                // link or a FIFO after the symlink_metadata check is refused, not followed.
+                && crate::scanners::read_head_bytes_nofollow(&p, 64)
+                    .is_some_and(|b| crate::scanners::agent_settings::is_native_head(&b))
                 && let Ok(rel) = p.strip_prefix(dir)
             {
                 found.push(crate::scanners::sanitize_display(&rel.to_string_lossy(), 200));

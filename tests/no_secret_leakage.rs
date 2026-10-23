@@ -90,9 +90,12 @@ fn surfaces() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Credential helpers print a credential, so their literal arguments go too (on top of
-/// the shapes above): echo/printf arguments, heredoc bodies, leading NAME=value values,
-/// and long opaque tokens. The program, flags, paths and $VAR references stay.
+/// Credential helpers print a credential, so only their SHAPE is recorded: the program,
+/// flags, $VAR references, paths, a URL's host and known subcommand words. Every other
+/// literal goes, wherever the shell grammar puts it: echo/printf arguments, heredoc
+/// bodies, NAME=value values, `sh -c` strings (redacted as nested commands), subshells
+/// and brace groups, wrapper prefixes (exec, sudo, command, builtin, time, env) and
+/// interpreter code passed to -c / -e.
 #[test]
 fn helper_command_literals_are_redacted() {
     use rustmachineguard::scanners::redact_helper_command as h;
@@ -104,21 +107,59 @@ fn helper_command_literals_are_redacted() {
         ("OPAQUEKEY", "./helper --profile x OPAQUEKEY0123456789abcdefXYZ"),
         ("ECHOQ", "echo -n 'ECHOQ'; true"),
         ("PIPEDKEY", "echo PIPEDKEY | base64"),
+        // Review round 3: wrapped forms that used to pass through verbatim.
+        ("Hunter2Pass", "/usr/bin/env echo Hunter2Pass"),
+        ("Hunter2Pass", "command echo Hunter2Pass"),
+        ("Hunter2Pass", "builtin echo Hunter2Pass"),
+        ("Hunter2Pass", "sh -c 'echo Hunter2Pass'"),
+        ("Hunter2Pass", "bash -c \"printf %s Hunter2Pass\""),
+        ("Hunter2Pass", "bash -lc 'exec echo Hunter2Pass'"),
+        ("Hunter2Pass", "(echo Hunter2Pass)"),
+        ("Hunter2Pass", "{ echo Hunter2Pass; }"),
+        ("Hunter2Pass", "exec echo Hunter2Pass"),
+        ("Hunter2Pass", "sudo echo Hunter2Pass"),
+        ("Hunter2Pass", "sudo -u root echo Hunter2Pass"),
+        ("Hunter2Pass", "time echo Hunter2Pass"),
+        ("Hunter2Pass", "env -i FOO=1 echo Hunter2Pass"),
+        ("Hunter2Pass", "node -e \"console.log('Hunter2Pass')\""),
+        ("Hunter2Pass", "python3 -c 'print(\"Hunter2Pass\")'"),
+        ("Hunter2Pass", "awk 'BEGIN{print \"Hunter2Pass\"}'"),
+        ("Hunter2Pass", "eval 'echo Hunter2Pass'"),
+        ("Hunter2Pass", "true && echo Hunter2Pass"),
+        ("Hunter2Pass", "mysql -pHunter2Pass -e 'select 1'"),
+        ("Hunter2Pass", "vault-cli --password=Hunter2Pass"),
+        ("Hunter2Pass", "mytool Hunter2Pass"),
+        ("Hunter2Pass", "cat x # Hunter2Pass"),
+        ("Hunter2Pass", "sh -c \"sh -c 'echo Hunter2Pass'\""),
+        ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJ", "sh -c 'echo abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'"),
+        ("dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU", "exec echo dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU="),
+        ("my-very-secret-password-value", "sudo echo my-very-secret-password-value"),
+        ("correcthorsebatterystaple", "python3 -c \"print('correcthorsebatterystaple')\""),
+        ("correcthorsebatterystaple", "printf '%s\\n' correcthorsebatterystaple"),
+        ("Hunter2Pass", "curl -s https://u:Hunter2Pass@vault.internal/v1/x"),
+        ("Hunter2Pass", "curl -s https://vault.internal/v1/x?token=Hunter2Pass"),
     ] {
         let out = h(raw);
         assert!(!out.contains(canary), "{raw:?} -> {out:?}");
+        assert!(out.contains("<redacted>"), "{raw:?} -> {out:?}");
     }
-    for keep in [
-        "op read op://vault/anthropic/key",
-        "aws sso login --profile dev",
-        "security find-generic-password -s ANTHROPIC_API_KEY -w",
-        "echo $ANTHROPIC_API_KEY",
-        "printenv ANTHROPIC_API_KEY",
-        "/usr/local/bin/key-helper-2024 --region us-east-1",
+    // The shape stays reviewable: programs, flags, subcommands, $VARs, paths, hosts.
+    for (raw, want) in [
+        ("op read op://vault/anthropic/key", "op read op://vault/<redacted>"),
+        ("aws sso login --profile dev", "aws sso login --profile <redacted>"),
+        ("security find-generic-password -s ANTHROPIC_API_KEY -w", "security find-generic-password -s <redacted> -w"),
+        ("echo $ANTHROPIC_API_KEY", "echo $ANTHROPIC_API_KEY"),
+        ("printenv ANTHROPIC_API_KEY", "printenv ANTHROPIC_API_KEY"),
+        ("/usr/local/bin/key-helper-2024 --region us-east-1", "/usr/local/bin/key-helper-2024 --region <redacted>"),
+        ("echo $KEY | curl -d @- https://x.example", "echo $KEY | curl -d @- https://x.example"),
+        ("gcloud auth print-access-token", "gcloud auth print-access-token"),
+        ("cat ~/.config/anthropic/key 2>/dev/null", "cat ~/.config/anthropic/key 2>/dev/null"),
+        ("sh -c 'echo $KEY'", "sh -c 'echo $KEY'"),
+        ("sudo -u svc /opt/bin/get-key", "sudo -u <redacted> /opt/bin/get-key"),
+        ("cat <<EOF\nHEREDOCKEY\nEOF", "cat <<EOF\n<redacted>\nEOF"),
     ] {
-        assert_eq!(h(keep), keep, "redaction blinded a benign helper");
+        assert_eq!(h(raw), want, "{raw:?}");
     }
-    assert_eq!(h("echo $KEY | curl -d @- https://x.example"), "echo $KEY | curl -d @- https://x.example");
 }
 
 /// The host-only readers never return userinfo, independent of redaction.

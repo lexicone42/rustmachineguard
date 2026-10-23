@@ -202,6 +202,10 @@ pub struct IdeExtension {
     /// so the walk never runs for them and this stays empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_addons: Vec<String>,
+    /// The extension's directory (sanitized). The same id can be installed for several
+    /// IDEs or in several versions; this says which copy a finding is about.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -453,7 +457,8 @@ pub struct SkillProvenance {
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentSettings {
     pub path: String,
-    /// "user-global" | "local" | "project" | "managed"
+    /// "user-global" | "user-local" (~/.claude/settings.local.json, seen when the scan
+    /// runs from HOME) | "local" | "project" | "managed"
     pub source: String,
     pub framework: String,
     /// Project-scoped settings from a cloned repo are higher risk; git_tracked tells
@@ -659,6 +664,20 @@ pub struct EnvFile {
     /// secrets, so the path or host is kept (sanitized); every other value is never read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_overrides: Vec<EnvAgentOverride>,
+    /// The .env is a symbolic link: it is inventoried by its link text and never read
+    /// (key_count, secret_keys and agent_overrides stay empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<EnvSymlink>,
+}
+
+/// A symlinked `.env`, recorded without opening it.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct EnvSymlink {
+    /// The link text, sanitized.
+    pub target: String,
+    /// The lexical target is a credential, key, shell-rc, agent-config or system path.
+    #[serde(default)]
+    pub sensitive_target: bool,
 }
 
 /// An agent-home or traffic override in a `.env` file.

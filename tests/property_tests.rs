@@ -5928,3 +5928,45 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    /// The credential-helper shape redactor is total on any text, control characters,
+    /// unbalanced quotes and stray operators included.
+    #[test]
+    fn helper_redaction_is_total(s in "\\PC*|[\\x00-\\x7f]{0,200}") {
+        let _ = rustmachineguard::scanners::redact_helper_command(&s);
+    }
+
+    /// A literal printed by echo/printf survives no wrapper, subshell, brace group or
+    /// `sh -c` nesting.
+    #[test]
+    fn helper_echo_literal_never_survives(
+        secret in "[A-Z][a-z]{2,6}[0-9][A-Za-z0-9]{2,12}",
+        wrap in 0usize..9,
+        printer in prop::sample::select(vec!["echo", "printf %s", "echo -n", "/bin/echo", "print"]),
+    ) {
+        let inner = format!("{printer} {secret}");
+        let cmd = match wrap {
+            0 => inner.clone(),
+            1 => format!("sh -c '{inner}'"),
+            2 => format!("bash -lc \"{inner}\""),
+            3 => format!("({inner})"),
+            4 => format!("{{ {inner}; }}"),
+            5 => format!("exec {inner}"),
+            6 => format!("sudo -u svc {inner}"),
+            7 => format!("/usr/bin/env FOO=1 {inner}"),
+            _ => format!("true && time {inner} | cat"),
+        };
+        let out = rustmachineguard::scanners::redact_helper_command(&cmd);
+        prop_assert!(!out.contains(&secret), "{} -> {}", cmd, out);
+    }
+
+    /// Claude Code's dynamic-context extractor mirror is total and returns only
+    /// non-empty, trimmed commands.
+    #[test]
+    fn dynamic_command_extraction_is_total(s in "\\PC*|[`!~\\n a-z]{0,120}") {
+        for (c, _) in rustmachineguard::scanners::skills::extract_dynamic_commands(&s) {
+            prop_assert!(!c.is_empty() && c.trim() == c);
+        }
+    }
+}

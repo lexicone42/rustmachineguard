@@ -1,4 +1,4 @@
-use crate::models::{EnvAgentOverride, EnvFile};
+use crate::models::{EnvAgentOverride, EnvFile, EnvSymlink};
 use crate::platform::PlatformInfo;
 use crate::scanners::{file_perms, is_git_tracked, read_bounded, redact_secrets_in_text, sanitize_display, Scanner};
 use std::path::{Path, PathBuf};
@@ -57,7 +57,23 @@ impl Scanner for EnvFilesScanner {
 }
 
 fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
-    let content = read_bounded(path);
+    // A .env is project content: a link is recorded by its lexical target and never
+    // opened (`.env -> ~/.ssh/id_ed25519` or `~/.aws/credentials` would otherwise put that
+    // file's key names, and now its values, into the report). The open itself refuses a
+    // link at the final component (O_NOFOLLOW) and a FIFO (O_NONBLOCK + fstat), so a
+    // swap after this check is refused too.
+    let symlink = std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.file_type().is_symlink())
+        .and_then(|_| std::fs::read_link(path).ok())
+        .map(|target| {
+            let lexical = crate::scanners::persistence::lexical_join(path.parent().unwrap_or(project_dir), &target);
+            EnvSymlink {
+                target: sanitize_display(&target.to_string_lossy(), 300),
+                sensitive_target: crate::scanners::persistence::is_sensitive_read_target(&lexical, home),
+            }
+        });
+    let content = if symlink.is_some() { None } else { crate::scanners::read_bounded_nofollow(path, None) };
     let (key_count, secret_keys) = match content.as_deref() {
         Some(content) => parse_env_keys(content),
         None => (0, Vec::new()),
@@ -68,12 +84,14 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
         .unwrap_or_default();
     let (_, world_readable, _) = file_perms(path).unwrap_or((String::new(), false, false));
     EnvFile {
-        path: path.display().to_string(),
+        // The project directory name is attacker-chosen text (ESC, newlines).
+        path: sanitize_display(&path.display().to_string(), 512),
         git_tracked: is_git_tracked(path),
         world_readable,
         key_count,
         secret_keys,
         agent_overrides,
+        symlink,
     }
 }
 
@@ -211,6 +229,41 @@ fn displayable_host(host: &str) -> String {
     }
 }
 
+/// Shown in place of a gateway or proxy value that is not a URL yet: a shell or dotenv
+/// interpolation (`${OPENAI_BASE_URL}`, `$(cmd)`, backticks) or a template placeholder
+/// (`<your-gateway-url>`, `{{GATEWAY}}`). Nothing is routed by the file itself.
+pub const UNRESOLVED_VALUE: &str = "<unresolved>";
+/// Shown in place of a value with no recognizable host.
+pub const UNPARSEABLE_VALUE: &str = "<unparseable>";
+
+/// A value that is an interpolation or a template placeholder, not a literal URL.
+fn is_unresolved(v: &str) -> bool {
+    v.contains('$') || v.contains('`') || v.contains("{{") || (v.contains('<') && v.contains('>'))
+}
+
+/// The host of a gateway/proxy value as it may be shown, or a marker. A value with no
+/// scheme and no dot (`OPENAI_API_BASE=Hunter2Pass`) is a host only when it reads like a
+/// service name (lowercase, with a `-`, or a common local-stack name); anything else
+/// could be a credential pasted into the wrong variable and is not echoed.
+fn shown_host(v: &str, host: &str) -> String {
+    if is_unresolved(v) {
+        return UNRESOLVED_VALUE.to_string();
+    }
+    let bare = !v.contains("://") && !host.contains('.') && host.parse::<std::net::IpAddr>().is_err();
+    if bare {
+        const SERVICE_NAMES: &[&str] =
+            &["localhost", "ollama", "litellm", "gateway", "proxy", "vllm", "llm", "openai", "router", "api"];
+        let service = !host.is_empty()
+            && !v.bytes().any(|b| b.is_ascii_uppercase())
+            && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            && (host.contains('-') || SERVICE_NAMES.contains(&host));
+        if !service {
+            return UNPARSEABLE_VALUE.to_string();
+        }
+    }
+    displayable_host(host)
+}
+
 fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) -> Vec<EnvAgentOverride> {
     let mut out = Vec::new();
     for (key, v) in pairs {
@@ -247,14 +300,17 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
             }
             "gateway" => {
                 let (host, _) = crate::scanners::host_of(v);
-                o.official = crate::scanners::agent_settings::classify_base_url(key, v).is_some_and(|g| g.official);
-                o.loopback = crate::scanners::is_loopback_host(&host);
-                o.value = Some(displayable_host(&host));
+                let unresolved = is_unresolved(v);
+                o.official = !unresolved
+                    && crate::scanners::agent_settings::classify_base_url(key, v).is_some_and(|g| g.official);
+                o.loopback = !unresolved && crate::scanners::is_loopback_host(&host);
+                o.value = Some(shown_host(v, &host));
             }
             "proxy" => {
                 let (host, _) = crate::scanners::host_of(v);
-                o.loopback = host.is_empty() || crate::scanners::is_loopback_host(&host);
-                o.value = Some(displayable_host(&host));
+                let unresolved = is_unresolved(v);
+                o.loopback = !unresolved && (host.is_empty() || crate::scanners::is_loopback_host(&host));
+                o.value = Some(shown_host(v, &host));
             }
             "headers" => {}
             "ollama-host" => {

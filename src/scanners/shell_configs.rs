@@ -131,8 +131,10 @@ impl Scanner for ShellConfigsScanner {
 /// classifying, so it never reaches the display.
 pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
     let s = v.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    // A shell expansion is not evaluated, and its text (`\`echo KEY\``, `$(cmd)`) is not
+    // shown: only that there is one.
     if s.contains('$') || s.contains('`') {
-        return (crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(s), 128), "unresolved");
+        return ("<shell expansion>".to_string(), "unresolved");
     }
     let hostport = s.split_once("://").map_or(s, |(_, rest)| rest);
     let hostport = hostport.split('/').next().unwrap_or(hostport);
@@ -281,24 +283,58 @@ pub fn runs_ollama_serve(cmdline: &str) -> bool {
 pub fn systemd_ollama_host(text: &str) -> (Option<String>, bool) {
     let mut value = None;
     let mut runs_ollama = false;
-    for line in text.lines() {
-        let t = line.trim();
-        if t.starts_with('#') || t.starts_with(';') {
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix("Environment=") {
-            for w in systemd_words(rest) {
-                if let Some(v) = w.strip_prefix("OLLAMA_HOST=") {
-                    value = Some(v.to_string());
+    for line in systemd_logical_lines(text) {
+        // systemd.syntax(7): the key ends at the first `=`, and whitespace around it is
+        // ignored (`Environment = "OLLAMA_HOST=0.0.0.0"` is valid).
+        let Some((key, rest)) = line.split_once('=') else { continue };
+        match key.trim() {
+            "Environment" => {
+                for w in systemd_words(rest.trim()) {
+                    if let Some(v) = w.strip_prefix("OLLAMA_HOST=") {
+                        value = Some(v.to_string());
+                    }
                 }
             }
-        } else if let Some(rest) = t.strip_prefix("ExecStart=")
-            && runs_ollama_serve(rest)
-        {
-            runs_ollama = true;
+            "ExecStart" if runs_ollama_serve(rest.trim()) => runs_ollama = true,
+            _ => {}
         }
     }
     (value, runs_ollama)
+}
+
+/// A unit file's logical lines, as systemd reads them: a line ending in a backslash is
+/// joined with the next (the backslash becomes a space), comment lines (`#`, `;`) are
+/// dropped, including those inside a continuation, and section headers are skipped.
+fn systemd_logical_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur: Option<String> = None;
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with('#') || t.starts_with(';') {
+            continue;
+        }
+        let (body, cont) = match t.strip_suffix('\\') {
+            Some(b) => (b, true),
+            None => (t, false),
+        };
+        let joined = match cur.take() {
+            Some(mut c) => {
+                c.push(' ');
+                c.push_str(body);
+                c
+            }
+            None => body.to_string(),
+        };
+        if cont {
+            cur = Some(joined);
+        } else if !joined.trim().is_empty() && !joined.trim_start().starts_with('[') {
+            out.push(joined);
+        }
+    }
+    if let Some(c) = cur.filter(|c| !c.trim().is_empty()) {
+        out.push(c);
+    }
+    out
 }
 
 const MAX_SERVICE_ENTRIES: usize = 500;
@@ -378,7 +414,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
             }
         }
         for (path, unit) in files {
-            let Some(text) = crate::scanners::read_bounded(&path) else { continue };
+            // O_NOFOLLOW|O_NONBLOCK + fstat: a unit swapped for a link or FIFO after the
+            // regular-file check is refused, not followed or blocked on.
+            let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else { continue };
             let (value, runs) = systemd_ollama_host(&text);
             if let Some(v) = value {
                 // The server: a unit whose ExecStart is `ollama serve`, or the official
@@ -485,7 +523,7 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
             if !regular_file(&p) {
                 continue;
             }
-            let Some(text) = crate::scanners::read_bounded(&p) else { continue };
+            let Some(text) = crate::scanners::read_bounded_nofollow(&p, None) else { continue };
             let (value, svc) = launchd_ollama_host(&text);
             if let Some(v) = value {
                 // In the system directories only ollama-named jobs are read at all, and

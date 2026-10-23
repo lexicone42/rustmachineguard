@@ -32,6 +32,7 @@ impl Scanner for AgentSettingsScanner {
         if let Ok(cwd) = std::env::current_dir() {
             project_dirs.push(cwd);
         }
+        let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
         for dir in project_dirs {
             parse_settings(
                 &dir.join(".claude").join("settings.json"),
@@ -39,9 +40,12 @@ impl Scanner for AgentSettingsScanner {
                 "claude-code",
                 &mut results,
             );
+            // Run from HOME, the "project" is the user's own ~/.claude: its
+            // settings.local.json is theirs, not a repository's ("user-local").
+            let at_home = dir == home || std::fs::canonicalize(&dir).is_ok_and(|d| d == real_home);
             parse_settings(
                 &dir.join(".claude").join("settings.local.json"),
-                "local",
+                if at_home { "user-local" } else { "local" },
                 "claude-code",
                 &mut results,
             );
@@ -235,7 +239,8 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
         crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
 
     Some(AgentSettings {
-        path: path.to_string_lossy().to_string(),
+        // Project directory names are attacker-chosen text.
+        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         source: source.to_string(),
         framework: framework.to_string(),
         // Managed settings are machine policy, not repository content.
@@ -338,7 +343,8 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         return;
     }
     out.push(AgentSettings {
-        path: path.to_string_lossy().to_string(),
+        // Project directory names are attacker-chosen text.
+        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         source: source.to_string(),
         framework: "cursor".to_string(),
         git_tracked: is_git_tracked(path),
@@ -393,10 +399,16 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
 /// known gateway variable. Shared by the settings `env` block and project `.env` files
 /// so both decide "official" identically (exact host match).
 pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::GatewayOverride> {
-    let (_, official_host) = GATEWAY_VARS.iter().find(|(v, _)| *v == var)?;
+    GATEWAY_VARS.iter().find(|(v, _)| *v == var)?;
     let host = url_host(value);
-    let official = host.eq_ignore_ascii_case(official_host)
+    // Any provider's own API host is first-party for any base-URL variable: Anthropic
+    // documents api.anthropic.com/v1/ as an OpenAI-SDK-compatible endpoint, and a key
+    // sent to the provider that issued it goes nowhere new.
+    let official = GATEWAY_VARS.iter().any(|(_, h)| host.eq_ignore_ascii_case(h))
         || (var.starts_with("OPENAI_") && is_openai_compatible_provider(&host));
+    // The host is attacker-chosen text in a project settings file (ESC, OSC, newlines):
+    // sanitized once here, after the official comparison on the raw value.
+    let host = crate::scanners::sanitize_display(&host, 256);
     Some(crate::models::GatewayOverride { var: var.to_string(), official, host })
 }
 
@@ -460,7 +472,11 @@ pub(crate) fn is_native_binary(path: &std::path::Path) -> bool {
     let Some(b) = crate::scanners::read_head_bytes(path, 64) else {
         return false;
     };
-    let b = b.as_slice();
+    is_native_head(&b)
+}
+
+/// [`is_native_binary`] on the first bytes of a file already read.
+pub(crate) fn is_native_head(b: &[u8]) -> bool {
     // A text script whose first line happens to start with "MZ" (`MZ_HOME=/opt/mz`) is
     // not a PE. A real binary has non-text bytes within its first 64.
     let looks_like_text = b.iter().all(|&c| c == b'\n' || c == b'\r' || c == b'\t' || (0x20..0x7f).contains(&c));

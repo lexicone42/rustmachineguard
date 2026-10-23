@@ -530,7 +530,7 @@ pub fn parse_marketplaces(
             name: crate::scanners::sanitize_display(&name, 128),
             source_type,
             // A git URL with `oauth2:<token>@` is the standard way to hand git a token.
-            source_ref: crate::scanners::redact_secrets_in_text(&source_ref),
+            source_ref: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(&source_ref), 512),
             auto_update,
             official,
             installed_plugin_count,

@@ -1,7 +1,56 @@
 use crate::models::ScanReport;
 use colored::Colorize;
 
+/// A copy of the report in which no string can carry a control character: every string
+/// value (and object key) has ESC, C0/C1 controls (newline included) and bidi/line
+/// separators replaced with `?`. The terminal renderer works from this copy, so the only
+/// escape sequences in its output are the colours it adds itself, and
+/// [`scrub_terminal`] can tell the two apart. None if the report does not round-trip.
+pub fn defanged(report: &ScanReport) -> Option<ScanReport> {
+    let mut v = serde_json::to_value(report).ok()?;
+    defang_value(&mut v);
+    serde_json::from_value(v).ok()
+}
+
+fn bad_data_char(c: char) -> bool {
+    (c.is_control() && c != '\t')
+        || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
+        || ('\u{202a}'..='\u{202e}').contains(&c)
+        || ('\u{2066}'..='\u{2069}').contains(&c)
+}
+
+fn defang_str(s: &str) -> String {
+    s.chars().map(|c| if bad_data_char(c) { '?' } else { c }).collect()
+}
+
+fn defang_value(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::String(s) if s.chars().any(bad_data_char) => *s = defang_str(s),
+        Value::Array(a) => a.iter_mut().for_each(defang_value),
+        Value::Object(o) => {
+            if o.keys().any(|k| k.chars().any(bad_data_char)) {
+                let old = std::mem::take(o);
+                for (k, val) in old {
+                    o.insert(defang_str(&k), val);
+                }
+            }
+            o.values_mut().for_each(defang_value);
+        }
+        _ => {}
+    }
+}
+
 pub fn render(report: &ScanReport) -> String {
+    match defanged(report) {
+        Some(clean) => scrub_terminal(&render_inner(&clean)),
+        // Unreachable in practice (the report is plain data); without the defanged copy no
+        // escape sequence can be trusted, so colour is dropped with the rest.
+        None => scrub_all(&render_inner(report)),
+    }
+}
+
+fn render_inner(report: &ScanReport) -> String {
     let mut out = String::new();
 
     // Header
@@ -910,14 +959,24 @@ pub fn render(report: &ScanReport) -> String {
         "Scan complete.".bold().green()
     ));
 
-    scrub_terminal(&out)
+    out
 }
 
-/// The whole-report backstop for inventory lines (paths, names, versions), which carry
-/// attacker-chosen text and are not individually sanitized: a project directory named
-/// `p\x1b]0;OWNED\x07` printed an OSC title-set sequence. Keeps newlines, tabs and the
-/// SGR colour sequences this renderer emits (`ESC [ digits/; m`); every other control
-/// character, ESC sequence, and bidi/line-separator character becomes `?`.
+/// SGR parameters this renderer's colours produce (reset, bold, dim, italic, underline,
+/// their resets, and the red..white / bright red..white foregrounds). Conceal (8),
+/// black (30, 90) and every background are not among them.
+fn renderer_sgr(params: &str) -> bool {
+    params.split(';').all(|p| {
+        p.is_empty()
+            || p.parse::<u8>().is_ok_and(|n| matches!(n, 0..=4 | 22..=24 | 31..=37 | 39 | 91..=97))
+    })
+}
+
+/// The whole-report backstop. The report is rendered from a [`defanged`] copy, so data
+/// cannot carry ESC; this still replaces every control character other than newline and
+/// tab, every non-SGR escape sequence and every SGR sequence with a parameter the
+/// renderer never emits (`ESC[8m` conceal, black on black) with `?`, plus bidi and line
+/// separators.
 pub fn scrub_terminal(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
@@ -929,7 +988,8 @@ pub fn scrub_terminal(s: &str) -> String {
             while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == ';') {
                 j += 1;
             }
-            if chars.get(j) == Some(&'m') {
+            let params: String = chars[i + 2..j.min(chars.len())].iter().collect();
+            if chars.get(j) == Some(&'m') && renderer_sgr(&params) {
                 out.extend(&chars[i..=j]);
                 i = j + 1;
                 continue;
@@ -943,6 +1003,14 @@ pub fn scrub_terminal(s: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// [`scrub_terminal`] with no escape sequence kept at all: for text with no colours
+/// (`--diff`) or when the defanged copy could not be made.
+pub fn scrub_all(s: &str) -> String {
+    s.chars()
+        .map(|c| if (c.is_control() && c != '\n' && c != '\t') || (bad_data_char(c) && c != '\n') { '?' } else { c })
+        .collect()
 }
 
 fn section_header(out: &mut String, title: &str) {
@@ -989,6 +1057,13 @@ pub fn human_bytes(bytes: u64) -> String {
 /// person asking "did the scanner actually look?", which is the question every
 /// silent-zero bug in this project's history came down to.
 pub fn render_diagnostics(report: &ScanReport) -> String {
+    match defanged(report) {
+        Some(clean) => scrub_terminal(&render_diagnostics_inner(&clean)),
+        None => scrub_all(&render_diagnostics_inner(report)),
+    }
+}
+
+fn render_diagnostics_inner(report: &ScanReport) -> String {
     let mut out = String::new();
     section_header(&mut out, "Scanner Diagnostics");
     out.push_str(&format!(

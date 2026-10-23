@@ -9,6 +9,7 @@ pub mod exposure;
 pub mod container_tools;
 pub mod extensions;
 pub mod git_config;
+mod helper_redact;
 pub mod ide;
 pub mod marketplaces;
 pub mod mcp;
@@ -394,100 +395,7 @@ pub fn redact_token_shapes(text: &str) -> String {
     out
 }
 
-/// Redact a credential-helper command (apiKeyHelper, awsAuthRefresh, ...). A helper's
-/// job is to PRINT a credential, so its most naive form carries the credential as a
-/// literal: `echo <key>`, `printf '%s' <key>`, a heredoc, or `NAME=<value> cmd`. On top of
-/// [`redact_secrets_in_text`], this keeps the program and its flags but redacts every
-/// literal argument of echo/printf, every heredoc body, the values of leading
-/// `NAME=value` assignments, and any long high-entropy token. `$VAR` references stay.
-pub fn redact_helper_command(cmd: &str) -> String {
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut idx = 0;
-    while idx < cmd.len() {
-        let Some(off) = cmd[idx..].find(|c: char| !c.is_whitespace()) else { break };
-        let start = idx + off;
-        let end = cmd[start..].find(char::is_whitespace).map_or(cmd.len(), |o| start + o);
-        spans.push((start, end));
-        idx = end;
-    }
-    let is_operator = |t: &str| matches!(t, "|" | "||" | "&&" | ";" | "&" | ">" | ">>" | "<" | "2>" | "2>&1");
-    let is_var_ref = |t: &str| {
-        let t = t.trim_matches(['"', '\'']);
-        let name = t.strip_prefix("${").and_then(|r| r.strip_suffix('}')).or_else(|| t.strip_prefix('$'));
-        name.is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-    };
-    let is_assignment = |t: &str| {
-        t.split_once('=').is_some_and(|(k, _)| {
-            !k.is_empty()
-                && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-    };
-    let mut out = String::with_capacity(cmd.len());
-    let mut last = 0;
-    let mut command_start = true; // the next token begins a simple command
-    let mut in_echo = false;
-    let mut heredoc: Option<String> = None;
-    for &(s, e) in &spans {
-        out.push_str(&cmd[last..s]);
-        last = e;
-        let tok = &cmd[s..e];
-        if let Some(delim) = heredoc.as_deref() {
-            if tok.trim_matches(['"', '\'']) == delim {
-                heredoc = None;
-                out.push_str(tok);
-            } else {
-                out.push_str("<redacted>");
-            }
-            continue;
-        }
-        if is_operator(tok) {
-            out.push_str(tok);
-            command_start = true;
-            in_echo = false;
-            continue;
-        }
-        if let Some(rest) = tok.strip_prefix("<<") {
-            // `<<EOF`, `<<'EOF'`, `<<-EOF`, `<<<word` (a here-string is one literal).
-            if let Some(word) = rest.strip_prefix('<') {
-                out.push_str(if word.is_empty() { "<<<" } else { "<<<<redacted>" });
-                in_echo = word.is_empty();
-            } else {
-                let d = rest.trim_start_matches('-').trim_matches(['"', '\'']);
-                if !d.is_empty() {
-                    heredoc = Some(d.to_string());
-                }
-                out.push_str(tok);
-            }
-            continue;
-        }
-        let ends_command = tok.ends_with(';') || tok.ends_with('|');
-        let rendered = if command_start && is_assignment(tok) {
-            let (k, v) = tok.split_once('=').unwrap_or((tok, ""));
-            if v.is_empty() || is_var_ref(v) { tok.to_string() } else { format!("{k}=<redacted>") }
-        } else if command_start && matches!(tok.trim_end_matches([';', '|']), "export" | "env") {
-            tok.to_string()
-        } else if command_start {
-            command_start = false;
-            in_echo = matches!(tok.rsplit('/').next().unwrap_or(tok), "echo" | "printf" | "print");
-            tok.to_string()
-        } else if in_echo && !is_var_ref(tok) && !matches!(tok, "-n" | "-e" | "-ne" | "-en" | "-E" | "--") {
-            let tail = &tok[tok.trim_end_matches([';', '|']).len()..];
-            format!("<redacted>{tail}")
-        } else if looks_high_entropy(tok) {
-            "<redacted>".to_string()
-        } else {
-            redact_entropy_runs_in_token(tok)
-        };
-        out.push_str(&rendered);
-        if ends_command {
-            command_start = true;
-            in_echo = false;
-        }
-    }
-    out.push_str(&cmd[last..]);
-    redact_secrets_in_text(&out)
-}
+pub use helper_redact::redact_helper_command;
 
 /// A long run of key-alphabet characters mixing letters and digits that is not a path, a
 /// flag or a word-separated identifier: the shape of an API key with no recognisable
@@ -1079,54 +987,192 @@ pub fn hardened_git() -> std::process::Command {
     cmd
 }
 
-/// Wall-clock cap on one `git ls-files` tracked-file query.
+/// Wall-clock cap on one repository's `git ls-files` listing.
 const GIT_TRACKED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Wall-clock budget for all tracked-file listings in one scan. Once spent, every
+/// repository not yet listed is "unknown": a machine with many cloned repositories, or
+/// repositories built to stall git, cannot stretch the scan without bound.
+const GIT_TRACKED_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+/// Output cap for one listing (paths, NUL-separated). A repository whose index lists
+/// more than this is "unknown" rather than half-answered.
+const GIT_LS_FILES_MAX: usize = 32 * 1024 * 1024;
 
-/// True when the git directory governing `start` holds a HEAD, index, config or
-/// commondir that is not a regular file (a FIFO, socket, device, directory, or a link to
-/// one). git opens these while discovering the repository, and opening a FIFO with no
-/// writer blocks forever. Only a real `.git` DIRECTORY is inspected; a `gitdir:` file is
-/// left to the timeout.
-fn git_dir_unsafe_to_spawn(start: &std::path::Path) -> bool {
-    for dir in start.ancestors() {
-        let g = dir.join(".git");
-        match std::fs::symlink_metadata(&g) {
-            Ok(m) if m.is_dir() => {
-                return ["HEAD", "index", "config", "commondir"].iter().any(|f| {
-                    let p = g.join(f);
-                    let bad = match std::fs::symlink_metadata(&p) {
-                        Err(_) => false,
-                        Ok(m) if m.is_file() => false,
-                        // A symlinked HEAD is legal (old git); a link to a non-file is not.
-                        Ok(m) if m.file_type().is_symlink() => !std::fs::metadata(&p).is_ok_and(|t| t.is_file()),
-                        Ok(_) => true,
-                    };
-                    if bad {
-                        telemetry::note_read(&p, "not a regular file");
-                    }
-                    bad
-                });
-            }
-            Ok(_) => return false,
-            Err(_) => continue,
-        }
+/// True when `p` is present and is not a regular file (a FIFO, socket, device,
+/// directory, or a link to one). A symlink to a regular file is accepted (old git).
+fn not_regular(p: &std::path::Path) -> bool {
+    let bad = match std::fs::symlink_metadata(p) {
+        Err(_) => false,
+        Ok(m) if m.is_file() => false,
+        Ok(m) if m.file_type().is_symlink() => !std::fs::metadata(p).is_ok_and(|t| t.is_file()),
+        Ok(_) => true,
+    };
+    if bad {
+        telemetry::note_read(p, "not a regular file");
     }
-    false
+    bad
 }
 
-/// Check whether a file is tracked by git (`git ls-files --error-unmatch` through
-/// [`hardened_git`]). The repository is content the scanner inspects, so the call must not
-/// be able to stall the scan: a git directory whose HEAD/index/config is not a regular file
-/// is answered "not tracked" without spawning, and the child runs with stdin closed under a
-/// wall-clock cap and is killed on timeout (a FIFO `.git/HEAD` used to hang the whole scan).
-pub fn is_git_tracked(path: &std::path::Path) -> bool {
-    let parent = path.parent().unwrap_or(path);
-    if git_dir_unsafe_to_spawn(parent) {
-        return false;
+/// `[include]` / `[includeIf ...]` `path = X` values in a git config file. Bounded
+/// read, no symlink at the final component; values are resolved relative to the
+/// config's directory (`~/` against HOME).
+fn config_include_paths(config: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some(text) = read_bounded_nofollow(config, None) else { return Vec::new() };
+    let base = config.parent().unwrap_or(std::path::Path::new("/"));
+    let mut out = Vec::new();
+    let mut in_include = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            let sec = t.trim_start_matches('[').to_ascii_lowercase();
+            in_include = sec.starts_with("include]") || sec.starts_with("include ") || sec.starts_with("includeif");
+            continue;
+        }
+        if !in_include {
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else { continue };
+        if !k.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let v = v.trim().trim_matches('"');
+        let p = if let Some(rest) = v.strip_prefix("~/") {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(rest))
+        } else {
+            Some(persistence::lexical_join(base, std::path::Path::new(v)))
+        };
+        out.extend(p);
+        if out.len() >= 64 {
+            break;
+        }
     }
+    out
+}
+
+/// The git directory a `.git` entry stands for: the directory itself, or the target of
+/// a `gitdir: <path>` file (resolved lexically against the file's directory).
+fn resolve_git_dir(dot_git: &std::path::Path) -> Option<std::path::PathBuf> {
+    let m = std::fs::symlink_metadata(dot_git).ok()?;
+    if m.is_dir() {
+        return Some(dot_git.to_path_buf());
+    }
+    if !m.is_file() {
+        return None;
+    }
+    let text = read_bounded_nofollow(dot_git, None)?;
+    let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let base = dot_git.parent().unwrap_or(std::path::Path::new("/"));
+    Some(persistence::lexical_join(base, std::path::Path::new(target)))
+}
+
+/// True when git, started in the repository whose `.git` entry is `dot_git`, would
+/// open something that is not a regular file while discovering it: a HEAD, index,
+/// config or commondir FIFO/socket/device (opening a FIFO with no writer blocks
+/// forever), including behind a `gitdir:` file (worktrees, submodules) and in the
+/// common directory a worktree's `commondir` names, or an `[include] path` in either
+/// config that is not a regular file.
+fn git_dir_unsafe_to_spawn(dot_git: &std::path::Path) -> bool {
+    let Some(gd) = resolve_git_dir(dot_git) else {
+        // A `.git` that is neither a directory nor a readable gitdir file (a FIFO, a
+        // link to one, a gitdir file that is itself unreadable): never spawn git on it.
+        return std::fs::symlink_metadata(dot_git).is_ok();
+    };
+    if !std::fs::symlink_metadata(&gd).is_ok_and(|m| m.is_dir()) {
+        return !std::fs::metadata(&gd).is_ok_and(|m| m.is_dir());
+    }
+    let mut dirs = vec![gd.clone()];
+    if !not_regular(&gd.join("commondir"))
+        && let Some(text) = read_bounded_nofollow(&gd.join("commondir"), None)
+        && let Some(line) = text.lines().next()
+    {
+        dirs.push(persistence::lexical_join(&gd, std::path::Path::new(line.trim())));
+    }
+    dirs.iter().any(|d| {
+        ["HEAD", "index", "config", "commondir"].iter().any(|f| not_regular(&d.join(f)))
+            || config_include_paths(&d.join("config")).iter().any(|p| not_regular(p))
+    })
+}
+
+/// The repository root governing `path`: the nearest ancestor of its directory holding
+/// a `.git` entry (directory or `gitdir:` file).
+fn repo_root_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let start = path.parent().unwrap_or(path);
+    start.ancestors().find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok()).map(|d| d.to_path_buf())
+}
+
+/// One repository's tracked paths (root-relative bytes, sorted), or None = unknown.
+type TrackedSet = Option<std::collections::BTreeSet<Vec<u8>>>;
+
+struct GitTrackCache {
+    repos: std::collections::HashMap<std::path::PathBuf, std::sync::Arc<std::sync::OnceLock<TrackedSet>>>,
+    spent: std::time::Duration,
+}
+
+static GIT_TRACK_CACHE: std::sync::Mutex<Option<GitTrackCache>> = std::sync::Mutex::new(None);
+
+/// List a repository's index once: `git ls-files -z` through [`hardened_git`], under the
+/// per-call timeout and the scan's remaining budget.
+fn list_tracked(root: &std::path::Path) -> TrackedSet {
+    if git_dir_unsafe_to_spawn(&root.join(".git")) {
+        return None;
+    }
+    let remaining = {
+        let guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let spent = guard.as_ref().map_or(std::time::Duration::ZERO, |c| c.spent);
+        GIT_TRACKED_BUDGET.saturating_sub(spent)
+    };
+    if remaining.is_zero() {
+        telemetry::note_read(root, "git budget spent");
+        return None;
+    }
+    let started = std::time::Instant::now();
     let mut cmd = hardened_git();
-    cmd.args(["ls-files", "--error-unmatch", "--"]).arg(path).current_dir(parent);
-    output_with_timeout_at(&mut cmd, GIT_TRACKED_TIMEOUT, "git_tracked").is_some_and(|o| o.status.success())
+    cmd.args(["ls-files", "-z"]).current_dir(root);
+    let out = output_with_timeout_capped(&mut cmd, GIT_TRACKED_TIMEOUT.min(remaining), "git_tracked", GIT_LS_FILES_MAX);
+    {
+        let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = guard.as_mut() {
+            c.spent += started.elapsed();
+        }
+    }
+    let out = out.filter(|o| o.status.success())?;
+    Some(out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(<[u8]>::to_vec).collect())
+}
+
+/// Whether `path` is tracked by git: `Some(true|false)`, or None when that cannot be
+/// answered (no spawn in a repository whose git directory holds a FIFO or other
+/// non-file, a listing that timed out or ran past its output cap, or the scan's git
+/// budget spent). Each repository is listed once per scan (`git ls-files -z` through
+/// [`hardened_git`], stdin closed, killed on timeout) and every later question about
+/// it is answered from that listing, so a repository built to stall git costs one
+/// timeout, not one per file. A path outside any repository is `Some(false)`. A
+/// directory counts as tracked when a file under it is.
+pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
+    let Some(root) = repo_root_of(path) else { return Some(false) };
+    let cell = {
+        let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = guard.get_or_insert_with(|| GitTrackCache { repos: Default::default(), spent: Default::default() });
+        cache.repos.entry(root.clone()).or_default().clone()
+    };
+    let set = cell.get_or_init(|| list_tracked(&root)).as_ref()?;
+    let rel = path.strip_prefix(&root).ok()?;
+    #[cfg(unix)]
+    let rel_bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        rel.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(not(unix))]
+    let rel_bytes = rel.to_string_lossy().replace('\\', "/").into_bytes();
+    if set.contains(&rel_bytes) {
+        return Some(true);
+    }
+    let mut prefix = rel_bytes;
+    prefix.push(b'/');
+    Some(set.range(prefix.clone()..).next().is_some_and(|p| p.starts_with(&prefix)))
+}
+
+/// [`git_tracked_state`], with "unknown" answered as not tracked.
+pub fn is_git_tracked(path: &std::path::Path) -> bool {
+    git_tracked_state(path).unwrap_or(false)
 }
 
 /// Compute SHA-256 hash of content, returning hex string.
@@ -1590,6 +1636,18 @@ fn output_with_timeout_at(
     timeout: std::time::Duration,
     site: &'static str,
 ) -> Option<std::process::Output> {
+    output_with_timeout_capped(cmd, timeout, site, MAX_CHILD_OUTPUT)
+}
+
+/// [`output_with_timeout_at`] with an explicit output cap. A child that writes past the
+/// cap is killed at once (not left to the timeout) and None is returned: its output is
+/// incomplete.
+fn output_with_timeout_capped(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+    site: &'static str,
+    cap: usize,
+) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
     let mut x = crate::otel::exec_span(site);
@@ -1604,18 +1662,35 @@ fn output_with_timeout_at(
         x.outcome("spawn_failed");
         return None;
     };
+    let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let over_r = over.clone();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = (&mut stdout).take(MAX_CHILD_OUTPUT as u64).read_to_end(&mut buf);
+        let _ = (&mut stdout).take(cap as u64 + 1).read_to_end(&mut buf);
+        if buf.len() > cap {
+            buf.truncate(cap);
+            over_r.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         buf
     });
     let start = std::time::Instant::now();
+    let capped = cap < MAX_CHILD_OUTPUT;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let stdout = reader.join().unwrap_or_default();
                 note_exit(&mut x, &status);
+                if capped && over.load(std::sync::atomic::Ordering::SeqCst) {
+                    x.outcome("output_cap");
+                    return None;
+                }
                 return Some(std::process::Output { status, stdout, stderr: Vec::new() });
+            }
+            Ok(None) if capped && over.load(std::sync::atomic::Ordering::SeqCst) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                x.outcome("output_cap");
+                return None;
             }
             Ok(None) if start.elapsed() > timeout => {
                 let _ = child.kill();

@@ -211,11 +211,11 @@ pub fn guidance(category: &str) -> Guidance {
         "Plugin pin" => Guidance {
             what: "A Claude Code plugin marketplace clone or plugin manifest holds a \"pin\" that is not a commit: a git ref whose name is a full 40- or 64-character hex string (a branch or tag impersonating a commit ID), HEAD checked out on such a branch, FETCH_HEAD recording a fetched branch with a commit-shaped name, or a manifest whose sha or gitCommitSha field holds a branch or tag name, an abbreviated commit ID (resolved by name, so a same-named branch wins) or nothing at all, or whose ref field holds a commit ID with no sha.",
             why: "Plugin4Shell (CVE-2026-86063): plugin install and update checked out the pinned commit by name, and a branch named with the same hex string won. So whoever controlled the plugin's upstream repository could swap reviewed code for their own while the pin still read intact. Git never creates a ref named like a commit, so one on disk is either an exploitation attempt or a pin that floats with a branch.",
-            fix: "Update Claude Code to 2.1.179 or later (Codex to 0.146.0 or later). Remove and reinstall the affected marketplace or plugin, and compare the installed files against the pinned commit before trusting them. In a manifest, put the 40-hex commit in `sha` and keep branch names in `ref`.",
+            fix: "Update Claude Code to 2.1.179 or later (Codex to 0.146.0 or later). Remove and reinstall the affected marketplace or plugin, and compare the installed files against the pinned commit before trusting them. In a plugin entry, put the 40-hex commit in `sha` and keep branch names in `ref`. A marketplace source has no `sha` field (its `ref` takes a branch or tag), so pin a marketplace by a tag you control.",
             reference: "CVE-2026-86063 · Plugin4Shell (Air Security) · EAA-009",
         },
         "Skill symlink" => Guidance {
-            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, .env, shell-rc or history, agent-config or system path, or a file that is not a skill-file type; a repository's or plugin's link that leaves it is inventoried without being read. Links that are read (inside the repository or plugin, into your own skill areas, or your own links into a dotfiles checkout) stay in the inventory and are not reported.",
+            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, .env, shell-rc or history, agent-config or system path, or a file that is not a skill-file type; a repository's or plugin's link that leaves it is inventoried without being read. Links that are read (inside the repository or plugin, into your own skill areas including other agents' skills/ and commands/ directories, or your own links into a dotfiles checkout) stay in the inventory and are not reported.",
             why: "Claude Code loads the link's target as the skill. A SKILL.md that points at ~/.ssh or a settings file puts that file into the model's context. An edit the agent makes to the skill writes through the link: the write-time symlink-following class behind CVE-2026-103435. A link into a dotfiles checkout is common and benign.",
             fix: "If you did not create the link, replace it with a regular file or remove the skill. Keep skill bundles self-contained; dotfile managers can copy instead of linking.",
             reference: "CVE-2026-103435 · write-time symlink following · AST02",
@@ -241,7 +241,7 @@ pub fn guidance(category: &str) -> Guidance {
         "Helper command" => Guidance {
             what: "A Claude Code settings file names a credential or telemetry helper (apiKeyHelper, awsAuthRefresh, awsCredentialExport, gcpAuthRefresh, otelHeadersHelper). This is a shell command Claude Code runs on its own to fetch credentials or headers.",
             why: "Like a hook, it runs silently with your privileges, and its output becomes the agent's credential. In a repository's settings file the repository author chooses the command. In your own or managed settings it is a normal enterprise setup and is only reported when the command matches a dangerous pattern.",
-            fix: "Review the command below (literal arguments are redacted). Remove a helper that arrived with a repository; keep credential helpers in user or managed settings, and have them read the key from a secret store rather than echo it.",
+            fix: "Review the command below (only its shape is shown: program, flags, paths and hosts; every other argument is redacted). Remove a helper that arrived with a repository; keep credential helpers in user or managed settings, and have them read the key from a secret store rather than echo it.",
             reference: "EAA-003 (lifecycle hook persistence) · OWASP ASI03",
         },
         "Login gateway" => Guidance {
@@ -934,9 +934,16 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         for i in &m.pin_issues {
             let p = i.plugin.as_deref().unwrap_or("");
             let (severity, title) = match i.kind.as_str() {
+                // Graded like the other ref kinds: a commit-named branch whose tip is the
+                // commit it is named after is a pin that floats with a branch (Medium);
+                // one that points elsewhere, or cannot be resolved, is the exploit shape.
                 "head-on-sha-branch" => (
-                    Severity::Critical,
-                    format!("marketplace '{}' is checked out on a branch named like a commit — Plugin4Shell shape (CVE-2026-86063)", m.name),
+                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    format!(
+                        "marketplace '{}' is checked out on a branch named like a commit{} — Plugin4Shell shape (CVE-2026-86063)",
+                        m.name,
+                        if i.mismatch { " that points at a different commit" } else { "" }
+                    ),
                 ),
                 "sha-shaped-ref" => (
                     if i.mismatch { Severity::Critical } else { Severity::Medium },
@@ -980,9 +987,16 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     Severity::Medium,
                     format!("plugin '{p}' from '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
                 ),
+                // A marketplace source has no `sha` field (github: repo/ref/path/sparsePaths;
+                // git: url/ref/path/sparsePaths), so a commit ID in `ref` is the only way to
+                // ask for one. The on-disk ref checks above already report a shadowing
+                // branch if one exists; this is the residual advisory.
                 "manifest-ref-is-sha" => (
-                    Severity::Medium,
-                    format!("marketplace '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
+                    Severity::Low,
+                    format!(
+                        "marketplace '{}' gives a commit ID as its ref — marketplace sources cannot pin a commit (ref is resolved as a branch or tag name, so a branch of that name would win); pin a tag you control instead",
+                        m.name
+                    ),
                 ),
                 "installed-sha-not-commit" => (
                     Severity::Medium,
@@ -1198,6 +1212,31 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 // A docker-compose service name (`http://ollama:11434/v1`),
                 // host.docker.internal or a private/link-local address is the local-stack
                 // setup, not an internet third party: advisory, worded as such.
+                // A template placeholder (`<your-gateway-url>`), an interpolation
+                // (`${OPENAI_BASE_URL}`, re-exporting the user's own environment) or text
+                // with no host routes nothing by itself, tracked or not: advisory.
+                "gateway" | "proxy"
+                    if !o.official
+                        && !o.loopback
+                        && matches!(
+                            value,
+                            crate::scanners::env_files::UNRESOLVED_VALUE | crate::scanners::env_files::UNPARSEABLE_VALUE
+                        ) =>
+                {
+                    Some((
+                        Severity::Low,
+                        if o.kind == "gateway" { "Gateway routing" } else { "Agent redirection" },
+                        format!(
+                            "{} in a{tracked} .env is not a recognizable URL ({}) — it routes nothing until it is filled in or expanded; check the host it ends up with{gemini_note}",
+                            o.key,
+                            if value == crate::scanners::env_files::UNRESOLVED_VALUE {
+                                "a placeholder or interpolation"
+                            } else {
+                                "no parseable host"
+                            }
+                        ),
+                    ))
+                }
                 "gateway" if !o.official && !o.loopback && is_local_network_host(value) => Some((
                     Severity::Low,
                     "Gateway routing",
@@ -1259,6 +1298,8 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         }
         // The id is the extension's directory name: attacker-chosen text.
         let id = crate::scanners::sanitize_display(&x.id, 200);
+        // Located by its directory: one id can sit in ~/.vscode and ~/.vscode-oss.
+        let loc = if x.path.is_empty() { id.clone() } else { crate::scanners::sanitize_display(&x.path, 512) };
         let runs: Vec<&str> = x
             .code_entry_points
             .iter()
@@ -1277,7 +1318,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     x.ide_type,
                     x.code_entry_points.join(", ")
                 ),
-                location: id.clone(),
+                location: loc.clone(),
                 evidence: None,
             });
         }
@@ -1291,7 +1332,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     x.ide_type,
                     x.native_addons.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
                 ),
-                location: id.clone(),
+                location: loc.clone(),
                 evidence: None,
             });
         }

@@ -184,16 +184,20 @@ pub fn render_diff(diff: &ScanDiff) -> String {
 
         out.push_str(&format!("--- {} ---\n", section.name));
 
+        // Item names and change lines carry report text (paths, names, commands) from
+        // the current scan and from a baseline file: each is sanitized so no ESC/OSC
+        // sequence or newline reaches the terminal, and the whole output is scrubbed.
+        let clean = |s: &str| crate::scanners::sanitize_display(s, 4000);
         for item in &section.added {
-            out.push_str(&format!("  + {}\n", item));
+            out.push_str(&format!("  + {}\n", clean(item)));
         }
         for item in &section.removed {
-            out.push_str(&format!("  - {}\n", item));
+            out.push_str(&format!("  - {}\n", clean(item)));
         }
         for item in &section.changed {
-            out.push_str(&format!("  ~ {}\n", item.name));
+            out.push_str(&format!("  ~ {}\n", clean(&item.name)));
             for change in &item.changes {
-                out.push_str(&format!("      {}\n", change));
+                out.push_str(&format!("      {}\n", clean(change)));
             }
         }
 
@@ -203,12 +207,12 @@ pub fn render_diff(diff: &ScanDiff) -> String {
     if !diff.summary_changes.is_empty() {
         out.push_str("--- Summary ---\n");
         for change in &diff.summary_changes {
-            out.push_str(&format!("  {}\n", change));
+            out.push_str(&format!("  {}\n", crate::scanners::sanitize_display(change, 4000)));
         }
         out.push('\n');
     }
 
-    out
+    crate::output::terminal::scrub_all(&out)
 }
 
 fn collect_mcp_servers(report: &Value) -> Vec<Value> {
