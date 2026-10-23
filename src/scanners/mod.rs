@@ -128,6 +128,78 @@ pub fn scrub_otel_env(cmd: &mut std::process::Command) -> &mut std::process::Com
     cmd
 }
 
+/// What a waited-on child did. `Exited` hands the child back (its exit status is cached
+/// by std, so `wait_with_output` still works) for callers that read its pipes afterwards.
+enum ChildWait {
+    Exited(std::process::ExitStatus, std::process::Child),
+    TimedOut,
+    OverCap,
+    WaitFailed,
+}
+
+/// Events the waiter and reader threads send to the caller's channel.
+enum ChildEvent {
+    Exited(std::io::Result<std::process::ExitStatus>, std::process::Child),
+    OverCap,
+}
+
+/// Block until the child exits, `timeout` passes, or (when `strict`) the reader thread
+/// reports the output cap hit; never a poll. The child is reaped on a waiter thread
+/// that sends its status down `rx` the moment it exits, so a 3 ms `--version` probe
+/// costs 3 ms. The old loops slept 50 ms (version probes) and 20 ms (every other
+/// child) between `try_wait` calls, which the OpenTelemetry trace exposed as every
+/// exec span lasting an exact multiple of the tick: 50, 100 and 300 ms version probes
+/// and 20 ms git calls, more than a second of a 3.5 s scan. On timeout or over-cap the
+/// child is killed by pid and then reaped, so no zombie and no pid reuse window: the
+/// pid stays reserved until the waiter's `wait` returns.
+fn wait_child(
+    pid: u32,
+    rx: &std::sync::mpsc::Receiver<ChildEvent>,
+    timeout: Duration,
+    strict: bool,
+) -> ChildWait {
+    use std::sync::mpsc::RecvTimeoutError;
+    let deadline = std::time::Instant::now() + timeout;
+    let reap = |rx: &std::sync::mpsc::Receiver<ChildEvent>| {
+        // SAFETY: plain libc call on a pid this process spawned and has not yet reaped.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        // The waiter thread's `wait` returns once the kill lands; drain to it.
+        while let Ok(ev) = rx.recv() {
+            if let ChildEvent::Exited(..) = ev {
+                break;
+            }
+        }
+    };
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(ChildEvent::Exited(Ok(status), child)) => return ChildWait::Exited(status, child),
+            Ok(ChildEvent::Exited(Err(_), _)) => return ChildWait::WaitFailed,
+            Ok(ChildEvent::OverCap) if strict => {
+                reap(rx);
+                return ChildWait::OverCap;
+            }
+            Ok(ChildEvent::OverCap) => continue,
+            Err(RecvTimeoutError::Timeout) => {
+                reap(rx);
+                return ChildWait::TimedOut;
+            }
+            Err(RecvTimeoutError::Disconnected) => return ChildWait::WaitFailed,
+        }
+    }
+}
+
+/// Spawn the waiter thread that reaps `child` and reports through `tx`.
+fn spawn_waiter(mut child: std::process::Child, tx: std::sync::mpsc::Sender<ChildEvent>) {
+    let spawned = std::thread::Builder::new().name("rmguard-wait".into()).spawn(move || {
+        let r = child.wait();
+        let _ = tx.send(ChildEvent::Exited(r, child));
+    });
+    // A failed thread spawn drops `tx` with the child; the caller then sees
+    // Disconnected and reports wait_failed rather than hanging.
+    let _ = spawned;
+}
+
 /// Get version from a binary by running `binary --version` with a 5-second timeout.
 pub fn get_binary_version(binary: &str) -> Option<String> {
     let mut x = crate::otel::exec_span("version_probe");
@@ -144,30 +216,23 @@ pub fn get_binary_version(binary: &str) -> Option<String> {
         }
     };
 
-    let timeout = Duration::from_secs(5);
-    let start = std::time::Instant::now();
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                note_exit(&mut x, &status);
-                break;
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    x.outcome("timeout");
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => {
-                x.outcome("wait_failed");
-                return None;
-            }
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_waiter(child, tx);
+    let child = match wait_child(pid, &rx, Duration::from_secs(5), false) {
+        ChildWait::Exited(status, child) => {
+            note_exit(&mut x, &status);
+            child
         }
-    }
+        ChildWait::TimedOut => {
+            x.outcome("timeout");
+            return None;
+        }
+        ChildWait::OverCap | ChildWait::WaitFailed => {
+            x.outcome("wait_failed");
+            return None;
+        }
+    };
     drop(x);
 
     let output = child.wait_with_output().ok()?;
@@ -1939,7 +2004,7 @@ pub fn sanitize_display(s: &str, max: usize) -> String {
 /// attacker-authored config and block forever, stalling the whole scan. Returns None on
 /// timeout or spawn failure.
 ///
-/// stdout is drained on a reader thread while the parent polls, so a child that writes
+/// stdout is drained on a reader thread while the parent blocks on the exit event, so a child that writes
 /// more than the pipe buffer (a `git ls-files` of a large repository) is not deadlocked
 /// into the timeout. Output is capped at `MAX_CHILD_OUTPUT` bytes; a child still writing
 /// past the cap is killed like a timeout, since nothing is reading any more.
@@ -1998,45 +2063,44 @@ fn output_with_cap(
     };
     let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let over_r = over.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx_r = tx.clone();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = (&mut stdout).take(cap as u64 + 1).read_to_end(&mut buf);
         if buf.len() > cap {
             buf.truncate(cap);
             over_r.store(true, std::sync::atomic::Ordering::SeqCst);
+            // Wake the waiting caller at once; it decides whether the cap is fatal.
+            let _ = tx_r.send(ChildEvent::OverCap);
         }
         buf
     });
-    let start = std::time::Instant::now();
-    let capped = strict;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = reader.join().unwrap_or_default();
-                note_exit(&mut x, &status);
-                if capped && over.load(std::sync::atomic::Ordering::SeqCst) {
-                    x.outcome("output_cap");
-                    return None;
-                }
-                return Some(std::process::Output { status, stdout, stderr: Vec::new() });
-            }
-            Ok(None) if capped && over.load(std::sync::atomic::Ordering::SeqCst) => {
-                let _ = child.kill();
-                let _ = child.wait();
+    let pid = child.id();
+    spawn_waiter(child, tx);
+    match wait_child(pid, &rx, timeout, strict) {
+        ChildWait::Exited(status, _child) => {
+            let stdout = reader.join().unwrap_or_default();
+            note_exit(&mut x, &status);
+            if strict && over.load(std::sync::atomic::Ordering::SeqCst) {
                 x.outcome("output_cap");
                 return None;
             }
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                x.outcome("timeout");
-                return None;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(_) => {
-                x.outcome("wait_failed");
-                return None;
-            }
+            Some(std::process::Output { status, stdout, stderr: Vec::new() })
+        }
+        ChildWait::OverCap => {
+            let _ = reader.join();
+            x.outcome("output_cap");
+            None
+        }
+        ChildWait::TimedOut => {
+            let _ = reader.join();
+            x.outcome("timeout");
+            None
+        }
+        ChildWait::WaitFailed => {
+            x.outcome("wait_failed");
+            None
         }
     }
 }
@@ -2048,6 +2112,45 @@ pub const MAX_CHILD_OUTPUT: usize = 8 * 1024 * 1024;
 #[cfg(all(test, unix))]
 mod capped_output_tests {
     use super::*;
+
+    /// The child wait is event-driven, not polled. Ten `/bin/true` runs through the
+    /// shared runner and ten through the version probe each finish in well under the
+    /// old tick totals (10 x 20 ms and 10 x 50 ms); the bounds leave room for a loaded
+    /// CI runner but not for a poll loop. (Found by the OpenTelemetry trace: every exec
+    /// span lasted an exact multiple of its tick.)
+    #[test]
+    fn child_waits_do_not_poll() {
+        let t = std::time::Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let mut c = child_command("/bin/true");
+            assert!(output_with_timeout(&mut c, t).is_some());
+        }
+        let runner = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let _ = get_binary_version("/bin/true");
+        }
+        let probe = start.elapsed();
+        assert!(runner < std::time::Duration::from_millis(150), "runner polled: 10 runs took {runner:?}");
+        assert!(probe < std::time::Duration::from_millis(350), "version probe polled: 10 runs took {probe:?}");
+    }
+
+    /// Timeouts and the output cap still kill and reap the child under the new waiter.
+    #[test]
+    fn child_timeout_kills_and_reaps() {
+        let mut c = child_command("/bin/sh");
+        c.args(["-c", "sleep 30"]);
+        let start = std::time::Instant::now();
+        assert!(output_with_timeout(&mut c, std::time::Duration::from_millis(200)).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "timeout did not fire promptly");
+        // Over-cap in strict mode is also event-driven: the reader wakes the waiter.
+        let mut c = child_command("/bin/sh");
+        c.args(["-c", "head -c 200000 /dev/zero; sleep 30"]);
+        let start = std::time::Instant::now();
+        assert!(output_with_timeout_capped(&mut c, std::time::Duration::from_secs(10), "test", 1000).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "over-cap kill was not prompt");
+    }
 
     /// Review round 6: a cap above MAX_CHILD_OUTPUT (the 32 MiB `git ls-files` cap) is
     /// enforced: a child that writes past it is an incomplete answer (None), never a
