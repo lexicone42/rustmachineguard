@@ -339,7 +339,6 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
                 .flatten()
                 .filter_map(|e| e.file_name().to_str().map(String::from))
                 .filter(|n| n.ends_with(".service") || n.ends_with(".service.d"))
-                .take(MAX_SERVICE_ENTRIES)
                 .collect()
         } else {
             ["ollama.service", "ollama.service.d"]
@@ -348,7 +347,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
                 .map(|n| n.to_string())
                 .collect()
         };
+        // Sort, then cap: which names survive the cap must not depend on read_dir order.
         names.sort();
+        names.truncate(MAX_SERVICE_ENTRIES);
         let wanted = |unit: &str| *all || unit == "ollama.service";
         let mut files: Vec<(PathBuf, String)> = Vec::new();
         for n in &names {
@@ -365,9 +366,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
                     .flatten()
                     .filter_map(|e| e.file_name().to_str().map(String::from))
                     .filter(|c| c.ends_with(".conf"))
-                    .take(MAX_SERVICE_ENTRIES)
                     .collect();
                 cs.sort();
+                cs.truncate(MAX_SERVICE_ENTRIES);
                 for c in cs {
                     let cp = p.join(&c);
                     if regular_file(&cp) {
@@ -476,9 +477,9 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
             .filter_map(|e| e.file_name().to_str().map(String::from))
             .filter(|n| n.ends_with(".plist"))
             .filter(|n| *all || n.to_ascii_lowercase().contains("ollama"))
-            .take(MAX_SERVICE_ENTRIES)
             .collect();
         names.sort();
+        names.truncate(MAX_SERVICE_ENTRIES);
         for n in names {
             let p = dir.join(&n);
             if !regular_file(&p) {

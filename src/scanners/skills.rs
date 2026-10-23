@@ -1,6 +1,6 @@
 use crate::models::{AgentSkill, SkillDynamicCommand, SkillProvenance, SkillSymlink};
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, redact_secrets_in_text, sanitize_display, Scanner};
+use crate::scanners::{read_bounded, sanitize_display, Scanner};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -120,19 +120,18 @@ impl Scanner for SkillsScanner {
         let global_commands = home.join(".claude").join("commands");
         scan_skill_dir(&global_commands, "claude-code", "global", None, &ctx, &mut results);
 
-        // Claude Code project commands from known projects
-        let claude_json = home.join(".claude.json");
-        if let Some(project_dirs) = extract_project_dirs(&claude_json) {
-            for dir in project_dirs {
-                let project_commands = dir.join(".claude").join("commands");
-                scan_skill_dir(&project_commands, "claude-code", "project", Some(&dir), &ctx, &mut results);
-            }
-        }
-
-        // Current directory project commands
+        // Known projects plus the current directory. HOME (or an ancestor) registered as a
+        // project is left out: its .claude is the global config walked above and below.
+        let mut project_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
         if let Ok(cwd) = std::env::current_dir() {
-            let cwd_commands = cwd.join(".claude").join("commands");
-            scan_skill_dir(&cwd_commands, "claude-code", "project", Some(&cwd), &ctx, &mut results);
+            project_dirs.push(cwd);
+        }
+        let project_dirs = project_dirs_excluding_home(project_dirs, &home);
+
+        // Claude Code project commands
+        for dir in &project_dirs {
+            let project_commands = dir.join(".claude").join("commands");
+            scan_skill_dir(&project_commands, "claude-code", "project", Some(dir), &ctx, &mut results);
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
@@ -151,22 +150,41 @@ impl Scanner for SkillsScanner {
         // actually install were never walked.
         scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, &mut results);
         scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, &mut results);
-        if let Some(project_dirs) = extract_project_dirs(&home.join(".claude.json")) {
-            for dir in project_dirs {
-                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(&dir), &ctx, &mut results);
-            }
-        }
-        if let Ok(cwd) = std::env::current_dir() {
-            scan_skill_bundles(&cwd.join(".claude").join("skills"), "claude-code", "project", Some(&cwd), &ctx, &mut results);
+        for dir in &project_dirs {
+            scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(dir), &ctx, &mut results);
         }
 
-        // Dedupe by path. Global entries are pushed first, so a home directory that is
-        // also a registered project keeps scope "global".
+        // Dedupe by path, with the DIRECTORY canonicalized (not the file: two links to one
+        // target are two skills). Global entries are pushed first, so a home directory that
+        // is also a registered project, or the current directory reached through a
+        // symlinked HOME (macOS /var -> /private/var), keeps scope "global".
         let mut seen = std::collections::HashSet::new();
-        results.retain(|r| seen.insert(r.path.clone()));
+        results.retain(|r| seen.insert(dedupe_key(Path::new(&r.path))));
 
         results
     }
+}
+
+/// `path` with its parent directory canonicalized, so the same file reached through a
+/// symlinked HOME or project directory is recognised as one entry.
+pub(crate) fn dedupe_key(path: &Path) -> PathBuf {
+    match (path.parent().and_then(|p| std::fs::canonicalize(p).ok()), path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Project directories worth walking as "project" content: not HOME itself or an
+/// ancestor of it (its `.claude` IS the user's global config, walked with the user's
+/// policy), compared canonically so a symlinked HOME is caught too.
+fn project_dirs_excluding_home(dirs: Vec<PathBuf>, home: &Path) -> Vec<PathBuf> {
+    let real_home = canon_or_lexical(home);
+    dirs.into_iter()
+        .filter(|d| {
+            let real = canon_or_lexical(d);
+            !real_home.starts_with(&real) && !home.starts_with(d)
+        })
+        .collect()
 }
 
 /// Cap on qualifying files (manifests, commands, scripts) per bundle walk.
@@ -209,6 +227,32 @@ fn owned_by_current_user(_p: &Path) -> bool {
     true
 }
 
+/// Extensions a link's TARGET must have to be read: the skill-file types the walks look
+/// for. A link that lands on anything else (`~/.cache/huggingface/token`, a `.yml`
+/// config, a key) is inventoried without being read, even when it is not on any
+/// credential list: reading it would put its hash in the report.
+const SKILL_TARGET_EXTS: &[&str] = &["md", "markdown", "sh", "bash", "py", "js", "mjs", "ts"];
+
+fn has_skill_ext(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SKILL_TARGET_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// The user's own link may be read in their own files only where skills plausibly live:
+/// a directory that itself holds a SKILL.md (a dotfiles or XDG skill bundle), or a path
+/// under HOME with no dot-directory in it (`~/dotfiles/claude/notes.md`). Dot-directories
+/// (`~/.cache`, `~/.config/<tool>`, `~/.local/share`) are where tools keep their state and
+/// tokens, so a link into one is not followed unless it is a skill bundle.
+fn user_link_target_ok(real: &Path, real_home: &Path) -> bool {
+    if real.parent().is_some_and(|d| std::fs::symlink_metadata(d.join("SKILL.md")).is_ok()) {
+        return true;
+    }
+    let Ok(rel) = real.strip_prefix(real_home) else { return false };
+    let dirs: Vec<_> = rel.parent().map(|p| p.components().collect()).unwrap_or_default();
+    !dirs.iter().any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.')))
+}
+
 /// Read a skill file without letting a symlink take the read somewhere it must not go.
 ///
 /// The decision is made on the file's REAL path (`fs::canonicalize`, every hop and every
@@ -219,14 +263,17 @@ fn owned_by_current_user(_p: &Path) -> bool {
 /// against it, so a swap between the check and the read is refused, not followed.
 ///
 /// Policy, by who authored the link:
-/// - a real path that is a credential, key, shell-rc/history, agent-settings or
-///   system/other-user path is never read (`sensitive_target`, High);
-/// - inside the skill's own directory (for a project: the repository), or inside the
-///   user's own skill areas (`~/.claude/{skills,commands,plugins,agents,hooks}`): read;
-/// - links in content the scanner inspects (`repo_root`: a plugin's install or clone
-///   root, a project repository) are read only when they stay inside it;
-/// - the user's own links (`repo_root` None) may also point at their own non-sensitive
-///   files under HOME (a dotfiles checkout, XDG `~/.config/...`): read, reported Low;
+/// - a target whose NAME is a credential, key, `.env` or shell-rc/history file is never
+///   read, wherever it is (inside the repository, the plugin or a skill area too);
+/// - outside the skill directory / repository / plugin root, a credential, keyring,
+///   agent-settings, system or other-user path is never read either (`sensitive_target`,
+///   High);
+/// - a target that is not a skill-file type (SKILL_TARGET_EXTS) is never read;
+/// - inside the skill's own directory (for a project: the repository; for a plugin: its
+///   install or clone root), or inside the user's own skill areas
+///   (`~/.claude/{skills,commands,plugins,agents,hooks}`): read;
+/// - the user's own links (`repo_root` None) may also point at their own files under HOME
+///   where skills plausibly live (see [`user_link_target_ok`]);
 /// - `/nix/store` (home-manager): read, inventory only;
 /// - anything else is inventoried without being read.
 ///
@@ -239,7 +286,7 @@ fn read_skill_file(
     repo_root: Option<&Path>,
     home: &Path,
 ) -> Option<SkillRead> {
-    use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
     let real_home = canon_or_lexical(home);
     let areas: Vec<PathBuf> = SKILL_LINK_OK_DIRS
         .iter()
@@ -249,12 +296,26 @@ fn read_skill_file(
         })
         .collect();
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
+    // The content's own tree: the skill directory, plus the repository or plugin root. A
+    // tree that contains HOME is never "own" (a project registered at ~ would otherwise
+    // let its links read anything under HOME).
+    let own_roots: Vec<PathBuf> = [Some(containment), repo_root]
+        .into_iter()
+        .flatten()
+        .flat_map(|r| [r.to_path_buf(), canon_or_lexical(r)])
+        .filter(|r| !home.starts_with(r) && !real_home.starts_with(r))
+        .collect();
+    let inside_own = |p: &Path| own_roots.iter().any(|r| p.starts_with(r));
+    let sensitive_at = |p: &Path, h: &Path| {
+        is_sensitive_read_name(p) || (!in_skill_area(p) && !inside_own(p) && is_sensitive_read_target(p, h))
+    };
     let read = |r: &Path| crate::scanners::read_bounded_nofollow(r, Some(r));
 
     if !is_link {
-        // The walk never descends a symlinked directory, so a regular file can only be
-        // redirected by the walk root itself. The user's own roots (a dotfiles-managed
-        // ~/.claude/commands) are theirs to link; a repository's are checked.
+        // A regular file reached through a symlinked directory (the walk root, or a
+        // followed top-level skill directory link). The user's own roots (a
+        // dotfiles-managed ~/.claude/commands) are theirs to link; a repository's are
+        // checked.
         let Some(repo) = repo_root else {
             return Some(SkillRead { content: read_bounded(path), symlink: None });
         };
@@ -262,7 +323,7 @@ fn read_skill_file(
         if real.starts_with(canon_or_lexical(repo)) {
             return Some(SkillRead { content: read(&real), symlink: None });
         }
-        let sensitive = !in_skill_area(&real) && is_sensitive_read_target(&real, &real_home);
+        let sensitive = sensitive_at(&real, &real_home);
         return Some(SkillRead {
             content: None,
             symlink: Some(SkillSymlink {
@@ -280,14 +341,14 @@ fn read_skill_file(
     let shown = sanitize_display(&target.to_string_lossy(), 300);
     let lexical = lexical_join(path.parent().unwrap_or(containment), &target);
     let real = std::fs::canonicalize(path).ok();
-    let sensitive = (!in_skill_area(&lexical) && is_sensitive_read_target(&lexical, home))
-        || real.as_ref().is_some_and(|r| !in_skill_area(r) && is_sensitive_read_target(r, &real_home));
+    let sensitive = sensitive_at(&lexical, home) || real.as_ref().is_some_and(|r| sensitive_at(r, &real_home));
     if sensitive {
+        let inside = inside_own(&lexical) && real.as_ref().is_none_or(|r| inside_own(r));
         return Some(SkillRead {
             content: None,
             symlink: Some(SkillSymlink {
                 target: shown,
-                escapes: true,
+                escapes: !inside,
                 sensitive_target: true,
                 followed: false,
                 ..Default::default()
@@ -299,21 +360,20 @@ fn read_skill_file(
     if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
         return None;
     }
-    if real.starts_with(canon_or_lexical(containment)) {
-        return Some(SkillRead {
-            content: read(&real),
-            symlink: Some(SkillSymlink { target: shown, followed: true, ..Default::default() }),
-        });
-    }
-    let store = real.starts_with("/nix/store");
+    let within = real.starts_with(canon_or_lexical(containment));
     let in_repo = repo_root.is_some_and(|r| real.starts_with(canon_or_lexical(r)));
-    let users_own = repo_root.is_none() && real.starts_with(&real_home) && owned_by_current_user(&real);
-    let followed = in_skill_area(&real) || in_repo || users_own || store;
+    let store = real.starts_with("/nix/store");
+    let users_own = repo_root.is_none()
+        && real.starts_with(&real_home)
+        && owned_by_current_user(&real)
+        && user_link_target_ok(&real, &real_home);
+    let followed = has_skill_ext(&real) && (within || in_skill_area(&real) || in_repo || users_own || store);
     Some(SkillRead {
         content: if followed { read(&real) } else { None },
         symlink: Some(SkillSymlink {
             target: shown,
-            escapes: true,
+            // Inside the skill directory, or the repository / plugin root it ships in.
+            escapes: !(within || in_repo),
             sensitive_target: false,
             followed,
             store,
@@ -358,14 +418,16 @@ fn build_skill(
         // Claude Code runs these in the user's shell before the skill text reaches the
         // model: code.claude.com/docs/en/skills#dynamic-context-injection
         for (raw, block) in extract_dynamic_commands(text) {
-            let patterns: Vec<String> = crate::scanners::rules_files::check_dangerous_patterns(&raw)
-                .into_iter()
-                .map(|f| f.pattern)
-                .collect();
+            let hits = crate::scanners::rules_files::check_dangerous_patterns(&raw);
+            // Graded by the matched pattern's own severity: a fetch piped to a shell, an
+            // exfiltration pipe or anything obfuscated (escalated to high by the matcher)
+            // is dangerous; a medium-only match (`printenv NODE_ENV`, a check that
+            // $OPENAI_API_KEY is set) is listed but stays advisory.
+            let dangerous = hits.iter().any(|f| matches!(f.severity.as_str(), "critical" | "high"));
             dynamic_commands.push(SkillDynamicCommand {
-                command: sanitize_display(&redact_secrets_in_text(&raw), 300),
-                dangerous: !patterns.is_empty(),
-                patterns,
+                command: sanitize_display(&crate::scanners::redact_command_text(&raw), 300),
+                dangerous,
+                patterns: hits.into_iter().map(|f| f.pattern).collect(),
                 block,
             });
         }
@@ -423,7 +485,10 @@ fn build_skill(
 /// reads clean while the payload sits in an adjacent script.
 ///
 /// Symlinked FILES are inventoried with their link text and judged on their real path
-/// (see `read_skill_file`); symlinked DIRECTORIES are never descended.
+/// (see `read_skill_file`). A symlinked skill DIRECTORY at the top of a `skills/` root
+/// (`~/.claude/skills/pdf -> ~/.agents/skills/pdf`, the layout `npx skills` and GNU stow
+/// create, and which Claude Code loads) is judged by [`skill_dir_link`] and then walked
+/// or inventoried unread; symlinked directories deeper in a bundle are not descended.
 fn scan_skill_bundles(
     root: &Path,
     framework: &str,
@@ -438,6 +503,10 @@ fn scan_skill_bundles(
     let mut budget = MAX_BUNDLE_FILES;
     let mut entries_left = MAX_BUNDLE_ENTRIES;
     let mut stack = vec![root.to_path_buf()];
+    // Followed top-level directory links: (lexical link path, what to record on the
+    // files found under it).
+    let mut dir_links: Vec<(PathBuf, SkillSymlink)> = Vec::new();
+    let skills_root = root.file_name().is_some_and(|n| n == "skills");
     while let Some(dir) = stack.pop() {
         let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
@@ -453,6 +522,29 @@ fn scan_skill_bundles(
                 continue;
             };
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if skills_root
+                && dir == root
+                && meta.file_type().is_symlink()
+                && std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
+            {
+                match skill_dir_link(&path, root, scope, project_root, &ctx.home) {
+                    DirLink::Follow(info) => {
+                        dir_links.push((path.clone(), info));
+                        stack.push(path);
+                    }
+                    DirLink::Refuse(info) => {
+                        budget -= 1;
+                        let manifest = path.join("SKILL.md");
+                        let read = SkillRead { content: None, symlink: Some(info) };
+                        let name = file_name.to_string();
+                        results.push(build_skill(
+                            &manifest, name, "skill-manifest".into(), true, read, framework, scope, project_root, ctx,
+                        ));
+                    }
+                    DirLink::NotASkill => {}
+                }
+                continue;
+            }
             if meta.is_dir() {
                 // A git directory never holds a skill; walking it only spent budget.
                 if file_name != ".git" {
@@ -490,9 +582,16 @@ fn scan_skill_bundles(
                     .unwrap_or_else(|| root.to_path_buf())
             };
             let repo_root = project_root.filter(|_| scope == "project").map(Path::to_path_buf).or(plugin_root);
-            let Some(read) = read_skill_file(&path, is_link, &containment, repo_root.as_deref(), &ctx.home) else {
+            let Some(mut read) = read_skill_file(&path, is_link, &containment, repo_root.as_deref(), &ctx.home) else {
                 continue;
             };
+            // A file found under a followed skill-directory link records that link (unless
+            // the file is itself a link, which is judged on its own).
+            if read.symlink.is_none()
+                && let Some((_, info)) = dir_links.iter().find(|(l, _)| path.starts_with(l))
+            {
+                read.symlink = Some(info.clone());
+            }
             // A manifest is named by its bundle directory (the unit users think in);
             // a bundled script or command is named by its path relative to the walk
             // root, which stays unambiguous when several bundles each ship a
@@ -521,6 +620,77 @@ fn scan_skill_bundles(
                 &path, name, file_type, is_manifest || is_command, read, framework, scope, project_root, ctx,
             ));
         }
+    }
+}
+
+/// What to do with a symlinked directory at the top of a `skills/` root.
+enum DirLink {
+    /// Walk it; record this on every file found under it.
+    Follow(SkillSymlink),
+    /// Inventory `<link>/SKILL.md` with this, unread.
+    Refuse(SkillSymlink),
+    /// The target holds no SKILL.md: Claude Code loads nothing from it.
+    NotASkill,
+}
+
+/// Judge a top-level skill-directory link on its REAL path, with the same rules as a
+/// linked file (see `read_skill_file`): a credential, agent-config, system or other-user
+/// directory is never walked (High); a directory that contains HOME or the skills root
+/// itself is never walked; a project's link is walked only inside the repository; the
+/// user's own link is walked into their own directories under HOME, into their skill
+/// areas and into /nix/store. Everything else is inventoried unread (Low).
+fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&Path>, home: &Path) -> DirLink {
+    use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    let Ok(target) = std::fs::read_link(link) else { return DirLink::NotASkill };
+    let Ok(real) = std::fs::canonicalize(link) else { return DirLink::NotASkill };
+    // Existence only: the manifest is not opened here.
+    if std::fs::symlink_metadata(real.join("SKILL.md")).is_err() {
+        return DirLink::NotASkill;
+    }
+    let shown = sanitize_display(&target.to_string_lossy(), 300);
+    let real_home = canon_or_lexical(home);
+    let lexical = lexical_join(link.parent().unwrap_or(root), &target);
+    let areas: Vec<PathBuf> = SKILL_LINK_OK_DIRS
+        .iter()
+        .flat_map(|d| {
+            let l = home.join(".claude").join(d);
+            [canon_or_lexical(&l), l]
+        })
+        .collect();
+    let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
+    let repo = project_root.filter(|_| scope == "project").map(canon_or_lexical);
+    let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
+    let sensitive = (!in_skill_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, &real_home))
+        || (!in_skill_area(&lexical) && !in_repo(&lexical) && is_sensitive_read_target(&lexical, home));
+    let info = |escapes: bool, sensitive_target: bool, followed: bool| SkillSymlink {
+        target: shown.clone(),
+        escapes,
+        sensitive_target,
+        followed,
+        store: real.starts_with("/nix/store"),
+        through_directory: true,
+    };
+    if sensitive {
+        return DirLink::Refuse(info(true, true, false));
+    }
+    // Walking HOME, or the skills root again, is never what a skill link means.
+    let real_root = canon_or_lexical(root);
+    if real_home.starts_with(&real) || real_root.starts_with(&real) {
+        return DirLink::Refuse(info(true, false, false));
+    }
+    let follow = match repo {
+        Some(_) => in_repo(&real),
+        None => {
+            in_skill_area(&real)
+                || real.starts_with("/nix/store")
+                || (real.starts_with(&real_home) && owned_by_current_user(&real))
+        }
+    };
+    if follow {
+        // A whole skill directory linked in is self-contained at its target: inventory.
+        DirLink::Follow(info(false, false, true))
+    } else {
+        DirLink::Refuse(info(true, false, false))
     }
 }
 

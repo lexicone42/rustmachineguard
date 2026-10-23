@@ -59,9 +59,10 @@ impl Scanner for AgentSettingsScanner {
             parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &mut results);
         }
 
-        // Dedupe by path (projects + cwd can overlap).
+        // Dedupe by path with the directory canonicalized: projects + cwd can overlap, and
+        // the cwd under a symlinked HOME (macOS /var) names ~/.claude/settings.json again.
         let mut seen = std::collections::HashSet::new();
-        results.retain(|r| seen.insert(r.path.clone()));
+        results.retain(|r| seen.insert(crate::scanners::skills::dedupe_key(Path::new(&r.path))));
         results
     }
 }
@@ -152,7 +153,7 @@ pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -
             // into the terminal report.
             command: crate::scanners::sanitize_display(&crate::scanners::redact_helper_command(cmd), 1000),
             dangerous: helper_dangerous(cmd),
-            risks: classify_hook_command(&crate::scanners::redact_helper_command(cmd), settings_path)
+            risks: classify_claude_command(&crate::scanners::redact_helper_command(cmd), settings_path, true)
                 .into_iter()
                 .map(|r| crate::scanners::sanitize_display(&r, 400))
                 .collect(),
@@ -494,12 +495,72 @@ pub fn classify_hook_command_with_home(
     settings_path: &std::path::Path,
     home: Option<&std::path::Path>,
 ) -> Vec<String> {
+    classify_command(command, settings_path, home, None, false)
+}
+
+/// A Claude Code settings file's hook or helper. The file's own agent directory is
+/// `.claude` even when its path has no `.claude` component: managed settings live in
+/// /etc/claude-code or /Library/Application Support/ClaudeCode, and a helper there that
+/// runs `~/.claude/bin/x.sh` is Claude Code's policy pointing at Claude Code's own
+/// directory, not a cross-tool reference.
+fn classify_claude_command(command: &str, settings_path: &Path, program_only: bool) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    classify_command(command, settings_path, home.as_deref(), Some(".claude"), program_only)
+}
+
+/// The executable word of each simple command in `command` (after leading `NAME=value`
+/// assignments and `env`/`exec`/`command`/`nohup`/`sudo`/`time`), trimmed like
+/// [`referenced_paths`] tokens. Everything else in a command line is an argument.
+fn program_tokens(command: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for simple in command.split(|c: char| matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '\n')) {
+        let word = simple
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
+            .find(|t| {
+                !t.is_empty()
+                    && !matches!(*t, "env" | "exec" | "command" | "nohup" | "sudo" | "time" | "$" | "{" | "}")
+                    && !t.split_once('=').is_some_and(|(k, _)| {
+                        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    })
+            });
+        if let Some(w) = word {
+            out.push(w);
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn has_exec_bit(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn has_exec_bit(_p: &Path) -> bool {
+    true
+}
+
+/// [`classify_hook_command_with_home`] with the settings file's own agent directory when
+/// its path does not show one (`own_default`), and, with `program_only`, the native-binary
+/// probe limited to executable words that have an exec bit. A credential helper's
+/// arguments routinely NAME the credential file (`cat ~/.anthropic_key`), and probing
+/// them read the first bytes of the key.
+fn classify_command(
+    command: &str,
+    settings_path: &std::path::Path,
+    home: Option<&std::path::Path>,
+    own_default: Option<&'static str>,
+    program_only: bool,
+) -> Vec<String> {
     let mut risks = Vec::new();
     // Which agent-config dir does this settings file itself live under?
     let own_dir = settings_path
         .components()
         .filter_map(|c| c.as_os_str().to_str())
-        .find(|c| AGENT_CONFIG_DIRS.contains(c));
+        .find(|c| AGENT_CONFIG_DIRS.contains(c))
+        .or(own_default);
     let base = settings_path.parent().unwrap_or(std::path::Path::new("."));
     // The directory that CONTAINS the agent-config dir (proj/ for proj/.claude/...).
     let project_root = settings_path.ancestors().find_map(|a| {
@@ -511,7 +572,9 @@ pub fn classify_hook_command_with_home(
     // about half the time, and probing it as a path wrote the credential to the trace
     // log and the miss counters; after redaction it is `<redacted>`, which has no '/'.
     let redacted_command = crate::scanners::redact_secrets_in_text(command);
+    let programs = program_tokens(&redacted_command);
     for token in referenced_paths(&redacted_command) {
+        let probe = !program_only || programs.contains(&token);
         let referenced_dir = token
             .split('/')
             .find(|seg| AGENT_CONFIG_DIRS.contains(seg));
@@ -565,7 +628,7 @@ pub fn classify_hook_command_with_home(
             }
             v
         };
-        if candidates.iter().any(|c| is_native_binary(c)) {
+        if probe && candidates.iter().any(|c| (!program_only || has_exec_bit(c)) && is_native_binary(c)) {
             risks.push(format!("executes a native binary, not a script ({token})"));
         }
     }
@@ -601,7 +664,7 @@ pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<Agen
                 };
                 let dangerous =
                     !crate::scanners::rules_files::check_dangerous_patterns(command).is_empty();
-                let risks = classify_hook_command(command, settings_path);
+                let risks = classify_claude_command(command, settings_path, false);
                 hooks.push(AgentHook {
                     event: event.clone(),
                     matcher: matcher.clone(),

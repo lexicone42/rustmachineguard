@@ -910,6 +910,38 @@ pub fn render(report: &ScanReport) -> String {
         "Scan complete.".bold().green()
     ));
 
+    scrub_terminal(&out)
+}
+
+/// The whole-report backstop for inventory lines (paths, names, versions), which carry
+/// attacker-chosen text and are not individually sanitized: a project directory named
+/// `p\x1b]0;OWNED\x07` printed an OSC title-set sequence. Keeps newlines, tabs and the
+/// SGR colour sequences this renderer emits (`ESC [ digits/; m`); every other control
+/// character, ESC sequence, and bidi/line-separator character becomes `?`.
+pub fn scrub_terminal(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\u{1b}' && chars.get(i + 1) == Some(&'[') {
+            let mut j = i + 2;
+            while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == ';') {
+                j += 1;
+            }
+            if chars.get(j) == Some(&'m') {
+                out.extend(&chars[i..=j]);
+                i = j + 1;
+                continue;
+            }
+        }
+        let bad = (c.is_control() && c != '\n' && c != '\t')
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c);
+        out.push(if bad { '?' } else { c });
+        i += 1;
+    }
     out
 }
 

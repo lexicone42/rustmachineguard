@@ -106,8 +106,22 @@ pub struct ManifestClaims {
     pub declarative_claim: bool,
 }
 
+/// The extension's package.json, read only when it is a regular file (not a symlink) whose
+/// real path stays inside the extension directory. The directory itself may be a link (a
+/// development install); a manifest linked elsewhere, such as into ~/.ssh, is not read.
 fn read_manifest_claims(dir: &std::path::Path) -> ManifestClaims {
-    crate::scanners::read_bounded(&dir.join("package.json"))
+    let manifest = dir.join("package.json");
+    if !std::fs::symlink_metadata(&manifest).is_ok_and(|m| m.is_file()) {
+        crate::scanners::telemetry::note_read(&manifest, "refused (symlink or not a regular file)");
+        return ManifestClaims::default();
+    }
+    let (Ok(real), Ok(real_dir)) = (std::fs::canonicalize(&manifest), std::fs::canonicalize(dir)) else {
+        return ManifestClaims::default();
+    };
+    if !real.starts_with(&real_dir) {
+        return ManifestClaims::default();
+    }
+    crate::scanners::read_bounded_nofollow(&manifest, Some(&real))
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .map(|v| manifest_claims(&v))
         .unwrap_or_default()

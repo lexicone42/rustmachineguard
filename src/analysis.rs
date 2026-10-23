@@ -215,7 +215,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "CVE-2026-86063 · Plugin4Shell (Air Security) · EAA-009",
         },
         "Skill symlink" => Guidance {
-            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, shell-rc or history, agent-config or system path; a repository's or plugin's link that leaves it is inventoried without being read, and only your own links into your own files (a dotfiles checkout) are read.",
+            what: "A skill manifest (SKILL.md), command file or bundled script is a symbolic link (or sits under a symlinked directory) whose real path is outside its skill directory, project or plugin. rmguard resolves every hop and never reads a target that is a credential, key, .env, shell-rc or history, agent-config or system path, or a file that is not a skill-file type; a repository's or plugin's link that leaves it is inventoried without being read. Links that are read (inside the repository or plugin, into your own skill areas, or your own links into a dotfiles checkout) stay in the inventory and are not reported.",
             why: "Claude Code loads the link's target as the skill. A SKILL.md that points at ~/.ssh or a settings file puts that file into the model's context. An edit the agent makes to the skill writes through the link: the write-time symlink-following class behind CVE-2026-103435. A link into a dotfiles checkout is common and benign.",
             fix: "If you did not create the link, replace it with a regular file or remove the skill. Keep skill bundles self-contained; dotfile managers can copy instead of linking.",
             reference: "CVE-2026-103435 · write-time symlink following · AST02",
@@ -428,7 +428,9 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         // reported only when dangerous; from a project file the repository chose them.
         let project_scoped = matches!(s.source.as_str(), "project" | "local");
         for h in &s.helper_commands {
-            let cross_dir = h.risks.iter().any(|r| r.starts_with("cross-references"));
+            // The cross-directory escalation is for a repository's helper; a user or
+            // managed helper is reported only when dangerous, as the guidance says.
+            let cross_dir = project_scoped && h.risks.iter().any(|r| r.starts_with("cross-references"));
             let severity = if h.dangerous {
                 Severity::Critical
             } else if cross_dir {
@@ -864,6 +866,31 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     f
 }
 
+/// A host that only resolves on the local network: a single-label name (a docker-compose
+/// service such as `ollama` or `litellm`), `host.docker.internal`, a `.local` mDNS name,
+/// or a private, link-local or shared-address IP literal. `<unparseable>` is not.
+pub fn is_local_network_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if h.is_empty() || h.starts_with('<') {
+        return false;
+    }
+    match h.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            v4.is_private() || v4.is_link_local() || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let s = v6.segments()[0];
+            (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
+        }
+        Err(_) => {
+            !h.contains('.')
+                || matches!(h.as_str(), "host.docker.internal" | "gateway.docker.internal" | "host.containers.internal")
+                || h.ends_with(".local")
+        }
+    }
+}
+
 /// `~/.claude/plugins/cache/<m>/<p>/<v>` for a path inside a plugin cache version.
 fn plugin_install_root(path: &str) -> String {
     let p = std::path::Path::new(path);
@@ -999,9 +1026,13 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         // AgentSkill.path is the raw path (a directory name is attacker-chosen text).
         let loc = crate::scanners::sanitize_display(&skill.path, 512);
         // A /nix/store target (home-manager) is read-only and content-addressed: inventory.
+        // Reported: a link refused as sensitive, or one that leaves its skill directory /
+        // repository / plugin and was therefore not read. A link that was followed (your
+        // own link into your own skill areas or files, a plugin's link inside the plugin)
+        // stays in the inventory (agent_skills[].symlink): the guidance calls those benign.
         if let Some(l) = &skill.symlink
-            && l.escapes
             && !l.store
+            && (l.sensitive_target || (l.escapes && !l.followed))
         {
             let via = if l.through_directory { "is reached through a symlinked directory" } else { "is a symlink" };
             let within = if skill.scope == "project" {
@@ -1016,10 +1047,8 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     Severity::High,
                     format!("skill file '{}' {via} into a credential, key, shell-rc or agent-config path — not read", skill.name),
                 )
-            } else if !l.followed {
-                (Severity::Low, format!("skill file '{}' {via} that resolves outside {within} — not read", skill.name))
             } else {
-                (Severity::Low, format!("skill file '{}' {via} that resolves outside its skill directory", skill.name))
+                (Severity::Low, format!("skill file '{}' {via} that resolves outside {within} — not read", skill.name))
             };
             f.push(Finding {
                 severity,
@@ -1072,11 +1101,20 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     Some(_) => "project (untracked in a git repository)",
                     None => "project",
                 };
+                // Medium-only pattern hits (printenv, an API_KEY name) are named but do not
+                // raise the grade.
+                let matched: BTreeSet<&str> =
+                    skill.dynamic_commands.iter().flat_map(|d| d.patterns.iter().map(String::as_str)).collect();
+                let note = if matched.is_empty() {
+                    String::new()
+                } else {
+                    format!("; matches {}", matched.into_iter().collect::<Vec<_>>().join(", "))
+                };
                 f.push(Finding {
                     severity: Severity::Low,
                     category: "Skill command".into(),
                     title: format!(
-                        "{origin} skill '{}' runs {} shell command(s) when it loads (dynamic context)",
+                        "{origin} skill '{}' runs {} shell command(s) when it loads (dynamic context{note})",
                         skill.name,
                         skill.dynamic_commands.len()
                     ),
@@ -1157,6 +1195,17 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 // usually the user's own app config (an OpenAI-compatible SDK pointed at a
                 // provider) and reaches a coding agent only when something loads it, so
                 // it is advisory.
+                // A docker-compose service name (`http://ollama:11434/v1`),
+                // host.docker.internal or a private/link-local address is the local-stack
+                // setup, not an internet third party: advisory, worded as such.
+                "gateway" if !o.official && !o.loopback && is_local_network_host(value) => Some((
+                    Severity::Low,
+                    "Gateway routing",
+                    format!(
+                        "{} points to local-network host {value} in a{tracked} .env (a container service name or LAN address) — when the .env is loaded, requests and the API key go there; confirm it is your own service{gemini_note}",
+                        o.key
+                    ),
+                )),
                 "gateway" if !o.official && !o.loopback => Some((
                     if t { Severity::High } else { Severity::Low },
                     "Gateway routing",

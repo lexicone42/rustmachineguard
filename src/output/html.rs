@@ -157,7 +157,9 @@ fn render_findings(findings: &[Finding]) -> String {
         // actual shell command). Always escaped — never a secret value.
         let evidence = match &f.evidence {
             Some(ev) => format!(
-                r#"<div class="evidence"><div class="label">Offending command</div><code>{}</code></div>"#,
+                r#"<div class="evidence"><div class="label">{}</div><code>{}</code></div>"#,
+                // A symlink's evidence is where it points, not something that runs.
+                if f.category == "Skill symlink" { "Link target" } else { "Offending command" },
                 html_escape(ev)
             ),
             None => String::new(),

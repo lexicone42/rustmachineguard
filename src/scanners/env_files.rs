@@ -46,7 +46,7 @@ impl Scanner for EnvFilesScanner {
         for dir in dirs {
             for name in ENV_FILENAMES {
                 let path = dir.join(name);
-                if !crate::scanners::probe_file(&path) || !seen.insert(path.clone()) {
+                if !crate::scanners::probe_file(&path) || !seen.insert(crate::scanners::skills::dedupe_key(&path)) {
                     continue;
                 }
                 results.push(scan_env_file(&path, &dir, &home));
@@ -215,6 +215,11 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
     let mut out = Vec::new();
     for (key, v) in pairs {
         let kind = AGENT_OVERRIDE_KEYS.iter().find(|(k, _)| k == key).map(|(_, kind)| *kind).unwrap_or("");
+        // `KEY=` / `KEY=""` (a template .env) sets nothing: the agent keeps its default
+        // home and host. Only ANTHROPIC_CUSTOM_HEADERS is recorded by presence alone.
+        if kind != "headers" && v.trim().is_empty() {
+            continue;
+        }
         let mut o = EnvAgentOverride { key: key.clone(), kind: kind.to_string(), ..Default::default() };
         match kind {
             "agent-home" => {

@@ -477,7 +477,7 @@ pub fn redact_helper_command(cmd: &str) -> String {
         } else if looks_high_entropy(tok) {
             "<redacted>".to_string()
         } else {
-            tok.to_string()
+            redact_entropy_runs_in_token(tok)
         };
         out.push_str(&rendered);
         if ends_command {
@@ -489,8 +489,9 @@ pub fn redact_helper_command(cmd: &str) -> String {
     redact_secrets_in_text(&out)
 }
 
-/// A long run of key-alphabet characters mixing letters and digits that is not a path or
-/// a flag: the shape of an API key with no recognisable vendor prefix.
+/// A long run of key-alphabet characters mixing letters and digits that is not a path, a
+/// flag or a word-separated identifier: the shape of an API key with no recognisable
+/// vendor prefix.
 fn looks_high_entropy(tok: &str) -> bool {
     let core = tok.trim_matches(['"', '\'', ';', ',', ')', '(']);
     let core = core.split_once('=').map_or(core, |(_, v)| v);
@@ -502,6 +503,80 @@ fn looks_high_entropy(tok: &str) -> bool {
         && core.bytes().filter(|b| b.is_ascii_alphabetic()).count() >= 4
         && core.bytes().filter(|b| *b == b'/').count() <= 2
         && core.bytes().filter(|b| *b == b'.').count() <= 1
+        && !identifier_like(core)
+}
+
+/// A snake/kebab/CONSTANT-case name (`get_secret_value_for_service_v2`,
+/// `MY_VERY_LONG_VARIABLE_NAME_2024`, `fetch-anthropic-key-v2024`): three or more `_`/`-`
+/// separated segments, at least half of them plain words, and no non-word segment longer
+/// than 6 characters. A UUID or `prefix-<long hex>` key has long non-word segments and
+/// does not qualify.
+fn identifier_like(s: &str) -> bool {
+    if s.bytes().any(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-')) {
+        return false;
+    }
+    let segs: Vec<&str> = s.split(['_', '-']).collect();
+    if segs.len() < 3 || segs.iter().any(|g| g.is_empty()) {
+        return false;
+    }
+    let words = segs.iter().filter(|g| g.bytes().all(|b| b.is_ascii_alphabetic())).count();
+    words * 2 >= segs.len() && segs.iter().all(|g| g.bytes().all(|b| b.is_ascii_alphabetic()) || g.len() <= 6)
+}
+
+/// Redact key-shaped runs INSIDE a token. [`looks_high_entropy`] judges a whole
+/// whitespace token, so an unprefixed key wrapped in interpreter syntax
+/// (`print('KEY')`, `console.log('KEY')`, `q(KEY)`, `%q[KEY]`) passed through. The token
+/// is split on every character outside `[A-Za-z0-9_+/=-]` and each run is judged by the
+/// same rule (identifiers, paths and `$NAME` / `${NAME}` references stay readable); in a
+/// `NAME=value` run only the value is redacted.
+fn redact_entropy_runs_in_token(tok: &str) -> String {
+    let b = tok.as_bytes();
+    let in_run = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'+' | b'/' | b'=' | b'-');
+    let mut out = String::with_capacity(tok.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if !in_run(b[i]) {
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < b.len() && in_run(b[i]) {
+            i += 1;
+        }
+        let run = &tok[s..i];
+        let var_ref = s > 0 && (b[s - 1] == b'$' || (b[s - 1] == b'{' && s > 1 && b[s - 2] == b'$'));
+        if var_ref || !looks_high_entropy(run) {
+            continue;
+        }
+        let keep = match run.split_once('=') {
+            Some((k, v)) if !k.is_empty() && !v.is_empty() && k.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') => {
+                k.len() + 1
+            }
+            _ => 0,
+        };
+        out.push_str(&tok[copied..s + keep]);
+        out.push_str("<redacted>");
+        copied = i;
+    }
+    out.push_str(&tok[copied..]);
+    out
+}
+
+/// [`redact_secrets_in_text`] plus key-shaped runs inside every whitespace token (see
+/// [`redact_entropy_runs_in_token`]): for command text that is shown as evidence, such as
+/// a skill's dynamic-context command.
+pub fn redact_command_text(text: &str) -> String {
+    let base = redact_secrets_in_text(text);
+    let mut out = String::with_capacity(base.len());
+    let mut last = 0;
+    for (s, tok) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)) {
+        out.push_str(&base[last..s]);
+        out.push_str(&redact_entropy_runs_in_token(tok));
+        last = s + tok.len();
+    }
+    out.push_str(&base[last..]);
+    out
 }
 
 /// What the tokenizer owes the NEXT token(s): nothing, one redaction (the credential
@@ -1004,27 +1079,54 @@ pub fn hardened_git() -> std::process::Command {
     cmd
 }
 
-/// Check whether a file is tracked by git (shells out to `git ls-files`).
-pub fn is_git_tracked(path: &std::path::Path) -> bool {
-    let parent = path.parent().unwrap_or(path);
-    let mut x = crate::otel::exec_span("git_tracked");
-    let status = hardened_git()
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(path)
-        .current_dir(parent)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match status {
-        Ok(s) => {
-            note_exit(&mut x, &s);
-            s.success()
-        }
-        Err(_) => {
-            x.outcome("spawn_failed");
-            false
+/// Wall-clock cap on one `git ls-files` tracked-file query.
+const GIT_TRACKED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// True when the git directory governing `start` holds a HEAD, index, config or
+/// commondir that is not a regular file (a FIFO, socket, device, directory, or a link to
+/// one). git opens these while discovering the repository, and opening a FIFO with no
+/// writer blocks forever. Only a real `.git` DIRECTORY is inspected; a `gitdir:` file is
+/// left to the timeout.
+fn git_dir_unsafe_to_spawn(start: &std::path::Path) -> bool {
+    for dir in start.ancestors() {
+        let g = dir.join(".git");
+        match std::fs::symlink_metadata(&g) {
+            Ok(m) if m.is_dir() => {
+                return ["HEAD", "index", "config", "commondir"].iter().any(|f| {
+                    let p = g.join(f);
+                    let bad = match std::fs::symlink_metadata(&p) {
+                        Err(_) => false,
+                        Ok(m) if m.is_file() => false,
+                        // A symlinked HEAD is legal (old git); a link to a non-file is not.
+                        Ok(m) if m.file_type().is_symlink() => !std::fs::metadata(&p).is_ok_and(|t| t.is_file()),
+                        Ok(_) => true,
+                    };
+                    if bad {
+                        telemetry::note_read(&p, "not a regular file");
+                    }
+                    bad
+                });
+            }
+            Ok(_) => return false,
+            Err(_) => continue,
         }
     }
+    false
+}
+
+/// Check whether a file is tracked by git (`git ls-files --error-unmatch` through
+/// [`hardened_git`]). The repository is content the scanner inspects, so the call must not
+/// be able to stall the scan: a git directory whose HEAD/index/config is not a regular file
+/// is answered "not tracked" without spawning, and the child runs with stdin closed under a
+/// wall-clock cap and is killed on timeout (a FIFO `.git/HEAD` used to hang the whole scan).
+pub fn is_git_tracked(path: &std::path::Path) -> bool {
+    let parent = path.parent().unwrap_or(path);
+    if git_dir_unsafe_to_spawn(parent) {
+        return false;
+    }
+    let mut cmd = hardened_git();
+    cmd.args(["ls-files", "--error-unmatch", "--"]).arg(path).current_dir(parent);
+    output_with_timeout_at(&mut cmd, GIT_TRACKED_TIMEOUT, "git_tracked").is_some_and(|o| o.status.success())
 }
 
 /// Compute SHA-256 hash of content, returning hex string.
@@ -1479,9 +1581,18 @@ pub fn output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> Option<std::process::Output> {
+    output_with_timeout_at(cmd, timeout, "output_with_timeout")
+}
+
+/// [`output_with_timeout`] with the exec span's site name.
+fn output_with_timeout_at(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+    site: &'static str,
+) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut x = crate::otel::exec_span("output_with_timeout");
+    let mut x = crate::otel::exec_span(site);
     let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(c) => c,
         Err(_) => {

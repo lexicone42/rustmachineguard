@@ -511,8 +511,8 @@ pub(crate) fn lexical_join(base: &Path, target: &Path) -> PathBuf {
     out
 }
 
-pub(crate) fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
-    if resolved.starts_with("/etc") || is_sensitive_read_target(resolved, home) {
+fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
+    if resolved.starts_with("/etc") {
         return true;
     }
     let Ok(rel) = resolved.strip_prefix(home) else {
@@ -543,16 +543,43 @@ const SENSITIVE_READ_PATHS: &[&str] = &[
     ".config/BraveSoftware", ".config/doctl", ".config/Bitwarden CLI", ".config/fish/config.fish",
     ".config/github-copilot", ".config/claude", "Library/Keychains", "Library/Cookies",
     "Library/Application Support/Google/Chrome", ".claude", ".claude.json", ".codex", ".gemini",
-    ".cursor", ".kiro",
+    ".cursor", ".kiro", ".cache/huggingface", ".huggingface", ".config/glab-cli", ".s3cfg",
+    ".authinfo", ".authinfo.gpg", ".boto", ".databrickscfg", ".config/configstore",
 ];
-/// File names that are sensitive wherever they sit under HOME: shell rc and history
-/// files, `.env` files, authorized_keys.
+/// File names that are sensitive wherever they sit, inside HOME or not, inside a
+/// repository or a plugin or not: shell rc and history files, credential dotfiles,
+/// authorized_keys. `.env`/`.env.*`, SSH private keys and key/certificate extensions are
+/// matched in [`is_sensitive_read_name`].
 const SENSITIVE_READ_NAMES: &[&str] = &[
     ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv", ".zprofile",
     ".zlogin", ".profile", ".bash_history", ".zsh_history", ".python_history", ".psql_history",
     ".mysql_history", ".node_repl_history", ".sqlite_history", ".lesshst", ".viminfo",
-    "authorized_keys", ".netrc", ".pgpass",
+    "authorized_keys", ".netrc", "_netrc", ".pgpass", ".git-credentials", ".vault-token", ".s3cfg",
+    ".authinfo", ".authinfo.gpg", ".boto", ".databrickscfg", ".npmrc", ".pypirc", ".htpasswd",
+    ".my.cnf", "credentials", "credentials.json", "credentials.toml",
 ];
+/// Extensions of key, certificate and keystore files.
+const SENSITIVE_READ_EXTS: &[&str] = &["pem", "key", "p12", "pfx", "keystore", "jks", "ppk", "kdbx", "gpg", "asc"];
+/// True when the FILE NAME alone marks a path as unreadable through a link, wherever it
+/// sits: a `.env`/`.env.*`, a shell rc or history file, a credential dotfile, an SSH
+/// private key (`id_rsa`, `id_ed25519`, ... but not `*.pub`), or a key/certificate/
+/// keystore extension. Unlike the HOME and system-tree rules this applies inside a
+/// repository, a plugin and the skill areas too: a project outside HOME linking SKILL.md
+/// to its own `.env.production` is refused like one under HOME.
+pub(crate) fn is_sensitive_read_name(resolved: &Path) -> bool {
+    let Some(n) = resolved.file_name().and_then(|n| n.to_str()) else { return false };
+    if SENSITIVE_READ_NAMES.contains(&n) || n == ".env" || n.starts_with(".env.") {
+        return true;
+    }
+    if n.starts_with("id_") && !n.ends_with(".pub") && !n.contains('.') {
+        return true;
+    }
+    resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SENSITIVE_READ_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 /// Trees outside HOME that hold system configuration, process state or other users' data.
 const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
     "/etc", "/proc", "/sys", "/dev", "/root", "/var", "/private", "/run", "/boot", "/Library/Keychains",
@@ -564,13 +591,11 @@ const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
 /// judged only by the HOME rules, so a HOME that itself lives under /var (macOS temp
 /// homes) is not refused wholesale.
 pub(crate) fn is_sensitive_read_target(resolved: &Path, home: &Path) -> bool {
+    if is_sensitive_read_name(resolved) {
+        return true;
+    }
     if let Ok(rel) = resolved.strip_prefix(home) {
-        if SENSITIVE_READ_PATHS.iter().any(|p| rel.starts_with(p)) {
-            return true;
-        }
-        return resolved.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-            SENSITIVE_READ_NAMES.contains(&n) || n == ".env" || n.starts_with(".env.")
-        });
+        return SENSITIVE_READ_PATHS.iter().any(|p| rel.starts_with(p));
     }
     if SENSITIVE_SYSTEM_ROOTS.iter().any(|r| resolved.starts_with(r)) {
         return true;
@@ -593,12 +618,17 @@ mod tests {
             "/home/u/.zsh_history", "/home/u/proj/.env", "/home/u/.claude/settings.json",
             "/proc/self/environ", "/sys/kernel/x", "/root/.bashrc", "/home/other/notes.md",
             "/etc/shadow", "/var/lib/x",
+            // File-name rules apply outside HOME too (a project under /datar or /srv).
+            "/srv/proj/.env.production", "/datar/w/app/.env", "/opt/x/id_ed25519", "/srv/p/certs/tls.key",
+            "/home/u/.cache/huggingface/token", "/home/u/.config/glab-cli/config.yml", "/home/u/.s3cfg",
+            "/home/u/.authinfo", "/home/u/.boto", "/home/u/.databrickscfg", "/home/u/.config/configstore/x.json",
         ] {
             assert!(is_sensitive_read_target(Path::new(p), home), "{p}");
         }
         for p in [
             "/home/u/.config/dotfiles/skills/x/SKILL.md", "/home/u/dotfiles/SKILL.md",
             "/home/u/Documents/notes.md", "/nix/store/abc-skill/SKILL.md", "/tmp/x",
+            "/srv/proj/docs/env.md", "/home/u/.ssh-notes.md", "/opt/x/id_ed25519.pub",
         ] {
             assert!(!is_sensitive_read_target(Path::new(p), home), "{p}");
         }
@@ -657,5 +687,12 @@ mod tests {
         assert_eq!(symlink_escapes(repo, &link, Path::new("../../proj/README"), home), None);
         // A prefix-sharing sibling is outside.
         assert_eq!(symlink_escapes(repo, &link, Path::new("../../proj2/README"), home), Some(false));
+        // The committed-symlink grading keeps its own (narrower) sensitive list: a shared
+        // data path under /var, /run or another user's home escapes the repository (High)
+        // but is not a credential or agent-config path (Critical). The skills read-refusal
+        // list (is_sensitive_read_target) is broader and is not used here.
+        for p in ["/var/tmp/shared/x", "/run/user/1000/x", "/home/other/shared/x", "/Users/Shared/x"] {
+            assert_eq!(symlink_escapes(repo, &link, Path::new(p), home), Some(false), "{p}");
+        }
     }
 }

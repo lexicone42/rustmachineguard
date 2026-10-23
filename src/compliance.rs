@@ -72,8 +72,8 @@ pub const CONTROLS: &[Control] = &[
         id: "UNAUTHORIZED",
         title: "Detect open / unauthorized MCP servers",
         coverage: Coverage::Partial,
-        how: "Enumerates configured servers and (opt-in) live-probes them; registry check flags unregistered/shadow. Does not sweep the network for listeners; also flags a local model server (Ollama) configured to listen beyond loopback with no authentication.",
-        finding_categories: &["Registry", "Ollama exposure"],
+        how: "Enumerates configured servers and (opt-in) live-probes them; registry check flags unregistered/shadow. Does not sweep the network for listeners.",
+        finding_categories: &["Registry"],
     },
     Control {
         framework: "NSA/CISA MCP Security CSI (2026-06)",
@@ -263,8 +263,8 @@ pub const CONTROLS: &[Control] = &[
         id: "EAA-006",
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
-        how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks and project .env files that relocate an agent's config home.",
-        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret", "Secret leak", "Agent redirection"],
+        how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks, project .env files that relocate an agent's config home, and a local model server (Ollama) configured to listen beyond loopback with no authentication.",
+        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret", "Secret leak", "Agent redirection", "Ollama exposure"],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -486,6 +486,15 @@ mod tests {
                 "finding category {cat:?} maps to no compliance control"
             );
         }
+    }
+
+    /// Ollama is a model server, not an MCP server: it is evidence for tool-configuration
+    /// abuse (EAA-006), not for the NSA/CISA "open / unauthorized MCP servers" control.
+    #[test]
+    fn ollama_exposure_is_not_mcp_server_evidence() {
+        let by_id = |id: &str| CONTROLS.iter().find(|c| c.id == id).unwrap();
+        assert!(!by_id("UNAUTHORIZED").finding_categories.contains(&"Ollama exposure"));
+        assert!(by_id("EAA-006").finding_categories.contains(&"Ollama exposure"));
     }
 
     #[test]
