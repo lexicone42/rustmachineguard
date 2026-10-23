@@ -199,10 +199,10 @@ technique. Each detection also names its source in a comment at the code.
 | Plugin pin | `marketplaces` | Air Security (Or Nevo Michrowski, Dor Granat, Niv Hoffman): Plugin4Shell, CVE-2026-86063 / GHSA-pq7j-f95f-qfcv; Codex fix openai/codex PR #34644 |
 | Skill symlink | `skills` | CVE-2026-103435 write-time symlink following (c_h4ck_0, edbr); real-path (multi-hop, symlinked-directory) resolution added after an internal review showed the lexical first-hop check could be walked past |
 | Skill command, Skill grant | `skills` | Anthropic Claude Code docs: skills (dynamic context injection, `allowed-tools`, `disableSkillShellExecution`, synced skills) and permissions (`Bash(*)` is equivalent to `Bash`) |
-| Agent redirection, .env Gateway routing | `envfiles` | Redguard AG (Benjamin Faller): Gemini CLI CVE-2026-13745; EAA-007 hostile gateway routing (0x4D31); CVE-2026-21852; vendor variable docs (Claude Code env-vars, Gemini CLI configuration, Codex config, Cursor CLI configuration, Kiro settings) |
+| Agent redirection, .env Gateway routing | `envfiles` | Redguard AG (Benjamin Faller): Gemini CLI CVE-2026-13745; EAA-007 hostile gateway routing (0x4D31); CVE-2026-21852; vendor variable docs (Claude Code env-vars, Gemini CLI configuration, Codex config, Cursor CLI configuration, Kiro settings); OpenAI data-residency docs (`<region>.api.openai.com`); LiteLLM proxy quick start (clients dial `0.0.0.0:4000`) |
 | Helper command, Login gateway | `settings` | Anthropic Claude Code settings reference and Claude apps gateway docs |
-| Extension code | `extensions` | Socket Threat Research (Kirill Boychenko): GlassWorm-linked theme loaders; Aikido Security (Ilyas Makari): GlassWorm Zig dropper native addon |
-| Ollama exposure | `shell`, `envfiles` | Ollama FAQ (`OLLAMA_HOST`, default 127.0.0.1:11434) and `envconfig.Host()` in ollama/ollama |
+| Extension code | `extensions` | Socket Threat Research (Kirill Boychenko): GlassWorm-linked theme loaders; Aikido Security (Ilyas Makari): GlassWorm Zig dropper native addon. The entry-point check applies to theme extensions only (the GlassWorm shape); native addons are checked in every declarative extension |
+| Ollama exposure | `shell`, `envfiles` | Ollama FAQ (`OLLAMA_HOST`, default 127.0.0.1:11434) and `envconfig.Host()` in ollama/ollama. Accepted deviation from the detection spec: a wildcard `OLLAMA_HOST` in a project `.env` is Low, not a warning (it binds only a server started from that environment, normally a container); profiles, systemd units and launchd jobs are Medium |
 
 ## Updating the Catalog
 

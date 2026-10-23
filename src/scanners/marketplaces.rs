@@ -69,8 +69,22 @@ fn show_path(p: &Path) -> String {
     sanitize_display(&p.to_string_lossy(), 512)
 }
 
+/// A `sha` / `gitCommitSha` / ref value as it may be shown: a hex value by its first 12
+/// characters, a plausible ref name (`[A-Za-z0-9._/-]`, 64 characters or fewer) as it is
+/// (token shapes still redacted), anything else as `<unparseable>`. None of these fields
+/// is a secret, but a credential pasted into the wrong field must not be echoed, and
+/// free text (ESC, spaces) is no ref name.
 fn show_value(v: &str) -> String {
-    sanitize_display(&redact_secrets_in_text(v), 64)
+    let t = v.trim();
+    if !t.is_empty() && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return hex12(t);
+    }
+    let ref_name = t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    if ref_name {
+        sanitize_display(&redact_secrets_in_text(t), 64)
+    } else {
+        "<unparseable>".to_string()
+    }
 }
 
 fn hex12(s: &str) -> String {

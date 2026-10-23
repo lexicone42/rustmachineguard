@@ -800,7 +800,12 @@ fn redact_token(
     next: Option<&str>,
     pending: Pending,
 ) -> (String, Pending) {
+    // A redirection between a secret flag and its value (`--with-token <<< TOKEN`,
+    // `--password < file`) is the shell's operator, not the credential: it is kept and the
+    // redaction owed carries on to the next word.
+    let redirection = matches!(tok, "<<<" | "<" | "<<" | "<<-");
     match pending {
+        Pending::One if redirection => return (tok.to_string(), Pending::One),
         Pending::One => return (redact_bare_value(tok), Pending::None),
         // Inside a quoted secret: this token is more of it, until the quote closes.
         Pending::Quote(q) => {
@@ -828,6 +833,9 @@ fn redact_token(
         return (tok.to_string(), Pending::One);
     }
     if is_secret_value_position(prev, prev2) {
+        if redirection {
+            return (tok.to_string(), Pending::One);
+        }
         let q = unclosed_quote(tok);
         return (redact_bare_value(tok), q.map_or(Pending::None, Pending::Quote));
     }
@@ -969,6 +977,16 @@ pub(crate) fn is_loopback_host(host: &str) -> bool {
         Ok(ip) => ip.to_canonical().is_loopback(),
         Err(_) => false,
     }
+}
+
+/// [`is_loopback_host`] for an address a CLIENT dials (a base URL, a proxy): the
+/// unspecified addresses `0.0.0.0` and `::` connect to the local machine, so they are
+/// loopback here. (LiteLLM's proxy quick start points every client at
+/// `http://0.0.0.0:4000`.) Server-bind semantics, where they mean "every interface",
+/// apply only to OLLAMA_HOST, which [`shell_configs::classify_ollama_host`] reads.
+pub(crate) fn is_client_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    is_loopback_host(host) || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_unspecified())
 }
 
 /// Unix permission bits of a file as (octal_string, world_readable, group_readable).

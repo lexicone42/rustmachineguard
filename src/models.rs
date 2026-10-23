@@ -504,6 +504,11 @@ pub struct AgentSettings {
     /// `disableSkillShellExecution`: skills and commands may not run inline shell.
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
+    /// A project or local settings file that is a symlink (or sits under a symlinked
+    /// agent directory) leaving its repository: recorded by its lexical target and never
+    /// opened, so every other field is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<EnvSymlink>,
 }
 
 /// Claude Code's forced login method / Claude apps gateway URL.
@@ -674,7 +679,7 @@ pub struct EnvFile {
     pub symlink: Option<EnvSymlink>,
 }
 
-/// A symlinked `.env`, recorded without opening it.
+/// A symlinked `.env` or project settings file, recorded without opening it.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct EnvSymlink {
     /// The link text, sanitized.
@@ -701,6 +706,11 @@ pub struct EnvAgentOverride {
     /// agent-home: the relocated home is inside the project.
     #[serde(default)]
     pub inside_project: bool,
+    /// agent-home: the value could not be resolved to a path (an expansion other than a
+    /// leading `~`/`$HOME`, such as `${PWD}/.claude-cfg` or `~user/x`), so whether it is
+    /// inside the project is unknown. `inside_project` is false and means nothing then.
+    #[serde(default)]
+    pub unresolved: bool,
     /// ollama-host only: the bind classification (see OllamaHostSetting).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,

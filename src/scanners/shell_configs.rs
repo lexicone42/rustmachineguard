@@ -137,7 +137,7 @@ pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
         return ("<shell expansion>".to_string(), "unresolved");
     }
     let hostport = s.split_once("://").map_or(s, |(_, rest)| rest);
-    let hostport = hostport.split('/').next().unwrap_or(hostport);
+    let hostport = hostport.split(['/', '?', '#']).next().unwrap_or(hostport);
     let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
     if s.is_empty() {
         return (String::new(), "loopback");
@@ -174,6 +174,15 @@ pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
             return (gated, bind);
         }
     }
+    // The port is shown only when it is one: `0.0.0.0:Hunter2` (a password pasted into
+    // the wrong place) is `0.0.0.0:<unparseable>`.
+    let port = port.map(|p| {
+        if p.is_empty() || (p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok()) {
+            p
+        } else {
+            "<unparseable>"
+        }
+    });
     let shown = match port {
         Some(p) if host.contains(':') => format!("[{host}]:{p}"),
         Some(p) => format!("{host}:{p}"),

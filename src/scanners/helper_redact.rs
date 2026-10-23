@@ -91,6 +91,16 @@ struct Word {
     value: String,
     /// The quote character, when the whole word is a single quoted string.
     whole_quote: Option<char>,
+    /// A `$` in `value` came from single quotes or ANSI-C `$'...'` quoting: `'$Hunter2'`
+    /// is the literal text `$Hunter2`, never a variable reference.
+    literal_dollar: bool,
+}
+
+impl Word {
+    /// A `$VAR` / `${VAR}` reference the shell expands (not literal quoted text).
+    fn var_ref(&self) -> bool {
+        !self.literal_dollar && is_var_ref(&self.value)
+    }
 }
 
 fn lex(cmd: &str) -> Vec<Tok> {
@@ -186,10 +196,28 @@ fn lex_word(chars: &[char], mut i: usize) -> (Word, usize) {
             '\'' => {
                 let end = (i + 1..n).find(|&j| chars[j] == '\'').unwrap_or(n);
                 w.value.extend(&chars[i + 1..end]);
+                w.literal_dollar |= chars[i + 1..end].contains(&'$');
                 if i == start {
                     first_quote_end = Some(end + 1);
                 }
                 i = end + 1;
+            }
+            // ANSI-C quoting, `$'...'`: a literal string (backslash escapes, `\'`
+            // included, are part of it), never a variable reference. Its body is pushed
+            // without the `$`, so `$'Hunter2pass'` is the literal `Hunter2pass`.
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                let mut j = i + 2;
+                while j < n && chars[j] != '\'' {
+                    j += if chars[j] == '\\' { 2 } else { 1 };
+                }
+                let end = j.min(n);
+                w.value.extend(&chars[i + 2..end]);
+                w.literal_dollar = true;
+                i = end + 1;
+            }
+            // Locale quoting, `$"..."`: a double-quoted string; the `$` is not part of it.
+            '$' if chars.get(i + 1) == Some(&'"') => {
+                i += 1;
             }
             '"' => {
                 let mut j = i + 1;
@@ -349,11 +377,17 @@ fn url_shape(v: &str) -> Option<String> {
     Some(format!("{scheme}://{host}{tail}"))
 }
 
-fn flag_shape(raw: &str, v: &str) -> String {
+/// `literal_dollar`: a `$` in the word came from single or ANSI-C quotes, so `$X` there is
+/// literal text, not a variable reference.
+fn flag_shape(raw: &str, v: &str, literal_dollar: bool) -> String {
     if let Some(long) = v.strip_prefix("--") {
         if let Some((name, val)) = long.split_once('=') {
             let name_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-            let shown = if is_var_ref(val) || path_shape(val).is_some() { val.to_string() } else { "<redacted>".into() };
+            let shown = if (is_var_ref(val) && !literal_dollar) || path_shape(val).is_some() {
+                val.to_string()
+            } else {
+                "<redacted>".into()
+            };
             return if name_ok { format!("--{name}={shown}") } else { "<redacted>".into() };
         }
         return if long.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && long.len() <= 40 {
@@ -363,6 +397,22 @@ fn flag_shape(raw: &str, v: &str) -> String {
         };
     }
     let short = &v[1..];
+    // Single-dash long options with an attached value (`vault kv get -field=api_key`,
+    // Go's flag package): the name is kept like a `--name=value`, the value redacted.
+    if let Some((name, val)) = short.split_once('=')
+        && name.len() >= 2
+        && name.len() <= 40
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !looks_high_entropy(name)
+    {
+        let shown = if (is_var_ref(val) && !literal_dollar) || path_shape(val).is_some() {
+            val.to_string()
+        } else {
+            "<redacted>".into()
+        };
+        return format!("-{name}={shown}");
+    }
     if short.chars().all(|c| c.is_ascii_alphabetic()) && short.len() <= 2 {
         return raw.to_string();
     }
@@ -426,7 +476,7 @@ fn argument(w: &Word, kind: Kind, st: &mut State, depth: usize) -> String {
     if kind == Kind::Eval {
         return nested(w, depth);
     }
-    if is_var_ref(v) {
+    if w.var_ref() {
         return w.raw.clone();
     }
     if v.starts_with('-') && v.len() > 1 {
@@ -434,7 +484,7 @@ fn argument(w: &Word, kind: Kind, st: &mut State, depth: usize) -> String {
             *st = State::Nested(kind);
             return w.raw.clone();
         }
-        return flag_shape(&w.raw, v);
+        return flag_shape(&w.raw, v, w.literal_dollar);
     }
     if kind == Kind::Echo {
         return "<redacted>".into();
@@ -513,7 +563,7 @@ fn shape(cmd: &str, depth: usize) -> String {
                     State::Redir => {
                         st = saved;
                         let v = w.value.as_str();
-                        if v == "-" || v.chars().all(|c| c.is_ascii_digit()) || is_var_ref(v) {
+                        if v == "-" || v.chars().all(|c| c.is_ascii_digit()) || w.var_ref() {
                             w.raw.clone()
                         } else {
                             path_shape(v).unwrap_or_else(|| "<redacted>".into())
@@ -523,7 +573,7 @@ fn shape(cmd: &str, depth: usize) -> String {
                         if RESERVED.contains(&w.value.as_str()) {
                             w.raw.clone()
                         } else if let Some((k, v)) = is_assignment(&w.raw) {
-                            if v.is_empty() || is_var_ref(v.trim_matches(['"', '\''])) {
+                            if v.is_empty() || (!v.contains('\'') && is_var_ref(v.trim_matches('"'))) {
                                 w.raw.clone()
                             } else {
                                 format!("{k}=<redacted>")
@@ -543,9 +593,9 @@ fn shape(cmd: &str, depth: usize) -> String {
                             if flags.contains(&v) {
                                 st = State::Wrapper(flags, true);
                             }
-                            flag_shape(&w.raw, v)
+                            flag_shape(&w.raw, v, w.literal_dollar)
                         } else if let Some((k, val)) = is_assignment(&w.raw) {
-                            if val.is_empty() || is_var_ref(val.trim_matches(['"', '\''])) {
+                            if val.is_empty() || (!val.contains('\'') && is_var_ref(val.trim_matches('"'))) {
                                 w.raw.clone()
                             } else {
                                 format!("{k}=<redacted>")
@@ -572,4 +622,36 @@ fn shape(cmd: &str, depth: usize) -> String {
         }
     }
     out.trim_end_matches(' ').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_helper_command as r;
+
+    #[test]
+    fn quoted_literals_are_redacted() {
+        // ANSI-C and locale quoting are literal strings, not `$VAR` references.
+        assert_eq!(r("printf %s $'Hunter2pass'"), "printf <redacted> <redacted>");
+        assert_eq!(r("echo $\"Tr0ub4dor3\""), "echo <redacted>");
+        assert_eq!(r("mytool $'Hunter2pass'"), "mytool <redacted>");
+        assert_eq!(r("mytool $\"Hunter2pass\""), "mytool <redacted>");
+        // Single-quoted `$` text is literal too; a double-quoted reference is not.
+        assert_eq!(r("mytool '$Hunter2pass'"), "mytool <redacted>");
+        assert_eq!(r("mytool --flag='$Hunter2pass'"), "mytool --flag=<redacted>");
+        assert_eq!(r("K='$Hunter2pass' mytool"), "K=<redacted> mytool");
+        assert_eq!(r("mytool \"$ANTHROPIC_API_KEY\""), "mytool \"$ANTHROPIC_API_KEY\"");
+        assert_eq!(r("mytool $ANTHROPIC_API_KEY"), "mytool $ANTHROPIC_API_KEY");
+        // Nested: inside `sh -c '...'` the inner shell expands `$X`.
+        assert_eq!(r("sh -c 'echo $X'"), "sh -c 'echo $X'");
+        assert!(!r("bash -c $'echo Hunter2pass'").contains("Hunter2pass"));
+    }
+
+    #[test]
+    fn single_dash_name_value_flags_keep_their_name() {
+        assert_eq!(r("vault kv get -field=api_key secret/anthropic"), "vault kv get -field=<redacted> secret/anthropic");
+        assert_eq!(r("vault kv get -field=$FIELD secret/x"), "vault kv get -field=$FIELD secret/x");
+        assert_eq!(r("tool -token=Hunter2pass"), "tool -token=<redacted>");
+        // A short flag with an attached value keeps only its letter.
+        assert_eq!(r("mysqlx -pHunter2pass"), "mysqlx -p<redacted>");
+    }
 }

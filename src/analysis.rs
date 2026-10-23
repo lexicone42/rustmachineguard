@@ -137,7 +137,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP Agentic Apps Top 10 (excessive agency)",
         },
         "Gateway routing" => Guidance {
-            what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not the provider's own API, so requests (and the API key) route through it. Named OpenAI-compatible providers (Groq, Azure OpenAI and AI Foundry, Mistral, Gemini, NVIDIA NIM, Bedrock, ...) and loopback proxies are not reported.",
+            what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not any AI provider's own API, so requests (and the API key) route through it. A provider's own API host counts as official under every base-URL variable (api.anthropic.com, api.openai.com and its regional hosts such as eu.api.openai.com, and named OpenAI- or Anthropic-compatible providers: Groq, Azure OpenAI and AI Foundry, Mistral, Gemini, NVIDIA NIM, Bedrock, DeepSeek, Z.ai, Moonshot, ...), and loopback proxies (including a client dial to 0.0.0.0 or [::], which reaches this machine) are not reported.",
             why: "Whoever controls that host sees every prompt and can capture the API key. In Claude Code project settings this is the exfiltration vector behind CVE-2026-21852. A .env applies only to tools that load it (Gemini CLI loads project .env files itself; other agents need direnv, an IDE or a dotenv loader), and a git-tracked .env is the repository choosing the host for everyone. A committed per-mode file (.env.development, .env.production) is the application's own build config, which no coding agent loads by default, so it is advisory. A legitimate proxy looks identical, so this needs a human check.",
             fix: "Confirm the host is a gateway you deliberately configured and trust. If it is not, remove the override, and rotate the API key if a tool already sent requests there.",
             reference: "EAA-007 · CVE-2026-21852",
@@ -222,8 +222,8 @@ pub fn guidance(category: &str) -> Guidance {
         },
         "Skill command" => Guidance {
             what: "A skill or custom command contains dynamic context injection: an inline !`command` placeholder or a ```! block. Claude Code runs it in your shell before the skill text reaches the model, every time the skill is invoked.",
-            why: "The command runs with your privileges on invocation, and Claude can invoke a skill on its own unless the skill sets disable-model-invocation. So a third-party plugin or a repository can ship code that runs when its skill loads, with no tool-approval prompt. Read-only context commands (git status, gh pr view) are the documented use; a committed project skill whose commands are all of that kind (one program and subcommand, no pipes, redirection or substitution) stays in the inventory and is not reported.",
-            fix: "Read the command shown below. Remove the skill if you did not expect it. To stop all skills running inline shell, set \"disableSkillShellExecution\": true in user or managed settings.",
+            why: "The command runs with your privileges on invocation, and Claude can invoke a skill on its own unless the skill sets disable-model-invocation. So a third-party plugin or a repository can ship code that runs when its skill loads, with no tool-approval prompt. Read-only context commands (git status, gh pr view) are the documented use; a committed project skill whose commands are all of that kind stays in the inventory and is not reported. That list is strict: git with the subcommand first and no option before it, git branch with list-only flags, no --no-index, --output, --ext-diff or --textconv, no path argument outside the repository, date with at most a +FORMAT, and no pipes, redirection, quoting or substitution. Any dangerous-pattern match is named, as it is for a hook: data sent to the network (printenv | nc, an encoded upload) is High wherever the skill comes from, and a medium-only match (printenv NODE_ENV) in your own skills is a Low advisory.",
+            fix: "Read the command shown below. Remove the skill if you did not expect it. To stop all skills running inline shell, set \"disableSkillShellExecution\": true in user or managed settings (a project's own .claude/settings.json or settings.local.json setting it silences that project's skills).",
             reference: "Claude Code skills: dynamic context injection · AST02 · EAA-003",
         },
         "Skill grant" => Guidance {
@@ -234,13 +234,13 @@ pub fn guidance(category: &str) -> Guidance {
         },
         "Agent redirection" => Guidance {
             what: "A project .env file sets a variable that relocates an AI agent's home directory (CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME, CURSOR_CONFIG_DIR, KIRO_HOME) or reroutes its traffic (HTTPS_PROXY to a non-loopback host, ANTHROPIC_CUSTOM_HEADERS).",
-            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A home outside the repository (a devcontainer home such as /home/node/.claude) loads nothing the repository controls and is advisory. A proxy sees all traffic. Gemini CLI and aider load a project's .env themselves; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader). Per-mode files (.env.local, .env.development, .env.production, .env.test) are application config that no coding agent loads by default, so they are advisory even when committed.",
+            why: "An agent started with a relocated home loads settings, hooks and MCP servers from that directory. When the directory sits inside the repository, the repository author controls them (Gemini CLI CVE-2026-13745: an untrusted .env overrode GEMINI_CLI_HOME past the folder-trust prompt). A home outside the repository (a devcontainer home such as /home/node/.claude) loads nothing the repository controls and is advisory. A home that could not be resolved (`${PWD}/.claude-cfg`, `$PWD`) may be the repository itself, so a committed one is Medium. A proxy sees all traffic. Gemini CLI and aider load a project's .env themselves; other agents only see these values when something exports them (direnv, an IDE, a dotenv loader). Per-mode files (.env.local, .env.development, .env.production, .env.test) are application config that no coding agent loads by default, so they are advisory even when committed.",
             fix: "Remove the variable unless you put it there. Never commit agent-home or proxy overrides; set them in your own shell profile. Upgrade Gemini CLI to 0.39.1 or later.",
             reference: "CVE-2026-13745 · EAA-006 · EAA-007",
         },
         "Helper command" => Guidance {
             what: "A Claude Code settings file names a credential or telemetry helper (apiKeyHelper, awsAuthRefresh, awsCredentialExport, gcpAuthRefresh, otelHeadersHelper). This is a shell command Claude Code runs on its own to fetch credentials or headers.",
-            why: "Like a hook, it runs silently with your privileges, and its output becomes the agent's credential. In a repository's settings file the repository author chooses the command. In your own or managed settings it is a normal enterprise setup and is only reported when the command matches a dangerous pattern.",
+            why: "Like a hook, it runs silently with your privileges, and its output becomes the agent's credential. In a repository's settings file the repository author chooses the command. In your own or managed settings it is a normal enterprise setup and is only reported when the command matches a dangerous pattern. Printing a variable or decoding a stored key is what a helper does; piping or substituting data into a network sender (nc, curl, wget, a python/node/ruby HTTP request) is not, and is dangerous from every scope.",
             fix: "Review the command below (only its shape is shown: program, flags, paths and hosts; every other argument is redacted). Remove a helper that arrived with a repository; keep credential helpers in user or managed settings, and have them read the key from a secret store rather than echo it.",
             reference: "EAA-003 (lifecycle hook persistence) · OWASP ASI03",
         },
@@ -251,7 +251,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "Claude apps gateway · EAA-007",
         },
         "Extension code" => Guidance {
-            what: "An IDE extension that presents itself as declarative (a colour or icon theme, snippets, keymaps, a language pack) carries code: a main/browser entry point with no contributed commands or settings to explain it, or a native .node addon.",
+            what: "An IDE extension that presents itself as declarative carries code: a theme (colour or icon theme) with a main/browser entry point and no contributed commands or settings to explain it, or a declarative extension (themes, snippets, keymaps, a language pack) that ships a native .node addon. The entry-point check applies to theme extensions only.",
             why: "Pure themes are JSON and run nothing. GlassWorm-linked \"theme\" extensions shipped encrypted JavaScript, and the GlassWorm Zig dropper loaded a native addon to install a second-stage extension into every IDE. Some popular themes legitimately add commands or settings code, so this is advisory.",
             fix: "Check the publisher and the marketplace page, and uninstall the extension if the code is not explained. Prefer themes with no entry point.",
             reference: "GlassWorm theme loaders (Socket) · GlassWorm Zig dropper (Aikido) · OWASP ASI04",
@@ -277,34 +277,113 @@ pub fn guidance(category: &str) -> Guidance {
     }
 }
 
-/// Collect and rank the actionable findings in a scan. Highest severity first.
-/// This is the risk-first view that HTML/fleet reports lead with.
-/// A read-only context command, the documented use of dynamic context: one simple
-/// command (no pipe, redirection, separator or substitution) whose program and
-/// subcommand only read: `git status|diff|log|show|branch|rev-parse|describe|ls-files`
-/// (without `--output`/`--ext-diff`), `gh pr|issue|repo|run view|list|diff|status|
-/// checks`, `date`, `pwd`, `ls`, `whoami`, `uname`.
-pub fn is_read_only_context_command(cmd: &str) -> bool {
-    if cmd.contains(['|', '>', '<', ';', '&', '$', '`', '(', ')', '\n', '\\']) {
+/// A path argument that may leave the repository: absolute (`/etc/passwd`, `/dev/null`),
+/// home-relative (`~/.ssh/id_rsa`, `~user`), or with a `..` path component (`../x`,
+/// `a/../../b`). A revision is not a path: `HEAD~3`, `main..HEAD` and
+/// `origin/main...HEAD` keep their `~` and `..` inside a component.
+fn leaves_repository(arg: &str) -> bool {
+    arg.starts_with('/') || arg.starts_with('~') || arg.contains("~/") || arg.split('/').any(|c| c == "..")
+}
+
+/// Flags of `git branch` that only list. Anything else (-d/-D/--delete, -m/-M/--move,
+/// -c/-C/--copy, -f/--force, -u/--set-upstream-to, --unset-upstream, --edit-description,
+/// -t/--track) changes refs.
+const GIT_BRANCH_LIST_FLAGS: &[&str] = &[
+    "-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose", "--show-current", "--contains",
+    "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "--color", "--no-color",
+    "--column", "--no-column", "-i", "--ignore-case", "--abbrev", "--no-abbrev", "--omit-empty",
+];
+/// `git branch` flags whose (separate) next word is their value, not a branch to create.
+const GIT_BRANCH_VALUE_FLAGS: &[&str] = &["--contains", "--no-contains", "--merged", "--no-merged", "--points-at"];
+/// Flags that make a reading git subcommand write a file, read one outside the
+/// repository, or run a configured program: `--no-index` (diff two arbitrary files:
+/// `git diff --no-index ~/.ssh/id_rsa /dev/null` prints the key), `--output` (writes),
+/// `--ext-diff` / `--textconv` (run configured drivers), `-O<orderfile>` (reads a file).
+const GIT_READ_DENIED_FLAGS: &[&str] = &["--no-index", "--output", "--ext-diff", "--textconv", "-O"];
+
+fn git_read_only(sub: &str, args: &[&str]) -> bool {
+    let flag_name = |a: &str| a.split_once('=').map_or(a, |(n, _)| n).to_string();
+    // Every argument: a path that leaves the repository, as a word or a flag's value.
+    if args.iter().any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v))) {
         return false;
     }
-    let words: Vec<&str> = cmd.split_whitespace().collect();
-    let Some((prog, args)) = words.split_first() else { return false };
-    if args.iter().any(|a| a.starts_with("--output") || a.starts_with("--ext-diff") || a.starts_with("-c")) {
-        return false;
-    }
-    let sub = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
-    match *prog {
-        "git" => matches!(sub, "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "describe" | "ls-files" | "shortlog"),
-        "gh" => {
-            let verb = args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("");
-            matches!(sub, "pr" | "issue" | "repo" | "run") && matches!(verb, "view" | "list" | "diff" | "status" | "checks")
+    match sub {
+        "status" | "diff" | "log" | "show" | "rev-parse" | "describe" | "ls-files" | "shortlog" => {
+            !args.iter().any(|a| GIT_READ_DENIED_FLAGS.iter().any(|d| flag_name(a).starts_with(d)))
         }
-        "date" | "pwd" | "ls" | "whoami" | "uname" => true,
+        // List-only flags; a positional word is a branch to create unless --list is
+        // given or it is the value of --contains and the like.
+        "branch" => {
+            let listing = args.iter().any(|a| matches!(*a, "-l" | "--list"));
+            let mut value_next = false;
+            for a in args {
+                if value_next && !a.starts_with('-') {
+                    value_next = false;
+                    continue;
+                }
+                value_next = false;
+                if a.starts_with('-') {
+                    let name = flag_name(a);
+                    if !GIT_BRANCH_LIST_FLAGS.contains(&name.as_str()) {
+                        return false;
+                    }
+                    value_next = !a.contains('=') && GIT_BRANCH_VALUE_FLAGS.contains(&name.as_str());
+                } else if !listing {
+                    return false;
+                }
+            }
+            true
+        }
         _ => false,
     }
 }
 
+/// A read-only context command, the documented use of dynamic context. Strict: one
+/// simple command (no pipe, redirection, separator, substitution, quoting, glob or
+/// escape), whose program and arguments only read inside the repository:
+/// - `git status|diff|log|show|rev-parse|describe|ls-files|shortlog` with the subcommand
+///   first (no `-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`, `--config-env`,
+///   `-p`/`--paginate`/`--no-pager` or any other option before it) and without
+///   `--no-index`, `--output`, `--ext-diff` or `--textconv`; `git branch` with list-only
+///   flags (see [`GIT_BRANCH_LIST_FLAGS`]);
+/// - `gh pr|issue|repo|run view|list|diff|status|checks`;
+/// - `date` with no argument or a single `+FORMAT`, `ls`, `pwd` and `whoami` with no
+///   arguments, `uname` with short flags only;
+/// - and no path argument that leaves the repository (see [`leaves_repository`]).
+pub fn is_read_only_context_command(cmd: &str) -> bool {
+    if cmd.contains([
+        '|', '>', '<', ';', '&', '$', '`', '(', ')', '\n', '\r', '\\', '"', '\'', '*', '?', '[', ']', '{', '}', '!', '#',
+    ]) {
+        return false;
+    }
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let Some((prog, args)) = words.split_first() else { return false };
+    match *prog {
+        "git" => {
+            // The subcommand must come first: any option before it can redirect git to
+            // another repository or work tree, set config (and with it a program to run),
+            // or start a pager.
+            let Some((sub, rest)) = args.split_first() else { return false };
+            !sub.starts_with('-') && git_read_only(sub, rest)
+        }
+        "gh" => {
+            let (Some(sub), Some(verb)) = (args.first(), args.get(1)) else { return false };
+            matches!(*sub, "pr" | "issue" | "repo" | "run")
+                && matches!(*verb, "view" | "list" | "diff" | "status" | "checks")
+                && !args.iter().any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v)))
+        }
+        // `date -s` sets the clock; `+FORMAT` only formats.
+        "date" => args.is_empty() || (args.len() == 1 && args[0].starts_with('+')),
+        "ls" | "pwd" | "whoami" => args.is_empty(),
+        "uname" => args.iter().all(|a| {
+            a.len() >= 2 && a.starts_with('-') && a[1..].chars().all(|c| "asnrvmpio".contains(c))
+        }),
+        _ => false,
+    }
+}
+
+/// Collect and rank the actionable findings in a scan. Highest severity first.
+/// This is the risk-first view that HTML/fleet reports lead with.
 pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     let mut f = Vec::new();
 
@@ -585,7 +664,9 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         // the API key) through that host — the CVE-2026-21852 exfil vector. A proxy may
         // be legitimate, so this is advisory-to-review, not automatically critical.
         for g in &s.gateway_overrides {
-            if !g.official {
+            // A loopback or unspecified dial address (localhost, 127.0.0.1, 0.0.0.0, [::])
+            // is a proxy on this machine: not reported, as the guidance says.
+            if !g.official && !crate::scanners::is_client_loopback_host(&g.host) {
                 f.push(Finding {
                     severity: Severity::Medium,
                     category: "Gateway routing".into(),
@@ -1053,6 +1134,20 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         .agent_settings
         .iter()
         .any(|s| matches!(s.source.as_str(), "user-global" | "managed") && s.disable_skill_shell_execution);
+    // disableSkillShellExecution is honoured from any settings file (settings-reference
+    // scope "Any file"), and a project can only make itself safer, so a project's own
+    // .claude/settings.json or settings.local.json setting it silences that project's
+    // skills: `<proj>/.claude/` for each such file.
+    let shell_disabled_projects: Vec<String> = report
+        .agent_settings
+        .iter()
+        .filter(|s| matches!(s.source.as_str(), "project" | "local") && s.disable_skill_shell_execution)
+        .filter_map(|s| {
+            let p = std::path::Path::new(&s.path);
+            let agent_dir = p.parent()?;
+            (agent_dir.file_name()? == ".claude").then(|| format!("{}/", agent_dir.to_string_lossy()))
+        })
+        .collect();
     // (marketplace, plugin) -> (install root, skill names, (path, first command))
     type PluginKey = (String, String);
     type CmdAgg = (String, BTreeSet<String>, Option<(String, String)>);
@@ -1121,7 +1216,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             )
         };
 
-        if loadable && !shell_disabled && !skill.dynamic_commands.is_empty() {
+        let project_shell_disabled = project && shell_disabled_projects.iter().any(|p| skill.path.starts_with(p.as_str()));
+        if loadable && !shell_disabled && !project_shell_disabled && !skill.dynamic_commands.is_empty() {
+            let matched = || -> BTreeSet<&str> {
+                skill.dynamic_commands.iter().flat_map(|d| d.patterns.iter().map(String::as_str)).collect()
+            };
             if let Some(d) = skill.dynamic_commands.iter().find(|d| d.dangerous) {
                 f.push(Finding {
                     severity: Severity::High,
@@ -1156,8 +1255,7 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 };
                 // Medium-only pattern hits (printenv, an API_KEY name) are named but do not
                 // raise the grade.
-                let matched: BTreeSet<&str> =
-                    skill.dynamic_commands.iter().flat_map(|d| d.patterns.iter().map(String::as_str)).collect();
+                let matched = matched();
                 let note = if matched.is_empty() {
                     String::new()
                 } else {
@@ -1173,6 +1271,21 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     ),
                     location: loc.clone(),
                     evidence: Some(skill.dynamic_commands[0].command.clone()),
+                });
+            } else if !project && !is_plugin && let Some(d) = skill.dynamic_commands.iter().find(|d| !d.patterns.is_empty()) {
+                // The user's own skill: any dangerous-pattern match is named, as it would be
+                // for a hook. Only medium rows matched (a critical or high one, or data sent
+                // to the network, is the High branch above), so it is advisory.
+                f.push(Finding {
+                    severity: Severity::Low,
+                    category: "Skill command".into(),
+                    title: format!(
+                        "skill '{}' runs a shell command matching {} when it loads (dynamic context; advisory)",
+                        skill.name,
+                        matched().into_iter().collect::<Vec<_>>().join(", ")
+                    ),
+                    location: loc.clone(),
+                    evidence: Some(d.command.clone()),
                 });
             }
         }
@@ -1257,6 +1370,18 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 // (CVE-2026-13745). Outside it (a devcontainer home such as
                 // /home/node/.claude, a shared team directory) nothing the repository
                 // controls is loaded from it, committed or not.
+                // A value that could not be resolved (`${PWD}/.claude-cfg`,
+                // `GEMINI_CLI_HOME=$PWD`) may point at the repository itself, so it is not
+                // given the "outside" reassurance: Medium in a committed .env, Low otherwise.
+                "agent-home" if o.unresolved => Some((
+                    if t { Severity::Medium } else { Severity::Low },
+                    "Agent redirection",
+                    format!(
+                        "{} in a{tracked} .env relocates the {} home to a value that could not be resolved ({value}); check where it points (inside the repository, the repository controls the agent's settings, hooks and MCP servers){gemini_note}",
+                        o.key,
+                        crate::scanners::env_files::agent_for_home_key(&o.key),
+                    ),
+                )),
                 "agent-home" => Some((
                     if t && o.inside_project {
                         Severity::High

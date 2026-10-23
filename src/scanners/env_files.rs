@@ -316,21 +316,26 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
                 {
                     continue;
                 }
+                // `${PWD}/.claude-cfg`, `$PROJECT_ROOT/.codex`, `~user/x`, `$HOME/$X`: the
+                // path is unknown (it may well be the repository itself), so it is neither
+                // inside nor outside the project.
+                o.unresolved = abs.is_none() || o.value.as_deref() == Some(UNRESOLVED_VALUE);
                 let project = lexical_join(Path::new("/"), project_dir);
-                o.inside_project = abs.is_some_and(|p| p.starts_with(&project));
+                o.inside_project = !o.unresolved && abs.is_some_and(|p| p.starts_with(&project));
             }
             "gateway" => {
                 let (host, _) = crate::scanners::host_of(v);
                 let unresolved = is_unresolved(v);
                 o.official = !unresolved
                     && crate::scanners::agent_settings::classify_base_url(key, v).is_some_and(|g| g.official);
-                o.loopback = !unresolved && crate::scanners::is_loopback_host(&host);
+                // A client dial: 0.0.0.0 and [::] reach this machine (client-side reading).
+                o.loopback = !unresolved && crate::scanners::is_client_loopback_host(&host);
                 o.value = Some(shown_host(v, &host));
             }
             "proxy" => {
                 let (host, _) = crate::scanners::host_of(v);
                 let unresolved = is_unresolved(v);
-                o.loopback = !unresolved && (host.is_empty() || crate::scanners::is_loopback_host(&host));
+                o.loopback = !unresolved && (host.is_empty() || crate::scanners::is_client_loopback_host(&host));
                 o.value = Some(shown_host(v, &host));
             }
             "headers" => {}
