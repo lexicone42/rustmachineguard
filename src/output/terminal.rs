@@ -13,10 +13,7 @@ pub fn defanged(report: &ScanReport) -> Option<ScanReport> {
 }
 
 fn bad_data_char(c: char) -> bool {
-    (c.is_control() && c != '\t')
-        || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
-        || ('\u{202a}'..='\u{202e}').contains(&c)
-        || ('\u{2066}'..='\u{2069}').contains(&c)
+    (c.is_control() && c != '\t') || crate::scanners::is_display_hazard(c)
 }
 
 fn defang_str(s: &str) -> String {
@@ -143,6 +140,9 @@ fn render_inner(report: &ScanReport) -> String {
     summary_line(&mut out, "Agent Hooks", s.agent_hooks_count);
     for (framework, n) in &s.agent_hooks_by_framework {
         out.push_str(&format!("  {:>35}  {}\n", format!("{framework} ·").dimmed(), n));
+    }
+    if s.agent_hooks_inactive_count > 0 {
+        out.push_str(&format!("  {:>35}  {}\n", "of which inactive (never run) ·".dimmed(), s.agent_hooks_inactive_count));
     }
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
@@ -649,7 +649,10 @@ fn render_inner(report: &ScanReport) -> String {
                 } else {
                     "·".dimmed().to_string()
                 };
-                let matcher = h.matcher.as_deref().unwrap_or("*");
+                let matcher = match &h.condition {
+                    Some(c) => format!("{} if {c}", h.matcher.as_deref().unwrap_or("*")),
+                    None => h.matcher.as_deref().unwrap_or("*").to_string(),
+                };
                 let cmd_preview: String = h.command.chars().take(70).collect();
                 let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
                 let plugin = match s.provenance.as_ref() {
@@ -1026,10 +1029,7 @@ pub fn scrub_terminal(s: &str) -> String {
                 continue;
             }
         }
-        let bad = (c.is_control() && c != '\n' && c != '\t')
-            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
-            || ('\u{202a}'..='\u{202e}').contains(&c)
-            || ('\u{2066}'..='\u{2069}').contains(&c);
+        let bad = (c.is_control() && c != '\n' && c != '\t') || crate::scanners::is_display_hazard(c);
         out.push(if bad { '?' } else { c });
         i += 1;
     }

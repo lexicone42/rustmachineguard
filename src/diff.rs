@@ -305,8 +305,14 @@ fn diff_array_section(
         let mut changes = Vec::new();
 
         for field in compare_fields {
-            let bv = b.get(*field);
-            let cv = c.get(*field);
+            let (bn, cn);
+            let (bv, cv) = if matches!(*field, "hooks" | "helper_commands") {
+                bn = normalize_hooks(b.get(*field));
+                cn = normalize_hooks(c.get(*field));
+                (bn.as_ref(), cn.as_ref())
+            } else {
+                (b.get(*field), c.get(*field))
+            };
             if bv != cv {
                 changes.push(format!(
                     "{}: {} -> {}",
@@ -331,6 +337,35 @@ fn diff_array_section(
         removed,
         changed,
     }
+}
+
+/// A hook list as drift sees it: what the hook IS (event, matcher, `if`, kind, command,
+/// http host, disabled), not how this version grades it (`dangerous`, `risks`,
+/// `patterns` are derived from the command and change with the analysis). A command
+/// hook's kind is the default and is dropped, so a baseline from before hook kinds
+/// existed compares equal. An absent or empty list is None.
+fn normalize_hooks(v: Option<&Value>) -> Option<Value> {
+    let list = v?.as_array()?;
+    if list.is_empty() {
+        return None;
+    }
+    let keep = ["event", "matcher", "if", "command", "url_host", "disabled"];
+    Some(Value::Array(
+        list.iter()
+            .map(|h| {
+                let mut m = serde_json::Map::new();
+                for k in keep {
+                    if let Some(x) = h.get(k).filter(|x| !x.is_null() && **x != Value::Bool(false)) {
+                        m.insert(k.to_string(), x.clone());
+                    }
+                }
+                if let Some(kind) = h.get("kind").and_then(|k| k.as_str()).filter(|k| !k.is_empty() && *k != "command") {
+                    m.insert("kind".to_string(), Value::String(kind.to_string()));
+                }
+                Value::Object(m)
+            })
+            .collect(),
+    ))
 }
 
 fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
@@ -490,8 +525,7 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         }
 
         // Frontmatter hooks (redacted command text, compared as JSON).
-        let empty = Value::Array(Vec::new());
-        if b.get("hooks").unwrap_or(&empty) != c.get("hooks").unwrap_or(&empty) {
+        if normalize_hooks(b.get("hooks")) != normalize_hooks(c.get("hooks")) {
             changes.push("HOOKS CHANGED".to_string());
         }
 
@@ -720,5 +754,31 @@ mod hook_diff_tests {
         let cur = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": false}}]});
         let text = render_diff(&diff_reports(&base, &cur));
         assert!(text.contains("provenance"), "{text}");
+    }
+
+    /// A baseline written before hook kinds and grading fields existed compares equal to
+    /// the same hooks now; a change to what the hook is (its `if`, its command) is drift.
+    #[test]
+    fn hooks_diff_on_identity_not_grading() {
+        let settings = |hooks: Value| serde_json::json!({"agent_settings": [{"path": "/p/.claude/settings.json", "hooks": hooks}]});
+        let old = settings(serde_json::json!([
+            {"command": "echo user-hook", "dangerous": false, "event": "Stop"},
+            {"command": "printenv NODE_ENV", "dangerous": true, "event": "Stop"}
+        ]));
+        let new = settings(serde_json::json!([
+            {"command": "echo user-hook", "dangerous": false, "event": "Stop", "kind": "command"},
+            {"command": "printenv NODE_ENV", "dangerous": false, "event": "Stop", "kind": "command",
+             "patterns": ["environment variable exfiltration"], "pattern_severity": "medium"}
+        ]));
+        let d = diff_reports(&old, &new);
+        assert!(d.sections.iter().all(|s| s.changed.is_empty() && s.added.is_empty() && s.removed.is_empty()), "{}", render_diff(&d));
+        let cond = settings(serde_json::json!([
+            {"command": "echo user-hook", "dangerous": false, "event": "Stop", "kind": "command", "if": "Bash(git *)"},
+            {"command": "printenv NODE_ENV", "event": "Stop"}
+        ]));
+        assert!(render_diff(&diff_reports(&new, &cond)).contains("Bash(git *)"));
+        let http = settings(serde_json::json!([{"command": "POST https://a.example", "event": "Stop", "kind": "http"}]));
+        let cmd = settings(serde_json::json!([{"command": "POST https://a.example", "event": "Stop"}]));
+        assert!(render_diff(&diff_reports(&cmd, &http)).contains("http"), "a kind change is drift");
     }
 }

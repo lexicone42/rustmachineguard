@@ -526,6 +526,10 @@ pub struct AgentSettings {
     /// Claude Code `disableAllHooks`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_all_hooks: bool,
+    /// Managed settings only: the `enabledPlugins` keys (`plugin@marketplace`) set to
+    /// true. Their hooks run even under `allowManagedHooksOnly`. Sorted, at most 200.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub force_enabled_plugins: Vec<String>,
 }
 
 /// Claude Code's forced login method / Claude apps gateway URL.
@@ -580,6 +584,20 @@ pub struct AgentHook {
     /// Dangerous-pattern descriptions the command matched, medium-only ones included.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patterns: Vec<String>,
+    /// The highest severity among `patterns` ("critical" | "high" | "medium" | "low");
+    /// empty when nothing matched.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pattern_severity: String,
+    /// Patterns the text matched only where they cannot run: inside a guard's test
+    /// argument (`grep -q 'curl .* | sh' && exit 2`), as data sent to a loopback host
+    /// (`jq . | curl -d @- http://localhost:8080/log`), or (modules) in a string or
+    /// comment that no shell-execution call receives. Advisory, never dangerous.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisory_patterns: Vec<String>,
+    /// Claude Code's `if` handler field (permission-rule syntax, `Bash(git *)`): the hook
+    /// runs only for tool calls that match it. Redacted and sanitized.
+    #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     /// http hooks: the URL host only (never path, query, userinfo or headers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_host: Option<String>,
@@ -858,6 +876,11 @@ pub struct Summary {
     /// Hooks per framework (settings, plugin and frontmatter hooks; helpers not counted).
     #[serde(default)]
     pub agent_hooks_by_framework: std::collections::BTreeMap<String, usize>,
+    /// Of `agent_hooks_count`, the hooks nothing runs: marked off by their source
+    /// (Kiro `enabled: false`, `disableAllHooks`) or shipped by a disabled plugin or a
+    /// synced skill copy. They are inventoried, never graded.
+    #[serde(default)]
+    pub agent_hooks_inactive_count: usize,
 }
 
 impl ScanReport {
@@ -895,7 +918,22 @@ impl ScanReport {
             jetbrains_plugins_count: self.summary.jetbrains_plugins_count,
             persistence_artifacts_count: self.persistence_artifacts.len(),
             agent_hooks_by_framework: self.hooks_by_framework(),
+            agent_hooks_inactive_count: self.inactive_hooks(),
         };
+    }
+
+    /// Hooks that never run (see [`Summary::agent_hooks_inactive_count`]).
+    fn inactive_hooks(&self) -> usize {
+        let off = |p: Option<&SkillProvenance>| p.is_some_and(|p| !p.active || p.synced);
+        self.agent_settings
+            .iter()
+            .map(|s| if off(s.provenance.as_ref()) { s.hooks.len() } else { s.hooks.iter().filter(|h| h.disabled).count() })
+            .sum::<usize>()
+            + self
+                .agent_skills
+                .iter()
+                .map(|k| if off(k.provenance.as_ref()) { k.hooks.len() } else { k.hooks.iter().filter(|h| h.disabled).count() })
+                .sum::<usize>()
     }
 
     /// Hook counts keyed by framework. Skill frameworks (`claude-code`,

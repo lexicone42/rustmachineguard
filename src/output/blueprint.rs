@@ -516,6 +516,12 @@ fn map_behavior_to_taxonomy(label: &str) -> &'static str {
         "mcp-tool" => "ai:agent:invokesTool",
         // Settings hooks run shell commands on agent events
         "hook-exec" => "application:codeExecution:executesNativeCommand",
+        // An http hook POSTs each event; a prompt hook asks a model; an agent hook hands
+        // the event to a subagent; an mcp_tool hook calls a tool.
+        "hook-http" => "network:transmission:sendsData",
+        "hook-prompt" => "ai:generative:processesPrompt",
+        "hook-agent" => "ai:agent:delegatesTask",
+        "hook-mcp-tool" => "ai:agent:invokesTool",
         "mcp-auto-approve" => "security",
         // Two servers offering the same tool name (confused-deputy / shadowing)
         "tool-shadowing" => "security",
@@ -981,9 +987,9 @@ impl BlueprintDocument {
                     .map(|(hi, h)| Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) })
                     .collect(),
             });
-            for _ in &skill.hooks {
+            for h in &skill.hooks {
                 behaviors.push(
-                    "hook-exec".into(),
+                    hook_behavior(h).into(),
                     vec!["declared".into()],
                     vec![format!("asset:{}", comp_ref)],
                     Vec::new(),
@@ -1687,6 +1693,9 @@ impl BlueprintDocument {
                 && let (Some(m), Some(pl)) = (&p.marketplace, &p.plugin)
             {
                 props.push(Property { name: "rmg:plugin".into(), value: format!("{pl}@{m}") });
+                if !p.active {
+                    props.push(Property { name: "rmg:plugin-active".into(), value: "false".into() });
+                }
             }
             for (hi, h) in settings.hooks.iter().enumerate() {
                 props.push(Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) });
@@ -1715,9 +1724,9 @@ impl BlueprintDocument {
             });
 
             // Each hook command is silent code execution on the agent host.
-            for _ in &settings.hooks {
+            for h in &settings.hooks {
                 behaviors.push(
-                    "hook-exec".into(),
+                    hook_behavior(h).into(),
                     vec!["declared".into()],
                     vec![format!("asset:{}", set_ref)],
                     Vec::new(),
@@ -2087,17 +2096,33 @@ impl BlueprintDocument {
 #[derive(Default)]
 struct RefAllocator(std::collections::HashSet<String>);
 
-/// `event[matcher] (kind) DANGEROUS: command` for an `rmg:hook-N` property.
+/// `event[matcher if cond] (kind) (disabled) DANGEROUS: command` for an `rmg:hook-N`
+/// property.
 fn hook_property(h: &crate::models::AgentHook) -> String {
     let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
+    let cond = h.condition.as_deref().map(|c| format!(" if {c}")).unwrap_or_default();
     format!(
-        "{}[{}]{}{}: {}",
+        "{}[{}{}]{}{}{}: {}",
         h.event,
         h.matcher.as_deref().unwrap_or("*"),
+        cond,
         kind,
+        if h.disabled { " (disabled)" } else { "" },
         if h.dangerous { " DANGEROUS" } else { "" },
         h.command
     )
+}
+
+/// The behavior a hook declares, by kind: a command or module runs code; http sends
+/// data; prompt and agent hooks hand the event to a model; mcp_tool calls a tool.
+fn hook_behavior(h: &crate::models::AgentHook) -> &'static str {
+    match h.kind.as_str() {
+        "http" => "hook-http",
+        "prompt" => "hook-prompt",
+        "agent" => "hook-agent",
+        "mcp_tool" => "hook-mcp-tool",
+        _ => "hook-exec",
+    }
 }
 
 impl RefAllocator {

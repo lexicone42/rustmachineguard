@@ -1195,6 +1195,141 @@ pub(crate) fn module_source_dangerous(src: &str) -> Vec<crate::models::RulesFile
         .collect()
 }
 
+/// Calls that run their (string) arguments as a command: node's child_process, execa,
+/// Bun.spawn, Deno.Command, and `system`.
+const MODULE_EXEC_CALLS: &[&str] = &[
+    "exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "execa", "execaSync", "execaCommand",
+    "execaCommandSync", "system", "Command",
+];
+/// Template tags that run the template as a shell command (Bun's and zx's `$`, execa).
+const MODULE_EXEC_TAGS: &[&str] = &["$", "execa", "execaSync", "execaCommand"];
+
+/// A JavaScript/TypeScript module split for grading, lexically (nothing is run):
+/// (every string or template literal that a shell-execution call receives, at any
+/// argument depth, one per line; the source with comments removed). A guard plugin that
+/// names what it blocks (`cmd.includes("curl") && cmd.includes("| sh")`) has its text
+/// only in the second; `` $`curl x | sh` `` and `execSync("curl x | sh")` are in both.
+/// Regex literals are skipped where an operand is expected, so a quote inside one does
+/// not open a string.
+pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
+    let b = src.as_bytes();
+    let mut execs: Vec<String> = Vec::new();
+    let mut code = String::with_capacity(src.len());
+    let mut frames: Vec<bool> = Vec::new();
+    let mut ident = String::new();
+    // Whitespace followed the identifier: the next identifier byte starts a new one.
+    let mut ident_done = false;
+    // The last significant code byte, for telling a regex literal from a division.
+    let mut last_sig: u8 = b'(';
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        // Comments.
+        if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            let end = src[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 2);
+            code.extend(src[i..end].chars().filter(|c| *c == '\n'));
+            i = end;
+            continue;
+        }
+        // Regex literal where an operand is expected.
+        if c == b'/' && matches!(last_sig, b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';' | b'\n') {
+            let mut j = i + 1;
+            let mut class = false;
+            while j < b.len() && b[j] != b'\n' {
+                match b[j] {
+                    b'\\' => j += 1,
+                    b'[' => class = true,
+                    b']' => class = false,
+                    b'/' if !class => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(b.len());
+            code.push_str(&src[i..end]);
+            i = end;
+            last_sig = b'x';
+            ident.clear();
+            continue;
+        }
+        if matches!(c, b'"' | b'\'' | b'`') {
+            let tagged = c == b'`' && MODULE_EXEC_TAGS.contains(&ident.as_str());
+            let mut j = i + 1;
+            while j < b.len() && b[j] != c && !(c != b'`' && b[j] == b'\n') {
+                if b[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            let end = j.min(b.len());
+            let body = &src[(i + 1).min(end)..end];
+            if tagged || frames.iter().any(|f| *f) {
+                execs.push(body.replace('\n', " "));
+            }
+            let close = (end + 1).min(b.len());
+            code.push_str(&src[i..close]);
+            i = close;
+            last_sig = b'x';
+            ident.clear();
+            continue;
+        }
+        if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+            if ident_done {
+                ident.clear();
+                ident_done = false;
+            }
+            ident.push(c as char);
+        } else if c.is_ascii_whitespace() {
+            ident_done = !ident.is_empty();
+        } else {
+            ident_done = false;
+            match c {
+                b'(' => frames.push(MODULE_EXEC_CALLS.contains(&ident.as_str())),
+                b')' => {
+                    frames.pop();
+                }
+                _ => {}
+            }
+            ident.clear();
+        }
+        if !c.is_ascii_whitespace() || c == b'\n' {
+            last_sig = if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' { b'x' } else { c };
+        }
+        // Copy one whole character (the source is UTF-8).
+        let w = src[i..].chars().next().map_or(1, char::len_utf8);
+        code.push_str(&src[i..i + w]);
+        i += w;
+    }
+    (execs, code)
+}
+
+/// A hook module's pattern verdict: (hits in what a shell-execution call runs, graded
+/// with the command-hook gate; critical rows anywhere else in the code, comments
+/// removed, as advisory pattern names).
+pub(crate) fn module_source_verdict(src: &str) -> (Vec<crate::models::RulesFileFinding>, Vec<String>) {
+    let (execs, code) = module_exec_strings(src);
+    let mut hits: Vec<crate::models::RulesFileFinding> = Vec::new();
+    for e in execs.iter().take(500) {
+        for h in crate::scanners::hook_sources::command_verdict(e).0 {
+            if !hits.iter().any(|x| x.pattern == h.pattern) {
+                hits.push(h);
+            }
+        }
+    }
+    let advisory = module_source_dangerous(&code)
+        .into_iter()
+        .map(|f| f.pattern)
+        .filter(|p| !hits.iter().any(|h| h.pattern == *p))
+        .collect();
+    (hits, advisory)
+}
+
 /// Raw network socket clients: they only ever send what they are given.
 const SOCKET_CLIENTS: &[&str] = &["nc", "ncat", "netcat", "socat", "telnet"];
 /// Interpreters whose one-liners can make a network request themselves.

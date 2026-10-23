@@ -291,7 +291,7 @@ pub fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
             0x200B | 0x200C | 0x200D | 0xFEFF | 0x2060..=0x2064 => "zero-width",
             0x00AD => "soft-hyphen",
             // Directional marks (200E/200F) as well as embeddings/overrides/isolates.
-            0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
+            0x061C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069 => "bidi-control",
             _ if ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r' => "other-control",
             _ => continue,
         };
@@ -407,7 +407,13 @@ pub fn redact_secrets_in_text(text: &str) -> String {
     // (mysql and its tools, sshpass): set by its name, cleared at a command separator.
     let mut attached_p: Option<&str> = None;
     for i in 0..spans.len() {
-        out.push_str(&text[last..spans[i].0]);
+        let gap = &text[last..spans[i].0];
+        // A header value owed to the end of its line (an unquoted `Cookie:`, as an
+        // exec-form argv element) ends at the line break.
+        if pending == Pending::Line && gap.contains('\n') {
+            pending = Pending::None;
+        }
+        out.push_str(gap);
         let prev = i.checked_sub(1).map(tok);
         let prev2 = i.checked_sub(2).map(tok);
         let next = (i + 1 < spans.len()).then(|| tok(i + 1));
@@ -436,7 +442,78 @@ pub fn redact_secrets_in_text(text: &str) -> String {
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
-    redact_token_shapes(&out)
+    redact_webhook_urls(&redact_token_shapes(&out))
+}
+
+/// Webhook URLs whose path IS the credential: Slack incoming webhooks and workflow
+/// triggers, Telegram bot tokens, Microsoft Teams (Office 365) connectors and Zapier
+/// catch hooks (Discord is matched separately, for its optional API version). The host
+/// and the fixed prefix are kept, so a finding still says where data goes; everything
+/// after the prefix is redacted.
+const WEBHOOK_SECRET_PREFIXES: &[&str] = &[
+    "hooks.slack.com/services/",
+    "hooks.slack.com/workflows/",
+    "hooks.slack.com/triggers/",
+    "api.telegram.org/bot",
+    "api.telegram.org/file/bot",
+    "webhook.office.com/webhookb2/",
+    "hooks.zapier.com/hooks/catch/",
+];
+
+/// Characters a webhook URL's secret path runs through (it stops at a quote, space,
+/// `?`, `#`, `<` or shell syntax).
+fn webhook_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b':' | b'/' | b'.' | b'%' | b'~' | b'+' | b'=')
+}
+
+/// The end of a Discord webhook prefix at `at` (`discord.com/api/[v10/]webhooks/`).
+fn discord_webhook_prefix(lower: &str, at: usize) -> Option<usize> {
+    let rest = &lower[at..];
+    let host = ["discord.com/api/", "discordapp.com/api/"].into_iter().find(|h| rest.starts_with(h))?;
+    let b = lower.as_bytes();
+    let mut i = at + host.len();
+    if b.get(i) == Some(&b'v') {
+        let digits = b[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 && b.get(i + 1 + digits) == Some(&b'/') {
+            i += digits + 2;
+        }
+    }
+    lower[i..].starts_with("webhooks/").then_some(i + "webhooks/".len())
+}
+
+/// Redact the secret path of the webhook URLs in [`WEBHOOK_SECRET_PREFIXES`] and of
+/// Discord webhooks, wherever they appear (a Stop or Notification hook posting to a chat
+/// is one of the commonest hooks people write).
+pub fn redact_webhook_urls(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if !text.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        let prefix_end = WEBHOOK_SECRET_PREFIXES
+            .iter()
+            .find(|p| lower[i..].starts_with(*p))
+            .map(|p| i + p.len())
+            .or_else(|| discord_webhook_prefix(&lower, i));
+        let Some(start) = prefix_end else {
+            i += 1;
+            continue;
+        };
+        let stop = start + b[start..].iter().take_while(|c| webhook_path_byte(**c)).count();
+        if stop > start {
+            out.push_str(&text[copied..start]);
+            out.push_str("<redacted>");
+            copied = stop;
+        }
+        i = stop.max(i + 1);
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 /// Programs whose `-p` takes the password attached (`mysql -uroot -pHunter2`), or as
@@ -591,17 +668,107 @@ fn redact_entropy_runs_in_token(tok: &str) -> String {
 /// [`redact_secrets_in_text`] plus key-shaped runs inside every whitespace token (see
 /// [`redact_entropy_runs_in_token`]): for command text that is shown as evidence, such as
 /// a skill's dynamic-context command.
+///
+/// Also: the value after a program-agnostic password flag ([`GENERIC_SECRET_FLAGS`]),
+/// the path of a URL after a webhook flag ([`WEBHOOK_FLAGS`]), and key-shaped segments of
+/// any URL path (`https://example.com/hook/<key>`), judged per segment before the run
+/// rule so the host stays readable.
 pub fn redact_command_text(text: &str) -> String {
-    let base = redact_stdin_password_feeds(&redact_program_secret_flags(&redact_secrets_in_text(text)));
+    let base = redact_generic_secret_flags(&redact_stdin_password_feeds(&redact_program_secret_flags(
+        &redact_secrets_in_text(text),
+    )));
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
     for (s, tok) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)) {
         out.push_str(&base[last..s]);
-        out.push_str(&redact_entropy_runs_in_token(tok));
+        out.push_str(&redact_entropy_runs_in_token(&redact_url_path_keys(tok)));
         last = s + tok.len();
     }
     out.push_str(&base[last..]);
     out
+}
+
+/// Flags whose value is a credential whatever the program, though their names are not
+/// all secret-shaped (`--pass`, `--user-key`): the next word, or the `=` value.
+const GENERIC_SECRET_FLAGS: &[&str] = &[
+    "--pass", "--passwd", "--pw", "--passphrase", "--user-key", "--userkey", "--app-token", "--app-key", "--appkey",
+];
+
+/// Flags whose value is a webhook URL: its path is the credential, its host is kept.
+const WEBHOOK_FLAGS: &[&str] =
+    &["--webhook", "--webhook-url", "--hook-url", "--slack-webhook", "--discord-webhook", "--teams-webhook"];
+
+/// A webhook URL value with its path (and query) redacted: `https://host/<redacted>`.
+/// A value that is not a URL is redacted whole.
+fn redact_webhook_value(v: &str) -> String {
+    let core = v.trim_matches(['"', '\'']);
+    let tail = &v[v.trim_end_matches(['"', '\'']).len()..];
+    let head = &v[..v.len() - v.trim_start_matches(['"', '\'']).len()];
+    match core.find("://") {
+        Some(sc) => {
+            let (authority, rest) = split_authority(&core[sc + 3..]);
+            let path = if rest.is_empty() || rest.starts_with("/<redacted>") { rest.to_string() } else { "/<redacted>".to_string() };
+            format!("{head}{}://{authority}{path}{tail}", &core[..sc])
+        }
+        None if core.is_empty() || core == "<redacted>" => v.to_string(),
+        None => format!("{head}<redacted>{tail}"),
+    }
+}
+
+/// The values of [`GENERIC_SECRET_FLAGS`] and [`WEBHOOK_FLAGS`], as the next word or
+/// glued with `=`.
+fn redact_generic_secret_flags(text: &str) -> String {
+    let spans = spans_of(text);
+    let toks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (k, &(s, e)) in spans.iter().enumerate() {
+        out.push_str(&text[last..s]);
+        let t = toks[k];
+        let prev = k.checked_sub(1).map(|p| toks[p]);
+        let rendered = if let Some((flag, v)) = t.split_once('=')
+            && !v.is_empty()
+            && (GENERIC_SECRET_FLAGS.contains(&flag) || WEBHOOK_FLAGS.contains(&flag))
+        {
+            if WEBHOOK_FLAGS.contains(&flag) {
+                format!("{flag}={}", redact_webhook_value(v))
+            } else if v.starts_with("<redacted>") {
+                t.to_string()
+            } else {
+                format!("{flag}={}", redact_bare_value(v))
+            }
+        } else if let Some(p) = prev
+            && !t.starts_with('-')
+            && !separator_token(p)
+        {
+            if WEBHOOK_FLAGS.contains(&p) {
+                redact_webhook_value(t)
+            } else if GENERIC_SECRET_FLAGS.contains(&p) && !t.starts_with("<redacted>") {
+                redact_bare_value(t)
+            } else {
+                t.to_string()
+            }
+        } else {
+            t.to_string()
+        };
+        out.push_str(&rendered);
+        last = e;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// Key-shaped segments of a URL's path redacted one by one (see [`looks_high_entropy`]):
+/// `https://example.com/hook/<key>` keeps its host and the readable segments.
+fn redact_url_path_keys(tok: &str) -> String {
+    let Some(sc) = tok.find("://") else { return tok.to_string() };
+    let after = &tok[sc + 3..];
+    let (authority, rest) = split_authority(after);
+    let end = rest.find(['?', '#', '\'', '"', '`', ')', ';', '&', '|']).unwrap_or(rest.len());
+    let (path, tail) = rest.split_at(end);
+    let path: Vec<String> =
+        path.split('/').map(|g| if looks_high_entropy(g) { "<redacted>".to_string() } else { g.to_string() }).collect();
+    format!("{}{authority}{}{tail}", &tok[..sc + 3], path.join("/"))
 }
 
 /// Programs whose password flag takes the NEXT word and is not named like a secret
@@ -753,6 +920,22 @@ enum Pending {
     None,
     One,
     Quote(char),
+    /// Every token up to the next line break (an unquoted `Cookie:` header value).
+    Line,
+}
+
+/// A `Cookie:` / `Set-Cookie:` header in a token (`'Cookie:`, `-H"Cookie:`,
+/// `--header=Set-Cookie:a=1`): the byte index just past its colon and the quote that
+/// opened the header word, if any. Every cookie in the value is a credential.
+fn cookie_header(tok: &str) -> Option<(usize, Option<char>)> {
+    let lower = tok.to_ascii_lowercase();
+    let at = lower.find("cookie:")?;
+    let name_start = if lower[..at].ends_with("set-") { at - 4 } else { at };
+    let prefix = &tok[..name_start];
+    if !(prefix.is_empty() || prefix.ends_with(['"', '\'', '='])) {
+        return None;
+    }
+    Some((at + "cookie:".len(), prefix.chars().find(|c| *c == '"' || *c == '\'')))
 }
 
 /// If `v` opens a quote it does not close, that quote character.
@@ -1027,7 +1210,27 @@ fn redact_token(
                 None => ("<redacted>".to_string(), Pending::Quote(q)),
             };
         }
+        Pending::Line => return (redact_bare_value(tok), Pending::Line),
         Pending::None => {}
+    }
+    // A Cookie header's whole value: up to the quote that opened the header word, or to
+    // the end of the line when nothing quoted it (an exec-form argv element).
+    if let Some((end, quote)) = cookie_header(tok) {
+        let (head, value) = tok.split_at(end);
+        let done = value.is_empty() || value == "<redacted>";
+        return match quote {
+            Some(q) => match value.find(q) {
+                Some(0) => (tok.to_string(), Pending::None),
+                Some(close) => (format!("{head}<redacted>{}", &value[close..]), Pending::None),
+                None if done => (tok.to_string(), Pending::Quote(q)),
+                None => (format!("{head}<redacted>"), Pending::Quote(q)),
+            },
+            None if value.is_empty() => (tok.to_string(), Pending::Line),
+            None if value == "<redacted>" => (tok.to_string(), Pending::None),
+            // `Cookie:a=1;` continues with the next cookie; `Cookie:a=1` was the whole word.
+            None if value.ends_with(';') => (format!("{head}<redacted>"), Pending::Line),
+            None => (format!("{head}<redacted>"), Pending::None),
+        };
     }
     // `Authorization: token X`: the scheme word stays visible, the credential goes.
     // Only when a real Authorization header precedes it and a value follows; the word
@@ -2021,6 +2224,40 @@ pub fn scan_injection_text(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The [`POISONING_PATTERNS`] that still mean injection in a prompt- or agent-type
+/// hook's prompt. That prompt's whole job is to instruct the hook's evaluator model
+/// ("Claude Code sends your prompt and the hook's input data to a Claude model ... The
+/// model's only job is to return its decision as JSON", code.claude.com/docs/en/hooks-guide,
+/// fetched 2026-10-23), so the tool-description phrases an ordinary evaluator prompt
+/// uses are left out: "first read", "system prompt", "do not mention", "do not display",
+/// "this is very important", "before using/you use this tool".
+pub const HOOK_PROMPT_POISONING_PATTERNS: &[&str] = &[
+    "ignore previous",
+    "ignore all previous",
+    "disregard previous",
+    "disregard the above",
+    "you must ignore",
+    "override previous instructions",
+    "do not tell the user",
+    "do not show the user",
+    "never reveal",
+    "always include the contents of",
+    "pass as a sidenote",
+    "hidden instruction",
+    "<important>",
+    "</important>",
+    "<secret>",
+    "<system-prompt>",
+    "<system>",
+    "```system",
+];
+
+/// [`scan_injection_text`] with [`HOOK_PROMPT_POISONING_PATTERNS`], for hook prompts.
+pub fn scan_hook_prompt_text(text: &str) -> Vec<&'static str> {
+    let lower = text.to_lowercase();
+    HOOK_PROMPT_POISONING_PATTERNS.iter().filter(|p| lower.contains(**p)).copied().collect()
+}
+
 /// Make attacker-controlled free text safe to print: control characters (including ESC,
 /// so no ANSI sequence can forge a green "clean" line), C1 controls and line breaks are
 /// replaced, and the result is capped. For names, versions, error messages and paths
@@ -2034,14 +2271,23 @@ pub fn sanitize_display(s: &str, max: usize) -> String {
         }
         // Bidi overrides and isolates (Cf, not is_control) can reverse the visible text
         // of a status line without adding one; they go too.
-        let bad = c.is_control()
-            || ('\u{80}'..='\u{9f}').contains(&c)
-            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}')
-            || ('\u{202a}'..='\u{202e}').contains(&c)
-            || ('\u{2066}'..='\u{2069}').contains(&c);
+        let bad = c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || is_display_hazard(c);
         out.push(if bad { '?' } else { c });
     }
     out
+}
+
+/// Format characters that change how surrounding text renders without showing
+/// themselves: the line and paragraph separators, every Unicode Bidi_Control character
+/// (U+061C ARABIC LETTER MARK, U+200E/F, U+202A-E, U+2066-9), and the invisible
+/// zero-width space, word joiner and invisible operators (U+200B, U+2060-4) and BOM
+/// (U+FEFF). ZWNJ and ZWJ (U+200C/D) are kept: Persian text and emoji sequences need
+/// them. Shared by [`sanitize_display`] and the terminal renderer's backstops.
+pub fn is_display_hazard(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}' | '\u{061c}' | '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{feff}')
+        || ('\u{202a}'..='\u{202e}').contains(&c)
+        || ('\u{2060}'..='\u{2064}').contains(&c)
+        || ('\u{2066}'..='\u{2069}').contains(&c)
 }
 
 

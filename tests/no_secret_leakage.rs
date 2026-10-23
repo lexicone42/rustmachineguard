@@ -628,3 +628,117 @@ fn no_hook_canary_reaches_any_output_or_diff() {
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+/// Webhook URLs whose path is the secret, Cookie headers, password flags that are not
+/// named like secrets, and unprefixed key-shaped words: the shapes a Stop or
+/// Notification hook posting to a chat carries (review of f4dbf35). The host stays.
+#[test]
+fn command_text_redacts_webhooks_cookies_flags_and_key_words() {
+    use rustmachineguard::scanners::redact_command_text as cmd;
+    for (canary, raw, kept) in [
+        ("Zq8vK3mN7pR2tW9xY4bC6dFg", "curl -X POST https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg", "hooks.slack.com"),
+        ("WFLOWSECRETx9", "curl https://hooks.slack.com/workflows/T0/A0/1/WFLOWSECRETx9", "hooks.slack.com"),
+        ("aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v", "curl https://discord.com/api/webhooks/1234567890123456789/aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hJ3kL5mN7pQ9rS1tU3v", "discord.com"),
+        ("DISCV10x", "curl 'https://discordapp.com/api/v10/webhooks/1/DISCV10x'", "discordapp.com"),
+        ("AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n", "curl https://api.telegram.org/bot7012345678:AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n/sendMessage", "api.telegram.org"),
+        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "curl -H 'Cookie: session=s%3Ak3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe' https://app.internal", "app.internal"),
+        ("COOKIETWO", "curl -H \"Cookie: a=1; sid=COOKIETWO\" https://app.internal", "app.internal"),
+        ("SETCOOKIE", "curl --header=Set-Cookie:sid=SETCOOKIE https://app.internal", "app.internal"),
+        ("Tr0ub4dor", "tool --pass Tr0ub4dor&3horse", "tool --pass"),
+        ("Tr0ub4dor", "tool --passwd=Tr0ub4dor", "tool --passwd="),
+        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "tool -t k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "tool -t"),
+        ("uQiRzpo4DXghDmr9QzzfQu27cmVRsG", "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi", "pushover --user"),
+        ("azGDORePK8gMaC0QOYAMyEEuzJnyUi", "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi", "--app"),
+        ("WEBHOOKPATH", "notify --webhook https://example.com/hook/WEBHOOKPATH", "https://example.com/"),
+        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "curl https://example.com/hook/k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe -d @-", "https://example.com/hook/"),
+    ] {
+        let out = cmd(raw);
+        assert!(!out.contains(canary), "{raw:?} -> {out:?}");
+        assert!(out.contains(kept), "over-redacted {raw:?} -> {out:?}");
+        assert_eq!(cmd(&out), out, "not idempotent: {raw:?}");
+    }
+    // Exec form: one element per line. An unquoted Cookie value runs to its line's end.
+    let out = cmd("curl\n-H\nCookie: a=1; sid=EXECCOOKIE\nhttps://app.internal");
+    assert!(!out.contains("EXECCOOKIE") && out.ends_with("\nhttps://app.internal"), "{out:?}");
+    // The global redactor (every surface) drops the webhook and cookie shapes too.
+    for raw in ["https://hooks.slack.com/services/T0/B0/GLOBALSLACK", "-H 'Cookie: sid=GLOBALCOOKIE'"] {
+        assert!(!redact(raw).contains("GLOBAL"), "{raw:?} -> {:?}", redact(raw));
+    }
+    for benign in [
+        "curl -H 'Accept: application/json' https://hooks.example.com/x",
+        "npx prettier --write src/index.ts",
+        "osascript -e 'display notification \"done\"'",
+        "jq -r .message | curl -s -d @- https://ntfy.sh/claude-alerts",
+    ] {
+        assert_eq!(cmd(benign), benign, "over-redacted a benign hook");
+    }
+}
+
+/// The same shapes as hook commands of every form, end to end: shell form, exec-form
+/// `args` (including an element with a line break after a credential flag), a matcher,
+/// an unknown handler type and an mcp_tool server. No value reaches any output format.
+#[test]
+fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-hookshapes-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+    let settings = serde_json::json!({"hooks": {
+        "Stop": [{"hooks": [
+            {"type": "command", "command": "curl", "args": ["-X", "POST", "https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg"]},
+            {"type": "command", "command": "curl -X POST https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg"},
+            {"type": "command", "command": "curl https://discord.com/api/webhooks/1234567890123456789/aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hJ3kL5mN7pQ9rS1tU3v"},
+            {"type": "command", "command": "curl https://api.telegram.org/bot7012345678:AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n/sendMessage"},
+            {"type": "command", "command": "curl -H 'Cookie: session=s%3Ak3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe' https://app.internal"},
+            {"type": "command", "command": "tool --pass Tr0ub4dor&3horse"},
+            {"type": "command", "command": "tool -t k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe"},
+            {"type": "command", "command": "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi"},
+            {"type": "command", "command": "notify --webhook https://example.com/hook/k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe"},
+            {"type": "command", "command": "tool", "args": ["--secret", "multi\nline k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe"]},
+            {"type": "sk-ant-api03-TYPECANARYk3J9x2Qp7Lm4Zr8Tn5Vb"},
+            {"type": "mcp_tool", "server": "srv --api-key MCPSRVCANARY", "tool": "t"}
+        ]}],
+        "PreToolUse": [{"matcher": "Bash --token MATCHERCANARY", "hooks": [{"type": "command", "command": "echo m"}]}]
+    }});
+    fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,skills,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    let run = |format: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--format", format, "--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let canaries = [
+        "Zq8vK3mN7pR2tW9xY4bC6dFg",
+        "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
+        "AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n",
+        "k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe",
+        "Tr0ub4dor",
+        "uQiRzpo4DXghDmr9QzzfQu27cmVRsG",
+        "azGDORePK8gMaC0QOYAMyEEuzJnyUi",
+        "TYPECANARY",
+        "MCPSRVCANARY",
+        "MATCHERCANARY",
+    ];
+    for format in ["terminal", "json", "html", "blueprint"] {
+        let text = run(format);
+        let leaked: Vec<&str> = canaries.iter().copied().filter(|c| text.contains(c)).collect();
+        assert!(leaked.is_empty(), "{format}: {leaked:?}");
+        if format == "json" {
+            for shown in ["hooks.slack.com", "discord.com", "api.telegram.org", "app.internal", "pushover", "example.com", "srv"] {
+                assert!(text.contains(shown), "{shown}: the fixture never reached the report");
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}

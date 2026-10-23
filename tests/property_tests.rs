@@ -356,6 +356,7 @@ fn summary_counts_match_vector_lengths() {
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
+            agent_hooks_inactive_count: 0,
         },
     };
 
@@ -433,6 +434,7 @@ fn json_output_is_valid_json() {
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
+            agent_hooks_inactive_count: 0,
         },
     };
     report.compute_summary();
@@ -507,6 +509,7 @@ fn html_output_no_script_injection() {
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
+            agent_hooks_inactive_count: 0,
         },
     };
     report.compute_summary();
@@ -3180,6 +3183,7 @@ fn make_test_report(customize: impl FnOnce(&mut rustmachineguard::models::ScanRe
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
+            agent_hooks_inactive_count: 0,
         },
     };
     customize(&mut report);
@@ -5584,6 +5588,45 @@ fn tool_descriptions_are_stored_raw_for_the_scanner() {
 fn sanitize_display_neutralises_bidi_controls() {
     use rustmachineguard::scanners::sanitize_display;
     assert_eq!(sanitize_display("ok\u{202e}kcab\u{2066}x\u{200f}", 32), "ok?kcab?x?");
+    // Every Unicode Bidi_Control character (U+061C included), and the invisible
+    // zero-width space, word joiner, invisible operators and BOM.
+    let bidi = ['\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'];
+    let invisible = ['\u{200b}', '\u{2060}', '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{feff}'];
+    for c in bidi.iter().chain(invisible.iter()) {
+        assert_eq!(sanitize_display(&format!("a{c}b"), 8), "a?b", "U+{:04X}", *c as u32);
+    }
+    // ZWNJ / ZWJ are orthographic (Persian, emoji sequences) and stay.
+    assert_eq!(sanitize_display("a\u{200c}b\u{200d}c", 8), "a\u{200c}b\u{200d}c");
+}
+
+/// The review's matcher payload: ESC, BEL, RLO and ARABIC LETTER MARK reach no output
+/// format of a hook matcher.
+#[test]
+fn hook_matcher_format_characters_reach_no_output() {
+    let home = std::env::temp_dir().join(format!("rmg-pt-alm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("proj/.claude")).unwrap();
+    let home = std::fs::canonicalize(&home).unwrap();
+    std::fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, home.join("proj").display())).unwrap();
+    let settings = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash\u{1b}[2J\u{1b}]0;pwn\u{7}\u{202e}evil\u{061c}", "hooks": [{"type": "command", "command": "echo x"}]}]}});
+    std::fs::write(home.join("proj/.claude/settings.json"), settings.to_string()).unwrap();
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,skills,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    for format in ["terminal", "json", "html", "blueprint"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--format", format, "--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("evil"), "{format}: fixture not reported");
+        for bad in ['\u{061c}', '\u{202e}', '\u{7}'] {
+            assert!(!text.contains(bad), "{format}: U+{:04X} reached the output", bad as u32);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 

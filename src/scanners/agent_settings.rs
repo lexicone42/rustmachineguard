@@ -360,6 +360,27 @@ pub(crate) fn read_hook_file(path: &Path, source: &str, project_dir: Option<&Pat
     let link: Option<&Path> =
         if is_link(path) { Some(path) } else { path.ancestors().skip(1).take_while(|a| below(a)).find(|a| is_link(a)) };
     let real = std::fs::canonicalize(path).ok();
+    // The containment root itself reached through a link (a plugin, extension or
+    // installed-plugin directory that is a symlink, or one of its parents): judged on its
+    // real path, so `installed-plugins/m/p -> ~/.config/gcloud` is never read through.
+    if link.is_none()
+        && let Some(c) = containment
+        && (source == "plugin" || c.starts_with(&home))
+        && let Ok(real_c) = std::fs::canonicalize(c)
+    {
+        let expected = c.strip_prefix(&home).map_or_else(|_| c.to_path_buf(), |rel| real_home.join(rel));
+        let refused = matches!(
+            crate::scanners::persistence::sensitive_read_kind(&real_c, &real_home),
+            Some("credential" | "other-home" | "system")
+        ) && !real_c.starts_with("/nix/store");
+        if real_c != expected && real_c != c && refused {
+            let rest = path.strip_prefix(c).unwrap_or(Path::new(""));
+            return SettingsRead::Link(crate::models::EnvSymlink {
+                target: shown_link(&real_c.join(rest)),
+                sensitive_target: true,
+            });
+        }
+    }
     let Some(l) = link else {
         let Some(real) = real else { return SettingsRead::Unreadable };
         if is_sensitive_read_name(path) || is_sensitive_read_name(&real) {
@@ -479,7 +500,25 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
         provenance: None,
         allow_managed_hooks_only: flag("allowManagedHooksOnly"),
         disable_all_hooks: flag("disableAllHooks"),
+        force_enabled_plugins: if source == "managed" { force_enabled_plugins(&json) } else { Vec::new() },
     })
+}
+
+/// A managed file's `enabledPlugins` keys set to true (`plugin@marketplace`): Claude Code
+/// runs their hooks under `allowManagedHooksOnly` too ("Hooks from plugins force-enabled
+/// in managed settings enabledPlugins are exempt", code.claude.com/docs/en/hooks, fetched
+/// 2026-10-23). Sanitized, sorted, at most 200.
+fn force_enabled_plugins(json: &serde_json::Value) -> Vec<String> {
+    let Some(map) = json.get("enabledPlugins").and_then(|v| v.as_object()) else { return Vec::new() };
+    let mut v: Vec<String> = map
+        .iter()
+        .filter(|(k, on)| on.as_bool() == Some(true) && k.contains('@'))
+        .map(|(k, _)| crate::scanners::sanitize_display(k, 256))
+        .collect();
+    v.sort();
+    v.dedup();
+    v.truncate(200);
+    v
 }
 
 /// Parse Cursor's `hooks.json`, whose schema differs from Claude Code's: the command
@@ -955,7 +994,10 @@ pub(crate) fn classify_command_with(
             // A helper's argument paths are not shown (they routinely name the credential
             // file); only the agent directory they reach into is.
             let shown_dir = format!("{dir}/");
-            let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { token };
+            // Shown without the shell quotes (`"$CLAUDE_PROJECT_DIR"/.claude/x` read as
+            // `$CLAUDE_PROJECT_DIR"/.claude/x` once split into a token).
+            let unquoted = token.replace(['"', '\''], "");
+            let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { &unquoted };
             if Some(dir) != own_dir {
                 risks.push(format!(
                     "cross-references another tool's config directory ({token}) — the \
@@ -1036,7 +1078,14 @@ pub(crate) fn classify_command_with(
                 c.starts_with(root) && std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_symlink())
             })
         {
-            let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            // A project's files are contained by its enclosing git work tree, as its skill
+            // links are: `apps/web/.claude/hooks/x -> ../../../../shared/x` in a monorepo
+            // stays inside the repository.
+            let contained = match (root_label, home) {
+                ("project", Some(h)) => crate::scanners::skills::project_containment_root(root, h),
+                _ => root.to_path_buf(),
+            };
+            let real_root = std::fs::canonicalize(&contained).unwrap_or(contained);
             let leaves = std::fs::canonicalize(link).map_or(true, |real| !real.starts_with(&real_root));
             if leaves {
                 let text = std::fs::read_link(link).unwrap_or_default();

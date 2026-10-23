@@ -118,12 +118,31 @@ fn files_in(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             !name.starts_with('.')
                 && p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
-                && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
+                && exists_nofollow(p) && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
         })
         .collect();
     v.sort();
     v.truncate(MAX_HOOK_FILES);
     v
+}
+
+/// [`files_in`] for a directory a repository ships (`.github/hooks`, `.kiro/hooks`,
+/// `.opencode/plugins`): when the directory's real path leaves the project (it, or an
+/// agent directory above it, is a symlink out), it is inventoried once by its link text
+/// and not listed, so a repository cannot make the scan list the names in any directory
+/// the user can read.
+fn project_files_in(dir: &Path, src: &Src, exts: &[&str], out: &mut Vec<AgentSettings>) -> Vec<PathBuf> {
+    if let Some(root) = src.project_dir
+        && exists_nofollow(dir)
+        && let Ok(real) = std::fs::canonicalize(dir)
+    {
+        let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if !real.starts_with(&real_root) {
+            let _ = load(dir, src, out);
+            return Vec::new();
+        }
+    }
+    files_in(dir, exts)
 }
 
 /// Subdirectories of `dir`, sorted, at most [`MAX_HOOK_FILES`].
@@ -135,7 +154,7 @@ fn dirs_in(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
-        .filter(|p| !p.file_name().and_then(|n| n.to_str()).unwrap_or(".").starts_with('.') && p.is_dir())
+        .filter(|p| !p.file_name().and_then(|n| n.to_str()).unwrap_or(".").starts_with('.') && probe_dir(p))
         .collect();
     v.sort();
     v.truncate(MAX_HOOK_FILES);
@@ -542,10 +561,18 @@ fn codex_plugin_roots(dir: &Path) -> Vec<PathBuf> {
 
 // ── GitHub Copilot CLI ──────────────────────────────────────────────────────────
 
-fn copilot_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, require_version: bool, out: &mut Vec<AgentSettings>) {
-    let Some(j) = load(path, src, out) else { return };
-    if require_version && j.get("version").and_then(|v| v.as_u64()) != Some(1) {
-        return;
+/// A Copilot CLI hook file. Hook configuration files must say `version: 1` ("Hook
+/// configuration files use JSON format with version `1`", docs.github.com/en/copilot/
+/// reference/hooks-configuration, fetched 2026-10-23); a settings file (`settings.json`,
+/// `settings.local.json`) carries `hooks` as one key among others and has no version.
+/// A file-level `disableAllHooks: true` marks the file's hooks disabled. Returns whether
+/// the file set `disableAllHooks: true`.
+fn copilot_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, out: &mut Vec<AgentSettings>) -> bool {
+    let Some(j) = load(path, src, out) else { return false };
+    let settings = matches!(path.file_name().and_then(|n| n.to_str()), Some("settings.json" | "settings.local.json"));
+    let off = j.get("disableAllHooks").and_then(|v| v.as_bool()) == Some(true);
+    if !settings && j.get("version").and_then(|v| v.as_u64()) != Some(1) {
+        return false;
     }
     let mut ctx = HookCtx::new(path, Dialect::Copilot);
     if let Some((r, l)) = root {
@@ -553,41 +580,53 @@ fn copilot_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, req
         ctx.root_label = l;
     }
     let mut hooks = j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default();
-    // A file-level disableAllHooks:true skips that file's hooks.
-    if j.get("disableAllHooks").and_then(|v| v.as_bool()) == Some(true) {
+    if off {
         for h in &mut hooks {
             h.disabled = true;
         }
     }
     push(path, src, hooks, out);
+    off
 }
 
 fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let ch = home.join(".copilot");
     let user = Src { source: "user-global", framework: "copilot-cli", project_dir: None, containment: Some(&ch), provenance: None };
     for f in files_in(&ch.join("hooks"), &["json"]) {
-        copilot_file(&f, &user, None, false, out);
+        copilot_file(&f, &user, None, out);
     }
-    copilot_file(&ch.join("settings.json"), &user, None, false, out);
+    copilot_file(&ch.join("settings.json"), &user, None, out);
     for p in projects {
         let src = Src { source: "project", framework: "copilot-cli", project_dir: Some(&p.root), containment: None, provenance: None };
         let root = Some((p.dir.as_path(), "project"));
-        for f in files_in(&p.dir.join(".github").join("hooks"), &["json"]) {
-            copilot_file(&f, &src, root, true, out);
+        let start = out.len();
+        for f in project_files_in(&p.dir.join(".github").join("hooks"), &src, &["json"], out) {
+            copilot_file(&f, &src, root, out);
         }
         let cp = p.dir.join(".github").join("copilot");
-        copilot_file(&cp.join("settings.json"), &src, root, false, out);
+        let mut off = copilot_file(&cp.join("settings.json"), &src, root, out);
         let local = Src { source: "local", ..src };
-        copilot_file(&cp.join("settings.local.json"), &local, root, false, out);
+        off |= copilot_file(&cp.join("settings.local.json"), &local, root, out);
+        // A repository settings `disableAllHooks: true` skips every hook in that
+        // repository's sessions except policy hooks: its own hook files are inventoried
+        // as disabled. (User and plugin hooks are skipped there too, but only in that
+        // repository, so they stay graded.)
+        if off {
+            for e in &mut out[start..] {
+                e.hooks.iter_mut().for_each(|h| h.disabled = true);
+            }
+        }
     }
     // Machine policy (Linux and macOS): applied in name order, cannot be disabled.
     let pol = system_path("/etc/github-copilot/policy.d");
     let managed = Src { source: "managed", framework: "copilot-cli", project_dir: None, containment: Some(&pol), provenance: None };
     for f in files_in(&pol, &["json"]) {
-        copilot_file(&f, &managed, None, false, out);
+        copilot_file(&f, &managed, None, out);
     }
     // Installed plugins: installed-plugins/<marketplace>/<plugin>/ (`_direct` for direct
-    // installs). No official Copilot marketplace model is verified: third-party.
+    // installs). The default marketplaces are GitHub's (copilot-plugins, awesome-copilot),
+    // but the directory layout is not documented, so no name is trusted as first-party:
+    // graded like a third-party plugin and titled "provenance not verified".
     for m in dirs_in(&ch.join("installed-plugins")) {
         for pdir in dirs_in(&m) {
             let src = Src {
@@ -605,17 +644,7 @@ fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
             };
             let top = pdir.join("hooks.json");
             let file = if exists_nofollow(&top) { top } else { pdir.join("hooks").join("hooks.json") };
-            let Some(j) = load(&file, &src, out) else { continue };
-            let mut ctx = HookCtx::new(&file, Dialect::Copilot);
-            ctx.root = Some(&pdir);
-            ctx.root_label = "plugin";
-            let mut hooks = extract_hook_map(hook_map(&j), &ctx);
-            if j.get("disableAllHooks").and_then(|v| v.as_bool()) == Some(true) {
-                for h in &mut hooks {
-                    h.disabled = true;
-                }
-            }
-            push(&file, &src, hooks, out);
+            copilot_file(&file, &src, Some((pdir.as_path(), "plugin")), out);
         }
     }
 }
@@ -743,7 +772,7 @@ fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Val
 // ── OpenCode ────────────────────────────────────────────────────────────────────
 
 fn opencode_modules(dir: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
-    for f in files_in(dir, hs::MODULE_EXTS) {
+    for f in project_files_in(dir, src, hs::MODULE_EXTS, out) {
         let shown = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match src.read(&f) {
             SettingsRead::Content(c) => {
@@ -798,7 +827,7 @@ fn kiro(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     }
     for p in projects {
         let src = Src { source: "project", framework: "kiro", project_dir: Some(&p.root), containment: None, provenance: None };
-        for f in files_in(&p.dir.join(".kiro").join("hooks"), &["json"]) {
+        for f in project_files_in(&p.dir.join(".kiro").join("hooks"), &src, &["json"], out) {
             kiro_file(&f, &src, out);
         }
     }

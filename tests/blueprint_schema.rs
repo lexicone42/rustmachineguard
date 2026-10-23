@@ -490,6 +490,7 @@ fn make_report(
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
             agent_hooks_by_framework: Default::default(),
+            agent_hooks_inactive_count: 0,
         },
     };
     customize(&mut report);
@@ -920,6 +921,15 @@ fn plugin_and_frontmatter_hooks_conform() {
             ],
             provenance: Some(SkillProvenance { marketplace: Some("m".into()), plugin: Some("p".into()), third_party: true, active: true, ..Default::default() }),
             ..Default::default()
+        },
+        // A disabled plugin's file with a hook its source marks off: both markers render.
+        AgentSettings {
+            path: "/h/.claude/plugins/cache/m/q/1.0.0/hooks/hooks.json".into(),
+            source: "plugin".into(),
+            framework: "claude-code".into(),
+            hooks: vec![AgentHook { disabled: true, condition: Some("Bash(git *)".into()), ..hook("command", "echo off") }],
+            provenance: Some(SkillProvenance { marketplace: Some("m".into()), plugin: Some("q".into()), third_party: true, active: false, ..Default::default() }),
+            ..Default::default()
         }];
         let skill = || AgentSkill {
             name: "fm".into(),
@@ -934,13 +944,24 @@ fn plugin_and_frontmatter_hooks_conform() {
         r.agent_skills = vec![skill(), skill()];
         r.compute_summary();
     });
-    assert_eq!(report.summary.agent_hooks_by_framework.get("claude-code"), Some(&9));
+    assert_eq!(report.summary.agent_hooks_by_framework.get("claude-code"), Some(&10));
+    assert_eq!(report.summary.agent_hooks_inactive_count, 1, "the disabled plugin's hook never runs");
     let cats: std::collections::BTreeSet<String> =
         rustmachineguard::analysis::collect_findings(&report).into_iter().map(|f| f.category).collect();
     assert!(cats.contains("Hook"), "{cats:?}");
     let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
     assert!(rendered.contains("rmg:plugin") && rendered.contains("p@m"), "plugin provenance on the settings asset");
     assert!(rendered.contains("Stop[*] (module): ./register.ts"), "hook kind on the property");
-    assert_eq!(rendered.matches("executesNativeCommand").count(), 9, "one hook-exec behavior per hook");
+    // One behavior per hook, by what the hook does: commands and modules run code (3 + 1 + the
+    // disabled one), http sends data, prompt and agent hooks hand the event to a model,
+    // mcp_tool calls a tool.
+    assert_eq!(rendered.matches("executesNativeCommand").count(), 5, "{rendered}");
+    assert_eq!(rendered.matches("network:transmission:sendsData").count(), 1, "{rendered}");
+    assert_eq!(rendered.matches("ai:generative:processesPrompt").count(), 1, "{rendered}");
+    assert_eq!(rendered.matches("ai:agent:delegatesTask").count(), 2, "{rendered}");
+    assert!(rendered.contains("ai:agent:invokesTool"), "{rendered}");
+    assert!(rendered.contains("rmg:plugin-active") && rendered.contains("Stop[* if Bash(git *)] (disabled): echo off"), "{rendered}");
+    let html = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Html);
+    assert!(html.contains("plugin (inactive plugin)") && html.contains("Stop[* if Bash(git *)] (disabled)"), "markers in HTML");
     assert_blueprint_valid(&report);
 }

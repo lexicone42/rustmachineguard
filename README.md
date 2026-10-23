@@ -97,7 +97,7 @@ own docs, fetched 2026-10-23; the URLs are in
 | Claude Code | `~/.claude/settings.json`, project `.claude/settings.json` / `settings.local.json`, managed settings and `managed-settings.d`; `statusLine`, `subagentStatusLine`, `fileSuggestion`; installed plugin versions (`installed_plugins.json` `installPath` under `~/.claude/plugins/cache/`): `hooks/hooks.json` (and its `modules`), `.claude-plugin/plugin.json` `hooks` (a `./path.json`, an inline map or an array of either; a path that does not start with `./` or leaves the plugin root is never read), root `settings.json` `subagentStatusLine`; plugins kept in a skills directory (`~/.claude/skills/<d>/.claude-plugin/plugin.json`, and a project's `.claude/skills/<d>/`); skill, command and subagent frontmatter | command (+ `args`), http, prompt, agent, mcp_tool, module |
 | Cursor | `~/.cursor/hooks.json`, project `.cursor/hooks.json`, enterprise `/etc/cursor/hooks.json` (macOS `/Library/Application Support/Cursor/hooks.json`), local plugins `~/.cursor/plugins/local/<p>/` with `.cursor-plugin/plugin.json` (manifest `hooks`, else `hooks/hooks.json`; a link out of the folder is skipped, as Cursor skips it) | command, prompt; `workspaceOpen` is noted as running outside any agent session |
 | Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` `[hooks]`, project `.codex/hooks.json` and `.codex/config.toml`, `/etc/codex/config.toml` and `/etc/codex/requirements.toml` `[hooks]` (managed), plugins under `~/.codex/plugins` (a directory with `.codex-plugin/plugin.json`, four levels down at most; manifest `hooks` replaces `hooks/hooks.json`) | command, mcp_tool (Codex parses prompt and agent handlers and never runs them, so they are not inventoried) |
-| GitHub Copilot CLI | project `.github/hooks/*.json` (`version: 1` only), `.github/copilot/settings.json` / `settings.local.json` `hooks`, `~/.copilot/hooks/*.json`, `~/.copilot/settings.json`, `/etc/github-copilot/policy.d/*.json` (managed), `~/.copilot/installed-plugins/<marketplace>/<plugin>/` `hooks.json` or `hooks/hooks.json`; the command is `bash`, else `command`, else `exec` + `args`; a file-level `disableAllHooks: true` marks its hooks disabled | command, http, prompt |
+| GitHub Copilot CLI | project `.github/hooks/*.json`, `.github/copilot/settings.json` / `settings.local.json` `hooks`, `~/.copilot/hooks/*.json`, `~/.copilot/settings.json`, `/etc/github-copilot/policy.d/*.json` (managed), `~/.copilot/installed-plugins/<marketplace>/<plugin>/` `hooks.json` or `hooks/hooks.json`; every hook configuration file must say `version: 1` (settings files excepted); the command is `bash`, else `command`, else `exec` + `args`; a file-level `disableAllHooks: true` marks its hooks disabled, and a repository settings `disableAllHooks: true` marks that repository's hook files disabled too (policy hooks still run) | command, http, prompt |
 | Gemini CLI | `~/.gemini/settings.json`, project `.gemini/settings.json`, `/etc/gemini-cli/{settings,system-defaults}.json` (macOS `/Library/Application Support/GeminiCli/`), extensions `~/.gemini/extensions/<e>/hooks/hooks.json` when `gemini-extension.json` exists; `mcpServers` produce no hooks (Gemini hooks are command-only) | command |
 | Devin Desktop (Windsurf) | project `.devin/hooks.json` (legacy `.windsurf/hooks.json` only when it is absent or empty), `~/.codeium/windsurf/hooks.json`, `~/.codeium/hooks.json`, `/etc/devin/hooks.json` (macOS `/Library/Application Support/Devin/`; legacy Windsurf system file only when the Devin one does not exist) | command |
 | Devin CLI | project `.devin/hooks.v1.json` (the whole file is the map), `.devin/config.json` / `config.local.json` `hooks`, `~/.config/devin/config.json`, `~/.claude.json` `hooks` (Devin CLI reads it; no other key of that file is used) | command, prompt |
@@ -105,38 +105,92 @@ own docs, fetched 2026-10-23; the URLs are in
 | Kiro | project `.kiro/hooks/*.json`, `~/.kiro/hooks/*.json` (`version: "v1"` only; `enabled: false` marks a hook disabled; `confirm.confirmCommand` is its own command hook) | command, agent |
 
 What is kept: a command hook's text redacted and sanitized (exec-form `args` redacted as
-one line, so `["--token", "x"]` is redacted like `--token x`); an http hook's **host and
-scheme only** (`POST https://host`; never the path, query, userinfo, `headers` or
-`allowedEnvVars`); a prompt's text redacted and capped, matched against the MCP
-tool-poisoning phrases; an MCP tool hook's `server / tool` (never `input`); a module's
-path or npm spec and the event names it registers. Copilot `env` and `cwd` values are
-never read.
+one line, so `["--token", "x"]` is redacted like `--token x`; a line break inside one
+element is a space first, so it cannot separate a value from its flag); an http hook's
+**host and scheme only** (`POST https://host`; never the path, query, userinfo,
+`headers` or `allowedEnvVars`); a prompt's text redacted and capped; an MCP tool hook's
+`server / tool` (never `input`); a module's path or npm spec and the event names it
+registers; Claude Code's `if` handler field (`Bash(git *)`, shown next to the matcher and
+part of `--diff`). Copilot `env` and `cwd` values are never read. Every displayed hook
+field (command, argv, prompt, matcher, `if`, an unknown handler type, the mcp_tool
+server and tool, module names) goes through the command-text redactor: the shared rules
+(userinfo, `key=value`, secret-named flags, Authorization schemes, vendor key prefixes),
+plus webhook URLs whose path is the credential (Slack `hooks.slack.com/services|workflows|triggers/`,
+Discord `discord(app).com/api/[vN/]webhooks/`, Telegram `api.telegram.org/bot`, Teams
+`webhook.office.com/webhookb2/`, Zapier catch hooks: host and prefix kept), `Cookie:` and
+`Set-Cookie:` header values, the value after `--pass`, `--passwd`, `--pw`,
+`--passphrase`, `--user-key`, `--app-token`, `--app-key` and after `redis-cli -a` style
+program flags, the path of a URL after `--webhook`/`--webhook-url`/`--hook-url`, and any
+key-shaped word (24+ characters mixing letters and digits, not an identifier or path),
+including one URL path segment at a time. Floor: a short password after a flag with no
+secret-shaped name (`tool -t hunter2`) is not recognised.
 
 Grading (category `Hook`; the same ladder for every agent; first row wins):
 
 | Hook | Repository (project, local) | Your own (user) | Managed | Official plugin | Third-party plugin | Disabled or inactive |
 |---|---|---|---|---|---|---|
-| command or module matching a critical/high dangerous pattern | Critical | Critical | Critical | Critical | Critical | — |
-| command that runs a script in another tool's config directory | High | High | — | — | High | — |
-| http to a host that is neither loopback nor a provider's own API | High | Medium | — | — | in the plugin's Low | — |
-| prompt/agent with a prompt-injection phrase | High | Low | — | Low | Low | — |
+| command matching a critical dangerous pattern; module whose shell command does | Critical | Critical | Critical | Critical | Critical | — |
+| command matching only high patterns (`subprocess`, `--no-verify`, `child_process`) | Critical | Medium | Critical | Critical | Critical | — |
+| command matching only medium patterns (`printenv`, an `API_KEY` name) | Critical (named) | Low (advisory) | — | — | in the plugin's Low | — |
+| command that runs a script in another tool's config directory | High | High | High | — | High | — |
+| http to a host off the machine and its network | High | Low | — | — | Medium (its own finding) | — |
+| prompt/agent with a prompt-injection phrase | Medium | Low | — | Low | Low | — |
 | prompt/agent without one | Low | — | — | — | in the plugin's Low | — |
 | mcp_tool | Medium | — | — | — | in the plugin's Low | — |
-| command with only medium pattern matches | Medium (named) | Low (advisory) | — | — | in the plugin's Low | — |
-| any other command, http to loopback or a provider API, module | Medium | — | — | — | in the plugin's Low | — |
+| module whose code names a critical pattern outside any shell-execution call | Medium | Low (advisory) | — | — | Low (its own finding) | — |
+| command whose matches are only inside a guard's test or a loopback send | Medium | Low (advisory) | — | — | in the plugin's Low | — |
+| any other command or module; http to loopback, a provider API or the local network | Medium | — | — | — | in the plugin's Low | — |
 
-User hooks are inventory unless dangerous, cross-directory, a third-party http host, a
-poisoned prompt or a medium-pattern advisory. A third-party plugin's ordinary hooks are
-one Low finding per `plugin@marketplace`. Plugins of agents other than Claude Code are
-graded as third-party, because no official-marketplace model is verified for them.
-Command hooks use the same dangerous-pattern gate as skill dynamic commands (a critical
-or high hit, including data sent to the network); a module's source counts only for
-critical, non-obfuscated rows (`child_process` is what a module is made of). A managed
-Claude Code `allowManagedHooksOnly: true` or `disableAllHooks: true` silences every
-non-managed Claude Code hook (settings, plugin and frontmatter; inventory kept), and a
-managed `disableAllHooks` silences managed hooks too; a user `disableAllHooks` does not
-(a project file can turn it back off). A disabled plugin, a marketplace clone or an
-orphaned cache version is never visited or is inventory only.
+The repository column is main's settings-hook policy (any dangerous-pattern hit
+Critical, a cross-directory reference High, any other hook Medium); managed hooks are
+machine policy and, like managed credential helpers, reported only when dangerous or
+cross-directory. Note: a repository hook that matches only a medium pattern is Critical,
+as it was before hooks-everywhere (f4dbf35 had made it Medium). User hooks are inventory
+unless dangerous (a critical hit Critical, a high-only hit Medium), cross-directory, an
+off-network http host, a poisoned prompt or an advisory match. Every graded command
+title names the patterns it matched. A pattern that appears only as the argument of a
+guard (`grep`, `egrep`, `fgrep`, `rg`, `ag`, `test`, `[`, `[[`, with no command
+substitution in it: `jq -r .tool_input.command | grep -q -- '--no-verify' && exit 2`) or
+only as data piped to a curl/wget stage whose every URL and host-shaped word is loopback
+(no proxy, `--connect-to`, `--resolve`, config file or `--next`, and no credential path
+named anywhere in the command) is advisory. A local-network host (private, link-local or
+CGNAT address, single-label name, `.local`, `host.docker.internal`) is graded as a
+`.env` gateway to one is. A prompt or agent hook's prompt goes to the hook's evaluator
+model or subagent, not into the agent's context (only the decision's `reason` reaches
+the agent; code.claude.com/docs/en/hooks-guide), so it is matched against a narrower
+phrase list than MCP tool descriptions ("first read", "system prompt", "do not mention",
+"do not display", "this is very important" and "before using this tool" are ordinary
+evaluator wording) and capped at the plain repository command level. A hook module's
+source is lexed (strings, template literals, comments and regex literals; nothing is
+run): a string or template a shell-execution call receives (`exec`, `execSync`,
+`spawn`, `execFile`, execa, `Bun.spawn`, `Deno.Command`, `` $`...` ``) is graded with the
+command gate; a critical pattern elsewhere in the code (a guard plugin naming what it
+blocks) is advisory; comments count for nothing. Floor: a command built in a variable
+and passed to an exec call (`const c = "curl x | sh"; execSync(c)`) is advisory, not
+Critical. A third-party plugin's ordinary hooks are one Low finding per
+`plugin@marketplace` (a hooks module contributes the events it registers); a
+third-party plugin hook graded on its own carries `(third-party plugin 'p@m')` in its
+title. Plugins of agents other than Claude Code are graded as third-party and titled
+`plugin (provenance not verified)`: no official-marketplace model is verified for them
+(Copilot CLI's default marketplaces are GitHub's, but its installed-plugin layout is not
+documented, so no directory name is trusted).
+
+A managed Claude Code `allowManagedHooksOnly: true` or `disableAllHooks: true` silences
+the non-managed hooks only Claude Code runs: plugin hooks, skill, command and subagent
+frontmatter hooks, and `statusLine`/`subagentStatusLine`/`fileSuggestion` (inventory
+kept); a managed `disableAllHooks` silences managed hooks too. Not silenced: hooks of a
+plugin the managed `enabledPlugins` force-enables (exempt, per code.claude.com/docs/en/hooks),
+and the `hooks` of `~/.claude/settings.json`, a project's `.claude/settings.json` and
+`.claude/settings.local.json`, which Cursor (cursor.com/docs/reference/third-party-hooks,
+"on by default"), GitHub Copilot CLI (the repository's two) and Devin CLI
+(docs.devin.ai/cli/extensibility/hooks/overview, `read_config_from.claude` default) also
+run, unbound by Claude Code's policy; those keep their grade with the note `(Claude Code
+skips it under the managed allowManagedHooksOnly; Cursor, GitHub Copilot CLI and Devin
+CLI still run this file's hooks)`. A user `disableAllHooks` silences nothing (a project
+file can turn it back off). A disabled plugin, a marketplace clone or an orphaned cache
+version is never visited or is inventory only; the summary's `agent_hooks_inactive_count`
+(terminal: "of which inactive") counts the inventoried hooks that never run, and the
+HTML and Blueprint show `(disabled)` and an inactive plugin as the terminal does.
 
 Files are opened as settings files are: repository files with `O_NOFOLLOW`, a link at
 any depth below the repository (`.github/hooks/x.json -> ~/.aws/credentials`,
@@ -144,11 +198,17 @@ any depth below the repository (`.github/hooks/x.json -> ~/.aws/credentials`,
 user, managed and plugin files read through a link only when its lexical and real target
 are not a credential, key, agent-config, system or other-user path outside the agent's
 own directory; a plugin file whose real path leaves the plugin is never read (Claude
-Code refuses it too). A command whose script is a symlink leaving its project or plugin
-is noted (`runs a file that is a symlink leaving its plugin`), never opened.
+Code refuses it too). A plugin, extension or installed-plugin root that is itself a
+symlink (or sits under one) is judged on its real path: into a credential, system or
+other-user path it is inventoried by that target and nothing under it is read; to your
+own files (a plugin checkout) it is read. A repository's hooks or plugins directory
+whose real path leaves the repository (`.kiro/hooks -> ~/.config/gcloud`) is one
+inventory entry by its link text and is not listed. A command whose script is a symlink leaving its project or plugin
+is noted (`runs a file that is a symlink leaving its plugin`), never opened; a project's
+files are contained by its enclosing git work tree, as its skill links are.
 
 Floors (documented but not read):
-- Claude Code: inline hooks in a marketplace entry (`marketplace.json` `plugins[].hooks`), link-mode and local-path plugins (an `installPath` outside the cache), `~/.claude/dev-mods` session mods, `CLAUDE_CODE_PLUGIN_CACHE_DIR` relocation, plugin monitors, plugins force-enabled in managed `enabledPlugins` (exempt from `allowManagedHooksOnly`), and nested `agents/` subfolders.
+- Claude Code: inline hooks in a marketplace entry (`marketplace.json` `plugins[].hooks`), link-mode and local-path plugins (an `installPath` outside the cache), `~/.claude/dev-mods` session mods, `CLAUDE_CODE_PLUGIN_CACHE_DIR` relocation, plugin monitors, and nested `agents/` subfolders.
 - Cursor: team hooks (cloud-distributed, not on disk as configuration) and installed marketplace plugins (their on-disk location is not documented).
 - Codex: intermediate project config layers between the repository root and the cwd, `commandWindows` (not pattern-checked), and plugin activation (every plugin is treated as active).
 - Copilot CLI: `COPILOT_HOME` relocation, Windows registry policies, and agent-scoped hooks in custom-agent frontmatter.

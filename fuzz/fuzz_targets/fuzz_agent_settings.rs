@@ -36,5 +36,12 @@ fuzz_target!(|data: &[u8]| {
         let _ = rustmachineguard::scanners::skills::frontmatter_hooks(s, p, p, None);
         let _ = hs::module_registers(s, RegistersRule::ClaudeMod);
         let _ = hs::module_registers(s, RegistersRule::OpenCode);
+        // The guard/loopback segmenter, the module source lexer and the hook redactor
+        // walk attacker-chosen text byte by byte.
+        let _ = hs::command_verdict(s);
+        let _ = hs::module_hook("m.ts", Some(s), RegistersRule::OpenCode);
+        let shown = hs::shown_text(s, 4000);
+        assert!(!shown.contains('\u{1b}'));
+        let _ = rustmachineguard::scanners::redact_webhook_urls(s);
     }
 });

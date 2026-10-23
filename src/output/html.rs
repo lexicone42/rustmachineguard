@@ -254,12 +254,18 @@ fn render_sections(report: &ScanReport) -> String {
                 s.hooks.iter().map(|h| {
                     let d = if h.dangerous { " ⚠" } else { "" };
                     let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", html_escape(&h.kind)) };
-                    format!("{}[{}]{}{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), kind, d)
+                    let cond = h.condition.as_deref().map(|c| format!(" if {}", html_escape(c))).unwrap_or_default();
+                    let off = if h.disabled { " (disabled)" } else { "" };
+                    format!("{}[{}{}]{}{}{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), cond, kind, off, d)
                 }).collect::<Vec<_>>().join(", ")
             };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                html_escape(&s.path), html_escape(&s.source),
+                html_escape(&s.path),
+                html_escape(&match s.provenance.as_ref().filter(|p| !p.active) {
+                    Some(_) => format!("{} (inactive plugin)", s.source),
+                    None => s.source.clone(),
+                }),
                 html_escape(s.permission_mode.as_deref().unwrap_or("-")), auto, hooks
             ));
         }
