@@ -1071,16 +1071,23 @@ fn http_reach(h: &crate::models::AgentHook) -> HttpReach {
 
 /// The hook ladder (first matching row wins; `kind` "" is a command). Pure.
 ///
-/// Command hooks keep main's settings-hook policy per scope. In a repository: any
-/// dangerous-pattern hit is Critical, a cross-directory reference High, any other hook
-/// Medium. In managed settings (machine policy, graded like managed credential helpers:
-/// reported only when dangerous): a critical- or high-pattern hit is Critical, a
-/// cross-directory reference High, anything else inventory. The user's own hooks are
-/// inventory unless dangerous: a critical-pattern hit is Critical, a high-only one
-/// (`subprocess`, `--no-verify`, `child_process`: what a formatter or a commit hook
-/// legitimately runs) Medium, a medium-only or advisory one a Low advisory. Hits that are
-/// only inside a guard's test argument or a loopback send (`advisory_patterns`) are not
-/// hits in any scope.
+/// Command hooks keep main's settings-hook policy per scope. In a repository and in the
+/// user's own settings: any dangerous-pattern hit is Critical (main graded every
+/// pattern-matching settings hook Critical, whatever its scope); a cross-directory
+/// reference is High. A repository's other hooks are Medium; the user's own are
+/// inventory. In managed settings (machine policy, graded like managed credential
+/// helpers: reported only when dangerous): a critical- or high-pattern hit is Critical,
+/// a cross-directory reference High, anything else inventory.
+///
+/// Two user-scope rows are graded by what the hook does rather than by the substring:
+/// a reference to another agent's config directory under the user's own HOME
+/// (`~/.claude/hooks/fmt.sh` from `~/.codex/hooks.json`, one personal script shared by
+/// several agents) is a Low advisory, and a notification hook that only pipes fields of
+/// its own event to a web host (`jq -r .message | curl -d @- ntfy.sh/topic`,
+/// [`crate::scanners::hook_sources::event_push_host`]) is graded as the http hook to that
+/// host is (Low, naming it). Hits that are only inside a guard's test argument or a
+/// loopback send (`advisory_patterns`) are not hits in any scope: such a hook is graded
+/// as a plain one.
 fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<HookGrade> {
     use HookGrade::{Aggregate, Finding};
     use HookScope::*;
@@ -1097,15 +1104,20 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
         PluginThirdParty { .. } => tp,
     };
     let code = matches!(kind, "command" | "module");
-    // Older reports carry no pattern_severity: a dangerous hook there is a critical one.
-    let critical_hit = h.pattern_severity == "critical" || (h.dangerous && h.pattern_severity.is_empty());
-    if code && h.dangerous {
-        return Some(Finding(if *scope == UserOwn && !critical_hit { Medium } else { Critical }));
+    if *scope == UserOwn && kind == "command" && user_event_push(h) {
+        return Some(Finding(Low));
     }
-    if kind == "command" && !h.patterns.is_empty() && matches!(scope, Repository { .. }) {
+    if code && h.dangerous {
         return Some(Finding(Critical));
     }
-    if kind == "command" && h.risks.iter().any(|r| r.starts_with("cross-references")) {
+    if kind == "command" && !h.patterns.is_empty() && matches!(scope, Repository { .. } | UserOwn) {
+        return Some(Finding(Critical));
+    }
+    let cross = |r: &String| r.starts_with("cross-references");
+    if kind == "command" && h.risks.iter().any(cross) {
+        if *scope == UserOwn && h.risks.iter().filter(|r| cross(r)).all(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK)) {
+            return Some(Finding(Low));
+        }
         return match scope {
             Managed => Some(Finding(High)),
             _ => by(Some(High), Some(High), None, Some(Finding(High))),
@@ -1132,13 +1144,14 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
     if code && !h.patterns.is_empty() {
         return by(Some(Medium), Some(Low), None, Some(Aggregate));
     }
-    if kind == "module" && !h.advisory_patterns.is_empty() {
-        return by(Some(Medium), Some(Low), None, Some(Finding(Low)));
-    }
-    if kind == "command" && !h.advisory_patterns.is_empty() {
-        return by(Some(Medium), Some(Low), None, Some(Aggregate));
-    }
     by(Some(Medium), None, None, Some(Aggregate))
+}
+
+/// The user's own notification hook: its only hit is the `| curl` / `| wget` row, and the
+/// command is exactly a jq of its own event piped to a sender with a parseable host
+/// (`push_host`), with no other risk.
+fn user_event_push(h: &crate::models::AgentHook) -> bool {
+    h.push_host.is_some() && h.risks.is_empty() && !h.patterns.is_empty() && h.patterns.iter().all(|p| p == "data exfiltration pattern")
 }
 
 /// The finding title for one hook (see [`hook_severity`] for the grade).
@@ -1193,12 +1206,16 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
         }
         _ => {
             let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
-            let graded_as_match = h.dangerous || matches!(scope, HookScope::Repository { .. } | HookScope::Managed);
-            if !h.patterns.is_empty() && graded_as_match {
+            let graded_as_match = h.dangerous || matches!(scope, HookScope::Repository { .. } | HookScope::Managed | HookScope::UserOwn);
+            if *scope == HookScope::UserOwn && user_event_push(h) {
+                let host = h.push_host.as_deref().unwrap_or("?");
+                format!("{event} hook [{m}] runs a command that sends fields of its event to {host} (a notification hook)")
+            } else if !h.patterns.is_empty() && graded_as_match {
                 format!("{event} hook [{m}] runs a command matching a dangerous pattern ({}){detail}{advisory}", h.patterns.join(", "))
             } else if !h.patterns.is_empty() {
-                let tag = if *scope == HookScope::UserOwn { " (advisory)" } else { "" };
-                format!("{event} hook [{m}] runs a command{detail}; matches {}{tag}{advisory}", h.patterns.join(", "))
+                format!("{event} hook [{m}] runs a command{detail}; matches {}{advisory}", h.patterns.join(", "))
+            } else if *scope == HookScope::UserOwn && h.risks.iter().any(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK)) {
+                format!("{event} hook [{m}] runs a command{detail} (advisory)")
             } else {
                 format!("{event} hook [{m}] runs a command{detail}{advisory}")
             }
@@ -1321,7 +1338,8 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             continue;
         }
         let loc = crate::scanners::sanitize_display(&k.path, 512);
-        let prefix = format!("skill '{}': ", k.name);
+        let what = if k.framework == "claude-code-agent" || k.file_type == "agent" { "subagent" } else { "skill" };
+        let prefix = format!("{what} '{}': ", k.name);
         for h in &k.hooks {
             grade(h, "claude-code", scope.clone(), &loc, &prefix, None, f);
         }
@@ -2083,6 +2101,23 @@ mod hook_ladder_tests {
         let mcp = hook("mcp_tool");
         let medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], pattern_severity: "medium".into(), ..hook("command") };
         let guarded = AgentHook { advisory_patterns: vec!["disable security controls".into()], ..hook("command") };
+        let cross_home = AgentHook {
+            risks: vec![format!("{} (~/.claude/hooks/fmt.sh)", crate::scanners::agent_settings::CROSS_HOME_RISK)],
+            ..hook("")
+        };
+        let cross_both = AgentHook { risks: vec![cross_home.risks[0].clone(), cross.risks[0].clone()], ..hook("") };
+        let exfil = |p: &str| AgentHook {
+            dangerous: true,
+            pattern_severity: "critical".into(),
+            patterns: vec![p.into()],
+            push_host: Some("ntfy.sh".into()),
+            ..hook("command")
+        };
+        let push = exfil("data exfiltration pattern");
+        let push_cred = AgentHook {
+            patterns: vec!["data exfiltration pattern".into(), "data exfiltration pattern (a credential file sent by a network client)".into()],
+            ..exfil("data exfiltration pattern")
+        };
         let plain = hook("");
         let module = hook("module");
         let module_medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], pattern_severity: "medium".into(), ..hook("module") };
@@ -2090,12 +2125,16 @@ mod hook_ladder_tests {
         // Columns: repo tracked, repo untracked, user, managed, official, third-party, inactive.
         let table: Vec<(&AgentHook, [Option<HookGrade>; 7])> = vec![
             (&dangerous, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&high_only, [Some(F(Critical)), Some(F(Critical)), Some(F(Medium)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
+            (&high_only, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
             (&legacy, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
             (&dangerous_module, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&medium, [Some(F(Critical)), Some(F(Critical)), Some(F(Low)), None, None, Some(A), None]),
-            (&guarded, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(A), None]),
+            (&medium, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None, None, Some(A), None]),
+            (&guarded, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&cross, [Some(F(High)), Some(F(High)), Some(F(High)), Some(F(High)), None, Some(F(High)), None]),
+            (&cross_home, [Some(F(High)), Some(F(High)), Some(F(Low)), Some(F(High)), None, Some(F(High)), None]),
+            (&cross_both, [Some(F(High)), Some(F(High)), Some(F(High)), Some(F(High)), None, Some(F(High)), None]),
+            (&push, [Some(F(Critical)), Some(F(Critical)), Some(F(Low)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
+            (&push_cred, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
             (&http_far, [Some(F(High)), Some(F(High)), Some(F(Low)), None, None, Some(F(Medium)), None]),
             (&http_lan, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&http_local, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
@@ -2106,7 +2145,7 @@ mod hook_ladder_tests {
             (&plain, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&module, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
             (&module_medium, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(A), None]),
-            (&module_advisory, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(F(Low)), None]),
+            (&module_advisory, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
         ];
         for (h, row) in &table {
             for (scope, want) in scopes.iter().zip(row.iter()) {

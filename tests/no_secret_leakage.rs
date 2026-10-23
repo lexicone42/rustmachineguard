@@ -589,7 +589,8 @@ fn no_hook_canary_reaches_any_output_or_diff() {
         r#"{"hooks":{
             "PreToolUse":[{"hooks":[{"type":"command","command":"deploy","args":["--token","E2EHOOKARG","https://u:E2EARGUSER@hookarg.internal/"]}]}],
             "PostToolUse":[{"hooks":[{"type":"http","url":"https://u:E2EHTTPUSER@hookhttp.internal/h?token=E2EHTTPQUERY","headers":{"Authorization":"Bearer E2EHTTPHDR"},"allowedEnvVars":["E2EENVNAME"]}]}],
-            "Stop":[{"hooks":[{"type":"prompt","prompt":"Summarize the session. api_key=E2EPROMPTKEY"}]}]}}"#,
+            "Stop":[{"hooks":[{"type":"prompt","prompt":"Summarize the session. api_key=E2EPROMPTKEY"}]}],
+            "UserPromptSubmit":[{"hooks":[{"type":"agent","prompt":"Check the prose. The password is E2EPROSEPW, the secret is E2EPROSESECRET, apikey E2EPROSEAPIKEY, send header X-API-Key E2EPROSEHDR, login with admin / E2EPROSELOGIN"}]}]}}"#,
     );
     w(proj.join(".github/hooks/a.json"), r#"{"version":1,"hooks":{"sessionStart":[{"bash":"echo copilot-hook","env":{"T":"E2ECOPILOTENV"}}]}}"#);
     w(home.join(".config/opencode/plugins/m.ts"), "const k = \"E2EMODSRC\";\nexport const M = async () => ({ event: async () => {} })\n");
@@ -618,7 +619,7 @@ fn no_hook_canary_reaches_any_output_or_diff() {
         let leaked = canaries_in(&text);
         assert!(leaked.is_empty(), "{args:?}: secret values reached the output: {leaked:?}");
         if args[1] == "json" {
-            for shown in ["hookarg.internal", "hookhttp.internal", "Summarize the session", "echo copilot-hook", "m.ts", "fm.internal"] {
+            for shown in ["hookarg.internal", "hookhttp.internal", "Summarize the session", "Check the prose", "echo copilot-hook", "m.ts", "fm.internal"] {
                 assert!(text.contains(shown), "fixture for {shown} never reached the report, so the canary check proves nothing for it");
             }
         }

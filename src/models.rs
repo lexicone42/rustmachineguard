@@ -613,6 +613,11 @@ pub struct AgentHook {
     /// module hooks: event names the module registers (lexical, sorted, deduped).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registers: Vec<String>,
+    /// command hooks: the host a notification hook sends fields of its own event to
+    /// (`jq -r .message | curl -d @- ntfy.sh/topic`, see
+    /// `hook_sources::event_push_host`). Host only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_host: Option<String>,
     /// The source marks the hook off (Kiro `enabled: false`, Copilot file-level
     /// `disableAllHooks: true`): inventoried, not graded.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

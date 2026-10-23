@@ -436,8 +436,11 @@ fn cursor(home: &Path, out: &mut Vec<AgentSettings>) {
 
 // ── Codex ───────────────────────────────────────────────────────────────────────
 
-fn codex_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, vars: &[(&'static str, PathBuf)], out: &mut Vec<AgentSettings>) {
-    let Some(j) = load(path, src, out) else { return };
+/// Reads one Codex hooks.json / config.toml / requirements.toml; returns its
+/// `[features].hooks` switch when it sets one.
+fn codex_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, vars: &[(&'static str, PathBuf)], out: &mut Vec<AgentSettings>) -> Option<bool> {
+    let j = load(path, src, out)?;
+    let switch = j.get("features").and_then(|f| f.get("hooks")).and_then(|v| v.as_bool());
     let mut ctx = HookCtx::new(path, Dialect::Codex);
     ctx.own_dir = Some(".codex");
     if let Some((r, l)) = root {
@@ -447,34 +450,57 @@ fn codex_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, vars:
     ctx.vars = vars.to_vec();
     let hooks = j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default();
     push(path, src, hooks, out);
+    switch
+}
+
+/// Mark the non-managed hooks of `framework` in `out[start..]` disabled (a global
+/// switch turned them off): inventoried and counted inactive, not graded.
+fn disable_non_managed(out: &mut [AgentSettings], start: usize, framework: &str) {
+    for e in out[start..].iter_mut().filter(|e| e.framework == framework && e.source != "managed") {
+        e.hooks.iter_mut().for_each(|h| h.disabled = true);
+    }
 }
 
 fn codex(platform: &dyn PlatformInfo, projects: &[Project], out: &mut Vec<AgentSettings>) {
+    let start = out.len();
     let ch = platform.codex_config_dir();
     let user = Src { source: "user-global", framework: "codex", project_dir: None, containment: Some(&ch), provenance: None };
     codex_file(&ch.join("hooks.json"), &user, None, &[], out);
-    codex_file(&ch.join("config.toml"), &user, None, &[], out);
+    let user_switch = codex_file(&ch.join("config.toml"), &user, None, &[], out);
+    let mut project_on = false;
     for p in projects {
         let src = Src { source: "project", framework: "codex", project_dir: Some(&p.root), containment: None, provenance: None };
         codex_file(&p.dir.join(".codex").join("hooks.json"), &src, None, &[], out);
-        codex_file(&p.dir.join(".codex").join("config.toml"), &src, None, &[], out);
+        project_on |= codex_file(&p.dir.join(".codex").join("config.toml"), &src, None, &[], out) == Some(true);
     }
     // The system config layer and managed requirements (`managed_dir` and other
     // non-array values under [hooks] are skipped by the parser).
     let etc = system_path("/etc/codex");
     let managed = Src { source: "managed", framework: "codex", project_dir: None, containment: Some(&etc), provenance: None };
-    codex_file(&etc.join("config.toml"), &managed, None, &[], out);
-    codex_file(&etc.join("requirements.toml"), &managed, None, &[], out);
+    let sys_switch = codex_file(&etc.join("config.toml"), &managed, None, &[], out);
+    let required = codex_file(&etc.join("requirements.toml"), &managed, None, &[], out);
+    // "Hooks are enabled by default. To turn them off in config.toml, set: [features]
+    // hooks = false"; "Admins can force hooks off the same way in requirements.toml"
+    // (learn.chatgpt.com/docs/hooks.md, fetched 2026-10-23). requirements.toml decides
+    // when it sets the switch; otherwise the user or system config turns hooks off unless
+    // a project config turns them back on (read conservatively: any project that does
+    // keeps every hook graded).
+    let off = match required {
+        Some(v) => !v,
+        None => (user_switch == Some(false) || sys_switch == Some(false)) && !project_on,
+    };
 
     // Plugins: a directory holding `.codex-plugin/plugin.json`, at most four levels down.
-    for root in codex_plugin_roots(&ch.join("plugins")) {
-        let src = Src {
-            source: "plugin",
-            framework: "codex",
-            project_dir: None,
-            containment: Some(&root),
-            provenance: prov("codex", dir_name(&root), true),
-        };
+    let plugins_dir = ch.join("plugins");
+    let roots = codex_plugin_roots(&plugins_dir);
+    let identities = codex_plugin_identities(&plugins_dir, &roots);
+    for (root, (marketplace, plugin, active)) in roots.iter().zip(identities) {
+        let root = root.clone();
+        let mut provenance = prov(&marketplace, plugin, true);
+        if let Some(p) = provenance.as_mut() {
+            p.active = active;
+        }
+        let src = Src { source: "plugin", framework: "codex", project_dir: None, containment: Some(&root), provenance };
         let vars = vec![
             ("${PLUGIN_ROOT}", root.clone()),
             ("$PLUGIN_ROOT", root.clone()),
@@ -521,6 +547,50 @@ fn codex(platform: &dyn PlatformInfo, projects: &[Project], out: &mut Vec<AgentS
             }
         }
     }
+    if off {
+        disable_non_managed(out, start, "codex");
+    }
+}
+
+/// (marketplace, plugin, active) for each Codex plugin root. The documented cache is
+/// `~/.codex/plugins/cache/$MARKETPLACE_NAME/$PLUGIN_NAME/$VERSION/`, `$VERSION` being
+/// `local` for local plugins (developers.openai.com/plugins/build/plugins.md, fetched
+/// 2026-10-23): the identity is the (marketplace, plugin) pair, never the version
+/// directory, so two `local` plugins stay two plugins. One version per plugin is graded
+/// (`local` when present, else the highest version, compared numerically per dot-separated
+/// part); the other cached versions are inventoried as inactive. A root outside that
+/// layout is its own plugin of the `codex` marketplace, named by its directory.
+fn codex_plugin_identities(plugins_dir: &Path, roots: &[PathBuf]) -> Vec<(String, String, bool)> {
+    let cache = plugins_dir.join("cache");
+    let ids: Vec<(String, String, Option<String>)> = roots
+        .iter()
+        .map(|r| {
+            let comps: Vec<String> = r
+                .strip_prefix(&cache)
+                .map(|rel| rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            match comps.as_slice() {
+                [m, p, v] => (sanitize_display(m, 128), sanitize_display(p, 128), Some(v.clone())),
+                _ => ("codex".to_string(), dir_name(r), None),
+            }
+        })
+        .collect();
+    let rank = |v: &str| -> (bool, Vec<(u64, String)>) {
+        let parts = v.split(['.', '-', '+']).map(|x| (x.parse::<u64>().unwrap_or(0), x.to_string())).collect();
+        (v == "local", parts)
+    };
+    ids.iter()
+        .enumerate()
+        .map(|(i, (m, p, v))| {
+            let active = match v {
+                None => true,
+                Some(v) => !ids.iter().enumerate().any(|(j, (m2, p2, v2))| {
+                    j != i && m2 == m && p2 == p && v2.as_ref().is_some_and(|v2| (rank(v2), v2) > (rank(v), v))
+                }),
+            };
+            (m.clone(), p.clone(), active)
+        })
+        .collect()
 }
 
 fn codex_plugin_roots(dir: &Path) -> Vec<PathBuf> {
@@ -651,30 +721,43 @@ fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
 
 // ── Gemini CLI ──────────────────────────────────────────────────────────────────
 
-fn gemini_file(path: &Path, src: &Src, vars: Vec<(&'static str, PathBuf)>, out: &mut Vec<AgentSettings>) {
-    let Some(j) = load(path, src, out) else { return };
+/// Reads one Gemini CLI settings file; returns its `hooksConfig.enabled` when set.
+fn gemini_file(path: &Path, src: &Src, vars: Vec<(&'static str, PathBuf)>, out: &mut Vec<AgentSettings>) -> Option<bool> {
+    let j = load(path, src, out)?;
+    let switch = j.get("hooksConfig").and_then(|c| c.get("enabled")).and_then(|v| v.as_bool());
     let mut ctx = HookCtx::new(path, Dialect::Gemini);
     ctx.own_dir = Some(".gemini");
     ctx.vars = vars;
     // Only `hooks`: Gemini hooks are command-only and never reference mcpServers.
     let hooks = j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default();
     push(path, src, hooks, out);
+    switch
 }
 
 fn gemini(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
+    let start = out.len();
     let gh = home.join(".gemini");
     let user = Src { source: "user-global", framework: "gemini-cli", project_dir: None, containment: Some(&gh), provenance: None };
-    gemini_file(&gh.join("settings.json"), &user, Vec::new(), out);
+    let user_switch = gemini_file(&gh.join("settings.json"), &user, Vec::new(), out);
+    let mut project_on = false;
     for p in projects {
         let src = Src { source: "project", framework: "gemini-cli", project_dir: Some(&p.root), containment: None, provenance: None };
         let vars = vec![("${GEMINI_PROJECT_DIR}", p.dir.clone()), ("$GEMINI_PROJECT_DIR", p.dir.clone())];
-        gemini_file(&p.dir.join(".gemini").join("settings.json"), &src, vars, out);
+        project_on |= gemini_file(&p.dir.join(".gemini").join("settings.json"), &src, vars, out) == Some(true);
     }
     let sys = system_path(if cfg!(target_os = "macos") { "/Library/Application Support/GeminiCli" } else { "/etc/gemini-cli" });
     let managed = Src { source: "managed", framework: "gemini-cli", project_dir: None, containment: Some(&sys), provenance: None };
-    for n in ["settings.json", "system-defaults.json"] {
-        gemini_file(&sys.join(n), &managed, Vec::new(), out);
-    }
+    let sys_switch = gemini_file(&sys.join("settings.json"), &managed, Vec::new(), out);
+    let defaults_switch = gemini_file(&sys.join("system-defaults.json"), &managed, Vec::new(), out);
+    // "hooksConfig.enabled ... When disabled, no hooks will be executed"
+    // (geminicli.com/docs/reference/configuration, fetched 2026-10-23). The system
+    // settings file overrides every other layer; below it the user file, then the system
+    // defaults, turn hooks off unless a project file turns them back on (read
+    // conservatively: any project that does keeps every hook graded).
+    let off = match sys_switch {
+        Some(v) => !v,
+        None => user_switch.or(defaults_switch) == Some(false) && !project_on,
+    };
     // Extensions: hooks live in hooks/hooks.json, never in the manifest.
     for e in dirs_in(&gh.join("extensions")) {
         if !probe_file(&e.join("gemini-extension.json")) {
@@ -696,6 +779,9 @@ fn gemini(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
         ctx.vars = vec![("${extensionPath}", e.clone())];
         let hooks = extract_hook_map(hook_map(&j), &ctx);
         push(&file, &src, hooks, out);
+    }
+    if off {
+        disable_non_managed(out, start, "gemini-cli");
     }
 }
 

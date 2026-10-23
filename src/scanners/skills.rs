@@ -146,9 +146,9 @@ impl Scanner for SkillsScanner {
         // Claude Code subagents: ~/.claude/agents/*.md and <proj>/.claude/agents/*.md, whose
         // frontmatter may declare hooks. Plugin agents are not walked: Claude Code ignores
         // their hooks (code.claude.com/docs/en/sub-agents).
-        scan_skill_dir(&home.join(".claude").join("agents"), "claude-code-agent", "global", None, &ctx, &mut results);
+        scan_agents_tree(&home.join(".claude").join("agents"), "global", None, &ctx, &mut results);
         for (root, dir) in &project_dirs {
-            scan_skill_dir(&dir.join(".claude").join("agents"), "claude-code-agent", "project", Some(root), &ctx, &mut results);
+            scan_agents_tree(&dir.join(".claude").join("agents"), "project", Some(root), &ctx, &mut results);
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
@@ -990,6 +990,52 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
     }
 }
 
+/// Subagent directories nested below an `agents/` walk root, at most.
+const MAX_AGENT_SUBDIRS: usize = 64;
+/// How deep below the `agents/` walk root subagent folders are walked.
+const MAX_AGENT_DEPTH: usize = 4;
+
+/// A Claude Code subagent directory and its subfolders: "Claude Code scans
+/// `.claude/agents/` and `~/.claude/agents/` recursively"
+/// (code.claude.com/docs/en/sub-agents.md, fetched 2026-10-23). Subfolders are real
+/// directories only (a symlinked one is not descended), dot-directories are skipped, and
+/// the walk is bounded in depth and count; each folder is scanned like the root.
+fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext, results: &mut Vec<AgentSkill>) {
+    scan_skill_dir(root, "claude-code-agent", scope, project_root, ctx, results);
+    if matches!(judge_walk_root(root, scope, project_root, &ctx.home), RootLink::Refuse(_)) {
+        // A refused walk root is one directory-level entry (scan_skill_dir); nothing under it.
+        return;
+    }
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut budget = MAX_AGENT_SUBDIRS;
+    let mut dirs = Vec::new();
+    while let Some((d, depth)) = stack.pop() {
+        if depth >= MAX_AGENT_DEPTH {
+            continue;
+        }
+        let Ok(rd) = crate::scanners::probe_read_dir(&d) else { continue };
+        let mut children: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.')))
+            .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
+            .collect();
+        children.sort();
+        for c in children {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            dirs.push(c.clone());
+            stack.push((c, depth + 1));
+        }
+    }
+    dirs.sort();
+    for d in dirs {
+        scan_skill_dir(&d, "claude-code-agent", scope, project_root, ctx, results);
+    }
+}
+
 fn scan_skill_dir(
     dir: &Path,
     framework: &str,
@@ -1011,7 +1057,7 @@ fn scan_skill_dir(
     // `commands/` holds custom slash commands, which support dynamic context too.
     let is_commands_dir = dir.file_name().is_some_and(|n| n == "commands");
     // `agents/` holds subagent definitions: markdown only.
-    let is_agents_dir = dir.file_name().is_some_and(|n| n == "agents");
+    let is_agents_dir = framework == "claude-code-agent" || dir.file_name().is_some_and(|n| n == "agents");
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -1196,7 +1242,10 @@ pub(crate) fn module_source_dangerous(src: &str) -> Vec<crate::models::RulesFile
 }
 
 /// Calls that run their (string) arguments as a command: node's child_process, execa,
-/// Bun.spawn, Deno.Command, and `system`.
+/// Bun.spawn, Deno.Command, and `system`. Claude Code mods have no Node.js APIs; their
+/// process API is `$.process.run([...])` / `$.process.spawn([...])`, an argument list run
+/// with no shell (code.claude.com/docs/en/plugins/mods/api.md, fetched 2026-10-23), so
+/// `run` counts when it is called as `process.run`.
 const MODULE_EXEC_CALLS: &[&str] = &[
     "exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "execa", "execaSync", "execaCommand",
     "execaCommandSync", "system", "Command",
@@ -1215,7 +1264,10 @@ pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
     let b = src.as_bytes();
     let mut execs: Vec<String> = Vec::new();
     let mut code = String::with_capacity(src.len());
-    let mut frames: Vec<bool> = Vec::new();
+    // One entry per open parenthesis: whether it is a shell-execution call, and the
+    // string literals it received (joined into one argv line when it closes, as an
+    // exec-form hook's `args` are).
+    let mut frames: Vec<(bool, Vec<String>)> = Vec::new();
     let mut ident = String::new();
     // Whitespace followed the identifier: the next identifier byte starts a new one.
     let mut ident_done = false;
@@ -1269,8 +1321,12 @@ pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
             }
             let end = j.min(b.len());
             let body = &src[(i + 1).min(end)..end];
-            if tagged || frames.iter().any(|f| *f) {
-                execs.push(body.replace('\n', " "));
+            if tagged || frames.iter().any(|f| f.0) {
+                let lit = body.replace('\n', " ");
+                if let Some(f) = frames.iter_mut().rev().find(|f| f.0) {
+                    f.1.push(lit.clone());
+                }
+                execs.push(lit);
             }
             let close = (end + 1).min(b.len());
             code.push_str(&src[i..close]);
@@ -1290,9 +1346,16 @@ pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
         } else {
             ident_done = false;
             match c {
-                b'(' => frames.push(MODULE_EXEC_CALLS.contains(&ident.as_str())),
+                b'(' => {
+                    let process_run = ident == "run" && src[..i].trim_end().ends_with("process.run");
+                    frames.push((MODULE_EXEC_CALLS.contains(&ident.as_str()) || process_run, Vec::new()));
+                }
                 b')' => {
-                    frames.pop();
+                    if let Some((true, argv)) = frames.pop()
+                        && argv.len() > 1
+                    {
+                        execs.push(argv.join(" "));
+                    }
                 }
                 _ => {}
             }
@@ -1454,13 +1517,21 @@ fn line_sends_credential_file(line: &str) -> bool {
     let ranges = shell_word_ranges(line);
     let delim = |c: char| c.is_whitespace() || "\"'()<>@=?&,;:`|".contains(c);
     let unquote = |j: usize| line[ranges[j].0..ranges[j].1].trim_matches(['"', '\'']);
+    // The nearest option before the current word, carried along so the walk stays linear
+    // (a rescan of every earlier word per word was quadratic: a 900 KB hook module of
+    // `curl x | sh; ` took over 40 s).
+    let mut last_opt: Option<&str> = None;
     for (k, &(ws, we)) in ranges.iter().enumerate() {
         let word = &line[ws..we];
         let prev = k.checked_sub(1).map(unquote).unwrap_or("");
+        let nearest_opt = last_opt;
+        if unquote(k).starts_with('-') {
+            last_opt = Some(unquote(k));
+        }
         // A header value: the nearest option before this word is -H / --header. (Judged
         // on the nearest option, not the previous word, so it holds for de-quoted text
         // too, where `-H "Authorization: token $(cat x)"` is several words.)
-        if (0..k).rev().map(unquote).find(|w| w.starts_with('-')).is_some_and(|w| matches!(w, "-h" | "--header")) {
+        if nearest_opt.is_some_and(|w| matches!(w, "-h" | "--header")) {
             continue;
         }
         let bare = word.trim_start_matches(['"', '\'']);

@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct ScanDiff {
@@ -275,18 +275,18 @@ fn diff_array_section(
         }
     };
 
-    let baseline_map: HashMap<String, &Value> = baseline
+    let baseline_map: BTreeMap<String, &Value> = baseline
         .iter()
         .filter_map(|v| Some((composite_key(v)?, v)))
         .collect();
 
-    let current_map: HashMap<String, &Value> = current
+    let current_map: BTreeMap<String, &Value> = current
         .iter()
         .filter_map(|v| Some((composite_key(v)?, v)))
         .collect();
 
-    let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
-    let current_keys: HashSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&String> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -371,18 +371,18 @@ fn normalize_hooks(v: Option<&Value>) -> Option<Value> {
 fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "path";
 
-    let baseline_map: HashMap<String, &Value> = baseline
+    let baseline_map: BTreeMap<String, &Value> = baseline
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
 
-    let current_map: HashMap<String, &Value> = current
+    let current_map: BTreeMap<String, &Value> = current
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
 
-    let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
-    let current_keys: HashSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&String> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -456,18 +456,18 @@ fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "path";
 
-    let baseline_map: HashMap<String, &Value> = baseline
+    let baseline_map: BTreeMap<String, &Value> = baseline
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
 
-    let current_map: HashMap<String, &Value> = current
+    let current_map: BTreeMap<String, &Value> = current
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
 
-    let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
-    let current_keys: HashSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&String> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -505,8 +505,8 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
             changes.push(format!("CONTENT CHANGED: hash {} -> {}", b_hash, c_hash));
         }
 
-        let b_caps: HashSet<String> = get_string_array(b, "capabilities").into_iter().collect();
-        let c_caps: HashSet<String> = get_string_array(c, "capabilities").into_iter().collect();
+        let b_caps: BTreeSet<String> = get_string_array(b, "capabilities").into_iter().collect();
+        let c_caps: BTreeSet<String> = get_string_array(c, "capabilities").into_iter().collect();
 
         let gained: Vec<&String> = c_caps.difference(&b_caps).collect();
         let lost: Vec<&String> = b_caps.difference(&c_caps).collect();
@@ -552,17 +552,17 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 /// never re-confirm. Keyed by server_name, then by tool name.
 fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "server_name";
-    let baseline_map: HashMap<String, &Value> = baseline
+    let baseline_map: BTreeMap<String, &Value> = baseline
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
-    let current_map: HashMap<String, &Value> = current
+    let current_map: BTreeMap<String, &Value> = current
         .iter()
         .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
         .collect();
 
-    let baseline_keys: HashSet<&String> = baseline_map.keys().collect();
-    let current_keys: HashSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&String> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -583,8 +583,8 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         let b_tools = tool_fingerprints(b);
         let c_tools = tool_fingerprints(c);
 
-        let b_names: HashSet<&String> = b_tools.keys().collect();
-        let c_names: HashSet<&String> = c_tools.keys().collect();
+        let b_names: BTreeSet<&String> = b_tools.keys().collect();
+        let c_names: BTreeSet<&String> = c_tools.keys().collect();
 
         for added_tool in c_names.difference(&b_names) {
             changes.push(format!("tool added: {}", added_tool));
@@ -605,9 +605,9 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         }
 
         // Observed capability drift.
-        let b_caps: HashSet<String> =
+        let b_caps: BTreeSet<String> =
             get_string_array(b, "observed_capabilities").into_iter().collect();
-        let c_caps: HashSet<String> =
+        let c_caps: BTreeSet<String> =
             get_string_array(c, "observed_capabilities").into_iter().collect();
         let gained: Vec<&String> = c_caps.difference(&b_caps).collect();
         if !gained.is_empty() {
@@ -634,8 +634,8 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 }
 
 /// Map each probed tool's name to (description, canonical-inputSchema-string).
-fn tool_fingerprints(probe: &Value) -> HashMap<String, (String, String)> {
-    let mut map = HashMap::new();
+fn tool_fingerprints(probe: &Value) -> BTreeMap<String, (String, String)> {
+    let mut map = BTreeMap::new();
     if let Some(tools) = probe.get("tools").and_then(|t| t.as_array()) {
         for t in tools {
             let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
@@ -754,6 +754,27 @@ mod hook_diff_tests {
         let cur = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": false}}]});
         let text = render_diff(&diff_reports(&base, &cur));
         assert!(text.contains("provenance"), "{text}");
+    }
+
+    /// Added and removed rows come out sorted, so two runs of the same `--diff` print the
+    /// same text (they came from a HashSet difference before).
+    #[test]
+    fn added_and_removed_rows_are_sorted() {
+        let rows = |paths: &[&str]| {
+            serde_json::json!({"agent_settings": paths.iter().map(|p| serde_json::json!({"path": p, "hooks": []})).collect::<Vec<_>>()})
+        };
+        let names: Vec<String> = (0..40).map(|i| format!("/p/{:02}/hooks.json", (i * 7) % 40)).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let d = diff_reports(&rows(&[]), &rows(&refs));
+        let s = d.sections.iter().find(|s| !s.added.is_empty()).expect("added rows");
+        let mut sorted = s.added.clone();
+        sorted.sort();
+        assert_eq!(s.added, sorted);
+        let d = diff_reports(&rows(&refs), &rows(&[]));
+        let s = d.sections.iter().find(|s| !s.removed.is_empty()).expect("removed rows");
+        let mut sorted = s.removed.clone();
+        sorted.sort();
+        assert_eq!(s.removed, sorted);
     }
 
     /// A baseline written before hook kinds and grading fields existed compares equal to

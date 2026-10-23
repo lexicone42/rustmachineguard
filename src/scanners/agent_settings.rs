@@ -734,6 +734,19 @@ pub(crate) fn url_host(url: &str) -> String {
 const AGENT_CONFIG_DIRS: &[&str] =
     &[".claude", ".vscode", ".cursor", ".codex", ".gemini", ".kiro", ".copilot", ".codeium", ".devin", ".windsurf", ".opencode"];
 
+/// The risk prefix of a reference to another agent's config directory under the user's
+/// own HOME (`~/.claude/hooks/fmt.sh` from `~/.codex/hooks.json`). It starts with
+/// "cross-references", so every scope that grades cross-directory references still sees
+/// it; the user's own hooks are graded on it as a Low advisory.
+pub const CROSS_HOME_RISK: &str = "cross-references another agent's config directory in your home";
+
+/// The path-shaped tokens of an already redacted command that may be probed: those of
+/// [`referenced_paths`] with no redaction in them. A token that held a credential
+/// (`--pass Xy/z`, a key-shaped run with a '/') is `<redacted>` or contains it.
+pub(crate) fn probe_tokens(redacted: &str) -> Vec<&str> {
+    referenced_paths(redacted).into_iter().filter(|t| !t.contains("<redacted>")).collect()
+}
+
 /// Tokens in a hook command that look like a filesystem path (rather than a flag,
 /// a bare command name, or a shell operator).
 fn referenced_paths(command: &str) -> Vec<&str> {
@@ -979,12 +992,15 @@ pub(crate) fn classify_command_with(
     };
     let root_label = root_override.map_or("project", |(_, l)| l);
 
-    // Probe paths in the REDACTED command. A base64 blob or an AWS secret contains '/'
-    // about half the time, and probing it as a path wrote the credential to the trace
-    // log and the miss counters; after redaction it is `<redacted>`, which has no '/'.
-    let redacted_command = crate::scanners::redact_secrets_in_text(command);
+    // Probe paths in the REDACTED command, redacted as it is shown
+    // ([`crate::scanners::redact_command_text`]: password flags such as `--pass`, and
+    // key-shaped runs, too). A base64 blob, an AWS secret or a `--pass Xy/z` value
+    // contains '/' often enough, and probing it as a path wrote the credential to the
+    // trace log and the miss counters, and put it in a stat() call any syscall audit
+    // sees. A token with a redaction in it is never a path to probe.
+    let redacted_command = crate::scanners::redact_command_text(command);
     let programs = program_tokens(&redacted_command);
-    for token in referenced_paths(&redacted_command) {
+    for token in probe_tokens(&redacted_command) {
         let probe = !program_only || programs.contains(&token);
         let referenced_dir = token
             .split('/')
@@ -997,14 +1013,24 @@ pub(crate) fn classify_command_with(
             // Shown without the shell quotes (`"$CLAUDE_PROJECT_DIR"/.claude/x` read as
             // `$CLAUDE_PROJECT_DIR"/.claude/x` once split into a token).
             let unquoted = token.replace(['"', '\''], "");
+            // A path anchored at HOME (`~/.claude/hooks/fmt.sh`, `$HOME/...`, or an
+            // absolute path under it) is the user's own file: one personal script shared
+            // by several agents is the ordinary multi-agent setup (Cursor and Devin CLI
+            // import ~/.claude configuration, Codex uses the Claude hook format). It is
+            // worded neutrally, and the ladder grades it by scope (a repository's hook
+            // reaching into it stays High).
+            let home_anchored = ["~/", "$HOME/", "${HOME}/"].iter().any(|p| unquoted.starts_with(p))
+                || home.is_some_and(|h| unquoted.starts_with('/') && Path::new(&unquoted).starts_with(h));
             let token: &str = if program_only && !programs.contains(&token) { &shown_dir } else { &unquoted };
-            if Some(dir) != own_dir {
+            if Some(dir) == own_dir {
+                risks.push(format!("runs a script stored in {dir}/ ({token})"));
+            } else if home_anchored {
+                risks.push(format!("{CROSS_HOME_RISK} ({token})"));
+            } else {
                 risks.push(format!(
                     "cross-references another tool's config directory ({token}) — the \
                      Shai-Hulud persistence pattern"
                 ));
-            } else {
-                risks.push(format!("runs a script stored in {dir}/ ({token})"));
             }
         }
 

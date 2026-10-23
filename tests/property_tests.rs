@@ -5318,6 +5318,15 @@ fn sanitize_display_strips_controls_and_caps() {
     assert_eq!(sanitize_display("ok-1.2.3", 64), "ok-1.2.3");
     assert_eq!(sanitize_display("a\u{1b}[2K\rb\nc\u{85}d\u{2028}e", 64), "a?[2K?b?c?d?e");
     assert_eq!(sanitize_display("abcdef", 3), "abc…");
+    // Invisible carriers (review of f6f7df7): the tag block, supplementary variation
+    // selectors, soft hyphen, Mongolian vowel separator and Hangul fillers are replaced;
+    // ZWJ and ZWNJ stay for the scripts and emoji sequences that need them.
+    for c in ['\u{E0041}', '\u{E007F}', '\u{E0100}', '\u{AD}', '\u{180E}', '\u{115F}', '\u{1160}', '\u{3164}', '\u{FFA0}'] {
+        assert_eq!(sanitize_display(&format!("a{c}b"), 64), "a?b", "U+{:04X}", c as u32);
+    }
+    for c in ['\u{200C}', '\u{200D}'] {
+        assert_eq!(sanitize_display(&format!("a{c}b"), 64), format!("a{c}b"), "U+{:04X}", c as u32);
+    }
 }
 
 

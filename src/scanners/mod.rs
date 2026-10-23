@@ -2240,22 +2240,50 @@ pub const HOOK_PROMPT_POISONING_PATTERNS: &[&str] = &[
     "override previous instructions",
     "do not tell the user",
     "do not show the user",
-    "never reveal",
     "always include the contents of",
     "pass as a sidenote",
     "hidden instruction",
-    "<important>",
-    "</important>",
-    "<secret>",
-    "<system-prompt>",
-    "<system>",
     "```system",
 ];
 
 /// [`scan_injection_text`] with [`HOOK_PROMPT_POISONING_PATTERNS`], for hook prompts.
+///
+/// "never reveal" and the XML-tag rows (`<important>`, `<system>`, ...) are left out of
+/// the hook subset: "the agent must never reveal API keys" and
+/// `<important>Be strict about rm -rf.</important>` are ordinary guard wording, and the
+/// hook's author already writes the evaluator's instructions (review of f6f7df7).
+///
+/// Matched three ways: on the lowercased text, on the text folded by
+/// [`normalize_for_matching`] with every Unicode space (NBSP, ideographic space) read as
+/// one ASCII space (so a soft hyphen, a zero-width character or fullwidth letters inside
+/// a phrase do not hide it), and on the ASCII that Unicode tag characters (U+E0020 to
+/// U+E007E) spell, which a model reads and a reviewer does not see.
 pub fn scan_hook_prompt_text(text: &str) -> Vec<&'static str> {
     let lower = text.to_lowercase();
-    HOOK_PROMPT_POISONING_PATTERNS.iter().filter(|p| lower.contains(**p)).copied().collect()
+    let spaced = |s: &str| s.split(char::is_whitespace).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let folded = spaced(&normalize_for_matching(text));
+    let tags: String = text
+        .chars()
+        .filter_map(|c| (0xE0020..=0xE007E).contains(&(c as u32)).then(|| char::from_u32(c as u32 - 0xE0000)).flatten())
+        .collect();
+    let tags = spaced(&tags.to_lowercase());
+    HOOK_PROMPT_POISONING_PATTERNS
+        .iter()
+        .filter(|p| lower.contains(**p) || folded.contains(**p) || tags.contains(**p))
+        .copied()
+        .collect()
+}
+
+/// The [`scan_suspicious_unicode`] classes that make a hook prompt a hiding place: the
+/// hook's evaluator model reads tag characters, variation-selector payloads, zero-width
+/// characters and bidi controls that render as nothing (or reorder what renders) for
+/// the person reviewing the hook. Soft hyphens and other controls are left to
+/// [`scan_hook_prompt_text`]'s folding.
+pub fn hook_prompt_hidden_unicode(text: &str) -> Vec<&'static str> {
+    scan_suspicious_unicode(text)
+        .into_iter()
+        .filter(|c| matches!(*c, "tag-block" | "variation-selector-smuggler" | "zero-width" | "bidi-control"))
+        .collect()
 }
 
 /// Make attacker-controlled free text safe to print: control characters (including ESC,
@@ -2288,6 +2316,17 @@ pub fn is_display_hazard(c: char) -> bool {
         || ('\u{202a}'..='\u{202e}').contains(&c)
         || ('\u{2060}'..='\u{2064}').contains(&c)
         || ('\u{2066}'..='\u{2069}').contains(&c)
+        || is_invisible_carrier(c)
+}
+
+/// Characters that render as nothing (or as blank space) and carry hidden text: the
+/// Unicode tag block (U+E0000-E007F, which spells ASCII a model reads), the
+/// supplementary variation selectors (U+E0100-E01EF), the soft hyphen (U+00AD), the
+/// Mongolian vowel separator (U+180E) and the Hangul fillers (U+115F, U+1160, U+3164,
+/// U+FFA0). [`scan_suspicious_unicode`] treats them as smuggling carriers; no display
+/// field needs them.
+fn is_invisible_carrier(c: char) -> bool {
+    matches!(c as u32, 0xE0000..=0xE007F | 0xE0100..=0xE01EF | 0x00AD | 0x180E | 0x115F | 0x1160 | 0x3164 | 0xFFA0)
 }
 
 
