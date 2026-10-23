@@ -253,7 +253,8 @@ fn render_sections(report: &ScanReport) -> String {
             } else {
                 s.hooks.iter().map(|h| {
                     let d = if h.dangerous { " ⚠" } else { "" };
-                    format!("{}[{}]{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), d)
+                    let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", html_escape(&h.kind)) };
+                    format!("{}[{}]{}{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), kind, d)
                 }).collect::<Vec<_>>().join(", ")
             };
             html.push_str(&format!(

@@ -461,39 +461,6 @@ struct Effectiveness {
     rating: String,
 }
 
-// Injection-specific phrases that suggest MCP tool/resource description poisoning
-// (hidden instructions aimed at the agent). Chosen to be multi-word to minimise
-// false positives on benign descriptions like "Always returns JSON". Covers the
-// Trail-of-Bits "line jumping" / Invariant Labs tool-poisoning families and the
-// CyberArk "Poison everywhere" resource-description variant.
-const POISONING_PATTERNS: &[&str] = &[
-    "ignore previous",
-    "ignore all previous",
-    "disregard previous",
-    "disregard the above",
-    "you must ignore",
-    "override previous instructions",
-    "do not tell the user",
-    "do not mention",
-    "do not display",
-    "do not show the user",
-    "never reveal",
-    "always include the contents of",
-    "before using this tool",
-    "before you use this tool",
-    "first read",
-    "pass as a sidenote",
-    "this is very important",
-    "system prompt",
-    "hidden instruction",
-    "<important>",
-    "</important>",
-    "<secret>",
-    "<system-prompt>",
-    "<system>",
-    "```system",
-];
-
 /// Recursively append every `"description"` string found in a JSON-Schema value to
 /// `out` (separated by spaces), so parameter descriptions are scanned for injection.
 fn collect_schema_descriptions(schema: &serde_json::Value, out: &mut String) {
@@ -519,16 +486,8 @@ fn collect_schema_descriptions(schema: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Scan text for known prompt-injection / line-jumping phrases.
-/// Lowercases once; returns the matched patterns in catalog order.
-fn scan_injection_text(text: &str) -> Vec<&'static str> {
-    let lower = text.to_lowercase();
-    POISONING_PATTERNS
-        .iter()
-        .filter(|p| lower.contains(**p))
-        .copied()
-        .collect()
-}
+// Prompt-injection phrase matching is shared with prompt/agent hooks.
+use crate::scanners::scan_injection_text;
 
 // Invisible-Unicode detection lives in `scanners` so every text surface (MCP tool
 // descriptions, rules files, skills) uses the same detector.
@@ -1014,8 +973,22 @@ impl BlueprintDocument {
                 component_ref: Some(comp_ref.clone()),
                 responsibilities: Vec::new(),
                 interfaces: Vec::new(),
-                properties: Vec::new(),
+                // Frontmatter hooks, as on an agent settings asset.
+                properties: skill
+                    .hooks
+                    .iter()
+                    .enumerate()
+                    .map(|(hi, h)| Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) })
+                    .collect(),
             });
+            for _ in &skill.hooks {
+                behaviors.push(
+                    "hook-exec".into(),
+                    vec!["declared".into()],
+                    vec![format!("asset:{}", comp_ref)],
+                    Vec::new(),
+                );
+            }
 
             // Each capability becomes a declared behavior
             for cap in &skill.capabilities {
@@ -1710,17 +1683,13 @@ impl BlueprintDocument {
                     value: "true".into(),
                 });
             }
+            if let Some(p) = &settings.provenance
+                && let (Some(m), Some(pl)) = (&p.marketplace, &p.plugin)
+            {
+                props.push(Property { name: "rmg:plugin".into(), value: format!("{pl}@{m}") });
+            }
             for (hi, h) in settings.hooks.iter().enumerate() {
-                props.push(Property {
-                    name: format!("rmg:hook-{}", hi),
-                    value: format!(
-                        "{}[{}]{}: {}",
-                        h.event,
-                        h.matcher.as_deref().unwrap_or("*"),
-                        if h.dangerous { " DANGEROUS" } else { "" },
-                        h.command
-                    ),
-                });
+                props.push(Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) });
             }
 
             assets.push(Asset {
@@ -2117,6 +2086,19 @@ impl BlueprintDocument {
 /// code derives from a name (probe results, the finding link index) still resolve.
 #[derive(Default)]
 struct RefAllocator(std::collections::HashSet<String>);
+
+/// `event[matcher] (kind) DANGEROUS: command` for an `rmg:hook-N` property.
+fn hook_property(h: &crate::models::AgentHook) -> String {
+    let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
+    format!(
+        "{}[{}]{}{}: {}",
+        h.event,
+        h.matcher.as_deref().unwrap_or("*"),
+        kind,
+        if h.dangerous { " DANGEROUS" } else { "" },
+        h.command
+    )
+}
 
 impl RefAllocator {
     fn unique(&mut self, base: String) -> String {

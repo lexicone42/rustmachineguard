@@ -545,6 +545,7 @@ const SENSITIVE_READ_PATHS: &[&str] = &[
     "Library/Application Support/Google/Chrome", ".claude", ".claude.json", ".codex", ".gemini",
     ".cursor", ".kiro", ".cache/huggingface", ".huggingface", ".config/glab-cli", ".s3cfg",
     ".authinfo", ".authinfo.gpg", ".boto", ".databrickscfg", ".config/configstore",
+    ".copilot", ".codeium", ".config/devin", ".config/opencode",
 ];
 /// File names that are sensitive wherever they sit, inside HOME or not, inside a
 /// repository or a plugin or not: shell rc and history files, credential dotfiles,
@@ -606,7 +607,10 @@ pub(crate) fn is_sensitive_read_target(resolved: &Path, home: &Path) -> bool {
 
 /// HOME-relative agent homes in SENSITIVE_READ_PATHS: agent configuration rather than a
 /// credential store (their credential files are judged by name).
-const AGENT_CONFIG_READ_PATHS: &[&str] = &[".claude", ".claude.json", ".codex", ".gemini", ".cursor", ".kiro", ".config/claude"];
+const AGENT_CONFIG_READ_PATHS: &[&str] = &[
+    ".claude", ".claude.json", ".codex", ".gemini", ".cursor", ".kiro", ".config/claude", ".copilot", ".codeium",
+    ".config/devin", ".config/opencode",
+];
 
 /// Why [`is_sensitive_read_target`] refuses `resolved`, for wording and grading:
 /// `"credential"` (a credential, key, `.env` or shell-rc/history name, or a credential

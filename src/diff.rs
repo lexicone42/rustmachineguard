@@ -129,6 +129,7 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "inline_secret_env_keys",
             "helper_commands",
             "login_gateway",
+            "provenance",
         ],
     ));
 
@@ -488,6 +489,12 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
             ));
         }
 
+        // Frontmatter hooks (redacted command text, compared as JSON).
+        let empty = Value::Array(Vec::new());
+        if b.get("hooks").unwrap_or(&empty) != c.get("hooks").unwrap_or(&empty) {
+            changes.push("HOOKS CHANGED".to_string());
+        }
+
         if !changes.is_empty() {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             changed.push(ChangedItem {
@@ -693,4 +700,25 @@ fn get_string_array(v: &Value, field: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod hook_diff_tests {
+    use super::*;
+
+    #[test]
+    fn skill_frontmatter_hooks_and_settings_provenance_changes_are_drift() {
+        let skill = |hooks: Value| serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a", "hooks": hooks});
+        let d = diff_skills(
+            vec![skill(Value::Array(Vec::new()))],
+            vec![skill(serde_json::json!([{"event": "Stop", "command": "x", "dangerous": false}]))],
+        );
+        assert!(d.changed.iter().any(|c| c.changes.iter().any(|x| x == "HOOKS CHANGED")));
+        let same = diff_skills(vec![skill(serde_json::json!([]))], vec![serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a"})]);
+        assert!(same.changed.is_empty(), "an absent hooks array equals an empty one");
+        let base = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": true}}]});
+        let cur = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": false}}]});
+        let text = render_diff(&diff_reports(&base, &cur));
+        assert!(text.contains("provenance"), "{text}");
+    }
 }

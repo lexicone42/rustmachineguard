@@ -141,6 +141,9 @@ fn render_inner(report: &ScanReport) -> String {
     summary_line(&mut out, "Agent Skills", s.agent_skills_count);
     summary_line(&mut out, "Agent Settings Files", s.agent_settings_count);
     summary_line(&mut out, "Agent Hooks", s.agent_hooks_count);
+    for (framework, n) in &s.agent_hooks_by_framework {
+        out.push_str(&format!("  {:>35}  {}\n", format!("{framework} ·").dimmed(), n));
+    }
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
     summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);
@@ -574,6 +577,16 @@ fn render_inner(report: &ScanReport) -> String {
                     skill.file_type.dimmed(),
                     caps,
                 ));
+                for h in &skill.hooks {
+                    let cmd: String = h.command.chars().take(70).collect();
+                    out.push_str(&format!(
+                        "      {} hook {}[{}]: {}\n",
+                        "·".dimmed(),
+                        h.event.dimmed(),
+                        h.matcher.as_deref().unwrap_or("*"),
+                        if h.dangerous { cmd.red().to_string() } else { cmd }
+                    ));
+                }
             }
         }
         out.push('\n');
@@ -638,11 +651,29 @@ fn render_inner(report: &ScanReport) -> String {
                 };
                 let matcher = h.matcher.as_deref().unwrap_or("*");
                 let cmd_preview: String = h.command.chars().take(70).collect();
+                let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
+                let plugin = match s.provenance.as_ref() {
+                    Some(pr) if pr.plugin.is_some() && pr.marketplace.is_some() => {
+                        let off = if pr.active { "" } else { ", inactive" };
+                        format!(
+                            " [plugin {}@{}{off}]",
+                            pr.plugin.as_deref().unwrap_or(""),
+                            pr.marketplace.as_deref().unwrap_or("")
+                        )
+                        .dimmed()
+                        .to_string()
+                    }
+                    _ => String::new(),
+                };
+                let off = if h.disabled { " (disabled)".dimmed().to_string() } else { String::new() };
                 out.push_str(&format!(
-                    "    {} hook {}[{}]: {}\n",
+                    "    {} hook {}[{}]{}{}{}: {}\n",
                     marker,
                     h.event.dimmed(),
                     matcher,
+                    kind,
+                    plugin,
+                    off,
                     if h.dangerous {
                         cmd_preview.red().to_string()
                     } else {

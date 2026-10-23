@@ -550,3 +550,81 @@ fn no_canary_reaches_any_output_format_end_to_end() {
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+/// Hooks everywhere: one canary per new surface (an exec-form argument, an http hook's
+/// userinfo, query and header, a Copilot `env` value, a prompt's key=value, a module's
+/// source, a frontmatter hook argument) reaches no output format and no --diff.
+#[test]
+fn no_hook_canary_reaches_any_output_or_diff() {
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-hookcanary-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let proj = home.join("proj");
+    let w = |p: std::path::PathBuf, t: &str| {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, t).unwrap();
+    };
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(args)
+            .args(["--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    w(home.join(".claude.json"), &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()));
+    let baseline = home.join("baseline.json");
+    fs::write(&baseline, run(&["--format", "json"])).unwrap();
+
+    w(
+        proj.join(".claude/settings.json"),
+        r#"{"hooks":{
+            "PreToolUse":[{"hooks":[{"type":"command","command":"deploy","args":["--token","E2EHOOKARG","https://u:E2EARGUSER@hookarg.internal/"]}]}],
+            "PostToolUse":[{"hooks":[{"type":"http","url":"https://u:E2EHTTPUSER@hookhttp.internal/h?token=E2EHTTPQUERY","headers":{"Authorization":"Bearer E2EHTTPHDR"},"allowedEnvVars":["E2EENVNAME"]}]}],
+            "Stop":[{"hooks":[{"type":"prompt","prompt":"Summarize the session. api_key=E2EPROMPTKEY"}]}]}}"#,
+    );
+    w(proj.join(".github/hooks/a.json"), r#"{"version":1,"hooks":{"sessionStart":[{"bash":"echo copilot-hook","env":{"T":"E2ECOPILOTENV"}}]}}"#);
+    w(home.join(".config/opencode/plugins/m.ts"), "const k = \"E2EMODSRC\";\nexport const M = async () => ({ event: async () => {} })\n");
+    w(
+        proj.join(".claude/skills/s/SKILL.md"),
+        "---\nname: s\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: \"deploy --token E2EFMTOK https://fm.internal/\"\n---\nbody\n",
+    );
+    fn canaries_in(text: &str) -> Vec<String> {
+        text.match_indices("E2E")
+            .map(|(i, _)| {
+                let end = text[i + 3..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + 3 + o);
+                text[i..end].to_string()
+            })
+            .filter(|c| c.len() > 3)
+            .collect()
+    }
+    let base = baseline.to_string_lossy().to_string();
+    for args in [
+        vec!["--format", "terminal"],
+        vec!["--format", "json"],
+        vec!["--format", "html"],
+        vec!["--format", "blueprint"],
+        vec!["--diff", base.as_str()],
+    ] {
+        let text = run(&args);
+        let leaked = canaries_in(&text);
+        assert!(leaked.is_empty(), "{args:?}: secret values reached the output: {leaked:?}");
+        if args[1] == "json" {
+            for shown in ["hookarg.internal", "hookhttp.internal", "Summarize the session", "echo copilot-hook", "m.ts", "fm.internal"] {
+                assert!(text.contains(shown), "fixture for {shown} never reached the report, so the canary check proves nothing for it");
+            }
+        }
+        if args[0] == "--diff" {
+            assert!(text.contains("hookarg.internal") || text.contains("settings.json"), "the diff saw the new hook file: {text}");
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}

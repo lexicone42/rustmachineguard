@@ -431,6 +431,7 @@ fn main() {
             npm_packages_count: 0,
             jetbrains_plugins_count: 0,
             persistence_artifacts_count: 0,
+            agent_hooks_by_framework: Default::default(),
         },
     };
 

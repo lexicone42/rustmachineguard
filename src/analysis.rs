@@ -119,8 +119,8 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "least privilege · EAA-003 (lifecycle persistence)",
         },
         "Hook" => Guidance {
-            what: "An agent settings file registers a hook that runs a shell command automatically on an agent event (e.g. before every tool use).",
-            why: "Hooks execute silently with your privileges on every triggering event — a powerful persistence and code-execution mechanism if the settings file is tampered with or shared.",
+            what: "A hook — a shell command, HTTP endpoint, model prompt, MCP tool call or in-process module — registered in an agent's settings, a plugin, a skill or subagent file, or a status-line or file-suggestion command.",
+            why: "Hooks execute silently with your privileges on every triggering event — a powerful persistence and code-execution mechanism if the settings file is tampered with or shared. Cursor, GitHub Copilot CLI and Devin CLI also run the hooks in a repository's .claude/settings.json by default.",
             fix: "Review the exact command below. Remove it if unexpected; if intended, confirm the settings file isn't world-writable or attacker-modifiable.",
             reference: "EAA-003 (lifecycle hook persistence)",
         },
@@ -493,41 +493,10 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
-    // Settings hooks run shell commands on agent events (silent code execution).
+    // Hooks of every agent and every scope: settings, plugin files and skill frontmatter.
+    collect_hook_findings(report, &mut f);
+
     for s in &report.agent_settings {
-        for h in &s.hooks {
-            // A hook that points at a script in ANOTHER tool's config directory is the
-            // 2026 persistence fingerprint (a Claude hook running .vscode/setup.mjs and
-            // vice versa). The command itself looks mundane, so it would otherwise score
-            // as an ordinary hook — elevate it on the reference, not the text.
-            let cross_dir = h.risks.iter().any(|r| r.starts_with("cross-references"));
-            let severity = if h.dangerous {
-                Severity::Critical
-            } else if cross_dir {
-                Severity::High
-            } else {
-                Severity::Medium
-            };
-            let detail = if h.risks.is_empty() {
-                String::new()
-            } else {
-                format!(" — {}", h.risks.join("; "))
-            };
-            f.push(Finding {
-                severity,
-                category: "Hook".into(),
-                title: format!(
-                    "{} hook [{}] runs a command{}{}",
-                    h.event,
-                    h.matcher.as_deref().unwrap_or("*"),
-                    if h.dangerous { " matching a dangerous pattern" } else { "" },
-                    detail
-                ),
-                location: s.path.clone(),
-                // The actual command is the offending artifact — surface it verbatim.
-                evidence: Some(h.command.clone()),
-            });
-        }
         // Credential/telemetry helpers: commands Claude Code runs on its own. In the
         // user's own or managed settings they are normal enterprise plumbing and are
         // reported only when dangerous; from a project file the repository chose them.
@@ -998,6 +967,241 @@ pub fn is_local_network_host(host: &str) -> bool {
                 || matches!(h.as_str(), "host.docker.internal" | "gateway.docker.internal" | "host.containers.internal")
                 || h.ends_with(".local")
         }
+    }
+}
+
+/// Where a hook came from, for grading. The ladder is the settings-hook policy per scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HookScope {
+    /// A repository's file (project or local settings, `.github/hooks`, `.kiro/hooks`, a
+    /// project skill or subagent).
+    Repository { tracked: bool },
+    /// The user's own file (user settings, `~/.claude/skills`, a local plugin).
+    UserOwn,
+    /// Machine policy.
+    Managed,
+    /// An active plugin from Anthropic's official marketplace.
+    PluginOfficial,
+    /// An active plugin from any other marketplace (every non-Claude-Code plugin).
+    PluginThirdParty { key: (String, String), root: String },
+    /// A disabled plugin, a marketplace clone, a synced skill: nothing loads it.
+    Inactive,
+}
+
+/// The plugin root of a plugin hook file: the directory above `hooks/` or the manifest
+/// directory, else the file's own directory.
+fn plugin_root_of(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let parent = p.parent().unwrap_or(p);
+    let up = matches!(
+        parent.file_name().and_then(|n| n.to_str()),
+        Some("hooks" | ".claude-plugin" | ".codex-plugin" | ".cursor-plugin")
+    );
+    let root = if up { parent.parent().unwrap_or(parent) } else { parent };
+    root.to_string_lossy().to_string()
+}
+
+fn plugin_scope(prov: Option<&crate::models::SkillProvenance>, root: String) -> HookScope {
+    match prov {
+        Some(p) if !p.active => HookScope::Inactive,
+        Some(p) if !p.third_party => HookScope::PluginOfficial,
+        p => HookScope::PluginThirdParty {
+            key: (
+                p.and_then(|p| p.marketplace.clone()).unwrap_or_default(),
+                p.and_then(|p| p.plugin.clone()).unwrap_or_default(),
+            ),
+            root,
+        },
+    }
+}
+
+fn hook_scope_for_settings(s: &crate::models::AgentSettings) -> HookScope {
+    match s.source.as_str() {
+        "project" | "local" => HookScope::Repository { tracked: s.git_tracked },
+        "managed" => HookScope::Managed,
+        "plugin" => plugin_scope(s.provenance.as_ref(), plugin_root_of(&s.path)),
+        _ => HookScope::UserOwn,
+    }
+}
+
+fn hook_scope_for_skill(k: &crate::models::AgentSkill) -> HookScope {
+    let prov = k.provenance.as_ref();
+    if k.scope == "project" {
+        return HookScope::Repository { tracked: prov.and_then(|p| p.git.as_deref()) == Some("tracked") };
+    }
+    if prov.is_some_and(|p| p.marketplace.is_some()) {
+        return plugin_scope(prov, plugin_install_root(&k.path));
+    }
+    if prov.is_some_and(|p| p.synced) {
+        return HookScope::Inactive;
+    }
+    HookScope::UserOwn
+}
+
+/// A hook's grade: its own finding, or one line in its third-party plugin's aggregated
+/// Low finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookGrade {
+    Finding(Severity),
+    Aggregate,
+}
+
+/// The hook ladder (first matching row wins; `kind` "" is a command). Pure.
+fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<HookGrade> {
+    use HookGrade::{Aggregate, Finding};
+    use HookScope::*;
+    use Severity::*;
+    if h.disabled || h.kind == "unknown" || *scope == Inactive {
+        return None;
+    }
+    let kind = if h.kind.is_empty() { "command" } else { h.kind.as_str() };
+    let by = |repo: Option<Severity>, user: Option<Severity>, official: Option<Severity>, tp: Option<HookGrade>| match scope {
+        Repository { .. } => repo.map(Finding),
+        UserOwn => user.map(Finding),
+        Managed | Inactive => None,
+        PluginOfficial => official.map(Finding),
+        PluginThirdParty { .. } => tp,
+    };
+    if matches!(kind, "command" | "module") && h.dangerous {
+        return Some(Finding(Critical));
+    }
+    if kind == "command" && h.risks.iter().any(|r| r.starts_with("cross-references")) {
+        return by(Some(High), Some(High), None, Some(Finding(High)));
+    }
+    if kind == "http" {
+        let host = h.url_host.as_deref().unwrap_or("");
+        if !crate::scanners::is_client_loopback_host(host) && !h.first_party_host {
+            return by(Some(High), Some(Medium), None, Some(Aggregate));
+        }
+    }
+    if matches!(kind, "prompt" | "agent") {
+        return if h.poisoning.is_empty() {
+            by(Some(Low), None, None, Some(Aggregate))
+        } else {
+            by(Some(High), Some(Low), Some(Low), Some(Finding(Low)))
+        };
+    }
+    if kind == "mcp_tool" {
+        return by(Some(Medium), None, None, Some(Aggregate));
+    }
+    if kind == "command" && !h.patterns.is_empty() {
+        return by(Some(Medium), Some(Low), None, Some(Aggregate));
+    }
+    by(Some(Medium), None, None, Some(Aggregate))
+}
+
+/// The finding title for one hook (see [`hook_severity`] for the grade).
+fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) -> String {
+    let event = if framework.starts_with("claude-code") || framework.is_empty() {
+        h.event.clone()
+    } else {
+        format!("{framework} {}", h.event)
+    };
+    let m = h.matcher.as_deref().unwrap_or("*");
+    let kind = if h.kind.is_empty() { "command" } else { h.kind.as_str() };
+    match kind {
+        "http" => {
+            let host = h.url_host.as_deref().unwrap_or("?");
+            let plain = if h.url_scheme.as_deref() == Some("http") { " over plaintext http" } else { "" };
+            format!("{event} hook [{m}] sends each event's JSON to {host}{plain}")
+        }
+        "prompt" | "agent" if !h.poisoning.is_empty() => format!(
+            "{event} {kind} hook [{m}] puts text matching prompt-injection phrases into the model's context ({})",
+            h.poisoning.join(", ")
+        ),
+        "prompt" | "agent" => format!("{event} {kind} hook [{m}] sends a model prompt on each event (advisory)"),
+        "mcp_tool" => format!("{event} hook [{m}] calls MCP tool {}", h.command),
+        "module" => {
+            let regs = if h.registers.is_empty() { String::new() } else { format!(": registers {}", h.registers.join(", ")) };
+            let bad = if h.dangerous { format!(" and its source matches a dangerous pattern ({})", h.patterns.join("; ")) } else { String::new() };
+            format!("hooks module {} runs inside the agent on its events{regs}{bad}", h.command)
+        }
+        _ => {
+            let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
+            let mut t = format!(
+                "{event} hook [{m}] runs a command{}{}",
+                if h.dangerous { " matching a dangerous pattern" } else { "" },
+                detail
+            );
+            if !h.dangerous && !h.patterns.is_empty() {
+                t.push_str(&format!("; matches {}", h.patterns.join(", ")));
+                if *scope == HookScope::UserOwn {
+                    t.push_str(" (advisory)");
+                }
+            }
+            t
+        }
+    }
+}
+
+/// Grade every hook: settings and plugin files (agent_settings) and skill, command and
+/// subagent frontmatter (agent_skills). A managed Claude Code `allowManagedHooksOnly` or
+/// `disableAllHooks` silences every non-managed Claude Code hook (inventory kept), and a
+/// managed `disableAllHooks` silences managed hooks too.
+fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    use std::collections::BTreeMap;
+    let managed_claude = || report.agent_settings.iter().filter(|s| s.source == "managed" && s.framework == "claude-code");
+    let managed_only = managed_claude().any(|s| s.allow_managed_hooks_only || s.disable_all_hooks);
+    let managed_off = managed_claude().any(|s| s.disable_all_hooks);
+    let suppressed = |framework: &str, scope: &HookScope| {
+        framework.starts_with("claude-code") && managed_only && (*scope != HookScope::Managed || managed_off)
+    };
+    // (marketplace, plugin) -> (plugin root, events, hook count, first (path, command))
+    let mut agg: BTreeMap<(String, String), (String, BTreeSet<String>, usize, Option<(String, String)>)> = BTreeMap::new();
+    let mut grade = |h: &crate::models::AgentHook, framework: &str, scope: HookScope, location: &str, prefix: &str, f: &mut Vec<Finding>| {
+        if suppressed(framework, &scope) {
+            return;
+        }
+        match hook_severity(&scope, h) {
+            None => {}
+            Some(HookGrade::Finding(severity)) => f.push(Finding {
+                severity,
+                category: "Hook".into(),
+                title: format!("{prefix}{}", hook_title(h, framework, &scope)),
+                location: location.to_string(),
+                evidence: Some(h.command.clone()),
+            }),
+            Some(HookGrade::Aggregate) => {
+                if let HookScope::PluginThirdParty { key, root } = scope {
+                    let e = agg.entry(key).or_insert_with(|| (root, BTreeSet::new(), 0, None));
+                    e.1.insert(h.event.clone());
+                    e.2 += 1;
+                    let cand = (location.to_string(), h.command.clone());
+                    if e.3.as_ref().is_none_or(|(p, _)| cand.0 < *p) {
+                        e.3 = Some(cand);
+                    }
+                }
+            }
+        }
+    };
+    for s in &report.agent_settings {
+        let scope = hook_scope_for_settings(s);
+        for h in &s.hooks {
+            grade(h, &s.framework, scope.clone(), &s.path, "", f);
+        }
+    }
+    for k in &report.agent_skills {
+        if k.hooks.is_empty() {
+            continue;
+        }
+        let scope = hook_scope_for_skill(k);
+        let loc = crate::scanners::sanitize_display(&k.path, 512);
+        let prefix = format!("skill '{}': ", k.name);
+        for h in &k.hooks {
+            grade(h, "claude-code", scope.clone(), &loc, &prefix, f);
+        }
+    }
+    for ((m, p), (root, events, n, first)) in agg {
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "Hook".into(),
+            title: format!(
+                "third-party plugin '{p}@{m}' registers {n} hook(s) that run on agent events: {}",
+                first_names(&events)
+            ),
+            location: crate::scanners::sanitize_display(&root, 512),
+            evidence: first.map(|(_, c)| c),
+        });
     }
 }
 
@@ -1693,5 +1897,76 @@ pub fn analyze_toxic_flow(report: &ScanReport) -> Option<ToxicFlowSurface> {
         Some(ToxicFlowSurface { sources, sinks })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod hook_ladder_tests {
+    use super::*;
+    use crate::models::AgentHook;
+
+    fn hook(kind: &str) -> AgentHook {
+        AgentHook { event: "Stop".into(), command: "x".into(), kind: kind.into(), ..Default::default() }
+    }
+
+    /// Every (scope x kind x condition) cell of the hook ladder.
+    #[test]
+    fn hook_severity_table() {
+        use HookGrade::{Aggregate as A, Finding as F};
+        use Severity::*;
+        let tp = HookScope::PluginThirdParty { key: ("m".into(), "p".into()), root: "/r".into() };
+        let scopes = [
+            HookScope::Repository { tracked: true },
+            HookScope::Repository { tracked: false },
+            HookScope::UserOwn,
+            HookScope::Managed,
+            HookScope::PluginOfficial,
+            tp,
+            HookScope::Inactive,
+        ];
+        let dangerous = AgentHook { dangerous: true, ..hook("command") };
+        let dangerous_module = AgentHook { dangerous: true, ..hook("module") };
+        let cross = AgentHook { risks: vec!["cross-references another tool's config directory (.vscode/x)".into()], ..hook("") };
+        let http_far = AgentHook { url_host: Some("collector.evil.example".into()), ..hook("http") };
+        let http_local = AgentHook { url_host: Some("localhost".into()), ..hook("http") };
+        let http_first = AgentHook { url_host: Some("api.anthropic.com".into()), first_party_host: true, ..hook("http") };
+        let poison = AgentHook { poisoning: vec!["ignore previous".into()], ..hook("prompt") };
+        let agent_plain = hook("agent");
+        let mcp = hook("mcp_tool");
+        let medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], ..hook("command") };
+        let plain = hook("");
+        let module = hook("module");
+        // Columns: repo tracked, repo untracked, user, managed, official, third-party, inactive.
+        let table: Vec<(&AgentHook, [Option<HookGrade>; 7])> = vec![
+            (&dangerous, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
+            (&dangerous_module, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
+            (&cross, [Some(F(High)), Some(F(High)), Some(F(High)), None, None, Some(F(High)), None]),
+            (&http_far, [Some(F(High)), Some(F(High)), Some(F(Medium)), None, None, Some(A), None]),
+            (&http_local, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&http_first, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&poison, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Low)), None]),
+            (&agent_plain, [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None]),
+            (&mcp, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&medium, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(A), None]),
+            (&plain, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+            (&module, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
+        ];
+        for (h, row) in &table {
+            for (scope, want) in scopes.iter().zip(row.iter()) {
+                assert_eq!(hook_severity(scope, h), *want, "{scope:?} x {h:?}");
+            }
+        }
+        // Disabled and unknown-type hooks are never graded.
+        for scope in &scopes {
+            assert_eq!(hook_severity(scope, &AgentHook { disabled: true, ..dangerous.clone() }), None);
+            assert_eq!(hook_severity(scope, &AgentHook { dangerous: true, ..hook("unknown") }), None);
+        }
+    }
+
+    #[test]
+    fn plugin_root_of_strips_hook_and_manifest_dirs() {
+        assert_eq!(plugin_root_of("/c/m/p/1.0/hooks/hooks.json"), "/c/m/p/1.0");
+        assert_eq!(plugin_root_of("/c/m/p/1.0/.codex-plugin/plugin.json"), "/c/m/p/1.0");
+        assert_eq!(plugin_root_of("/c/m/p/hooks.json"), "/c/m/p");
     }
 }

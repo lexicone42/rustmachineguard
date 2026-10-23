@@ -10,6 +10,8 @@ pub mod container_tools;
 pub mod extensions;
 pub mod git_config;
 mod helper_redact;
+pub(crate) mod hook_discovery;
+pub mod hook_sources;
 pub mod ide;
 pub mod marketplaces;
 pub mod mcp;
@@ -1973,6 +1975,50 @@ pub mod telemetry {
             skipped: true,
         }
     }
+}
+
+// Injection-specific phrases that suggest MCP tool/resource description poisoning
+// (hidden instructions aimed at the agent). Chosen to be multi-word to minimise
+// false positives on benign descriptions like "Always returns JSON". Covers the
+// Trail-of-Bits "line jumping" / Invariant Labs tool-poisoning families and the
+// CyberArk "Poison everywhere" resource-description variant.
+pub const POISONING_PATTERNS: &[&str] = &[
+    "ignore previous",
+    "ignore all previous",
+    "disregard previous",
+    "disregard the above",
+    "you must ignore",
+    "override previous instructions",
+    "do not tell the user",
+    "do not mention",
+    "do not display",
+    "do not show the user",
+    "never reveal",
+    "always include the contents of",
+    "before using this tool",
+    "before you use this tool",
+    "first read",
+    "pass as a sidenote",
+    "this is very important",
+    "system prompt",
+    "hidden instruction",
+    "<important>",
+    "</important>",
+    "<secret>",
+    "<system-prompt>",
+    "<system>",
+    "```system",
+];
+
+/// Scan text for known prompt-injection / line-jumping phrases.
+/// Lowercases once; returns the matched patterns in catalog order.
+pub fn scan_injection_text(text: &str) -> Vec<&'static str> {
+    let lower = text.to_lowercase();
+    POISONING_PATTERNS
+        .iter()
+        .filter(|p| lower.contains(**p))
+        .copied()
+        .collect()
 }
 
 /// Make attacker-controlled free text safe to print: control characters (including ESC,

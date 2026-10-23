@@ -238,7 +238,7 @@ pub const CONTROLS: &[Control] = &[
         id: "EAA-003",
         title: "Lifecycle hook / startup persistence",
         coverage: Coverage::Covered,
-        how: "Flags agent hooks, credential helpers and skill dynamic-context commands, VS Code folder-open tasks (and the cross-directory pair), writable agent configs, Python startup hooks (.pth import lines, sitecustomize.py), loaders staged in agent directories, tool-shadowing binaries in project roots, and the persistence paths of the 2026 agent-targeting worms.",
+        how: "Flags agent hooks of every type (command with exec-form args, http by host, prompt and agent by prompt-injection phrase, MCP tool, in-process module) from settings, plugin and extension hook files, Claude Code mods, skill/command/subagent frontmatter and status-line/file-suggestion commands, across Claude Code, Cursor, Codex, Copilot CLI, Gemini CLI, Devin, OpenCode and Kiro; credential helpers and skill dynamic-context commands, VS Code folder-open tasks (and the cross-directory pair), writable agent configs, Python startup hooks (.pth import lines, sitecustomize.py), loaders staged in agent directories, tool-shadowing binaries in project roots, and the persistence paths of the 2026 agent-targeting worms.",
         finding_categories: &[
             "Hook",
             "Auto-run task",

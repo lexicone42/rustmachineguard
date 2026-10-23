@@ -28,12 +28,15 @@ impl Scanner for AgentSettingsScanner {
         parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &mut results);
 
         // Project-scoped settings from known projects + the current directory.
-        let mut project_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
+        // ~/.claude.json is read once: its `projects` keys, and its `hooks` for Devin CLI.
+        let claude_json = read_bounded(&home.join(".claude.json"))
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+        let mut project_dirs = claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default();
         if let Ok(cwd) = std::env::current_dir() {
             project_dirs.push(cwd);
         }
         let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
-        for dir in project_dirs {
+        for dir in project_dirs.clone() {
             parse_settings(
                 &dir.join(".claude").join("settings.json"),
                 "project",
@@ -54,14 +57,15 @@ impl Scanner for AgentSettingsScanner {
         // Cursor's control plane: same risks, different filenames and schema.
         parse_cursor_settings(&home.join(".cursor").join("hooks.json"), "user-global", &mut results);
         parse_cursor_settings(&home.join(".cursor").join("cli-config.json"), "user-global", &mut results);
-        let mut cursor_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            cursor_dirs.push(cwd);
-        }
-        for dir in cursor_dirs {
+        for dir in &project_dirs {
             parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &mut results);
             parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &mut results);
         }
+
+        // Hook files of every other surface: Claude Code plugins, mods and skills-dir
+        // plugins, Cursor enterprise and local plugins, Codex, Copilot CLI, Gemini CLI,
+        // Devin Desktop and CLI, OpenCode and Kiro.
+        crate::scanners::hook_discovery::scan(platform, &home, &project_dirs, claude_json.as_ref(), &mut results);
 
         // Dedupe by path with the directory canonicalized: projects + cwd can overlap, and
         // the cwd under a symlinked HOME (macOS /var) names ~/.claude/settings.json again.
@@ -71,9 +75,7 @@ impl Scanner for AgentSettingsScanner {
     }
 }
 
-fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
-    let content = read_bounded(claude_json)?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+fn extract_project_dirs(parsed: &serde_json::Value) -> Option<Vec<PathBuf>> {
     let projects = parsed.get("projects")?.as_object()?;
     Some(
         projects
@@ -175,6 +177,7 @@ pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -
                 .into_iter()
                 .map(|r| crate::scanners::sanitize_display(&r, 400))
                 .collect(),
+            ..Default::default()
         });
     }
     out
@@ -219,7 +222,7 @@ pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<c
 }
 
 /// What opening a settings file produced.
-enum SettingsRead {
+pub(crate) enum SettingsRead {
     Content(String),
     /// A project file that is (or sits under) a symlink leaving the repository: not read.
     Link(crate::models::EnvSymlink),
@@ -229,7 +232,7 @@ enum SettingsRead {
 /// Project and local scopes are repository content; user-global, user-local and
 /// managed files are the user's or the organization's own (a dotfiles-managed
 /// ~/.claude/settings.json is a normal link).
-fn is_repository_scope(source: &str) -> bool {
+pub(crate) fn is_repository_scope(source: &str) -> bool {
     matches!(source, "project" | "local")
 }
 
@@ -242,16 +245,72 @@ fn is_repository_scope(source: &str) -> bool {
 /// repository. The open itself refuses a link at the final component (O_NOFOLLOW) and a
 /// FIFO, and the opened descriptor must be the resolved path, so a swap is refused too.
 fn read_settings(path: &Path, source: &str) -> SettingsRead {
+    read_settings_in(path, source, None)
+}
+
+fn is_link(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+fn shown_link(t: &Path) -> String {
+    crate::scanners::sanitize_display(&t.to_string_lossy(), 300)
+}
+
+/// [`read_settings`] for a repository file whose project directory is known (any file a
+/// hook surface keeps in a repository: `.github/hooks/*.json`, `.kiro/hooks/*.json`,
+/// `opencode.json` at the root). The symlinked component below `project_dir` is found
+/// by walking the path's ancestors, so a link at any depth (`.kiro/hooks -> ../../x`,
+/// `.codex -> /tmp/elsewhere`) is named by its own link text, and the verdict is made on
+/// both the lexical and the real target. With `project_dir` None the project is the
+/// directory above the file's agent directory, as before.
+pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&Path>) -> SettingsRead {
     use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
     if !is_repository_scope(source) {
         return read_bounded(path).map_or(SettingsRead::Unreadable, SettingsRead::Content);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
-    let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    if let Some(project_dir) = project_dir {
+        let sensitive = |lexical: &Path, real: Option<&Path>| {
+            is_sensitive_read_target(lexical, &home) || real.is_some_and(|r| is_sensitive_read_target(r, &real_home))
+        };
+        let real = std::fs::canonicalize(path).ok();
+        if is_link(path) {
+            let target = std::fs::read_link(path).unwrap_or_default();
+            let lexical = lexical_join(path.parent().unwrap_or(Path::new("/")), &target);
+            return SettingsRead::Link(crate::models::EnvSymlink {
+                target: shown_link(&target),
+                sensitive_target: sensitive(&lexical, real.as_deref()),
+            });
+        }
+        let Some(real) = real else { return SettingsRead::Unreadable };
+        let real_root = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+        if !real.starts_with(&real_root) {
+            let link = path
+                .ancestors()
+                .skip(1)
+                .take_while(|a| a.starts_with(project_dir) && *a != project_dir)
+                .find(|a| is_link(a));
+            let (text, lexical) = match link {
+                Some(l) => {
+                    let t = std::fs::read_link(l).unwrap_or_default();
+                    let rest = path.strip_prefix(l).unwrap_or(Path::new(""));
+                    let lex = lexical_join(l.parent().unwrap_or(Path::new("/")), &t);
+                    (t.join(rest), lex.join(rest))
+                }
+                None => (real.clone(), real.clone()),
+            };
+            return SettingsRead::Link(crate::models::EnvSymlink {
+                target: shown_link(&text),
+                sensitive_target: sensitive(&lexical, Some(&real)),
+            });
+        }
+        return crate::scanners::read_bounded_nofollow(path, Some(&real))
+            .map_or(SettingsRead::Unreadable, SettingsRead::Content);
+    }
     let agent_dir = path.parent().unwrap_or(Path::new("."));
     let project_dir = agent_dir.parent().unwrap_or(agent_dir);
-    let shown = |t: &Path| crate::scanners::sanitize_display(&t.to_string_lossy(), 300);
+    let shown = shown_link;
     if is_link(path) {
         let target = std::fs::read_link(path).unwrap_or_default();
         let lexical = lexical_join(agent_dir, &target);
@@ -279,9 +338,61 @@ fn read_settings(path: &Path, source: &str) -> SettingsRead {
     crate::scanners::read_bounded_nofollow(path, Some(&real)).map_or(SettingsRead::Unreadable, SettingsRead::Content)
 }
 
+/// Open a NEW hook file in a non-repository scope (user, managed, plugin); repository
+/// scopes go to [`read_settings_in`].
+///
+/// A file with no symlink at it or between it and `containment` is read with the
+/// no-follow reader. A link (the file, or a directory below `containment`) is judged on
+/// its lexical target and its real path: a plugin's file whose real path leaves the
+/// plugin is never read (Claude Code refuses it too), and any file whose lexical or real
+/// target is a credential, key, agent-config, system or other-user path outside the
+/// canonical `containment` is inventoried by its link text, never opened. A credential
+/// NAME is never opened anywhere. A dotfiles-managed `~/.gemini/settings.json` (a link
+/// into the user's own files) and a /nix/store target are read through the real path.
+pub(crate) fn read_hook_file(path: &Path, source: &str, project_dir: Option<&Path>, containment: Option<&Path>) -> SettingsRead {
+    use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
+    if is_repository_scope(source) {
+        return read_settings_in(path, source, project_dir);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    let below = |a: &Path| containment.is_some_and(|c| a.starts_with(c) && a != c);
+    let link: Option<&Path> =
+        if is_link(path) { Some(path) } else { path.ancestors().skip(1).take_while(|a| below(a)).find(|a| is_link(a)) };
+    let real = std::fs::canonicalize(path).ok();
+    let Some(l) = link else {
+        let Some(real) = real else { return SettingsRead::Unreadable };
+        if is_sensitive_read_name(path) || is_sensitive_read_name(&real) {
+            return SettingsRead::Unreadable;
+        }
+        return crate::scanners::read_bounded_nofollow(path, Some(&real))
+            .map_or(SettingsRead::Unreadable, SettingsRead::Content);
+    };
+    let t = std::fs::read_link(l).unwrap_or_default();
+    let rest = path.strip_prefix(l).unwrap_or(Path::new(""));
+    let mut lexical = lexical_join(l.parent().unwrap_or(Path::new("/")), &t);
+    let mut text = t;
+    if !rest.as_os_str().is_empty() {
+        lexical = lexical.join(rest);
+        text = text.join(rest);
+    }
+    let real_containment = containment.map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| c.to_path_buf()));
+    let inside = |r: &Path| real_containment.as_ref().is_some_and(|c| r.starts_with(c));
+    let sensitive = is_sensitive_read_target(&lexical, &home)
+        || real.as_ref().is_some_and(|r| is_sensitive_read_target(r, &real_home));
+    let named = is_sensitive_read_name(&lexical) || real.as_ref().is_some_and(|r| is_sensitive_read_name(r));
+    let link_entry = |sensitive_target: bool| SettingsRead::Link(crate::models::EnvSymlink { target: shown_link(&text), sensitive_target });
+    let Some(real) = real else { return link_entry(sensitive) };
+    let store = real.starts_with("/nix/store");
+    if named || (source == "plugin" && !inside(&real)) || (sensitive && !inside(&real) && !store) {
+        return link_entry(sensitive || named);
+    }
+    crate::scanners::read_bounded_nofollow(&real, Some(&real)).map_or(SettingsRead::Unreadable, SettingsRead::Content)
+}
+
 /// The inventory entry for a project settings file that was not opened because it is a
 /// symlink out of its repository.
-fn linked_settings(path: &Path, source: &str, framework: &str, link: crate::models::EnvSymlink) -> AgentSettings {
+pub(crate) fn linked_settings(path: &Path, source: &str, framework: &str, link: crate::models::EnvSymlink) -> AgentSettings {
     AgentSettings {
         path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         source: source.to_string(),
@@ -304,7 +415,9 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
     };
     let json = serde_json::from_str::<serde_json::Value>(&content).ok()?;
 
-    let hooks = extract_hooks(&json, path);
+    let mut hooks = extract_hooks(&json, path);
+    hooks.extend(crate::scanners::hook_sources::extract_settings_commands(&json, path));
+    let flag = |k: &str| json.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
 
     let permissions = json.get("permissions");
     let permission_mode = permissions
@@ -363,6 +476,9 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         symlink: None,
+        provenance: None,
+        allow_managed_hooks_only: flag("allowManagedHooksOnly"),
+        disable_all_hooks: flag("disableAllHooks"),
     })
 }
 
@@ -372,32 +488,8 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
 ///
 /// `{ "version": 1, "hooks": { "<event>": [ { "command": "./x.sh", "matcher": "..." } ] } }`
 pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
-    let mut out = Vec::new();
-    let Some(hooks_obj) = json.get("hooks").and_then(|h| h.as_object()) else {
-        return out;
-    };
-    for (event, entries) in hooks_obj {
-        let Some(arr) = entries.as_array() else { continue };
-        for entry in arr {
-            let Some(command) = entry.get("command").and_then(|c| c.as_str()) else {
-                continue;
-            };
-            let matcher = entry
-                .get("matcher")
-                .and_then(|m| m.as_str())
-                .filter(|s| !s.is_empty() && *s != "*")
-                .map(String::from);
-            out.push(AgentHook {
-                event: event.clone(),
-                matcher,
-                command: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(command), 2000),
-                dangerous: !crate::scanners::rules_files::check_dangerous_patterns(command)
-                    .is_empty(),
-                risks: classify_hook_command(command, settings_path),
-            });
-        }
-    }
-    out
+    let ctx = crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Cursor);
+    json.get("hooks").map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx)).unwrap_or_default()
 }
 
 /// Parse a Cursor config file (`hooks.json`, `cli-config.json`, or a project `cli.json`)
@@ -471,6 +563,7 @@ fn parse_cursor_settings(path: &Path, source: &str, out: &mut Vec<AgentSettings>
         login_gateway: None,
         disable_skill_shell_execution: false,
         symlink: None,
+        ..Default::default()
     });
 }
 
@@ -591,7 +684,7 @@ pub fn is_openai_compatible_provider(host: &str) -> bool {
 /// The connection host of a base-URL value (lowercased, no port) — what an HTTP client
 /// actually dials, so the official-vs-hostile decision can't be spoofed. Delegates the
 /// evasion-resistant authority parse to [`crate::scanners::split_url_authority`].
-fn url_host(url: &str) -> String {
+pub(crate) fn url_host(url: &str) -> String {
     // host_of, not a split on the first ':': `http://[::]:4000` is `::`, not `[`.
     crate::scanners::host_of(url).0.trim().to_string()
 }
@@ -599,7 +692,8 @@ fn url_host(url: &str) -> String {
 /// Agent-config directories a hook command might reference. A hook that runs a script
 /// stored in one of these travels with a repo or a package install, which is what makes
 /// it a persistence surface rather than just a local convenience.
-const AGENT_CONFIG_DIRS: &[&str] = &[".claude", ".vscode", ".cursor", ".codex", ".gemini"];
+const AGENT_CONFIG_DIRS: &[&str] =
+    &[".claude", ".vscode", ".cursor", ".codex", ".gemini", ".kiro", ".copilot", ".codeium", ".devin", ".windsurf", ".opencode"];
 
 /// Tokens in a hook command that look like a filesystem path (rather than a flag,
 /// a bare command name, or a shell operator).
@@ -805,6 +899,29 @@ fn classify_command(
     own_default: Option<&'static str>,
     program_only: bool,
 ) -> Vec<String> {
+    classify_command_with(command, settings_path, home, own_default, program_only, &[], None)
+}
+
+/// Where a hook's files are contained: the repository (`"project"`) or the plugin or
+/// extension that shipped it (`"plugin"`).
+pub(crate) type HookRoot<'a> = (&'a Path, &'static str);
+
+/// [`classify_command`] for a hook of any agent. `vars` are the path placeholders the
+/// agent expands before running the command (`${CLAUDE_PLUGIN_ROOT}`, `${extensionPath}`,
+/// ...), substituted after the agent-directory check (which sees the command as written,
+/// so a plugin hook is not "a script stored in .claude/" because its plugin lives there)
+/// and before `~/` expansion. `root_override` replaces the project root derived from the
+/// agent directory, so the probe's containment is the plugin or the repository itself
+/// (`.github/hooks/*.json` has no agent directory in its path).
+pub(crate) fn classify_command_with(
+    command: &str,
+    settings_path: &std::path::Path,
+    home: Option<&std::path::Path>,
+    own_default: Option<&'static str>,
+    program_only: bool,
+    vars: &[(&str, PathBuf)],
+    root_override: Option<HookRoot<'_>>,
+) -> Vec<String> {
     let mut risks = Vec::new();
     // Which agent-config dir does this settings file itself live under?
     let own_dir = settings_path
@@ -814,10 +931,14 @@ fn classify_command(
         .or(own_default);
     let base = settings_path.parent().unwrap_or(std::path::Path::new("."));
     // The directory that CONTAINS the agent-config dir (proj/ for proj/.claude/...).
-    let project_root = settings_path.ancestors().find_map(|a| {
-        let name = a.file_name()?.to_str()?;
-        AGENT_CONFIG_DIRS.contains(&name).then(|| a.parent()).flatten()
-    });
+    let project_root = match root_override {
+        Some((r, _)) => Some(r),
+        None => settings_path.ancestors().find_map(|a| {
+            let name = a.file_name()?.to_str()?;
+            AGENT_CONFIG_DIRS.contains(&name).then(|| a.parent()).flatten()
+        }),
+    };
+    let root_label = root_override.map_or("project", |(_, l)| l);
 
     // Probe paths in the REDACTED command. A base64 blob or an AWS secret contains '/'
     // about half the time, and probing it as a path wrote the credential to the trace
@@ -854,8 +975,11 @@ fn classify_command(
         // "$CLAUDE_PROJECT_DIR"/.claude/hooks/<script>: embedded quotes, and a variable
         // that only the hook runner expands. Expand it ourselves or the binary check
         // never runs for the one form the docs recommend.
-        let cleaned = token.replace(['"', '\''], "");
-        let mut expanded = match project_root {
+        let mut cleaned = token.replace(['"', '\''], "");
+        for (placeholder, path) in vars {
+            cleaned = cleaned.replace(placeholder, &path.to_string_lossy());
+        }
+        let mut expanded = match project_root.filter(|_| root_label == "project") {
             Some(root) => cleaned
                 .replace("${CLAUDE_PROJECT_DIR}", &root.to_string_lossy())
                 .replace("$CLAUDE_PROJECT_DIR", &root.to_string_lossy()),
@@ -904,6 +1028,24 @@ fn classify_command(
         {
             risks.push(format!("executes a native binary, not a script ({token})"));
         }
+        // A file the project or plugin ships that is a symlink leaving it: named by its
+        // link text, never opened (symlink_metadata and read_link only).
+        if !program_only
+            && let Some(root) = project_root.filter(|r| home.is_none_or(|h| !h.starts_with(r)))
+            && let Some(link) = candidates.iter().find(|c| {
+                c.starts_with(root) && std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_symlink())
+            })
+        {
+            let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            let leaves = std::fs::canonicalize(link).map_or(true, |real| !real.starts_with(&real_root));
+            if leaves {
+                let text = std::fs::read_link(link).unwrap_or_default();
+                risks.push(format!(
+                    "runs a file that is a symlink leaving its {root_label} ({}) — not read",
+                    crate::scanners::sanitize_display(&text.to_string_lossy(), 200)
+                ));
+            }
+        }
     }
     risks.sort();
     risks.dedup();
@@ -912,43 +1054,13 @@ fn classify_command(
 
 /// Parse the Claude Code `hooks` object:
 /// `{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "..." } ] } ] }`
+/// Every handler type is kept (command with exec-form `args`, http, prompt, agent,
+/// mcp_tool); see [`crate::scanners::hook_sources::extract_hook_map`].
 pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
-    let mut hooks = Vec::new();
-    let Some(hooks_obj) = json.get("hooks").and_then(|h| h.as_object()) else {
-        return hooks;
-    };
-
-    for (event, matchers) in hooks_obj {
-        let Some(matcher_arr) = matchers.as_array() else {
-            continue;
-        };
-        for entry in matcher_arr {
-            let matcher = entry
-                .get("matcher")
-                .and_then(|m| m.as_str())
-                .filter(|s| !s.is_empty() && *s != "*")
-                .map(String::from);
-            let Some(inner) = entry.get("hooks").and_then(|h| h.as_array()) else {
-                continue;
-            };
-            for h in inner {
-                let Some(command) = h.get("command").and_then(|c| c.as_str()) else {
-                    continue;
-                };
-                let dangerous =
-                    !crate::scanners::rules_files::check_dangerous_patterns(command).is_empty();
-                let risks = classify_claude_command(command, settings_path, false);
-                hooks.push(AgentHook {
-                    event: event.clone(),
-                    matcher: matcher.clone(),
-                    command: crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(command), 2000),
-                    dangerous,
-                    risks,
-                });
-            }
-        }
-    }
-    hooks
+    let mut ctx = crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Claude);
+    // A Claude Code settings file's own agent directory is .claude even in /etc.
+    ctx.own_dir = Some(".claude");
+    json.get("hooks").map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx)).unwrap_or_default()
 }
 
 #[cfg(test)]

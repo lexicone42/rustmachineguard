@@ -393,6 +393,9 @@ pub struct AgentSkill {
     /// Where the skill came from, used to grade the two fields above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<SkillProvenance>,
+    /// Frontmatter `hooks:` (skills, commands and subagent files).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<AgentHook>,
 }
 
 /// A skill file that is a symbolic link, or a regular file reached through a symlinked
@@ -466,7 +469,8 @@ pub struct SkillProvenance {
 pub struct AgentSettings {
     pub path: String,
     /// "user-global" | "user-local" (~/.claude/settings.local.json, seen when the scan
-    /// runs from HOME) | "local" | "project" | "managed"
+    /// runs from HOME) | "local" | "project" | "managed" | "plugin" (a plugin- or
+    /// extension-bundled hook file of any framework)
     pub source: String,
     pub framework: String,
     /// Project-scoped settings from a cloned repo are higher risk; git_tracked tells
@@ -513,6 +517,15 @@ pub struct AgentSettings {
     /// opened, so every other field is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symlink: Option<EnvSymlink>,
+    /// Plugin-bundled hook files (source "plugin"): which plugin shipped them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SkillProvenance>,
+    /// Claude Code `allowManagedHooksOnly` (honoured in managed settings only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_managed_hooks_only: bool,
+    /// Claude Code `disableAllHooks`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_all_hooks: bool,
 }
 
 /// Claude Code's forced login method / Claude apps gateway URL.
@@ -539,8 +552,9 @@ pub struct GatewayOverride {
     pub official: bool,
 }
 
-/// A hook that runs a command on an agent lifecycle event.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// A hook that runs on an agent lifecycle event: a shell command, an HTTP endpoint, a
+/// model prompt, an MCP tool call or an in-process module.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AgentHook {
     /// Event name, e.g. "PreToolUse", "PostToolUse", "Stop".
     pub event: String,
@@ -555,6 +569,36 @@ pub struct AgentHook {
     /// ordinary inline command. See `agent_settings::classify_hook_command`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub risks: Vec<String>,
+    /// "command" | "http" | "prompt" | "agent" | "mcp_tool" | "module" | "unknown".
+    /// Empty means command (older reports, credential helpers).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Exec-form argv (Claude Code `args`, Copilot `exec` + `args`): each element
+    /// redacted and sanitized, at most 64.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Dangerous-pattern descriptions the command matched, medium-only ones included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<String>,
+    /// http hooks: the URL host only (never path, query, userinfo or headers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_host: Option<String>,
+    /// http hooks: "http" | "https" | "<other>".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_scheme: Option<String>,
+    /// http hooks: the host is an AI provider's own API (the official-host model).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_party_host: bool,
+    /// prompt/agent hooks: prompt-injection phrases matched in the prompt text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub poisoning: Vec<String>,
+    /// module hooks: event names the module registers (lexical, sorted, deduped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registers: Vec<String>,
+    /// The source marks the hook off (Kiro `enabled: false`, Copilot file-level
+    /// `disableAllHooks: true`): inventoried, not graded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 /// An agent transcript / conversation-state store (EAA-005 collection surface).
@@ -774,7 +818,7 @@ pub struct ExposureFinding {
     pub found_in: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Summary {
     pub ai_agents_and_tools_count: usize,
     pub ai_frameworks_count: usize,
@@ -811,6 +855,9 @@ pub struct Summary {
     pub jetbrains_plugins_count: usize,
     #[serde(default)]
     pub persistence_artifacts_count: usize,
+    /// Hooks per framework (settings, plugin and frontmatter hooks; helpers not counted).
+    #[serde(default)]
+    pub agent_hooks_by_framework: std::collections::BTreeMap<String, usize>,
 }
 
 impl ScanReport {
@@ -833,7 +880,8 @@ impl ScanReport {
             rules_files_count: self.rules_files.len(),
             agent_skills_count: self.agent_skills.len(),
             agent_settings_count: self.agent_settings.len(),
-            agent_hooks_count: self.agent_settings.iter().map(|s| s.hooks.len()).sum(),
+            agent_hooks_count: self.agent_settings.iter().map(|s| s.hooks.len()).sum::<usize>()
+                + self.agent_skills.iter().map(|k| k.hooks.len()).sum::<usize>(),
             ai_credentials_count: self.ai_credentials.len(),
             env_files_count: self.env_files.len(),
             rules_file_findings_count: self.rules_files.iter().map(|r| r.findings.len()).sum(),
@@ -846,7 +894,26 @@ impl ScanReport {
             npm_packages_count: self.summary.npm_packages_count,
             jetbrains_plugins_count: self.summary.jetbrains_plugins_count,
             persistence_artifacts_count: self.persistence_artifacts.len(),
+            agent_hooks_by_framework: self.hooks_by_framework(),
         };
+    }
+
+    /// Hook counts keyed by framework. Skill frameworks (`claude-code`,
+    /// `claude-code-agent`, ...) all count as `claude-code`.
+    fn hooks_by_framework(&self) -> std::collections::BTreeMap<String, usize> {
+        let mut m = std::collections::BTreeMap::new();
+        for s in &self.agent_settings {
+            if !s.hooks.is_empty() {
+                *m.entry(s.framework.clone()).or_insert(0) += s.hooks.len();
+            }
+        }
+        for k in &self.agent_skills {
+            if !k.hooks.is_empty() {
+                let fw = if k.framework.starts_with("claude-code") { "claude-code".to_string() } else { k.framework.clone() };
+                *m.entry(fw).or_insert(0) += k.hooks.len();
+            }
+        }
+        m
     }
 }
 
