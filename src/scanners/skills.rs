@@ -1028,6 +1028,7 @@ fn scan_skill_bundles(
         for entry in entries.flatten() {
             if budget == 0 || entries_left == 0 {
                 walk_note(|w| w.budget_exhausted = true);
+                crate::scanners::telemetry::mark_truncated();
                 return;
             }
             entries_left -= 1;

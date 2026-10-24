@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use rustmachineguard::scanners::telemetry::timed;
+use rustmachineguard::scanners::telemetry::{self, timed};
 use rustmachineguard::models::{self, ScanReport};
 use rustmachineguard::output::{self, OutputFormat};
 use rustmachineguard::platform::{self, PlatformInfo};
@@ -93,6 +93,13 @@ struct Cli {
     /// never paths, server or package names, or secret values. OTEL_SDK_DISABLED=true wins.
     #[arg(long)]
     otel: bool,
+
+    /// Scanners run side by side within each scan phase, on at most N threads
+    /// (default: the machine's available parallelism, at most 8). 1 runs them one after
+    /// another on the main thread. The report is the same whatever N is: results and
+    /// diagnostics rows keep the fixed scanner order.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=64))]
+    jobs: Option<u16>,
 }
 
 /// Severity threshold for `--fail-on`, ordered most- to least-severe.
@@ -136,118 +143,174 @@ const VALID_SKIP: &[&str] = &[
     "npmpkgs", "jbplugins", "persistence",
 ];
 
-/// Scanners that operate from a home directory (re-run per --search-dirs entry).
-fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut ScanReport) {
-    if !skip.contains(&"extensions") {
-        report
-            .ide_extensions
-            .extend(timed(&mut report.diagnostics, "extensions", Some(plat.home_dir()), || scanners::extensions::ExtensionsScanner.scan(plat)));
-    }
-    if !skip.contains(&"mcp") {
-        report
-            .mcp_configs
-            .extend(timed(&mut report.diagnostics, "mcp", Some(plat.home_dir()), || scanners::mcp::McpScanner.scan(plat)));
-    }
-    if !skip.contains(&"shell") {
-        report
-            .shell_configs
-            .extend(timed(&mut report.diagnostics, "shell", Some(plat.home_dir()), || scanners::shell_configs::ShellConfigsScanner.scan(plat)));
-    }
-    if !skip.contains(&"ssh") {
-        report
-            .ssh_keys
-            .extend(timed(&mut report.diagnostics, "ssh", Some(plat.home_dir()), || scanners::ssh_keys::SshKeysScanner.scan(plat)));
-    }
-    if !skip.contains(&"cloud") {
-        report
-            .cloud_credentials
-            .extend(timed(&mut report.diagnostics, "cloud", Some(plat.home_dir()), || scanners::cloud_credentials::CloudCredentialsScanner.scan(plat)));
-    }
-    if !skip.contains(&"browser") {
-        report
-            .browser_extensions
-            .extend(timed(&mut report.diagnostics, "browser", Some(plat.home_dir()), || scanners::browser_extensions::BrowserExtensionsScanner.scan(plat)));
-    }
-    if !skip.contains(&"packages") {
-        report
-            .package_config_audits
-            .extend(timed(&mut report.diagnostics, "packages", Some(plat.home_dir()), || scanners::package_configs::PackageConfigsScanner.scan(plat)));
-    }
-    if !skip.contains(&"rules") {
-        report
-            .rules_files
-            .extend(timed(&mut report.diagnostics, "rules", Some(plat.home_dir()), || scanners::rules_files::RulesFilesScanner.scan(plat)));
-    }
-    if !skip.contains(&"skills") {
-        report
-            .agent_skills
-            .extend(timed(&mut report.diagnostics, "skills", Some(plat.home_dir()), || scanners::skills::SkillsScanner.scan(plat)));
-    }
-    if !skip.contains(&"settings") {
-        report
-            .agent_settings
-            .extend(timed(&mut report.diagnostics, "settings", Some(plat.home_dir()), || scanners::agent_settings::AgentSettingsScanner.scan(plat)));
-    }
-    if !skip.contains(&"aicreds") {
-        report
-            .ai_credentials
-            .extend(timed(&mut report.diagnostics, "aicreds", Some(plat.home_dir()), || scanners::ai_credentials::AiCredentialsScanner.scan(plat)));
-    }
-    if !skip.contains(&"envfiles") {
-        report
-            .env_files
-            .extend(timed(&mut report.diagnostics, "envfiles", Some(plat.home_dir()), || scanners::env_files::EnvFilesScanner.scan(plat)));
-    }
-    if !skip.contains(&"persistence") {
-        report
-            .persistence_artifacts
-            .extend(timed(&mut report.diagnostics, "persistence", Some(plat.home_dir()), || scanners::persistence::PersistenceScanner.scan(plat)));
-    }
-    if !skip.contains(&"transcripts") {
-        report
-            .transcripts
-            .extend(timed(&mut report.diagnostics, "transcripts", Some(plat.home_dir()), || scanners::transcripts::TranscriptsScanner.scan(plat)));
-    }
-    if !skip.contains(&"marketplaces") {
-        report
-            .marketplaces
-            .extend(timed(&mut report.diagnostics, "marketplaces", Some(plat.home_dir()), || scanners::marketplaces::MarketplacesScanner.scan(plat)));
-    }
-    if !skip.contains(&"vscodetasks") {
-        report
-            .vscode_tasks
-            .extend(timed(&mut report.diagnostics, "vscodetasks", Some(plat.home_dir()), || scanners::vscode_tasks::VsCodeTasksScanner.scan(plat)));
-    }
-    if !skip.contains(&"gitconfig") {
-        report
-            .git_autorun_configs
-            .extend(timed(&mut report.diagnostics, "gitconfig", Some(plat.home_dir()), || scanners::git_config::GitConfigScanner.scan(plat)));
+/// One scanner of a phase, ready to run on any thread: it returns its diagnostics row
+/// and a closure that stores its results in the report. Results are stored, and rows
+/// pushed, in the phase's fixed scanner order after every job has finished
+/// ([`run_jobs`]), so nothing in the report depends on which job finished first.
+struct Job<'a> {
+    run: Box<dyn FnOnce() -> Done<'a> + Send + 'a>,
+}
+
+/// A finished [`Job`]: its row-to-be and the store of its results.
+struct Done<'a> {
+    pending: telemetry::Pending,
+    store: Box<dyn FnOnce(&mut ScanReport) + Send + 'a>,
+}
+
+impl Done<'_> {
+    /// Finalize the row (in the fixed order: see [`telemetry::Pending`]), push it, and
+    /// store the results.
+    fn apply(self, report: &mut ScanReport) {
+        report.diagnostics.push(self.pending.finalize());
+        (self.store)(report);
     }
 }
 
+/// A [`Job`] that runs `scan` under [`telemetry::run`] (its own span, read counters and
+/// budgets on the thread it runs on) and hands the results to `store`.
+fn job<'a, T: Send + 'a>(
+    label: &'static str,
+    root: Option<PathBuf>,
+    scan: impl FnOnce() -> Vec<T> + Send + 'a,
+    store: fn(&mut ScanReport, Vec<T>),
+) -> Job<'a> {
+    Job {
+        run: Box::new(move || {
+            let (out, pending) = telemetry::run(label, root, scan);
+            Done { pending, store: Box::new(move |r: &mut ScanReport| store(r, out)) }
+        }),
+    }
+}
+
+/// Run a phase's jobs on up to `jobs` threads (this one and `jobs - 1` workers), then
+/// store every result and push every diagnostics row in the jobs' order. `jobs <= 1`
+/// is the plain sequential loop, on this thread, in order.
+///
+/// Each worker makes the phase's span context current before it runs a job, so a
+/// `scanner.*` span is a child of the `phase.*` span that is current here, and every
+/// span the scanner opens nests under it on the worker. A worker that cannot be spawned
+/// is not an error: the jobs it would have taken are run by the others, this thread
+/// included.
+fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if jobs <= 1 || list.len() <= 1 {
+        for j in list {
+            (j.run)().apply(report);
+        }
+        return;
+    }
+    let parent = otel::current_context();
+    let slots: Vec<Mutex<Option<Job<'_>>>> = list.into_iter().map(|j| Mutex::new(Some(j))).collect();
+    let done: Vec<Mutex<Option<Done<'_>>>> = slots.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    let work = || loop {
+        let i = next.fetch_add(1, Ordering::Relaxed);
+        let Some(slot) = slots.get(i) else { break };
+        let j = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each job is taken once");
+        let d = (j.run)();
+        *done[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
+    };
+    std::thread::scope(|s| {
+        for _ in 1..jobs.min(slots.len()) {
+            // The main thread's stack size: a scanner's parse or walk must not get less
+            // room on a worker than it had when the phase ran sequentially.
+            let _ = std::thread::Builder::new().name("rmguard-scan".into()).stack_size(8 << 20).spawn_scoped(s, || {
+                let _cx = parent.attach();
+                work();
+            });
+        }
+        work();
+    });
+    for d in done {
+        d.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every job ran").apply(report);
+    }
+}
+
+/// Scanners that operate from a home directory (re-run per --search-dirs entry).
+fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
+    let mut list = Vec::new();
+    if !skip.contains(&"extensions") {
+        list.push(job("extensions", Some(plat.home_dir()), move || scanners::extensions::ExtensionsScanner.scan(plat), |r, v| r.ide_extensions.extend(v)));
+    }
+    if !skip.contains(&"mcp") {
+        list.push(job("mcp", Some(plat.home_dir()), move || scanners::mcp::McpScanner.scan(plat), |r, v| r.mcp_configs.extend(v)));
+    }
+    if !skip.contains(&"shell") {
+        list.push(job("shell", Some(plat.home_dir()), move || scanners::shell_configs::ShellConfigsScanner.scan(plat), |r, v| r.shell_configs.extend(v)));
+    }
+    if !skip.contains(&"ssh") {
+        list.push(job("ssh", Some(plat.home_dir()), move || scanners::ssh_keys::SshKeysScanner.scan(plat), |r, v| r.ssh_keys.extend(v)));
+    }
+    if !skip.contains(&"cloud") {
+        list.push(job("cloud", Some(plat.home_dir()), move || scanners::cloud_credentials::CloudCredentialsScanner.scan(plat), |r, v| r.cloud_credentials.extend(v)));
+    }
+    if !skip.contains(&"browser") {
+        list.push(job("browser", Some(plat.home_dir()), move || scanners::browser_extensions::BrowserExtensionsScanner.scan(plat), |r, v| r.browser_extensions.extend(v)));
+    }
+    if !skip.contains(&"packages") {
+        list.push(job("packages", Some(plat.home_dir()), move || scanners::package_configs::PackageConfigsScanner.scan(plat), |r, v| r.package_config_audits.extend(v)));
+    }
+    if !skip.contains(&"rules") {
+        list.push(job("rules", Some(plat.home_dir()), move || scanners::rules_files::RulesFilesScanner.scan(plat), |r, v| r.rules_files.extend(v)));
+    }
+    if !skip.contains(&"skills") {
+        list.push(job("skills", Some(plat.home_dir()), move || scanners::skills::SkillsScanner.scan(plat), |r, v| r.agent_skills.extend(v)));
+    }
+    if !skip.contains(&"settings") {
+        list.push(job("settings", Some(plat.home_dir()), move || scanners::agent_settings::AgentSettingsScanner.scan(plat), |r, v| r.agent_settings.extend(v)));
+    }
+    if !skip.contains(&"aicreds") {
+        list.push(job("aicreds", Some(plat.home_dir()), move || scanners::ai_credentials::AiCredentialsScanner.scan(plat), |r, v| r.ai_credentials.extend(v)));
+    }
+    if !skip.contains(&"envfiles") {
+        list.push(job("envfiles", Some(plat.home_dir()), move || scanners::env_files::EnvFilesScanner.scan(plat), |r, v| r.env_files.extend(v)));
+    }
+    if !skip.contains(&"persistence") {
+        list.push(job("persistence", Some(plat.home_dir()), move || scanners::persistence::PersistenceScanner.scan(plat), |r, v| r.persistence_artifacts.extend(v)));
+    }
+    if !skip.contains(&"transcripts") {
+        list.push(job("transcripts", Some(plat.home_dir()), move || scanners::transcripts::TranscriptsScanner.scan(plat), |r, v| r.transcripts.extend(v)));
+    }
+    if !skip.contains(&"marketplaces") {
+        list.push(job("marketplaces", Some(plat.home_dir()), move || scanners::marketplaces::MarketplacesScanner.scan(plat), |r, v| r.marketplaces.extend(v)));
+    }
+    if !skip.contains(&"vscodetasks") {
+        list.push(job("vscodetasks", Some(plat.home_dir()), move || scanners::vscode_tasks::VsCodeTasksScanner.scan(plat), |r, v| r.vscode_tasks.extend(v)));
+    }
+    if !skip.contains(&"gitconfig") {
+        list.push(job("gitconfig", Some(plat.home_dir()), move || scanners::git_config::GitConfigScanner.scan(plat), |r, v| r.git_autorun_configs.extend(v)));
+    }
+    run_jobs(list, jobs, report);
+}
+
 /// Scanners that don't depend on home dir (run once).
-fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], report: &mut ScanReport) {
+fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
+    let mut list = Vec::new();
     if !skip.contains(&"ai") {
-        report.ai_agents_and_tools = timed(&mut report.diagnostics, "ai", None, || scanners::ai_tools::AiToolsScanner.scan(plat));
+        list.push(job("ai", None, move || scanners::ai_tools::AiToolsScanner.scan(plat), |r, v| r.ai_agents_and_tools = v));
     }
     if !skip.contains(&"frameworks") {
-        report.ai_frameworks = timed(&mut report.diagnostics, "frameworks", None, || scanners::ai_frameworks::AiFrameworksScanner.scan(plat));
+        list.push(job("frameworks", None, move || scanners::ai_frameworks::AiFrameworksScanner.scan(plat), |r, v| r.ai_frameworks = v));
     }
     if !skip.contains(&"ide") {
-        report.ide_installations = timed(&mut report.diagnostics, "ide", None, || scanners::ide::IdeScanner.scan(plat));
+        list.push(job("ide", None, move || scanners::ide::IdeScanner.scan(plat), |r, v| r.ide_installations = v));
     }
     if !skip.contains(&"node") {
-        report.node_package_managers =
-            timed(&mut report.diagnostics, "node", None, || scanners::node_packages::NodePackagesScanner.scan(plat));
+        list.push(job("node", None, move || scanners::node_packages::NodePackagesScanner.scan(plat), |r, v| r.node_package_managers = v));
     }
     if !skip.contains(&"containers") {
-        report.container_tools =
-            timed(&mut report.diagnostics, "containers", None, || scanners::container_tools::ContainerToolsScanner.scan(plat));
+        list.push(job("containers", None, move || scanners::container_tools::ContainerToolsScanner.scan(plat), |r, v| r.container_tools = v));
     }
     if !skip.contains(&"notebooks") {
-        report.notebook_servers =
-            timed(&mut report.diagnostics, "notebooks", None, || scanners::notebook_servers::NotebookServersScanner.scan(plat));
+        list.push(job("notebooks", None, move || scanners::notebook_servers::NotebookServersScanner.scan(plat), |r, v| r.notebook_servers = v));
     }
+    run_jobs(list, jobs, report);
+}
+
+/// `--jobs`, or the machine's parallelism clamped to 1..=8.
+fn scan_jobs(flag: Option<usize>) -> usize {
+    flag.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8))
 }
 
 fn main() {
@@ -341,6 +404,7 @@ fn main() {
         Format::Blueprint => "blueprint",
         Format::Compliance => "compliance",
     };
+    let jobs = scan_jobs(cli.jobs.map(usize::from));
     // Only for the rmguard.scan.duration metric: no clock read unless exporting.
     let scan_start = otel::enabled().then(Instant::now);
     // Root span of the whole scan; every phase and scanner span nests under it. Options
@@ -353,6 +417,7 @@ fn main() {
             Attr::bool(Key::ProbeMcp, cli.probe_mcp),
             Attr::bool(Key::VerifyRegistry, cli.verify_registry),
             Attr::bool(Key::Diff, cli.diff.is_some()),
+            Attr::int(Key::Jobs, jobs as i64),
         ]
     });
 
@@ -440,7 +505,7 @@ fn main() {
     // Global scanners (PATH-based, platform-level): run once
     {
         let _p = otel::span("phase.global_scanners", || vec![Attr::str(Key::Phase, "global_scanners")]);
-        run_global_scanners(primary_plat.as_ref(), &skip, &mut report);
+        run_global_scanners(primary_plat.as_ref(), &skip, jobs, &mut report);
     }
 
     // Home-rooted scanners: run for primary home + each --search-dirs entry
@@ -448,7 +513,7 @@ fn main() {
         let _p = otel::span("phase.home_pass", || {
             vec![Attr::str(Key::Phase, "home_pass"), Attr::int(Key::RootIndex, 0), Attr::str(Key::RootKind, "home")]
         });
-        run_home_rooted_scanners(primary_plat.as_ref(), &skip, &mut report);
+        run_home_rooted_scanners(primary_plat.as_ref(), &skip, jobs, &mut report);
     }
     for (i, extra_home) in search_dirs.iter().enumerate() {
         let _p = otel::span("phase.home_pass", || {
@@ -459,7 +524,7 @@ fn main() {
             ]
         });
         let alt_plat = platform::platform_for_home(extra_home.clone());
-        run_home_rooted_scanners(alt_plat.as_ref(), &skip, &mut report);
+        run_home_rooted_scanners(alt_plat.as_ref(), &skip, jobs, &mut report);
     }
 
     // Deduplicate results that might appear from overlapping roots

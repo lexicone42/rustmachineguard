@@ -57,7 +57,8 @@ impl<'a> HookCtx<'a> {
 
 /// Hooks kept per file.
 pub const MAX_HOOKS_PER_FILE: usize = 500;
-/// Hooks parsed in one scan, every file of every agent together (review of b9cda85: a
+/// Hooks parsed in one scanner run (`skills`, `settings`: each has its own budget), every
+/// file of every agent together (review of b9cda85: a
 /// plugin manifest naming one 0.5 MB hook file 200 times made a 1.7 s scan take 331 s).
 /// Hooks past it are not parsed; the file's read is noted "hook budget spent".
 pub const MAX_HOOKS_PER_SCAN: usize = 10_000;
@@ -65,42 +66,33 @@ pub const MAX_HOOKS_PER_SCAN: usize = 10_000;
 /// read); program words first. The agent-directory reference check is lexical and sees
 /// every word.
 pub const MAX_PROBED_PER_COMMAND: usize = 16;
-/// Path-shaped words probed on disk in one scan.
+/// Path-shaped words probed on disk in one scanner run.
 pub const MAX_PROBED_PER_SCAN: usize = 20_000;
 
-thread_local! {
-    /// (hooks left, probes left) for the scan running on this thread. The scanners run
-    /// one after another on one thread; the settings and skills scanners reset it.
-    static BUDGET: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((MAX_HOOKS_PER_SCAN, MAX_PROBED_PER_SCAN)) };
-}
-
-/// Start a scan's hook and probe budget.
+/// Restart the running scanner's hook and probe budget. The budget lives in the
+/// scanner's [`telemetry::ScannerScope`](crate::scanners::telemetry::ScannerScope), which
+/// [`telemetry::timed`](crate::scanners::telemetry::timed) makes fresh for every scanner,
+/// so `skills` and `settings` (the two scanners that parse hooks) each have their own,
+/// on whatever thread they run. Calling this only matters to a caller outside `timed`.
 pub fn reset_scan_budget() {
-    BUDGET.with(|b| b.set((MAX_HOOKS_PER_SCAN, MAX_PROBED_PER_SCAN)));
+    crate::scanners::telemetry::with_scope(|s| s.reset_budget());
 }
 
-/// Take one hook from the scan's budget; false once it is spent.
+/// Take one hook from the scanner's budget; false once it is spent.
 fn take_hook() -> bool {
-    BUDGET.with(|b| {
-        let (h, p) = b.get();
-        b.set((h.saturating_sub(1), p));
-        h > 0
-    })
+    crate::scanners::telemetry::with_scope(|s| s.take_hook())
 }
 
-/// Hooks left in the scan's budget.
+/// Hooks left in the scanner's budget.
 pub fn hooks_left() -> usize {
-    BUDGET.with(|b| b.get().0)
+    crate::scanners::telemetry::with_scope(|s| s.hooks_left())
 }
 
-/// Take one on-disk probe from the scan's budget; false once it is spent.
+/// Take one on-disk probe from the scanner's budget; false once it is spent.
 pub(crate) fn take_probe() -> bool {
-    BUDGET.with(|b| {
-        let (h, p) = b.get();
-        b.set((h, p.saturating_sub(1)));
-        p > 0
-    })
+    crate::scanners::telemetry::with_scope(|s| s.take_probe())
 }
+
 /// Exec-form arguments kept per hook.
 pub const MAX_ARGS: usize = 64;
 /// Event names kept per module.

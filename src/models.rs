@@ -1004,6 +1004,10 @@ pub struct ScannerStat {
     pub items: usize,
     /// Excluded via --skip; the other counters are zero.
     pub skipped: bool,
+    /// The scanner stopped at a walk budget (`telemetry::mark_truncated`): its results
+    /// may be incomplete. Absent from the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 /// A user-installed JetBrains IDE plugin. Identity only; the descriptor fields are

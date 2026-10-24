@@ -446,8 +446,9 @@ fn conv(attrs: Vec<Attr>) -> Vec<KeyValue> {
 /// A started span, attached as the current context on this thread.
 pub(super) struct Live {
     cx: Context,
-    // Dropped after `Drop::drop` ends the span: restores the parent context.
-    _attach: ContextGuard,
+    // Dropped after `Drop::drop` ends the span: restores the parent context. `None`
+    // once detached.
+    attach: Option<ContextGuard>,
     /// `Anchor::wall(t0)`: derived from the init-time anchor, not a fresh clock read.
     start: SystemTime,
     /// Monotonic twin of `start`. Start and end are both on the anchor's monotonic
@@ -468,6 +469,40 @@ impl Live {
     pub(super) fn finish_after(mut self, elapsed: Duration) {
         self.cx.span().end_with_timestamp(self.start + elapsed);
         self.finished = true;
+    }
+
+    /// Restore the previous context now and hand the still-open span on.
+    pub(super) fn detach(mut self) -> Detached {
+        self.attach = None;
+        self.finished = true;
+        Detached { cx: self.cx.clone(), start: self.start, t0: self.t0, finished: false }
+    }
+}
+
+/// A started span that is no longer attached to any thread ([`Live::detach`]).
+pub(super) struct Detached {
+    cx: Context,
+    start: SystemTime,
+    t0: Instant,
+    finished: bool,
+}
+
+impl Detached {
+    pub(super) fn set(&mut self, attrs: Vec<Attr>) {
+        self.cx.span().set_attributes(conv(attrs));
+    }
+
+    pub(super) fn finish_after(mut self, elapsed: Duration) {
+        self.cx.span().end_with_timestamp(self.start + elapsed);
+        self.finished = true;
+    }
+}
+
+impl Drop for Detached {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.cx.span().end_with_timestamp(self.start + self.t0.elapsed());
+        }
     }
 }
 
@@ -499,7 +534,20 @@ pub(super) fn start(
         .start(tracer);
     let cx = Context::current_with_span(span);
     let attach = cx.clone().attach();
-    Some(Live { cx, _attach: attach, start, t0, finished: false })
+    Some(Live { cx, attach: Some(attach), start, t0, finished: false })
+}
+
+/// The current context, for [`super::ParentContext`].
+pub(super) type Cx = Context;
+/// [`super::AttachedContext`]'s guard: restores the previous context on drop.
+pub(super) type Attached = ContextGuard;
+
+pub(super) fn current() -> Option<Context> {
+    Some(Context::current())
+}
+
+pub(super) fn attach(cx: &Context) -> ContextGuard {
+    cx.clone().attach()
 }
 
 pub(super) fn annotate_current(attrs: Vec<Attr>) {

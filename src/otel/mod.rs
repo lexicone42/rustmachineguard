@@ -54,12 +54,36 @@ mod sdk {
     use std::time::Duration;
 
     pub enum Live {}
+    pub enum Cx {}
+    pub enum Attached {}
+
+    #[inline(always)]
+    pub fn current() -> Option<Cx> {
+        None
+    }
+    pub fn attach(cx: &Cx) -> Attached {
+        match *cx {}
+    }
 
     impl Live {
         pub fn set(&mut self, _: Vec<Attr>) {
             match *self {}
         }
         pub fn error(&mut self, _: &'static str) {
+            match *self {}
+        }
+        pub fn finish_after(self, _: Duration) {
+            match self {}
+        }
+        pub fn detach(self) -> Detached {
+            match self {}
+        }
+    }
+
+    pub enum Detached {}
+
+    impl Detached {
+        pub fn set(&mut self, _: Vec<Attr>) {
             match *self {}
         }
         pub fn finish_after(self, _: Duration) {
@@ -140,6 +164,8 @@ pub enum Key {
     SkillsProjects,
     TranscriptsFramework,
     TranscriptsKind,
+    ScannerTruncated,
+    Jobs,
 }
 
 impl Key {
@@ -188,6 +214,8 @@ impl Key {
         Key::SkillsProjects,
         Key::TranscriptsFramework,
         Key::TranscriptsKind,
+        Key::ScannerTruncated,
+        Key::Jobs,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -239,6 +267,8 @@ impl Key {
             Key::SkillsProjects => "rmguard.skills.projects",
             Key::TranscriptsFramework => "rmguard.transcripts.framework",
             Key::TranscriptsKind => "rmguard.transcripts.kind",
+            Key::ScannerTruncated => "rmguard.scanner.truncated",
+            Key::Jobs => "rmguard.jobs",
         }
     }
 }
@@ -344,7 +374,70 @@ impl SpanGuard {
             live.finish_after(elapsed);
         }
     }
+
+    /// Stop being the current span on this thread (the context that was current before
+    /// it is restored now) while the span itself stays open, to be given its last
+    /// attributes and ended later, on any thread. Every child must have ended first.
+    /// A scanner span is detached when the scanner returns and ended once its counts
+    /// are final ([`crate::scanners::telemetry::Pending::finalize`]).
+    #[inline]
+    pub fn detach(mut self) -> DetachedSpan {
+        DetachedSpan(self.0.take().map(sdk::Live::detach))
+    }
 }
+
+/// An open span that is no longer any thread's current span ([`SpanGuard::detach`]).
+/// It is ended by [`DetachedSpan::finish_after`], or when dropped.
+#[must_use = "a span ends when it is finished or dropped"]
+pub struct DetachedSpan(Option<sdk::Detached>);
+
+impl DetachedSpan {
+    /// Add attributes. The closure is not called when export is off.
+    #[inline]
+    pub fn set(&mut self, attrs: impl FnOnce() -> Vec<Attr>) {
+        if let Some(d) = &mut self.0 {
+            d.set(attrs());
+        }
+    }
+
+    /// As [`SpanGuard::finish_after`].
+    #[inline]
+    pub fn finish_after(mut self, elapsed: Duration) {
+        if let Some(d) = self.0.take() {
+            d.finish_after(elapsed);
+        }
+    }
+}
+
+/// The current span (and its trace), captured on one thread to be made current on
+/// another with [`ParentContext::attach`]. A phase hands it to the worker threads that
+/// run its scanners, so each `scanner.*` span is a child of its `phase.*` span exactly as
+/// when the scanners ran on the main thread, and every span a scanner opens (its
+/// `exec.*`, `skills.walk`, ...) is a child of that scanner, on the worker it runs on.
+/// Empty when export is off.
+pub struct ParentContext(Option<sdk::Cx>);
+
+/// Capture the current span context of this thread.
+#[inline]
+pub fn current_context() -> ParentContext {
+    if !enabled() {
+        return ParentContext(None);
+    }
+    ParentContext(sdk::current())
+}
+
+impl ParentContext {
+    /// Make the captured context current on this thread until the guard drops. Guards
+    /// must be dropped in reverse order of creation, like [`SpanGuard`]s.
+    #[inline]
+    pub fn attach(&self) -> AttachedContext {
+        AttachedContext(self.0.as_ref().map(sdk::attach))
+    }
+}
+
+/// Restores this thread's previous context on drop.
+#[must_use = "the context is current only while the guard lives"]
+pub struct AttachedContext(#[allow(dead_code)] Option<sdk::Attached>);
 
 /// Open a span named `name` as a child of the current span.
 #[inline]
@@ -577,6 +670,7 @@ mod tests {
                 files_missing: 0,
                 items: 0,
                 skipped: false,
+                truncated: false,
             },
             Duration::ZERO,
         );
@@ -608,7 +702,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 44, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 46, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are a tool inventory and are not exported"

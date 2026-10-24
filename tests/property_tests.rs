@@ -4805,6 +4805,57 @@ fn telemetry_counts_reads_and_misses_and_attributes_them_to_the_scanner() {
     assert_eq!(stat.root.as_deref(), Some(dir.to_string_lossy().as_ref()));
 }
 
+/// Two scanners running at the same time on two threads (as `--jobs` runs a phase)
+/// each get their own read counts. The barriers force the overlap: both are inside
+/// `timed` while `a` reads 3 files and then while `b` reads 5. With the process-wide
+/// counters of f613c78 both rows said 8 read.
+#[test]
+fn concurrent_scanners_count_only_their_own_reads() {
+    use rustmachineguard::scanners::{read_bounded, telemetry};
+    use std::sync::Barrier;
+    let dir = std::env::temp_dir().join(format!("rmg-telemetry-par-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let files: Vec<_> = (0..8)
+        .map(|i| {
+            let p = dir.join(format!("f{i}.json"));
+            std::fs::write(&p, "{}").unwrap();
+            p
+        })
+        .collect();
+    let absent = dir.join("absent.json");
+    let (entered, a_done, b_done) = (Barrier::new(2), Barrier::new(2), Barrier::new(2));
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| {
+            let mut diag = Vec::new();
+            telemetry::timed(&mut diag, "a", None, || {
+                entered.wait();
+                let n: Vec<bool> = files[..3].iter().map(|f| read_bounded(f).is_some()).collect();
+                a_done.wait();
+                b_done.wait();
+                n
+            });
+            diag.pop().unwrap()
+        });
+        let b = s.spawn(|| {
+            let mut diag = Vec::new();
+            telemetry::timed(&mut diag, "b", None, || {
+                entered.wait();
+                a_done.wait();
+                let mut n: Vec<bool> = files[3..].iter().map(|f| read_bounded(f).is_some()).collect();
+                n.push(read_bounded(&absent).is_some());
+                b_done.wait();
+                n
+            });
+            diag.pop().unwrap()
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!((a.files_read, a.files_missing, a.items), (3, 0, 3), "a counted b's reads: {a:?}");
+    assert_eq!((b.files_read, b.files_missing, b.items), (5, 1, 6), "b counted a's reads: {b:?}");
+}
+
 /// Every scanner -- run or skipped -- must appear in the JSON diagnostics, so the
 /// report can answer "did it run?" for all of them, not just the ones that did.
 #[test]

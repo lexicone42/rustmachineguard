@@ -274,7 +274,7 @@ mod enabled {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
     use opentelemetry_proto::tonic::trace::v1::{Span, status::StatusCode};
     use prost::Message;
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -619,7 +619,6 @@ mod enabled {
     /// is a closed label, a count or a bool.
     #[test]
     fn otel_sub_spans_explain_scanner_time() {
-        use std::collections::BTreeMap;
         let home = temp_home("subspans");
         let proj = home.join("proj");
         // A git repository whose config mentions `include`, so git config is spawned on
@@ -805,6 +804,110 @@ mod enabled {
             assert!(!contains(needle), "{:?} reached the collector", String::from_utf8_lossy(needle));
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P3: with the phases run on worker threads (`--jobs 4`) the span tree keeps its
+    /// documented shape: every `scanner.*` span is a child of its own `phase.*` span,
+    /// and every `exec.*` span is under a scanner span with nothing but that scanner's
+    /// sub-spans in between. The scanner spans of a phase overlap in time (they ran
+    /// side by side); at `--jobs 1` no two scanner spans overlap. The gitconfig span
+    /// carries `rmguard.scanner.truncated = true` (its nested walk hit the directory
+    /// budget) and every other scanner span `false`.
+    #[test]
+    fn otel_concurrent_phases_keep_the_span_shape() {
+        let home = temp_home("jobs");
+        // A skill bundle large enough that scanner.skills is still running while the
+        // workers take the scanners after it.
+        write(&home.join(".claude/skills/big/SKILL.md"), "---\nname: big\n---\nBig.\n");
+        for i in 0..400 {
+            write(&home.join(format!(".claude/skills/big/ref/f{i}.md")), "reference text\n");
+        }
+        // A project whose nested-git walk lists more than 4,000 directories.
+        let big = home.join("big");
+        for i in 0..70 {
+            for j in 0..60 {
+                std::fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
+            }
+        }
+        write(&big.join(".git/config"), "[core]\n\tbare = false\n[include]\n\tpath = extra\n");
+        write(&big.join(".git/HEAD"), "ref: refs/heads/main\n");
+        std::fs::create_dir_all(big.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(big.join(".git/refs")).unwrap();
+        let claude = serde_json::json!({ "projects": { big.to_string_lossy(): {} } });
+        write(&home.join(".claude.json"), &claude.to_string());
+
+        const GLOBAL: &[&str] = &["ai", "frameworks", "ide", "node", "containers", "notebooks"];
+        const EXPOSURE: &[&str] = &["pypkgs", "npmpkgs", "jbplugins"];
+        let mut overlapped = BTreeMap::new();
+        for jobs in ["4", "1"] {
+            let collector = Collector::start();
+            let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json", "--jobs", jobs]);
+            cmd.current_dir(&home);
+            let (out, _) = run(cmd);
+            let bodies = collector.finish();
+            assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+            let report = json(&out);
+            let all = spans(&traces(&bodies));
+            let by_id: HashMap<&[u8], &Span> = all.iter().map(|s| (s.span_id.as_slice(), s)).collect();
+            let parent = |s: &Span| by_id.get(s.parent_span_id.as_slice()).copied();
+            let root = all.iter().find(|s| s.name == "rmguard.scan").expect("root span");
+            assert_eq!(attr_int(&root.attributes, "rmguard.jobs"), jobs.parse().ok());
+
+            let scanners: Vec<&Span> = all.iter().filter(|s| s.name.starts_with("scanner.")).collect();
+            assert!(scanners.len() >= 20, "--jobs {jobs}: {} scanner spans", scanners.len());
+            for s in &scanners {
+                let label = &s.name["scanner.".len()..];
+                let want = if GLOBAL.contains(&label) {
+                    "phase.global_scanners"
+                } else if EXPOSURE.contains(&label) {
+                    "phase.exposure"
+                } else if matches!(label, "mcp-probe" | "registry") {
+                    "rmguard.scan"
+                } else {
+                    "phase.home_pass"
+                };
+                assert_eq!(parent(s).map(|p| p.name.as_str()), Some(want), "--jobs {jobs}: parent of {}", s.name);
+                let truncated = match attr(&s.attributes, "rmguard.scanner.truncated") {
+                    Some(any_value::Value::BoolValue(b)) => *b,
+                    other => panic!("--jobs {jobs}: {} truncated = {other:?}", s.name),
+                };
+                assert_eq!(truncated, label == "gitconfig", "--jobs {jobs}: {} truncated", s.name);
+            }
+            let gc_row = report["diagnostics"].as_array().unwrap().iter().find(|r| r["scanner"] == "gitconfig").unwrap();
+            assert_eq!(gc_row["truncated"], true);
+
+            let execs: Vec<&Span> = all.iter().filter(|s| s.name.starts_with("exec.")).collect();
+            assert!(!execs.is_empty(), "no exec span (the process-list snapshot at least)");
+            for e in &execs {
+                let mut cur = parent(e).unwrap_or_else(|| panic!("{} has no parent", e.name));
+                while !cur.name.starts_with("scanner.") {
+                    assert!(
+                        !cur.name.starts_with("phase.") && cur.name != "rmguard.scan" && !cur.name.starts_with("exec."),
+                        "--jobs {jobs}: {} reaches {} before any scanner span",
+                        e.name,
+                        cur.name
+                    );
+                    cur = parent(cur).unwrap_or_else(|| panic!("{} detached", e.name));
+                }
+            }
+
+            // Do two scanner spans of one phase overlap in time?
+            let mut any = false;
+            for ph in all.iter().filter(|p| p.name.starts_with("phase.")) {
+                let kids: Vec<&&Span> = scanners.iter().filter(|s| s.parent_span_id == ph.span_id).collect();
+                for (i, a) in kids.iter().enumerate() {
+                    for b in &kids[i + 1..] {
+                        if a.start_time_unix_nano < b.end_time_unix_nano && b.start_time_unix_nano < a.end_time_unix_nano {
+                            any = true;
+                        }
+                    }
+                }
+            }
+            overlapped.insert(jobs, any);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(overlapped.get("4"), Some(&true), "no two scanner spans overlapped at --jobs 4");
+        assert_eq!(overlapped.get("1"), Some(&false), "scanner spans overlapped at --jobs 1");
     }
 
     /// A HOME full of E2E-prefixed canaries in every place the scanners read.

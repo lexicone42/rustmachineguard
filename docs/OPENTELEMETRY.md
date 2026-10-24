@@ -116,6 +116,20 @@ A `scanner.<label>` span's duration equals that scanner's `duration_ms` in the J
 `diagnostics` (the span is ended at exactly start + the measured elapsed time), and its
 attributes carry the same counts.
 
+Within `phase.global_scanners` and each `phase.home_pass` the scanners run side by side
+on up to `--jobs` threads (default: the machine's available parallelism, at most 8), so
+their spans overlap in time; with `--jobs 1` they run one after another on the main
+thread and never overlap. The tree is the same either way: each worker makes the
+phase's span context current before it runs a scanner, so every `scanner.*` span is a
+child of its `phase.*` span, and every span a scanner opens (`exec.*`, `skills.walk`,
+...) is a child of that scanner. A scanner span's counts are set, and the span ended
+at start + its measured duration, once the phase has joined and the rows are final, in
+the fixed scanner order (the reads of a cache shared by several scanners, a
+repository's `git ls-files` listing, are charged to the first scanner in that order
+that asked for it, as when the scanners ran one at a time). The `exec.git_tracked` or
+`exec.process_list` span that fills such a cache sits under whichever scanner thread
+got there first.
+
 The process list is read once per scan, by whichever scanner asks first (normally
 `ai`); `frameworks`, `containers` and `notebooks` answer from the same snapshot and
 open no span for it. It replaced one `pgrep -x <name>` per question (ten spawns and
@@ -138,12 +152,14 @@ the old per-project order, so the report is unchanged.
 | `rmguard.probe_mcp`, `rmguard.verify_registry`, `rmguard.diff` | root | bool |
 | `rmguard.exposure_findings` | root | count |
 | `rmguard.scanners_run` | root | count of non-skipped diagnostics rows |
+| `rmguard.jobs` | root | threads a scan phase may use (`--jobs`, or the default) |
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
 | `rmguard.scanner` | scanner.*, metrics | scanner label (`mcp`, `packages`, ...) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
+| `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` |
 | `rmguard.exec.program` | exec.*, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
@@ -335,8 +351,9 @@ scan the trace does not yet explain. `--save FILE` writes the decoded spans as J
 - "rmguard opens no socket" is about rmguard's own process. Programs it runs in a default
   scan are their own programs: `ollama --version`, for example, connects to its local
   server on 127.0.0.1:11434. That predates `--otel` and is unrelated to it.
-- Spans opened on another thread would start a new trace. All instrumented work runs on
-  the main thread today.
+- Spans opened on a thread nobody handed the context to would start a new trace. The
+  scan-phase workers are handed it (`otel::current_context`, `ParentContext::attach`);
+  the reader and waiter threads of a spawned child open no span.
 - Span timestamps come from one wall-clock reading taken when export starts, plus
   monotonic time since. A clock step during the run (NTP, a manual change) cannot put
   a child span outside its parent or change any duration; the price is that every span

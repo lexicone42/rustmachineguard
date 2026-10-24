@@ -245,6 +245,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
         // dir -- an attacker-controllable way to hide from the CVE-2026-45033 check.
         if budget == 0 {
             stats.budget_exhausted = true;
+            crate::scanners::telemetry::mark_truncated();
             return;
         }
         budget -= 1;

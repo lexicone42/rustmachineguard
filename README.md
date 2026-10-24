@@ -423,7 +423,15 @@ means it opened nothing and produced nothing — either this machine has none of
 looks for, or it is looking in the wrong place. `--trace` (or `RMGUARD_TRACE=1`) then
 prints every path as it is tried, redacted and sanitized. The same numbers are in
 `--format json` under `diagnostics`, so a fleet aggregator can spot a scanner that
-silently stopped working across machines.
+silently stopped working across machines. A scanner that stopped at a walk budget (the
+gitconfig nested-repository walk, the skills bundle walk) is marked `partial` in the
+table and `"truncated": true` in its JSON row: its results may be incomplete.
+
+The scanners of each phase run side by side (`--jobs`, default the machine's available
+parallelism, at most 8); the report, including the order of every list and every
+diagnostics count, is the same whatever the job count. `--trace` lines of scanners
+running at the same time interleave; `--jobs 1` gives the old one-scanner-at-a-time
+trace.
 
 ### Telemetry (OpenTelemetry)
 
@@ -590,6 +598,11 @@ Options:
       --trace                        Print every path the scanners open or probe to
                                      stderr as it happens (paths only, redacted and
                                      sanitized). Same as RMGUARD_TRACE=1.
+      --jobs <N>                     Run each scan phase's scanners side by side on
+                                     at most N threads (default: available
+                                     parallelism, at most 8; 1 = one after another
+                                     on the main thread). The report is the same
+                                     whatever N is.
       --fail-on <SEVERITY>           Exit 2 if any finding is at or above this
                                      severity [values: critical, high, medium,
                                      low]. The report still prints; only the exit

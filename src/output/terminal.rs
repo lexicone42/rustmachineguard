@@ -1133,15 +1133,20 @@ fn render_diagnostics_inner(report: &ScanReport) -> String {
             .as_deref()
             .map(|r| format!("  ({r})"))
             .unwrap_or_default();
+        let partial = if d.truncated { " partial" } else { "" };
         out.push_str(&format!(
-            "  {:<13} {:>7} {:>6} {:>8} {:>6}  {status}{root}\n",
+            "  {:<13} {:>7} {:>6} {:>8} {:>6}  {status}{partial}{root}\n",
             d.scanner, d.duration_ms, d.files_read, d.files_missing, d.items
         ));
     }
     out.push_str(
         "\n  \"no inputs\" = opened no files and produced nothing: either this machine has \
          none of what the scanner\n  looks for, or it is looking in the wrong place. Run with \
-         --trace to see every path it tried.\n\n",
+         --trace to see every path it tried.\n",
     );
+    if report.diagnostics.iter().any(|d| d.truncated) {
+        out.push_str("  \"partial\" = walk budget reached; results for that scanner may be incomplete.\n");
+    }
+    out.push('\n');
     out
 }

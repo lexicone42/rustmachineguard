@@ -1887,8 +1887,12 @@ fn repo_root_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
 /// One repository's tracked paths (root-relative bytes, sorted), or None = unknown.
 type TrackedSet = Option<std::collections::BTreeSet<Vec<u8>>>;
 
+/// One repository's listing, filled once, with what filling it read
+/// ([`telemetry::SharedCost`]), charged to the first scanner in the fixed order that asked.
+type TrackedCell = std::sync::Arc<std::sync::OnceLock<(TrackedSet, std::sync::Arc<telemetry::SharedCost>)>>;
+
 struct GitTrackCache {
-    repos: std::collections::HashMap<std::path::PathBuf, std::sync::Arc<std::sync::OnceLock<TrackedSet>>>,
+    repos: std::collections::HashMap<std::path::PathBuf, TrackedCell>,
     spent: std::time::Duration,
 }
 
@@ -1900,23 +1904,29 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
     if git_dir_unsafe_to_spawn(&root.join(".git")) {
         return None;
     }
-    let remaining = {
-        let guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let spent = guard.as_ref().map_or(std::time::Duration::ZERO, |c| c.spent);
-        GIT_TRACKED_BUDGET.saturating_sub(spent)
+    // The listing's whole allowance is reserved from the budget before the spawn and
+    // the time actually taken charged after it, so scanners listing different repositories
+    // at the same time (`--jobs`) cannot together run past the budget. Run one at a
+    // time, the sum is what the old spend-after accounting gave.
+    let allowed = {
+        let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = guard.get_or_insert_with(|| GitTrackCache { repos: Default::default(), spent: Default::default() });
+        let allowed = GIT_TRACKED_TIMEOUT.min(GIT_TRACKED_BUDGET.saturating_sub(cache.spent));
+        cache.spent += allowed;
+        allowed
     };
-    if remaining.is_zero() {
+    if allowed.is_zero() {
         telemetry::note_read(root, "git budget spent");
         return None;
     }
     let started = std::time::Instant::now();
     let mut cmd = hardened_git();
     cmd.args(["ls-files", "-z"]).current_dir(root);
-    let out = output_with_timeout_capped(&mut cmd, GIT_TRACKED_TIMEOUT.min(remaining), "git_tracked", GIT_LS_FILES_MAX);
+    let out = output_with_timeout_capped(&mut cmd, allowed, "git_tracked", GIT_LS_FILES_MAX);
     {
         let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = guard.as_mut() {
-            c.spent += started.elapsed();
+            c.spent = c.spent.saturating_sub(allowed) + started.elapsed();
         }
     }
     let out = out.filter(|o| o.status.success())?;
@@ -1931,6 +1941,12 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
 /// it is answered from that listing, so a repository built to stall git costs one
 /// timeout, not one per file. A path outside any repository is `Some(false)`. A
 /// directory counts as tracked when a file under it is.
+///
+/// Safe to call from scanners running at the same time: the map is behind a mutex and
+/// each repository's listing is a `OnceLock`, so a second scanner asking about a
+/// repository being listed waits for that one listing and gets the same answer. The
+/// reads the listing makes are charged to the first scanner in the fixed order that
+/// asked ([`telemetry::SharedCost`]).
 pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
     let Some(root) = repo_root_of(path) else { return Some(false) };
     let cell = {
@@ -1938,7 +1954,9 @@ pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
         let cache = guard.get_or_insert_with(|| GitTrackCache { repos: Default::default(), spent: Default::default() });
         cache.repos.entry(root.clone()).or_default().clone()
     };
-    let set = cell.get_or_init(|| list_tracked(&root)).as_ref()?;
+    let (set, cost) = cell.get_or_init(|| telemetry::shared_fill(|| list_tracked(&root)));
+    telemetry::touch_shared(cost);
+    let set = set.as_ref()?;
     let rel = path.strip_prefix(&root).ok()?;
     #[cfg(unix)]
     let rel_bytes = {
@@ -2257,12 +2275,155 @@ pub fn probe_exists(path: &std::path::Path) -> bool {
 pub mod telemetry {
     use crate::models::ScannerStat;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::time::Instant;
 
-    static FILES_READ: AtomicU64 = AtomicU64::new(0);
-    static FILES_MISSING: AtomicU64 = AtomicU64::new(0);
     static TRACE: AtomicBool = AtomicBool::new(false);
+
+    /// The state one scanner run owns: its read counters, whether it stopped at a
+    /// budget, and its hook and probe budget. [`timed`] gives every scanner a fresh one
+    /// on the thread it runs on, so scanners running side by side on worker threads
+    /// (`--jobs`) never count each other's reads or spend each other's budget. A thread
+    /// outside any [`timed`] call (a unit test calling a scanner directly) has its own.
+    ///
+    /// The counters are atomics behind an `Arc` only so that a scanner that hands work
+    /// to a helper thread can carry its scope there ([`current_scope`],
+    /// [`ScopeHandle::enter`]); no scanner does today.
+    #[derive(Debug)]
+    pub struct ScannerScope {
+        read: AtomicU64,
+        missing: AtomicU64,
+        truncated: AtomicBool,
+        hooks_left: AtomicUsize,
+        probes_left: AtomicUsize,
+        /// Shared-cache fills this scanner asked for ([`touch_shared`]); their reads are
+        /// charged to it at [`Pending::finalize`] unless an earlier scanner claimed them.
+        touched: std::sync::Mutex<Vec<Arc<SharedCost>>>,
+    }
+
+    impl Default for ScannerScope {
+        fn default() -> Self {
+            use super::hook_sources::{MAX_HOOKS_PER_SCAN, MAX_PROBED_PER_SCAN};
+            ScannerScope {
+                read: AtomicU64::new(0),
+                missing: AtomicU64::new(0),
+                truncated: AtomicBool::new(false),
+                hooks_left: AtomicUsize::new(MAX_HOOKS_PER_SCAN),
+                probes_left: AtomicUsize::new(MAX_PROBED_PER_SCAN),
+                touched: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ScannerScope {
+        /// Restart the hook and probe budget (the counters are untouched).
+        pub(crate) fn reset_budget(&self) {
+            let fresh = ScannerScope::default();
+            self.hooks_left.store(fresh.hooks_left.into_inner(), Ordering::Relaxed);
+            self.probes_left.store(fresh.probes_left.into_inner(), Ordering::Relaxed);
+        }
+
+        /// Take one from `which` (hooks or probes); false once it is spent.
+        fn take(slot: &AtomicUsize) -> bool {
+            slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok()
+        }
+        pub(crate) fn take_hook(&self) -> bool {
+            Self::take(&self.hooks_left)
+        }
+        pub(crate) fn take_probe(&self) -> bool {
+            Self::take(&self.probes_left)
+        }
+        pub(crate) fn hooks_left(&self) -> usize {
+            self.hooks_left.load(Ordering::Relaxed)
+        }
+    }
+
+    thread_local! {
+        static SCOPE: std::cell::RefCell<Arc<ScannerScope>> = std::cell::RefCell::new(Arc::new(ScannerScope::default()));
+    }
+
+    /// Run `f` with the current thread's scanner scope.
+    pub(crate) fn with_scope<R>(f: impl FnOnce(&ScannerScope) -> R) -> R {
+        SCOPE.with(|s| f(&s.borrow()))
+    }
+
+    /// A handle on the running scanner's scope, for a helper thread that does part of
+    /// that scanner's work: reads and budget spent there count for the scanner.
+    #[derive(Clone)]
+    pub struct ScopeHandle(Arc<ScannerScope>);
+
+    /// The scope of the scanner running on this thread.
+    pub fn current_scope() -> ScopeHandle {
+        SCOPE.with(|s| ScopeHandle(s.borrow().clone()))
+    }
+
+    impl ScopeHandle {
+        /// Make this the current thread's scope until the guard drops.
+        pub fn enter(&self) -> ScopeGuard {
+            let prev = SCOPE.with(|s| std::mem::replace(&mut *s.borrow_mut(), self.0.clone()));
+            ScopeGuard { prev: Some(prev) }
+        }
+    }
+
+    /// Restores the thread's previous scope on drop.
+    #[must_use = "the scope is current only while the guard lives"]
+    pub struct ScopeGuard {
+        prev: Option<Arc<ScannerScope>>,
+    }
+
+    impl Drop for ScopeGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = self.prev.take() {
+                SCOPE.with(|s| *s.borrow_mut() = prev);
+            }
+        }
+    }
+
+    /// The reads one fill of a cache shared by several scanners made (the git-tracked
+    /// listing of one repository). Sequentially, they were counted for whichever scanner
+    /// asked first, in the fixed scanner order. Scanners running side by side ask in
+    /// whatever order the threads take, so the fill's reads are counted apart
+    /// ([`shared_fill`]) and charged, when rows are finalized in the fixed order, to the
+    /// first scanner that asked for it ([`touch_shared`]): the row is the one the
+    /// sequential run gave, whichever thread did the fill.
+    #[derive(Debug, Default)]
+    pub struct SharedCost {
+        read: u64,
+        missing: u64,
+        claimed: AtomicBool,
+    }
+
+    /// Run a shared cache's fill under a scope of its own and return what it read.
+    pub(crate) fn shared_fill<R>(f: impl FnOnce() -> R) -> (R, Arc<SharedCost>) {
+        let scope = ScopeHandle(Arc::new(ScannerScope::default()));
+        let out = {
+            let _g = scope.enter();
+            f()
+        };
+        let cost = SharedCost {
+            read: scope.0.read.load(Ordering::Relaxed),
+            missing: scope.0.missing.load(Ordering::Relaxed),
+            claimed: AtomicBool::new(false),
+        };
+        (out, Arc::new(cost))
+    }
+
+    /// The running scanner used a shared cache entry filled by [`shared_fill`].
+    pub(crate) fn touch_shared(cost: &Arc<SharedCost>) {
+        with_scope(|s| {
+            let mut t = s.touched.lock().unwrap_or_else(|e| e.into_inner());
+            if !t.iter().any(|c| Arc::ptr_eq(c, cost)) {
+                t.push(cost.clone());
+            }
+        });
+    }
+
+    /// The running scanner stopped at a walk budget: its results may be incomplete.
+    /// Shown as `truncated` in its diagnostics row and on its span.
+    pub fn mark_truncated() {
+        with_scope(|s| s.truncated.store(true, Ordering::Relaxed));
+    }
 
     /// Turn on per-path tracing to stderr (`--trace`, or RMGUARD_TRACE=1).
     pub fn enable_trace() {
@@ -2277,11 +2438,7 @@ pub mod telemetry {
     /// successful open; anything else counts as missing. Only the PATH is ever
     /// traced, never content.
     pub fn note_read(path: &Path, outcome: &str) {
-        if outcome == "ok" {
-            FILES_READ.fetch_add(1, Ordering::Relaxed);
-        } else {
-            FILES_MISSING.fetch_add(1, Ordering::Relaxed);
-        }
+        with_scope(|s| if outcome == "ok" { &s.read } else { &s.missing }.fetch_add(1, Ordering::Relaxed));
         if trace_enabled() {
             // Paths inside a scanned tree are attacker-chosen (a plugin's lib/*.jar name):
             // redact secrets AND neutralise control characters before they hit the terminal.
@@ -2295,7 +2452,7 @@ pub mod telemetry {
     /// diagnostics rather than indistinguishable from never having looked.
     pub fn note_probe(path: &Path, present: bool) {
         if !present {
-            FILES_MISSING.fetch_add(1, Ordering::Relaxed);
+            with_scope(|s| s.missing.fetch_add(1, Ordering::Relaxed));
         }
         if trace_enabled() {
             let shown = super::sanitize_display(&super::redact_secrets_in_text(&path.display().to_string()), 512);
@@ -2303,62 +2460,111 @@ pub mod telemetry {
         }
     }
 
+    /// (files read, files missing) so far by the scanner running on this thread (its
+    /// scope's counters; a thread outside any scanner has its own). Callers take
+    /// differences, as `skills.walk` does for one walk.
     pub fn snapshot() -> (u64, u64) {
-        (
-            FILES_READ.load(Ordering::Relaxed),
-            FILES_MISSING.load(Ordering::Relaxed),
-        )
+        with_scope(|s| (s.read.load(Ordering::Relaxed), s.missing.load(Ordering::Relaxed)))
     }
 
     /// Run one scanner, attributing wall time and read counters to it.
+    ///
+    /// The scanner gets a fresh [`ScannerScope`] on this thread for the duration of `f`
+    /// (read counters, `truncated` flag, hook and probe budget), so its row counts what
+    /// it did and nothing a scanner running at the same time on another thread did.
+    /// [`run`] then [`Pending::finalize`], on this thread.
     pub fn timed<T>(
         diagnostics: &mut Vec<ScannerStat>,
         scanner: &'static str,
         root: Option<PathBuf>,
         f: impl FnOnce() -> Vec<T>,
     ) -> Vec<T> {
-        use crate::otel::{Attr, Key};
-        let (r0, m0) = snapshot();
+        let (out, pending) = run(scanner, root, f);
+        diagnostics.push(pending.finalize());
+        out
+    }
+
+    /// Run one scanner on this thread under its own [`ScannerScope`] and `scanner.*`
+    /// span (a child of this thread's current span). The span is detached when `f`
+    /// returns, so the thread's context is back to what it was; its counts are set, and
+    /// it is ended, by [`Pending::finalize`], which may run on another thread.
+    pub fn run<T>(scanner: &'static str, root: Option<PathBuf>, f: impl FnOnce() -> Vec<T>) -> (Vec<T>, Pending) {
+        use crate::otel::Attr;
+        let scope = ScopeHandle(Arc::new(ScannerScope::default()));
+        let entered = scope.enter();
         // The span starts at the same instant `elapsed` is measured from and is ended at
         // exactly start + elapsed: its duration is the table's, and every child span the
         // scanner opens ends inside it.
         let start = Instant::now();
-        let mut span =
-            crate::otel::span_with_at("scanner.", scanner, start, || vec![Attr::scanner(scanner)]);
+        let span = crate::otel::span_with_at("scanner.", scanner, start, || vec![Attr::scanner(scanner)]);
         if trace_enabled() {
             eprintln!("trace: scanner {scanner} start");
         }
         let out = f();
         let elapsed = start.elapsed();
-        let (r1, m1) = snapshot();
-        let stat = ScannerStat {
-            scanner: scanner.to_string(),
-            root: root.map(|p| p.display().to_string()),
-            duration_ms: elapsed.as_millis() as u64,
-            files_read: r1 - r0,
-            files_missing: m1 - m0,
-            items: out.len(),
-            skipped: false,
-        };
-        // Counts and duration only; `root` (a path) is never exported.
-        span.set(|| {
-            vec![
-                Attr::int(Key::DurationMs, stat.duration_ms as i64),
-                Attr::int(Key::FilesRead, stat.files_read as i64),
-                Attr::int(Key::FilesMissing, stat.files_missing as i64),
-                Attr::int(Key::Items, stat.items as i64),
-            ]
-        });
-        span.finish_after(elapsed);
-        crate::otel::record_scanner(scanner, &stat, elapsed);
-        if trace_enabled() {
-            eprintln!(
-                "trace: scanner {scanner} done: {}ms, {} read, {} missing, {} items",
-                stat.duration_ms, stat.files_read, stat.files_missing, stat.items
-            );
+        let span = span.detach();
+        drop(entered);
+        let items = out.len();
+        (out, Pending { scanner, root, elapsed, items, scope: scope.0, span })
+    }
+
+    /// A scanner that has run ([`run`]) whose row is not final yet: the shared-cache
+    /// reads it may be charged with ([`SharedCost`]) depend on the scanners before it in
+    /// the fixed order. Finalize rows in that order.
+    #[must_use = "a scanner's row and span are produced by finalize"]
+    pub struct Pending {
+        scanner: &'static str,
+        root: Option<PathBuf>,
+        elapsed: std::time::Duration,
+        items: usize,
+        scope: Arc<ScannerScope>,
+        span: crate::otel::DetachedSpan,
+    }
+
+    impl Pending {
+        /// The scanner's diagnostics row: its own reads plus every shared-cache fill it
+        /// asked for that no scanner finalized before it claimed. Sets the span's counts
+        /// and ends it, records the scanner metrics, and prints the `--trace` done line.
+        pub fn finalize(self) -> ScannerStat {
+            use crate::otel::{Attr, Key};
+            let Pending { scanner, root, elapsed, items, scope, mut span } = self;
+            let (mut read, mut missing) = (scope.read.load(Ordering::Relaxed), scope.missing.load(Ordering::Relaxed));
+            for c in scope.touched.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                if !c.claimed.swap(true, Ordering::Relaxed) {
+                    read += c.read;
+                    missing += c.missing;
+                }
+            }
+            let stat = ScannerStat {
+                scanner: scanner.to_string(),
+                root: root.map(|p| p.display().to_string()),
+                duration_ms: elapsed.as_millis() as u64,
+                files_read: read,
+                files_missing: missing,
+                items,
+                skipped: false,
+                truncated: scope.truncated.load(Ordering::Relaxed),
+            };
+            // Counts and duration only; `root` (a path) is never exported.
+            span.set(|| {
+                vec![
+                    Attr::int(Key::DurationMs, stat.duration_ms as i64),
+                    Attr::int(Key::FilesRead, stat.files_read as i64),
+                    Attr::int(Key::FilesMissing, stat.files_missing as i64),
+                    Attr::int(Key::Items, stat.items as i64),
+                    Attr::bool(Key::ScannerTruncated, stat.truncated),
+                ]
+            });
+            span.finish_after(elapsed);
+            crate::otel::record_scanner(scanner, &stat, elapsed);
+            if trace_enabled() {
+                eprintln!(
+                    "trace: scanner {scanner} done: {}ms, {} read, {} missing, {} items",
+                    stat.duration_ms, stat.files_read, stat.files_missing, stat.items
+                );
+            }
+            stat
         }
-        diagnostics.push(stat);
-        out
     }
 
     pub fn skipped(scanner: &'static str) -> ScannerStat {
@@ -2371,6 +2577,7 @@ pub mod telemetry {
             files_missing: 0,
             items: 0,
             skipped: true,
+            truncated: false,
         }
     }
 }
@@ -2997,5 +3204,79 @@ podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvll
         for p in programs {
             assert_eq!(crate::otel::exec_program(std::ffi::OsStr::new(p)), p, "{p} missing from EXEC_PROGRAMS");
         }
+    }
+}
+
+#[cfg(test)]
+mod scanner_scope_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rmg-scope-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The hook and probe budget is the scanner's own: a scanner run on a thread where
+    /// an earlier scanner spent the budget starts with all of it. (On f613c78 the
+    /// budget was a thread-local that only `skills` and `settings` reset, so any other
+    /// scanner, or those two run on a reused worker thread mid-scan, inherited what the
+    /// previous scanner on that thread left.)
+    #[test]
+    fn hook_budget_is_per_scanner_not_per_thread() {
+        std::thread::spawn(|| {
+            let mut diag = Vec::new();
+            telemetry::timed(&mut diag, "first", None, || {
+                while hook_sources::take_probe() {}
+                assert!(!hook_sources::take_probe());
+                Vec::<()>::new()
+            });
+            let left = telemetry::timed(&mut diag, "second", None, || {
+                vec![(hook_sources::hooks_left(), hook_sources::take_probe())]
+            });
+            assert_eq!(left, vec![(hook_sources::MAX_HOOKS_PER_SCAN, true)], "the second scanner inherited a spent budget");
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A shared cache's fill (the git-tracked listing of one repository) is charged to
+    /// the first scanner in the fixed order that asked, whichever thread filled it: here
+    /// the later scanner `b` fills it, and `a`, finalized first, is charged, as it would
+    /// have been had `a` run first. `b` is charged nothing.
+    #[test]
+    fn shared_cache_reads_go_to_the_first_scanner_in_order() {
+        let repo = scratch("shared");
+        std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(repo.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+        std::fs::write(repo.join(".git/commondir"), ".\n").unwrap();
+        let file = repo.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let (_, b) = std::thread::scope(|s| {
+            s.spawn(|| telemetry::run("b", None, || vec![is_git_tracked(&file)])).join().unwrap()
+        });
+        let (_, a) = telemetry::run("a", None, || vec![is_git_tracked(&file)]);
+        let (a, b) = (a.finalize(), b.finalize());
+        let _ = std::fs::remove_dir_all(&repo);
+        assert!(a.files_read + a.files_missing > 0, "the fill's reads were not charged to a: {a:?}");
+        assert_eq!((b.files_read, b.files_missing), (0, 0), "b was charged for a fill a claimed: {b:?}");
+    }
+
+    /// `mark_truncated` marks the running scanner's row only.
+    #[test]
+    fn truncated_is_per_scanner() {
+        let mut diag = Vec::new();
+        telemetry::timed(&mut diag, "walk", None, || {
+            telemetry::mark_truncated();
+            Vec::<()>::new()
+        });
+        telemetry::timed(&mut diag, "next", None, Vec::<()>::new);
+        assert!(diag[0].truncated);
+        assert!(!diag[1].truncated, "truncated leaked into the next scanner");
+        let json = serde_json::to_value(&diag[1]).unwrap();
+        assert!(json.get("truncated").is_none(), "false is not serialized: {json}");
+        assert_eq!(serde_json::to_value(&diag[0]).unwrap()["truncated"], true);
     }
 }

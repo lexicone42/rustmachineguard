@@ -48,7 +48,10 @@ impl Ide {
 
 /// Platform-specific path and device info resolution.
 #[allow(dead_code)]
-pub trait PlatformInfo {
+///
+/// `Send + Sync`: a phase's scanners run side by side on worker threads (`--jobs`) and
+/// share one platform value.
+pub trait PlatformInfo: Send + Sync {
     fn device_info(&self) -> DeviceInfo;
     fn home_dir(&self) -> PathBuf;
 
