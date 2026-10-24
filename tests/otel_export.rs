@@ -925,9 +925,12 @@ mod enabled {
 
             let execs: Vec<&Span> = all.iter().filter(|s| s.name.starts_with("exec.")).collect();
             assert!(!execs.is_empty(), "no exec span (the process-list snapshot at least)");
+            // Every exec span sits under a scanner span, except the device-info probes
+            // (`sw_vers` on macOS), which run directly under phase.device_info: that phase
+            // has no scanners. On Linux device info is a libc call and spawns nothing.
             for e in &execs {
                 let mut cur = parent(e).unwrap_or_else(|| panic!("{} has no parent", e.name));
-                while !cur.name.starts_with("scanner.") {
+                while !cur.name.starts_with("scanner.") && cur.name != "phase.device_info" {
                     assert!(
                         !cur.name.starts_with("phase.") && cur.name != "rmguard.scan" && !cur.name.starts_with("exec."),
                         "--jobs {jobs}: {} reaches {} before any scanner span",
@@ -935,6 +938,13 @@ mod enabled {
                         cur.name
                     );
                     cur = parent(cur).unwrap_or_else(|| panic!("{} detached", e.name));
+                }
+                if cur.name == "phase.device_info" {
+                    assert_eq!(
+                        attr_str(&e.attributes, "rmguard.exec.program").as_deref(),
+                        Some("sw_vers"),
+                        "--jobs {jobs}: only the macOS version probe may run under phase.device_info"
+                    );
                 }
             }
 

@@ -73,6 +73,7 @@ whatever configuration notices were printed at start-up. The report on stdout or
 ```
 rmguard.scan                                   (root; one trace per run)
 ├── phase.device_info
+│   └── exec.output_with_timeout               (macOS only: `sw_vers -productVersion`; Linux uses libc uname, no spawn)
 ├── phase.global_scanners
 │   ├── scanner.ai
 │   │   ├── exec.version_probe                 (`<tool> --version`)
@@ -130,7 +131,8 @@ run one after the other, as before; `--search-dirs` passes always follow the pai
 at a time. The tree is the same either way: a thread makes the scanner's own phase span
 context current before it runs a scanner, so every `scanner.*` span is a child of its
 `phase.*` span, and every span a scanner opens (`exec.*`, `skills.walk`,
-...) is a child of that scanner. A scanner span's counts are set, and the span ended
+...) is a child of that scanner. The one `exec.*` span outside a scanner is the macOS
+device-info probe under `phase.device_info`, a phase with no scanners. A scanner span's counts are set, and the span ended
 at start + its measured duration, once the phase has joined and the rows are final, in
 the fixed scanner order (the reads of a cache shared by several scanners, a
 repository's `git ls-files` listing, are charged to the first scanner in that order
