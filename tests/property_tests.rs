@@ -370,6 +370,7 @@ fn summary_counts_match_vector_lengths() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -467,6 +468,7 @@ fn json_output_is_valid_json() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -558,6 +560,7 @@ fn html_output_no_script_injection() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -3925,6 +3928,7 @@ fn make_test_report(
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,

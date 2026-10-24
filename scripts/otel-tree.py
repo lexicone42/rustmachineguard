@@ -16,7 +16,9 @@ export, and prints:
   * exec spans by program and site (`rmguard.exec.program`, `rmguard.exec.site`);
   * per phase and per scanner, the time no child span covers ("uncovered"): work the
     trace does not yet explain;
-  * every counter's data points with their attributes (the posture metrics
+  * the resource attributes (`service.instance.id` when `--otel-instance` gave one,
+    `rmguard.catalog.version`, ...);
+  * every counter's and gauge's data points with their attributes (the posture gauges
     `rmguard.findings`, `rmguard.inventory`, `rmguard.scan.truncated_scanners` first),
     and each histogram's per-attribute-set count and sum.
 
@@ -84,6 +86,9 @@ class Store:
         # name -> {"kind", "unit", "points": [{"attrs", "value"} | {"attrs", "count", "sum"}]},
         # the last export of each (export is cumulative: the last is the scan's total).
         self.points = {}
+        # Resource attributes, merged over every request (traces and metrics carry the
+        # same resource).
+        self.resource = {}
         self.root_seen = threading.Event()
         self.last = time.monotonic()
 
@@ -92,6 +97,7 @@ class Store:
         req.ParseFromString(body)
         with self.lock:
             for rs in req.resource_spans:
+                self.resource.update(attrs(rs.resource.attributes))
                 for ss in rs.scope_spans:
                     for s in ss.spans:
                         span = {
@@ -113,13 +119,14 @@ class Store:
         req.ParseFromString(body)
         with self.lock:
             for rm in req.resource_metrics:
+                self.resource.update(attrs(rm.resource.attributes))
                 for sm in rm.scope_metrics:
                     for m in sm.metrics:
                         self.metrics.add(m.name)
                         kind = m.WhichOneof("data")
                         pts = []
-                        if kind == "sum":
-                            for p in m.sum.data_points:
+                        if kind in ("sum", "gauge"):
+                            for p in getattr(m, kind).data_points:
                                 v = p.as_int if p.WhichOneof("value") == "as_int" else p.as_double
                                 pts.append({"attrs": attrs(p.attributes), "value": v})
                         elif kind == "histogram":
@@ -335,9 +342,15 @@ def main():
         spans = list(store.spans)
         metrics = set(store.metrics)
         points = dict(store.points)
+        resource = dict(store.resource)
     if args.save:
         with open(args.save, "w") as f:
-            json.dump({"spans": spans, "metrics": sorted(metrics), "points": points}, f, indent=1)
+            json.dump(
+                {"resource": resource, "spans": spans, "metrics": sorted(metrics), "points": points},
+                f,
+                indent=1,
+            )
+    print("resource: " + ", ".join(f"{k}={v}" for k, v in sorted(resource.items())), file=sys.stdout)
     print_report(spans, metrics, args.depth, args.min_ms, sys.stdout)
     print_points(points, sys.stdout)
     return 0

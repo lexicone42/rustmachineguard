@@ -32,7 +32,9 @@
 //! environment values, URLs or error text into telemetry. The one runtime-text input is
 //! [`exec_program`], which maps a spawned program to an entry of the fixed
 //! [`EXEC_PROGRAMS`] table or the literal `other`; the value exported is always the
-//! table's own `&'static str`. See docs/OPENTELEMETRY.md.
+//! table's own `&'static str`. The one value that is not a closed set is
+//! `--otel-instance`, which the operator types and [`init`] puts on the resource as
+//! `service.instance.id`; it never comes from the machine. See docs/OPENTELEMETRY.md.
 //!
 //! Disabled cost: every entry point checks one `Relaxed` atomic (a constant `false` in a
 //! build without the `otel` feature) and returns before evaluating any closure or
@@ -110,7 +112,7 @@ mod sdk {
     pub fn record(_: Metric, _: f64, _: Vec<Attr>) {}
     #[inline(always)]
     pub fn record_scanner(_: &'static str, _: &ScannerStat, _: Duration) {}
-    pub fn init() -> Result<(), InitError> {
+    pub fn init(_: Option<&str>) -> Result<(), InitError> {
         Err(InitError::NotCompiled)
     }
     #[inline(always)]
@@ -175,6 +177,8 @@ pub enum Key {
     FindingsHigh,
     FindingsMedium,
     FindingsLow,
+    OtelInstanceIdSet,
+    CatalogVersion,
 }
 
 impl Key {
@@ -234,6 +238,8 @@ impl Key {
         Key::FindingsHigh,
         Key::FindingsMedium,
         Key::FindingsLow,
+        Key::OtelInstanceIdSet,
+        Key::CatalogVersion,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -296,6 +302,8 @@ impl Key {
             Key::FindingsHigh => "rmguard.findings.high",
             Key::FindingsMedium => "rmguard.findings.medium",
             Key::FindingsLow => "rmguard.findings.low",
+            Key::OtelInstanceIdSet => "rmguard.otel.instance_id_set",
+            Key::CatalogVersion => "rmguard.catalog.version",
         }
     }
 }
@@ -768,9 +776,35 @@ impl Drop for ExecSpan {
 
 /// Start export. Called once, only when `--otel` was given. Builds the exporters,
 /// providers and their background threads; until this returns `Ok`, nothing exists.
-pub fn init() -> Result<(), InitError> {
-    sdk::init()
+///
+/// `instance` is `--otel-instance`: the one piece of runtime text that reaches the
+/// export, as the resource's `service.instance.id`. It is typed by the operator on the
+/// command line and passed through as is; rmguard never derives it from the host name,
+/// the user or any file. Every other resource attribute is a fixed fact of the binary.
+pub fn init(instance: Option<&str>) -> Result<(), InitError> {
+    sdk::init(instance)
 }
+
+/// Does `OTEL_RESOURCE_ATTRIBUTES` give the resource a non-empty `service.instance.id`?
+/// Parsed the way the SDK's environment detector parses it (comma-separated
+/// `key=value`, both trimmed, the last entry for a key wins). Reads the variable, so it
+/// is called only under `--otel`.
+pub fn env_has_instance_id() -> bool {
+    std::env::var("OTEL_RESOURCE_ATTRIBUTES").is_ok_and(|v| resource_attrs_have_instance_id(&v))
+}
+
+fn resource_attrs_have_instance_id(attrs: &str) -> bool {
+    attrs
+        .split_terminator(',')
+        .rev()
+        .filter_map(|e| e.split_once('='))
+        .find(|(k, _)| k.trim() == "service.instance.id")
+        .is_some_and(|(_, v)| !v.trim().is_empty())
+}
+
+/// The one-line notice for an export with no machine identity: without a
+/// `service.instance.id`, every machine's series carry the same labels.
+pub const NO_INSTANCE_NOTICE: &str = "info: OpenTelemetry export carries no machine identity (no service.instance.id), so every machine's series share labels; add one with --otel-instance <id> or OTEL_RESOURCE_ATTRIBUTES=service.instance.id=<id> (rmguard never derives it from the host)";
 
 /// Flush and stop export, bounded at 2 s. Safe to call more than once and when off.
 /// Prints at most one warning line to stderr; never touches stdout.
@@ -882,6 +916,30 @@ mod tests {
     }
 
     #[test]
+    fn instance_id_in_resource_attributes() {
+        for yes in [
+            "service.instance.id=box-1",
+            " service.instance.id = box-1 ",
+            "a=b,service.instance.id=x",
+            "service.instance.id=,service.instance.id=y",
+        ] {
+            assert!(resource_attrs_have_instance_id(yes), "{yes:?}");
+        }
+        for no in [
+            "",
+            "service.name=x",
+            "service.instance.id=",
+            "service.instance.id=  ",
+            "service.instance.id=x,service.instance.id=",
+            "xservice.instance.id=y",
+            "service.instance.idx=y",
+            "service.instance.id",
+        ] {
+            assert!(!resource_attrs_have_instance_id(no), "{no:?}");
+        }
+    }
+
+    #[test]
     fn keys_are_unique_and_well_formed() {
         let mut seen = std::collections::HashSet::new();
         for k in Key::ALL {
@@ -894,7 +952,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 55, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 57, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are a tool inventory and are not exported"

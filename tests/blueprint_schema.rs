@@ -460,6 +460,7 @@ fn make_report(
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,

@@ -14,6 +14,7 @@ evidence, path, name or value.
 |---|---|
 | no `--otel` (whatever `OTEL_*` variables are set) | **no**: no `OTEL_*` value is used, nothing is built, rmguard opens no socket |
 | `--otel` | yes |
+| `--otel` with no `--otel-instance` and no `service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES` | yes, with one `info:` line saying the export carries no machine identity ([Machine identity](#machine-identity)) |
 | `--otel` + `OTEL_SDK_DISABLED=true` (any case) | no (`info:` line) |
 | `--otel` + `OTEL_TRACES_EXPORTER=none` | metrics only |
 | `--otel` + `OTEL_METRICS_EXPORTER=none` | traces only |
@@ -36,7 +37,8 @@ The variables only choose **where** `--otel` sends:
   variable removed, with or without `--otel`. A probed server command is written by
   whoever wrote the MCP config, and must not be able to read your collector key.
 - `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` are honored. What you add there is
-  your choice and your data.
+  your choice and your data. `--otel-instance <ID>` sets `service.instance.id` and wins
+  over one in `OTEL_RESOURCE_ATTRIBUTES`.
 - Proxies: a **loopback** endpoint (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`,
   which includes the default) is always reached directly. For any other endpoint, ureq's
   environment proxy applies: the first of `ALL_PROXY`, `all_proxy`, `HTTPS_PROXY`,
@@ -51,6 +53,41 @@ The variables only choose **where** `--otel` sends:
   that signal off, the same as `none`: a value rmguard cannot honour never falls back to
   an OTLP push you did not ask for. Timeouts are fixed in code (below), and env values
   do not lengthen them.
+
+## Machine identity
+
+rmguard does not name the machine it runs on: there is no `host.name`, no user and no
+id derived from either (see [What is never exported](#what-is-never-exported-and-why)).
+Without an identity of your choosing, every machine's series carry the same labels and
+a fleet dashboard sees one machine. Give each one an id with
+
+```bash
+rmguard --otel --otel-instance "$ASSET_TAG"
+# or
+OTEL_RESOURCE_ATTRIBUTES=service.instance.id=$ASSET_TAG rmguard --otel
+```
+
+`--otel-instance <ID>` sets the resource attribute `service.instance.id` (the
+[resource semantic convention](https://opentelemetry.io/docs/specs/semconv/resource/service/)
+for telling instances of one service apart; the collector's Prometheus exporter turns it
+into the `instance` label). It is **the one exported value that is not a closed set**:
+it is your text, typed on the command line (or by your fleet tooling), exported as given
+(surrounding whitespace removed; empty, longer than 128 characters or containing a
+control character is a usage error). rmguard never fills it in itself: not from the host
+name, the user, a machine id file or anything it scanned. Pick something that means
+something to you and nothing to an outsider, such as an asset tag, rather than the host
+name. `--otel-instance` without `--otel` is a usage error.
+
+When `--otel` starts export and neither `--otel-instance` nor a non-empty
+`service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES` is given, stderr gets one line, and
+export goes ahead without an id:
+
+```
+info: OpenTelemetry export carries no machine identity (no service.instance.id), so every machine's series share labels; add one with --otel-instance <id> or OTEL_RESOURCE_ATTRIBUTES=service.instance.id=<id> (rmguard never derives it from the host)
+```
+
+The root span's `rmguard.otel.instance_id_set` (bool) says whether an id was supplied,
+so a trace shows it without the resource at hand.
 
 ## Quickstart
 
@@ -190,6 +227,8 @@ starts a thread.
 | `rmguard.findings.critical`, `rmguard.findings.high`, `rmguard.findings.medium`, `rmguard.findings.low` | root | findings of that severity (the same findings `--fail-on` and the report's risk summary count) |
 | `rmguard.scanners_run` | root | count of non-skipped diagnostics rows |
 | `rmguard.jobs` | root | threads a scan phase may use (`--jobs`, or the default) |
+| `rmguard.otel.instance_id_set` | root | bool: `--otel-instance` or a `service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES` was given ([Machine identity](#machine-identity)) |
+| `rmguard.catalog.version` | root, resource | the built-in threat catalog's version (`2026-10-22`: the date of its last change, a constant compiled into the binary, also in `rmguard --version` and the JSON report's `catalog.builtin_version`). On the root span only when the built-in catalog was used (absent with `--no-builtin-catalog`); on the resource always, as a fact of the binary |
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
@@ -249,11 +288,18 @@ version, or anything outside the table.
 
 Resource attributes: `service.name=rmguard` (unless `OTEL_SERVICE_NAME` is set),
 `service.version`, `os.type` (`linux` \| `darwin`), `host.arch` (`amd64` \| `arm64` \| raw),
-and the SDK's `telemetry.sdk.*`. There is no `host.name` and no user.
+`rmguard.catalog.version`, the SDK's `telemetry.sdk.*`, and `service.instance.id` when you
+give one ([Machine identity](#machine-identity)). There is no `host.name` and no user.
+
+`rmguard.catalog.version` is there so a fleet can tell a catalog update from a posture
+change: when `rmguard.findings{rmguard.finding.category="Exposure"}` jumps on many
+machines at once, a new catalog version on the same day says the catalog learned about
+packages that were already installed, not that the machines changed.
 
 ## Metrics
 
-Exported once, as a cumulative snapshot when the scan ends.
+Exported once, when the scan ends (cumulative temporality: the one snapshot covers the
+whole run).
 
 | Name | Instrument | Unit | Attributes |
 |---|---|---|---|
@@ -266,9 +312,9 @@ Exported once, as a cumulative snapshot when the scan ends.
 | `rmguard.exec.duration` | histogram | s | `rmguard.exec.site`, `rmguard.exec.program`, `rmguard.exec.outcome` |
 | `rmguard.mcp.probe.duration` | histogram | s | `rmguard.mcp.outcome` |
 | `rmguard.registry.lookup.duration` | histogram | s | `rmguard.registry.verdict` |
-| `rmguard.findings` | counter | `{finding}` | `rmguard.finding.severity`, `rmguard.finding.category` |
-| `rmguard.inventory` | counter | `{item}` | `rmguard.inventory.kind` |
-| `rmguard.scan.truncated_scanners` | counter | `{scanner}` | `rmguard.scanner` |
+| `rmguard.findings` | gauge | `{finding}` | `rmguard.finding.severity`, `rmguard.finding.category` |
+| `rmguard.inventory` | gauge | `{item}` | `rmguard.inventory.kind` |
+| `rmguard.scan.truncated_scanners` | gauge | `{scanner}` | `rmguard.scanner` |
 
 That is twelve names, but a plain scan exports ten: `rmguard.mcp.probe.duration` appears
 only with `--probe-mcp` (and at least one stdio server probed), and
@@ -289,8 +335,28 @@ has, never which ones or where. Choose the collector with that in mind.
 `rmguard.findings` and `rmguard.inventory` are recorded once per scan from the finished
 report, after analysis and before the export shutdown (and only under `--otel`: a plain
 run does not compute them); `rmguard.scan.truncated_scanners` is recorded with the other
-per-scanner metrics as each diagnostics row is final. All three are exported in the one
-snapshot at the end of the scan.
+per-scanner metrics as each diagnostics row is final (a scanner with one row per home
+pass records the running sum, so the exported value is the scan's total). All three are
+exported in the one snapshot at the end of the scan.
+
+They are **gauges** (the synchronous `u64_gauge` of opentelemetry 0.33), not counters.
+One rmguard process exports one scan and exits, so each value is the machine's state at
+that scan, replaced by the next run's, never added to. As counters (before this
+version) each run started a new cumulative stream, which a backend reads as a counter
+reset per run: `rate()`/`increase()` over them were meaningless, and `_total` names
+suggested a running count that was not there. The metrics API's
+[Gauge](https://opentelemetry.io/docs/specs/otel/metrics/api/#gauge) records a current
+value "when changes occur", and the
+[Prometheus compatibility spec](https://opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#gauges)
+maps an OTLP Gauge to a Prometheus gauge with no `_total` suffix. (The
+[instrument-selection guidelines](https://opentelemetry.io/docs/specs/otel/metrics/supplementary-guidelines/#instrument-selection)
+put a non-additive absolute value on a gauge; these counts are additive across their
+labels, which is the case for an UpDownCounter. That would export as a non-monotonic
+cumulative Sum, which the same compatibility spec also maps to a Prometheus gauge; the
+gauge was chosen because each value is a replacement, not a delta. Summing them across
+labels and machines is still meaningful, and the queries below do it.) The performance
+metrics are unchanged: durations are histograms, and the per-scanner
+`files_read`/`files_missing`/`items`/`skipped` stay counters.
 
 | Name | Data points | Equals |
 |---|---|---|
@@ -324,31 +390,55 @@ The names follow the OpenTelemetry metric naming guidance
 lowercase dot-separated namespaces under `rmguard.`, a count's unit an annotation in
 braces (`{finding}`, `{item}`, `{scanner}`), and no unit or `_total` in the name.
 
-Each run is its own process, so each export is one cumulative snapshot whose start time
-is that run's: read the counters as "the value of the latest scan", not as a rate. The
-export carries no host identity (no `host.name`; see below), so a fleet needs one of its
-own choosing, for example `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=<asset tag>`,
-or every machine's series land on the same labels. With the collector's `prometheus`
-exporter and its default underscore translation, the counters become
-`rmguard_findings_total`, `rmguard_inventory_total` and
-`rmguard_scan_truncated_scanners_total`, with labels such as `rmguard_finding_severity`
-and `instance` from `service.instance.id`:
+Each run is its own process and exports its scan once, so a backend holds one sample
+per machine per scan: read a posture gauge as "the value at the latest scan", with
+`last_over_time` over a window at least as long as the scan interval. Every machine
+needs an id of its own ([Machine identity](#machine-identity)), or their series land on
+the same labels.
+
+Names in Prometheus, from the collector's `prometheus` exporter (verified against
+otelcol-contrib 0.163.2, [below](#verified-against)). Under the
+[Prometheus compatibility rules](https://opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#metric-metadata),
+dots become underscores, a brace unit such as `{finding}` is dropped, a monotonic Sum
+gets `_total` and a Gauge gets no suffix:
+
+| OTLP name | default (`translation_strategy: UnderscoreEscapingWithSuffixes`) | `NoUTF8EscapingWithSuffixes`, scraped with UTF-8 escaping allowed |
+|---|---|---|
+| `rmguard.findings` (gauge) | `rmguard_findings` | `rmguard.findings` |
+| `rmguard.inventory` (gauge) | `rmguard_inventory` | `rmguard.inventory` |
+| `rmguard.scan.truncated_scanners` (gauge) | `rmguard_scan_truncated_scanners` | `rmguard.scan.truncated_scanners` |
+| `rmguard.scanner.files_read` (counter) | `rmguard_scanner_files_read_total` | `rmguard.scanner.files_read_total` |
+
+Labels follow the same rule (`rmguard_finding_severity`, or `"rmguard.finding.severity"`
+with UTF-8 names); `service.instance.id` becomes `instance` and `service.name` becomes
+`job` either way. A UTF-8 name is kept only when the exporter is configured for it
+**and** the scraper asks for it (Prometheus 3 does; a plain `curl` without an
+`escaping=allow-utf-8` Accept header still gets underscores). The
+[exporter's `translation_strategy`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/prometheusexporter/README.md)
+replaces the deprecated `add_metric_suffixes`. With the default translation:
 
 ```promql
 # Fleet findings by severity, from each machine's latest scan in the last day
-sum by (rmguard_finding_severity) (last_over_time(rmguard_findings_total[1d]))
+sum by (rmguard_finding_severity) (last_over_time(rmguard_findings[1d]))
 
 # Critical and high findings by category across the fleet (a Grafana bar chart)
 sum by (rmguard_finding_category) (
-  last_over_time(rmguard_findings_total{rmguard_finding_severity=~"critical|high"}[1d])
+  last_over_time(rmguard_findings{rmguard_finding_severity=~"critical|high"}[1d])
 )
 
 # Machines with at least one critical finding
-count(sum by (instance) (last_over_time(rmguard_findings_total{rmguard_finding_severity="critical"}[1d])) > 0)
+count(sum by (instance) (last_over_time(rmguard_findings{rmguard_finding_severity="critical"}[1d])) > 0)
 
 # Machines whose last scan stopped a walk early (results may be incomplete)
-count(sum by (instance) (last_over_time(rmguard_scan_truncated_scanners_total[1d])) > 0)
+count(sum by (instance) (last_over_time(rmguard_scan_truncated_scanners[1d])) > 0)
+
+# The same first query with UTF-8 names
+sum by ("rmguard.finding.severity") (last_over_time({"rmguard.findings"}[1d]))
 ```
+
+`sum by` over `last_over_time` is right for these gauges: within one machine the points
+of one scan are disjoint label sets, so summing them is a count of that scan's
+findings, and summing across `instance` adds machines.
 
 ## What is never exported, and why
 
@@ -362,7 +452,9 @@ so none of that map goes out:
   `rmguard.exec.program` table (see above); everything else is `other`;
 - package names and versions, registry URLs and response bodies;
 - error message text from servers, ureq or the OS (only the fixed categories above);
-- host names, user names, file contents, secret values;
+- host names, user names, file contents, secret values (and no machine id derived from
+  any of them: `service.instance.id` is exported only when you supply it, as you typed
+  it);
 - finding titles, evidence and locations (only the closed severity and category
   labels, and counts);
 - `--trace` / `RMGUARD_TRACE` lines. They are per-path and are fine on your own terminal,
@@ -376,7 +468,10 @@ Some exported **integers** are chosen by programs rmguard runs, not by rmguard:
 runs with your privileges and network access, so this opens no new channel; it does
 mean those numbers are untrusted input to your backend, not facts about rmguard.
 
-This is enforced by construction rather than by review. In `src/otel/mod.rs`, attribute
+This is enforced by construction rather than by review. (The one exception is the
+operator's `--otel-instance` text, which `otel::init` puts on the resource as
+`service.instance.id`; it is command-line input, never scan output, and is the only
+runtime text that reaches the export.) In `src/otel/mod.rs`, attribute
 keys are a closed enum. Attribute values can be built only from `&'static str`,
 integers and booleans; there is no constructor that takes runtime text, so nothing a
 scan read can be passed in (the one function that looks at runtime text,
@@ -415,14 +510,18 @@ tree with durations and attributes (runs of identical leaf spans, such as one wa
 project, are folded into one `xN` line), totals by span name, exec time by program and
 site, and for each phase and scanner the time no child span covers: the part of the
 scan the trace does not yet explain, then every metric's data points with their
-attributes (the posture metrics first; histograms as count and sum). `--save FILE`
-writes the decoded spans and metric points as JSON.
+attributes (the posture gauges first; histograms as count and sum). A `resource:` line
+comes first, with `service.instance.id` when `--otel-instance` gave one (the script
+removes every `OTEL_*` variable from the command it runs, so pass the flag, not
+`OTEL_RESOURCE_ATTRIBUTES`). `--save FILE` writes the decoded resource, spans and metric
+points as JSON.
 
 ## Failure behavior
 
 - Nothing from telemetry is written to stdout. The SDK's internal logging is compiled
   out (`internal-logs` off), so it cannot print either.
-- stderr gets one `info:` line at start, a start-up `warning:` line per unsupported
+- stderr gets one `info:` line at start (two when no machine identity was given; see
+  [Machine identity](#machine-identity)), a start-up `warning:` line per unsupported
   setting (`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_*_EXPORTER`), and at most one
   `warning: OpenTelemetry export ...` line at the end. The end-of-run warning names a
   category (`could not connect`, `could not resolve host`, `timeout`, `tls`, `HTTP 503`,
@@ -532,6 +631,42 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>" \
   `.env` substrings are the fixed span names `exec.ssh_keygen`, `scanner.ssh` and
   `scanner.envfiles`, and every string value in it is a closed label or a
   version (`service.version`, the SDK's).
+
+### Gauges, machine identity and catalog version (2026-10-24)
+
+The same image (otelcol-contrib 0.163.2, image id `a64fa52ad3b5`), run under podman with
+a plain OTLP/HTTP receiver (no auth), the `debug` exporter at `verbosity: detailed`, and
+two `prometheus` exporters on the metrics pipeline, one with the default translation and
+one with `translation_strategy: NoUTF8EscapingWithSuffixes`, every port published on
+127.0.0.1 only. One real scan of the development machine:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port> \
+  rmguard --otel --otel-instance test-box-1 --format json -o scan.json
+```
+
+- Exit 0, no warning, and no machine-identity `info:` line (an id was given). The debug
+  exporter logged one traces batch of 217 spans and one metrics batch of 10 metrics and
+  183 data points.
+- `rmguard.findings`, `rmguard.inventory` and `rmguard.scan.truncated_scanners` arrived
+  as `DataType: Gauge`; `rmguard.scanner.files_read` as `Sum` and `rmguard.scan.duration`
+  as `Histogram`, as before.
+- Both resources (traces and metrics) carried `service.instance.id: Str(test-box-1)` and
+  `rmguard.catalog.version: Str(2026-10-22)`; the root span carried
+  `rmguard.otel.instance_id_set: Bool(true)` and `rmguard.catalog.version`.
+- The default Prometheus exporter served `# TYPE rmguard_findings gauge`,
+  `rmguard_inventory gauge`, `rmguard_scan_truncated_scanners gauge` and
+  `rmguard_scanner_files_read_total counter`, with `instance="test-box-1"` and
+  `job="rmguard"` on every series. The UTF-8 exporter served the same underscore names
+  to a plain `curl`, and `"rmguard.findings"`, `"rmguard.inventory"`,
+  `"rmguard.scan.truncated_scanners"` and `"rmguard.scanner.files_read_total"` (with
+  `"rmguard.finding.severity"` labels) to a scrape sending
+  `Accept: text/plain;version=1.0.0;escaping=allow-utf-8`.
+- Nothing identifying arrived: with the collector's own log lines removed, the log holds
+  no host name, user name, home directory, `/datar` or `/home` path, `CLAUDE.md`, `.claude`
+  or key file name; the `.ssh` / `.env` substrings are the fixed span names
+  `exec.ssh_keygen`, `scanner.ssh` and `scanner.envfiles`, and every string value is a
+  closed label, a version, the catalog version or `test-box-1`.
 
 ## Implementation and credits
 

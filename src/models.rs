@@ -60,7 +60,24 @@ pub struct ScanReport {
     /// files_read=0.
     #[serde(default)]
     pub diagnostics: Vec<ScannerStat>,
+    /// Which threat catalog the exposure findings were matched against. Absent in
+    /// reports from older versions (read back as the default: no version, 0 entries).
+    #[serde(default)]
+    pub catalog: CatalogInfo,
     pub summary: Summary,
+}
+
+/// The threat catalog a scan used: rmguard's own data, never anything read from the
+/// machine (a `--threat-catalog` file contributes only its entry count).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct CatalogInfo {
+    /// `catalogs::BUILTIN_CATALOG_VERSION` when the built-in catalog was loaded; `None`
+    /// with `--no-builtin-catalog`.
+    pub builtin_version: Option<String>,
+    /// Entries of the built-in catalog that were loaded (0 when it was not).
+    pub builtin_entries: usize,
+    /// Entries loaded from `--threat-catalog` (0 without it).
+    pub user_entries: usize,
 }
 
 /// A non-fatal issue encountered during scanning.

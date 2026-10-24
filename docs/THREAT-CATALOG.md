@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog currently contains 228 entries
+that is automatically checked during every scan. The catalog (version `2026-10-22`) currently contains 228 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -237,6 +237,13 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
 - **Any entry citing a CVE must carry a bound** — an unbounded CVE entry flags every
   install including patched ones. This is enforced by a test
 - Always include the source in the advisory string
+- Bump the catalog version in the same change: `builtin_catalog_version!()` in
+  `src/catalogs/builtin.rs` is the date of the last edit (`YYYY-MM-DD`, `.2`, `.3`, ...
+  for further edits that day), and `catalog_version_is_bumped_with_the_catalog` pins the
+  file's sha256 to it, so an edit without a bump fails the tests. The version is shown by
+  `rmguard --version`, in the JSON report's `catalog.builtin_version`, and under `--otel`
+  as `rmguard.catalog.version`, which is how a fleet tells a catalog update from a change
+  on its machines
 
 To contribute additional entries, please open a PR with:
 1. The JSON entry in `builtin_catalog.json`

@@ -11,7 +11,7 @@
 
 use super::{Attr, InitError, Metric, V};
 use crate::models::ScannerStat;
-use opentelemetry::metrics::{Counter, Histogram, MeterProvider as _};
+use opentelemetry::metrics::{Counter, Gauge, Histogram, MeterProvider as _};
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer as _, TracerProvider as _};
 use opentelemetry::{Context, ContextGuard, KeyValue, Value};
 use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
@@ -20,8 +20,8 @@ use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracer, SdkTracerProvider};
 use std::borrow::Cow;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -70,9 +70,13 @@ struct Instruments {
     exec_duration: Histogram<f64>,
     mcp_probe_duration: Histogram<f64>,
     registry_lookup_duration: Histogram<f64>,
-    findings: Counter<u64>,
-    inventory: Counter<u64>,
-    truncated_scanners: Counter<u64>,
+    findings: Gauge<u64>,
+    inventory: Gauge<u64>,
+    truncated_scanners: Gauge<u64>,
+    /// Truncated rows so far per scanner label (one row per home pass), in first-seen
+    /// order. A gauge keeps the last value recorded, so each row records the running
+    /// total, and the exported value is the scan's sum.
+    truncated_by_scanner: Mutex<Vec<(&'static str, u64)>>,
 }
 
 /// A failed export, as a fixed category. Never the error text: ureq's messages carry
@@ -272,7 +276,7 @@ pub(super) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-pub(super) fn init() -> Result<(), InitError> {
+pub(super) fn init(instance: Option<&str>) -> Result<(), InitError> {
     if STATE.get().is_some() {
         return Ok(());
     }
@@ -310,18 +314,27 @@ pub(super) fn init() -> Result<(), InitError> {
     }
 
     // Resource: the SDK's detectors (telemetry.sdk.*, OTEL_SERVICE_NAME,
-    // OTEL_RESOURCE_ATTRIBUTES) plus fixed facts. No host name, no user.
+    // OTEL_RESOURCE_ATTRIBUTES) plus fixed facts of this binary. No host name, no user.
+    // The one value that is not a constant is `--otel-instance`, the operator's own text
+    // (it wins over a service.instance.id in OTEL_RESOURCE_ATTRIBUTES: later attributes
+    // replace earlier ones in the SDK's resource merge).
     let mut rb = Resource::builder();
     if std::env::var("OTEL_SERVICE_NAME").map_or(true, |v| v.trim().is_empty()) {
         rb = rb.with_service_name("rmguard");
     }
-    let res = rb
-        .with_attributes([
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-            KeyValue::new("os.type", os_type(std::env::consts::OS)),
-            KeyValue::new("host.arch", host_arch(std::env::consts::ARCH)),
-        ])
-        .build();
+    rb = rb.with_attributes([
+        KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+        KeyValue::new("os.type", os_type(std::env::consts::OS)),
+        KeyValue::new("host.arch", host_arch(std::env::consts::ARCH)),
+        KeyValue::new(
+            super::Key::CatalogVersion.as_str(),
+            crate::catalogs::BUILTIN_CATALOG_VERSION,
+        ),
+    ]);
+    if let Some(id) = instance {
+        rb = rb.with_attribute(KeyValue::new("service.instance.id", id.to_owned()));
+    }
+    let res = rb.build();
 
     let agent = |proxy: Option<ureq::Proxy>| -> ureq::Agent {
         ureq::Agent::config_builder()
@@ -445,21 +458,31 @@ pub(super) fn init() -> Result<(), InitError> {
             ),
             // Posture. Names and `{annotation}` units follow the OpenTelemetry metric
             // naming conventions (opentelemetry.io/docs/specs/semconv/general/metrics/).
+            //
+            // Gauges, not counters: one rmguard process exports one scan and exits, so
+            // each value is the machine's state at that scan, replaced (not added to) by
+            // the next run's. A counter's cumulative stream restarts with every process,
+            // which reads as a reset per run: `rate()` over it is meaningless. The metrics
+            // API spec's Gauge is for recording a current value "when changes occur"
+            // (opentelemetry.io/docs/specs/otel/metrics/api/#gauge), and the Prometheus
+            // compatibility spec maps a Gauge to a Prometheus gauge with no `_total`
+            // suffix (opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#gauges).
             findings: meter
-                .u64_counter("rmguard.findings")
+                .u64_gauge("rmguard.findings")
                 .with_unit("{finding}")
                 .with_description("Findings of the scan, by severity and category")
                 .build(),
             inventory: meter
-                .u64_counter("rmguard.inventory")
+                .u64_gauge("rmguard.inventory")
                 .with_unit("{item}")
                 .with_description("Report summary counts, by kind")
                 .build(),
             truncated_scanners: meter
-                .u64_counter("rmguard.scan.truncated_scanners")
+                .u64_gauge("rmguard.scan.truncated_scanners")
                 .with_unit("{scanner}")
                 .with_description("Scanner runs that stopped at a walk budget")
                 .build(),
+            truncated_by_scanner: Mutex::new(Vec::new()),
         }
     });
 
@@ -627,8 +650,8 @@ pub(super) fn record(metric: Metric, v: f64, attrs: Vec<Attr>) {
         Metric::ExecDuration => inst.exec_duration.record(v, &kv),
         Metric::McpProbeDuration => inst.mcp_probe_duration.record(v, &kv),
         Metric::RegistryLookupDuration => inst.registry_lookup_duration.record(v, &kv),
-        Metric::Findings => inst.findings.add(n, &kv),
-        Metric::Inventory => inst.inventory.add(n, &kv),
+        Metric::Findings => inst.findings.record(n, &kv),
+        Metric::Inventory => inst.inventory.record(n, &kv),
     }
 }
 
@@ -642,7 +665,25 @@ pub(super) fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: D
     inst.files_missing.add(stat.files_missing, &kv);
     inst.items.add(stat.items as u64, &kv);
     // 0 for a scanner that finished its walk, so every scanner that ran has a point.
-    inst.truncated_scanners.add(u64::from(stat.truncated), &kv);
+    // A scanner has one row per home pass; the gauge gets the running sum, so its last
+    // (exported) value is the scan's total for that scanner.
+    let total = {
+        let mut by = inst
+            .truncated_by_scanner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match by.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, n)) => {
+                *n += u64::from(stat.truncated);
+                *n
+            }
+            None => {
+                by.push((label, u64::from(stat.truncated)));
+                u64::from(stat.truncated)
+            }
+        }
+    };
+    inst.truncated_scanners.record(total, &kv);
 }
 
 /// Flush both pipelines concurrently under one deadline, then return whatever happened.

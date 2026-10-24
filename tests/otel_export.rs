@@ -140,6 +140,11 @@ fn help_documents_otel_flag() {
         help.contains("OTEL_EXPORTER_OTLP_ENDPOINT alone never enables export"),
         "--help must say the env var alone never enables export:\n{help}"
     );
+    assert!(help.contains("--otel-instance <ID>"), "{help}");
+    assert!(
+        help.contains("never derives it from the host name"),
+        "--help must say the instance id is never derived from the machine:\n{help}"
+    );
 }
 
 #[test]
@@ -313,6 +318,73 @@ fn no_child_command_spawns_a_program_by_bare_name() {
             }
         }
     }
+}
+
+/// The built-in catalog's version is in `--version` and in the JSON report's `catalog`
+/// block (null with `--no-builtin-catalog`), so a report says which catalog its exposure
+/// findings were matched against.
+#[test]
+fn catalog_version_in_version_and_report() {
+    use rustmachineguard::catalogs::{BUILTIN_CATALOG, BUILTIN_CATALOG_VERSION};
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(BUILTIN_CATALOG)
+        .unwrap()
+        .len() as u64;
+    let home = temp_home("catver");
+    let (out, _) = run(rmguard(&home, None, &["--version"]));
+    assert!(out.status.success());
+    let v = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        v.trim(),
+        format!(
+            "rmguard {} (threat catalog {BUILTIN_CATALOG_VERSION})",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+
+    let (out, _) = run(rmguard(&home, None, &["--format", "json", "--skip", SLOW_SKIP]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let cat = &json(&out)["catalog"];
+    assert_eq!(cat["builtin_version"].as_str(), Some(BUILTIN_CATALOG_VERSION), "{cat}");
+    assert_eq!(cat["builtin_entries"].as_u64(), Some(entries), "{cat}");
+    assert_eq!(cat["user_entries"].as_u64(), Some(0), "{cat}");
+    assert!(
+        stderr(&out).contains(&format!(
+            "loaded built-in threat catalog {BUILTIN_CATALOG_VERSION} ({entries} entries)"
+        )),
+        "{}",
+        stderr(&out)
+    );
+
+    let (out, _) = run(rmguard(
+        &home,
+        None,
+        &["--format", "json", "--skip", SLOW_SKIP, "--no-builtin-catalog"],
+    ));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let cat = &json(&out)["catalog"];
+    assert!(cat["builtin_version"].is_null(), "{cat}");
+    assert_eq!(cat["builtin_entries"].as_u64(), Some(0), "{cat}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// `--otel-instance` is an export setting: without `--otel` it is a usage error, and
+/// an empty or control-character id is refused rather than exported.
+#[test]
+fn otel_instance_needs_otel_and_a_sane_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = temp_home("instflag");
+    for args in [
+        &["--otel-instance", "box-1", "--format", "json"][..],
+        &["--otel", "--otel-instance", "  ", "--format", "json"][..],
+        &["--otel", "--otel-instance", "a\u{1b}[31m", "--format", "json"][..],
+    ] {
+        let (out, _) = run(rmguard(&home, Some(port), args));
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{args:?} scanned anyway");
+    }
+    assert_never_connected(&listener);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[cfg(not(feature = "otel"))]
@@ -1319,13 +1391,33 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Data points of a Sum, keyed by their sorted (key, value) attributes.
+    /// Data points of a Gauge, keyed by their sorted (key, value) attributes.
     type Points = BTreeMap<Vec<(String, String)>, i64>;
 
-    /// The data points of one u64 Sum metric, keyed by their attributes (key=value, sorted),
-    /// from the last request that carried it (export is cumulative, so the last snapshot
-    /// is the scan's total). Also returns (unit, is_monotonic, temporality).
-    fn sum_points(mr: &[ExportMetricsServiceRequest], name: &str) -> Option<(Points, String, bool, i32)> {
+    /// The data type of metric `name` in the export (`Sum`, `Gauge`, `Histogram`, ...),
+    /// one entry per occurrence, so a metric exported under two types shows both.
+    fn metric_kinds(mr: &[ExportMetricsServiceRequest], name: &str) -> BTreeSet<&'static str> {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        mr.iter()
+            .flat_map(|r| &r.resource_metrics)
+            .flat_map(|rm| &rm.scope_metrics)
+            .flat_map(|sm| &sm.metrics)
+            .filter(|m| m.name == name)
+            .map(|m| match &m.data {
+                Some(Data::Sum(_)) => "Sum",
+                Some(Data::Gauge(_)) => "Gauge",
+                Some(Data::Histogram(_)) => "Histogram",
+                Some(Data::ExponentialHistogram(_)) => "ExponentialHistogram",
+                Some(Data::Summary(_)) => "Summary",
+                None => "none",
+            })
+            .collect()
+    }
+
+    /// The data points of one u64 Gauge metric, keyed by their attributes (key=value,
+    /// sorted), from the last request that carried it (the last snapshot is the scan's
+    /// value). Also returns the unit. Panics if the metric is not a Gauge.
+    fn gauge_points(mr: &[ExportMetricsServiceRequest], name: &str) -> Option<(Points, String)> {
         use opentelemetry_proto::tonic::metrics::v1::{metric::Data, number_data_point::Value as NV};
         let mut last = None;
         for r in mr {
@@ -1336,11 +1428,11 @@ mod enabled {
                 .flat_map(|sm| &sm.metrics)
                 .filter(|m| m.name == name)
             {
-                let Some(Data::Sum(sum)) = &m.data else {
-                    panic!("{name} is not a Sum")
+                let Some(Data::Gauge(g)) = &m.data else {
+                    panic!("{name} is not a Gauge: {:?}", metric_kinds(mr, name))
                 };
                 let mut points = BTreeMap::new();
-                for p in &sum.data_points {
+                for p in &g.data_points {
                     let mut key: Vec<(String, String)> = p
                         .attributes
                         .iter()
@@ -1359,7 +1451,7 @@ mod enabled {
                     };
                     assert!(points.insert(key, n).is_none(), "{name}: duplicate point");
                 }
-                last = Some((points, m.unit.clone(), sum.is_monotonic, sum.aggregation_temporality));
+                last = Some((points, m.unit.clone()));
             }
         }
         last
@@ -1461,16 +1553,41 @@ mod enabled {
             assert!(names.contains(m), "metric {m} missing; got {names:?}");
         }
 
-        let (got, unit, mono, temporality) = sum_points(&mr, "rmguard.findings").unwrap();
-        assert_eq!((unit.as_str(), mono), ("{finding}", true));
-        assert_eq!(temporality, 2, "cumulative");
+        // Instrument types: the posture metrics are gauges (one scan per process is a
+        // snapshot, not a running count); the performance metrics stay histograms and
+        // counters.
+        let one = |k: &'static str| BTreeSet::from([k]);
+        for m in [
+            "rmguard.findings",
+            "rmguard.inventory",
+            "rmguard.scan.truncated_scanners",
+        ] {
+            assert_eq!(metric_kinds(&mr, m), one("Gauge"), "{m}");
+        }
+        for m in [
+            "rmguard.scanner.files_read",
+            "rmguard.scanner.files_missing",
+            "rmguard.scanner.items",
+            "rmguard.scanner.skipped",
+        ] {
+            assert_eq!(metric_kinds(&mr, m), one("Sum"), "{m}");
+        }
+        for m in ["rmguard.scan.duration", "rmguard.scanner.duration"] {
+            assert_eq!(metric_kinds(&mr, m), one("Histogram"), "{m}");
+        }
+        // Present only when this fixture's scan spawned something (git, ps).
+        let exec = metric_kinds(&mr, "rmguard.exec.duration");
+        assert!(exec.is_empty() || exec == one("Histogram"), "{exec:?}");
+
+        let (got, unit) = gauge_points(&mr, "rmguard.findings").unwrap();
+        assert_eq!(unit.as_str(), "{finding}");
         assert_eq!(got, want, "rmguard.findings vs the report's findings");
         assert!(got.values().all(|n| *n > 0), "a zero pair was exported");
         for key in got.keys() {
             assert!(FINDING_CATEGORIES.contains(&key[0].1.as_str()), "{key:?}");
         }
 
-        let (inv, unit, _, _) = sum_points(&mr, "rmguard.inventory").unwrap();
+        let (inv, unit) = gauge_points(&mr, "rmguard.inventory").unwrap();
         assert_eq!(unit, "{item}");
         let summary = json_report["summary"].as_object().expect("summary");
         let want_inv: Points = summary
@@ -1488,7 +1605,7 @@ mod enabled {
         let env_files = vec![("rmguard.inventory.kind".to_string(), "env_files".to_string())];
         assert_eq!(inv.get(&env_files), Some(&2), "both fixture .env files counted");
 
-        let (tr_points, unit, _, _) = sum_points(&mr, "rmguard.scan.truncated_scanners").unwrap();
+        let (tr_points, unit) = gauge_points(&mr, "rmguard.scan.truncated_scanners").unwrap();
         assert_eq!(unit, "{scanner}");
         let mut want_tr: Points = BTreeMap::new();
         for row in json_report["diagnostics"].as_array().unwrap() {
@@ -1537,6 +1654,136 @@ mod enabled {
                 assert!(exact.is_empty() || s != *exact, "exported host or user {s:?}");
             }
         }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Machine identity is the operator's: `--otel-instance` sets the resource's
+    /// `service.instance.id` (traces and metrics) to exactly the flag's value and the
+    /// root span says identity was supplied; with neither the flag nor
+    /// `service.instance.id` in OTEL_RESOURCE_ATTRIBUTES, one `info:` line says the
+    /// export carries no machine identity and export goes ahead with none; the env
+    /// variable alone silences the line. Every run's resource and root span carry the
+    /// built-in catalog's version, and nothing host-derived becomes the id.
+    #[test]
+    fn otel_instance_identity_and_catalog_version() {
+        use rustmachineguard::catalogs::BUILTIN_CATALOG_VERSION;
+        let notice = |out: &Output| {
+            stderr(out)
+                .lines()
+                .filter(|l| l.starts_with("info:") && l.contains("no machine identity"))
+                .count()
+        };
+        let bool_attr = |kvs: &[KeyValue], key: &str| match attr(kvs, key) {
+            Some(any_value::Value::BoolValue(b)) => Some(*b),
+            _ => None,
+        };
+        /// (extra args, OTEL_RESOURCE_ATTRIBUTES, expected id, expected notice lines)
+        type Case<'a> = (&'a [&'a str], Option<&'a str>, Option<&'a str>, usize);
+        let cases: [Case; 4] = [
+            (&[], None, None, 1),
+            (&["--otel-instance", "test-box-1"], None, Some("test-box-1"), 0),
+            (&[], Some("service.instance.id=x"), Some("x"), 0),
+            // The flag wins over the environment.
+            (
+                &["--otel-instance", "flag-id"],
+                Some("service.instance.id=env-id"),
+                Some("flag-id"),
+                0,
+            ),
+        ];
+        for (extra, env, want_id, want_notice) in cases {
+            let home = temp_home("instance");
+            let collector = Collector::start();
+            let mut args = vec!["--otel", "--format", "json", "--skip", SLOW_SKIP];
+            args.extend_from_slice(extra);
+            let mut cmd = rmguard(&home, Some(collector.port), &args);
+            if let Some(e) = env {
+                cmd.env("OTEL_RESOURCE_ATTRIBUTES", e);
+            }
+            let (out, _) = run(cmd);
+            let bodies = collector.finish();
+            let case = format!("{extra:?} env={env:?}");
+            assert!(out.status.success(), "{case}: {}", stderr(&out));
+            let report = json(&out);
+            assert_eq!(notice(&out), want_notice, "{case}: {}", stderr(&out));
+            assert_eq!(warning_lines(&out), 0, "{case}: {}", stderr(&out));
+
+            let tr = traces(&bodies);
+            let mr = metrics(&bodies);
+            assert!(!tr.is_empty() && !mr.is_empty(), "{case}: nothing exported");
+            let resources: Vec<&[KeyValue]> = tr
+                .iter()
+                .flat_map(|r| &r.resource_spans)
+                .filter_map(|rs| rs.resource.as_ref())
+                .chain(
+                    mr.iter()
+                        .flat_map(|r| &r.resource_metrics)
+                        .filter_map(|rm| rm.resource.as_ref()),
+                )
+                .map(|r| r.attributes.as_slice())
+                .collect();
+            for res in &resources {
+                assert_eq!(
+                    attr_str(res, "service.instance.id").as_deref(),
+                    want_id,
+                    "{case}: resource"
+                );
+                assert_eq!(
+                    attr_str(res, "rmguard.catalog.version").as_deref(),
+                    Some(BUILTIN_CATALOG_VERSION),
+                    "{case}: resource catalog version"
+                );
+            }
+            let all = spans(&tr);
+            let root = all.iter().find(|s| s.name == "rmguard.scan").expect("root span");
+            assert_eq!(
+                bool_attr(&root.attributes, "rmguard.otel.instance_id_set"),
+                Some(want_id.is_some()),
+                "{case}: root"
+            );
+            assert_eq!(
+                attr_str(&root.attributes, "rmguard.catalog.version").as_deref(),
+                Some(BUILTIN_CATALOG_VERSION),
+                "{case}: root catalog version"
+            );
+            // Nothing host-derived stands in for the id.
+            for s in all_strings(&tr, &mr) {
+                for exact in [
+                    report["device"]["hostname"].as_str().unwrap_or(""),
+                    report["device"]["user_identity"].as_str().unwrap_or(""),
+                ] {
+                    assert!(exact.is_empty() || s != exact, "{case}: exported host or user {s:?}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    /// With `--no-builtin-catalog` the root span carries no catalog version (no catalog
+    /// of this binary was used); the resource still names the binary's.
+    #[test]
+    fn otel_root_has_no_catalog_version_without_the_builtin_catalog() {
+        let home = temp_home("nocat");
+        let collector = Collector::start();
+        let (out, _) = run(rmguard(
+            &home,
+            Some(collector.port),
+            &[
+                "--otel",
+                "--otel-instance",
+                "t",
+                "--format",
+                "json",
+                "--skip",
+                SLOW_SKIP,
+                "--no-builtin-catalog",
+            ],
+        ));
+        let bodies = collector.finish();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let all = spans(&traces(&bodies));
+        let root = all.iter().find(|s| s.name == "rmguard.scan").expect("root span");
+        assert!(attr(&root.attributes, "rmguard.catalog.version").is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
 

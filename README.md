@@ -335,7 +335,7 @@ Floors (documented but not read):
 - Everywhere: Windows paths (`%APPDATA%`, `ProgramData`).
 - Budgets: at most 500 hooks per file entry and per plugin (a plugin manifest's list of hook files is read once per path and only until the plugin's cap) and 10,000 per scan; hooks past either are not parsed (the file is counted as a miss in the diagnostics and traced as "hook budget spent" under `--trace`). The on-disk checks of one command (native-binary probe, symlink check) stop after 16 path words, program words first, and after 20,000 per scan; the lexical agent-directory check still sees every word.
 
-A built-in **threat catalog** (228 entries) flags known-malicious or known-vulnerable
+A built-in **threat catalog** (228 entries; its version, the date of its last change, is in `rmguard --version` and the JSON report's `catalog` block) flags known-malicious or known-vulnerable
 packages, MCP servers, IDE plugins and browser extensions during the scan — and, via the
 `agent-runtime` ecosystem, checks the **agent's own version** (Claude Code, Claude
 Desktop/Cowork, Codex CLI, Copilot CLI, Gemini CLI, Goose, Kiro IDE, Ollama) against
@@ -446,7 +446,7 @@ trace, every scanner on one thread.
 http/protobuf: one `rmguard.scan` trace with a span per phase, per scanner, per
 instrumented subprocess (`--version` probes, `git ls-files`, `ssh-keygen`; the device-info
 lookups are not), per MCP probe and per registry lookup, plus duration histograms and
-files-read/missing/items counters. Posture metrics count the scan's findings by severity
+files-read/missing/items counters. Posture gauges hold the scan's findings by severity
 and category (`rmguard.findings`), its summary inventory by kind (`rmguard.inventory`) and
 the scanners that stopped at a walk budget, with closed labels only, never a finding's
 title, evidence or path ([Posture metrics](docs/OPENTELEMETRY.md#posture-metrics)).
@@ -454,7 +454,7 @@ title, evidence or path ([Posture metrics](docs/OPENTELEMETRY.md#posture-metrics
 ```bash
 docker run --rm -p 4318:4318 otel/opentelemetry-collector   # or Jaeger all-in-one
 rmguard --otel                                               # sends to http://localhost:4318
-OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel --otel-instance "$ASSET_TAG"
 ```
 
 - **Off unless you pass `--otel`.** `OTEL_EXPORTER_OTLP_ENDPOINT` and the other
@@ -470,7 +470,14 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel
   (else `other`), closed walk labels (`skills.walk` kind/scope, transcript store
   framework), counts, durations, and fixed outcome categories (`ok`, `timeout`, `spawn_failed`,
   `lookup_failed`, `error.type=connect`, an HTTP status code). Resource: `service.name`,
-  `service.version`, `os.type`, `host.arch`.
+  `service.version`, `os.type`, `host.arch`, `rmguard.catalog.version` (the built-in
+  threat catalog's version, so a catalog update is not mistaken for a posture change).
+- **Machine identity is yours to give:** `--otel-instance <ID>` (or
+  `service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES`) names the machine in the export;
+  it is the one exported value that is not a fixed label, it is exported as you typed
+  it, and rmguard never derives it from the host name, user or any file. Without one, a
+  single `info:` line says the export carries no machine identity, and export goes
+  ahead ([Machine identity](docs/OPENTELEMETRY.md#machine-identity)).
 - **What is never exported:** file paths (including your home directory), MCP server
   names, commands, arguments and environment, any program name outside that fixed
   table (the table's names on `--version` probes do say which of those tools are
@@ -633,6 +640,11 @@ Options:
                                      Exports labels, counts and durations only —
                                      never paths, server or package names, or
                                      secret values. OTEL_SDK_DISABLED=true wins
+      --otel-instance <ID>           Name this machine in the export: sets the
+                                     resource's service.instance.id to ID (an
+                                     asset tag). Exported as typed; never derived
+                                     from the host name, user or any file.
+                                     Requires --otel.
   -h, --help                         Print help
   -V, --version                      Print version
 ```

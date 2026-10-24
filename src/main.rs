@@ -18,7 +18,11 @@ use std::time::Instant;
 ///
 /// Began as a Rust rewrite of step-security/dev-machine-guard (Apache-2.0); see NOTICE.
 #[derive(Parser)]
-#[command(name = "rmguard", version, about)]
+#[command(
+    name = "rmguard",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (threat catalog ", rustmachineguard::builtin_catalog_version!(), ")"),
+    about
+)]
 struct Cli {
     /// Output format
     #[arg(short, long, default_value = "terminal")]
@@ -93,6 +97,14 @@ struct Cli {
     /// never paths, server or package names, or secret values. OTEL_SDK_DISABLED=true wins.
     #[arg(long)]
     otel: bool,
+
+    /// Name this machine in the OpenTelemetry export: sets the resource's
+    /// `service.instance.id` to ID (an asset tag, an inventory number), so a fleet's
+    /// series do not all land on the same labels. Exported exactly as typed (surrounding
+    /// whitespace removed; at most 128 characters, no control characters). rmguard never
+    /// derives it from the host name, the user or any file. Requires --otel.
+    #[arg(long, value_name = "ID", requires = "otel", value_parser = parse_otel_instance)]
+    otel_instance: Option<String>,
 
     /// Scanners run side by side within each scan phase, on at most N threads
     /// (default: the machine's available parallelism, at most 8). 1 runs them one after
@@ -574,6 +586,22 @@ fn global_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
     list
 }
 
+/// `--otel-instance`: the operator's text, trimmed, non-empty, at most 128 characters
+/// and free of control characters (it ends up in dashboards and terminal output).
+fn parse_otel_instance(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err("must not be empty".into());
+    }
+    if t.chars().count() > 128 {
+        return Err("at most 128 characters".into());
+    }
+    if t.chars().any(char::is_control) {
+        return Err("must not contain control characters".into());
+    }
+    Ok(t.to_string())
+}
+
 /// `--jobs`, or the machine's parallelism clamped to 1..=8.
 fn scan_jobs(flag: Option<usize>) -> usize {
     flag.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8))
@@ -612,11 +640,22 @@ fn main() {
     // OpenTelemetry export: only ever started by the explicit flag. Ambient OTEL_* env
     // (common on developer machines, set up for other tools) never turns it on; it only
     // chooses where --otel sends. Without the flag nothing below is built or read.
+    //
+    // Machine identity is the operator's to give (`--otel-instance`, or
+    // service.instance.id in OTEL_RESOURCE_ATTRIBUTES); without it one info line says
+    // so and export goes ahead. Nothing is derived from the host.
+    let mut otel_instance_set = false;
     if cli.otel {
-        match otel::init() {
-            Ok(()) => eprintln!(
-                "info: OpenTelemetry export enabled (OTLP http/protobuf; endpoint from OTEL_EXPORTER_OTLP_*, default http://localhost:4318)"
-            ),
+        match otel::init(cli.otel_instance.as_deref()) {
+            Ok(()) => {
+                eprintln!(
+                    "info: OpenTelemetry export enabled (OTLP http/protobuf; endpoint from OTEL_EXPORTER_OTLP_*, default http://localhost:4318)"
+                );
+                otel_instance_set = cli.otel_instance.is_some() || otel::env_has_instance_id();
+                if !otel_instance_set {
+                    eprintln!("{}", otel::NO_INSTANCE_NOTICE);
+                }
+            }
             Err(otel::InitError::NotCompiled) => {
                 eprintln!("warning: --otel ignored: this rmguard was built without the `otel` feature")
             }
@@ -691,6 +730,7 @@ fn main() {
             Attr::bool(Key::VerifyRegistry, cli.verify_registry),
             Attr::bool(Key::Diff, cli.diff.is_some()),
             Attr::int(Key::Jobs, jobs as i64),
+            Attr::bool(Key::OtelInstanceIdSet, otel_instance_set),
         ]
     });
 
@@ -738,6 +778,7 @@ fn main() {
         persistence_artifacts: Vec::new(),
         warnings: Vec::new(),
         diagnostics: Vec::new(),
+        catalog: Default::default(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -806,7 +847,13 @@ fn main() {
     } else {
         match scanners::exposure::ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG) {
             Ok(c) => {
-                eprintln!("info: loaded built-in threat catalog ({} entries)", c.len());
+                eprintln!(
+                    "info: loaded built-in threat catalog {} ({} entries)",
+                    rustmachineguard::catalogs::BUILTIN_CATALOG_VERSION,
+                    c.len()
+                );
+                report.catalog.builtin_version = Some(rustmachineguard::catalogs::BUILTIN_CATALOG_VERSION.to_string());
+                report.catalog.builtin_entries = c.len();
                 Some(c)
             }
             Err(e) => {
@@ -824,6 +871,7 @@ fn main() {
                     user_catalog.len(),
                     catalog_path.display()
                 );
+                report.catalog.user_entries = user_catalog.len();
                 if let Some(ref mut c) = catalog {
                     c.merge(user_catalog);
                 } else {
@@ -1131,6 +1179,16 @@ fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &
                 Attr::int(Key::FindingsLow, low),
             ]
         });
+        // The catalog the exposure findings were matched against: a constant of this
+        // binary, present only when the built-in catalog was used.
+        if report.catalog.builtin_version.is_some() {
+            root.set(|| {
+                vec![Attr::str(
+                    Key::CatalogVersion,
+                    rustmachineguard::catalogs::BUILTIN_CATALOG_VERSION,
+                )]
+            });
+        }
         otel::record_posture(&findings, &report.summary);
     }
     if let Some(t) = scan_start {
