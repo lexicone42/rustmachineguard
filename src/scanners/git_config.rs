@@ -71,17 +71,10 @@ impl Scanner for GitConfigScanner {
         // budget, in no meaningful order, and ran out of budget on any real HOME. Its
         // repo-local config (a dotfiles repo at ~/.git) is still checked above.
         let walkable = crate::scanners::skills::project_dirs_excluding_home(dirs.clone(), &home);
-        let mut nested: Vec<Vec<GitAutorunConfig>> = Vec::with_capacity(dirs.len());
-        {
+        let nested = {
             let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
-            let mut stats = WalkStats::default();
-            for dir in &dirs {
-                let mut o = Vec::new();
-                if walkable.contains(dir) {
-                    scan_nested_repos(dir, &mut o, &mut stats);
-                }
-                nested.push(o);
-            }
+            let jobs = crate::scanners::telemetry::helper_jobs();
+            let (nested, stats) = walk_projects(&dirs, &walkable, jobs);
             span.set(|| {
                 vec![
                     Attr::int(Key::WalkEntries, stats.entries as i64),
@@ -91,13 +84,38 @@ impl Scanner for GitConfigScanner {
                     Attr::bool(Key::WalkBudgetExhausted, stats.budget_exhausted),
                 ]
             });
-        }
+            nested
+        };
         local.into_iter().zip(nested).flat_map(|(l, n)| l.into_iter().chain(n)).collect()
     }
 }
 
+/// The nested walk of every project in `dirs` that is in `walkable`, on up to `jobs`
+/// threads ([`par_map`](crate::scanners::telemetry::par_map)), one project per task, each
+/// with its own directory budget and its own [`WalkStats`]. Findings come back per
+/// project in `dirs` order and the stats are summed in that order, so neither depends on
+/// which project finished first; `jobs` 1 is the sequential loop.
+fn walk_projects(dirs: &[PathBuf], walkable: &[PathBuf], jobs: usize) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
+    let per_project = crate::scanners::telemetry::par_map(dirs.iter().collect(), jobs, |dir: &PathBuf| {
+        let (mut o, mut stats) = (Vec::new(), WalkStats::default());
+        if walkable.contains(dir) {
+            scan_nested_repos(dir, &mut o, &mut stats);
+        }
+        (o, stats)
+    });
+    let mut total = WalkStats::default();
+    let nested = per_project
+        .into_iter()
+        .map(|(o, s)| {
+            total.add(&s);
+            o
+        })
+        .collect();
+    (nested, total)
+}
+
 /// Counts for the `gitconfig.nested_walk` span, summed over every project walked.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 struct WalkStats {
     /// Directory entries seen.
     entries: u64,
@@ -111,6 +129,17 @@ struct WalkStats {
     pruned: u64,
     /// A project's walk stopped at its directory budget.
     budget_exhausted: bool,
+}
+
+impl WalkStats {
+    /// Fold one project's counts into the total.
+    fn add(&mut self, o: &WalkStats) {
+        self.entries += o.entries;
+        self.dirs += o.dirs;
+        self.repos += o.repos;
+        self.pruned += o.pruned;
+        self.budget_exhausted |= o.budget_exhausted;
+    }
 }
 
 fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
@@ -529,4 +558,110 @@ fn is_bare_gitdir(dir: &Path) -> bool {
     head_is_valid(&dir.join("HEAD"))
         && crate::scanners::probe_dir(&dir.join("objects"))
         && crate::scanners::probe_dir(&dir.join("refs"))
+}
+
+#[cfg(test)]
+mod walk_projects_tests {
+    use super::{walk_projects, WalkStats};
+    use std::path::{Path, PathBuf};
+
+    /// A buried bare git dir at `<project>/<rel>` whose `core.fsmonitor` runs a script
+    /// named after `tag`, so each finding says which project and repo it came from.
+    fn plant(project: &Path, rel: &str, tag: &str) {
+        let g = project.join(rel);
+        std::fs::create_dir_all(g.join("objects")).unwrap();
+        std::fs::create_dir_all(g.join("refs")).unwrap();
+        std::fs::write(g.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(g.join("config"), format!("[core]\n\tfsmonitor = \"./{tag}.sh\"\n")).unwrap();
+    }
+
+    fn base(tag: &str) -> PathBuf {
+        let b = std::env::temp_dir().join(format!("rmg-gc-walk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&b);
+        b
+    }
+
+    fn findings(nested: &[Vec<crate::models::GitAutorunConfig>]) -> Vec<Vec<String>> {
+        nested.iter().map(|o| o.iter().map(|c| serde_json::to_string(c).unwrap()).collect()).collect()
+    }
+
+    /// Three projects (one registered but not walkable) walked at `jobs` 1 and `jobs` 4:
+    /// the same findings, per project, in project order, and the same summed counts.
+    #[test]
+    fn projects_walked_concurrently_keep_order_and_counts() {
+        let b = base("order");
+        let dirs: Vec<PathBuf> = (0..4).map(|i| b.join(format!("proj{i}"))).collect();
+        for (i, d) in dirs.iter().enumerate() {
+            for j in 0..30 {
+                std::fs::create_dir_all(d.join(format!("src/m{j}"))).unwrap();
+            }
+            std::fs::create_dir_all(d.join("node_modules/dep")).unwrap();
+            plant(d, "vendor/a", &format!("p{i}-a"));
+            plant(d, &format!("src/m{}/b", i * 3), &format!("p{i}-b"));
+        }
+        // proj2 is registered but not walked (HOME-as-project): no findings, no counts.
+        let walkable: Vec<PathBuf> = dirs.iter().filter(|d| !d.ends_with("proj2")).cloned().collect();
+        let (n1, s1) = walk_projects(&dirs, &walkable, 1);
+        let (n4, s4) = walk_projects(&dirs, &walkable, 4);
+        let _ = std::fs::remove_dir_all(&b);
+        let (f1, f4) = (findings(&n1), findings(&n4));
+        assert_eq!(f1, f4, "findings differ between jobs 1 and jobs 4");
+        assert_eq!(s1, s4, "walk counts differ between jobs 1 and jobs 4");
+        assert_eq!(f1.len(), 4);
+        for (i, per) in f1.iter().enumerate() {
+            if i == 2 {
+                assert!(per.is_empty(), "unwalkable project produced {per:?}");
+                continue;
+            }
+            assert_eq!(per.len(), 2, "project {i}: {per:?}");
+            assert!(per.iter().all(|f| f.contains(&format!("proj{i}")) && f.contains(&format!("p{i}-"))), "project {i}: {per:?}");
+        }
+        assert_eq!(s1.repos, 6);
+        assert_eq!(s1.pruned, 3);
+        assert!(!s1.budget_exhausted);
+    }
+
+    /// One project past its 4,000-directory budget and one well inside it, at `jobs` 4:
+    /// the scanner row is `truncated` (set on whichever thread walked the big project),
+    /// the big project stopped at exactly its own budget, and the small project's walk is
+    /// complete, its buried repos all found, as at `jobs` 1.
+    #[test]
+    fn one_project_over_budget_leaves_the_others_complete() {
+        let b = base("budget");
+        let big = b.join("big");
+        for i in 0..70 {
+            for j in 0..60 {
+                std::fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
+            }
+        }
+        let small = b.join("small");
+        for j in 0..20 {
+            std::fs::create_dir_all(small.join(format!("lib/x{j}"))).unwrap();
+        }
+        plant(&small, "lib/x3/pay", "small-1");
+        plant(&small, "lib/x17/deep/pay", "small-2");
+        let dirs = vec![big.clone(), small.clone()];
+        let mut seen: Vec<(Vec<Vec<String>>, WalkStats, bool)> = Vec::new();
+        for jobs in [1, 4] {
+            let (out, pending) = crate::scanners::telemetry::run("gitconfig", None, || {
+                let (n, s) = walk_projects(&dirs, &dirs, jobs);
+                vec![(n, s)]
+            });
+            let stat = pending.finalize();
+            let (n, s) = out.into_iter().next().unwrap();
+            seen.push((findings(&n), s, stat.truncated));
+        }
+        // The small project alone, for its complete count.
+        let (_, alone) = walk_projects(std::slice::from_ref(&small), std::slice::from_ref(&small), 1);
+        let _ = std::fs::remove_dir_all(&b);
+        let (f4, s4, truncated4) = &seen[1];
+        assert_eq!(seen[0].0, *f4, "findings differ between jobs 1 and jobs 4");
+        assert_eq!(seen[0].1, *s4, "counts differ between jobs 1 and jobs 4");
+        assert!(seen[0].2 && *truncated4, "truncated: jobs 1 {}, jobs 4 {truncated4}", seen[0].2);
+        assert!(s4.budget_exhausted);
+        assert_eq!(s4.dirs, 4_000 + alone.dirs, "the big project's own budget, the small one complete");
+        assert_eq!(f4[0].len(), 0);
+        assert_eq!(f4[1].len(), 2, "small project findings: {:?}", f4[1]);
+        assert!(f4[1][0].contains("small-") && f4[1][1].contains("small-"));
+    }
 }

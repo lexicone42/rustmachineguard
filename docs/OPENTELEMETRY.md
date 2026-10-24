@@ -159,7 +159,19 @@ not, in which case the `exec.version_probe` that follows, a sibling under
 `gitconfig` runs in two passes so the trace can tell its two costs apart: every
 project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
 buried inside each project (`gitconfig.nested_walk`). The findings are joined back in
-the old per-project order, so the report is unchanged.
+the old per-project order, so the report is unchanged. The projects are walked side by
+side on up to `--jobs` threads, each with its own directory budget and counts; the
+span's counts are the per-project counts summed in project order, and
+`rmguard.walk.budget_exhausted` is true when any project's walk stopped at its budget.
+An `exec.*` span a helper thread opens (a nested repo's `git config`) is a child of
+`gitconfig.nested_walk`, as it was sequentially.
+
+A `skills.walk` reads, hashes and analyses the files it judged on up to `--jobs`
+threads, after the walk; the walk (its entries, budgets and symlink judgement), the
+frontmatter hooks (which spend the scan's hook budget) and its counts stay on the
+scanner's thread, in walk order, so `rmguard.walk.files`, `rmguard.walk.bytes_hashed`
+and `rmguard.walk.hooks` are the same at any `--jobs`. With `--jobs 1` neither scanner
+starts a thread.
 
 ## Attributes
 

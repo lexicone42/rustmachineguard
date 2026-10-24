@@ -497,6 +497,10 @@ fn main() {
         Format::Compliance => "compliance",
     };
     let jobs = scan_jobs(cli.jobs.map(usize::from));
+    // The same setting bounds the threads one scanner uses for its own work (the
+    // gitconfig project walks, the skills file reads): `--jobs 1` keeps every scanner
+    // single-threaded.
+    telemetry::set_helper_jobs(jobs);
     // Only for the rmguard.scan.duration metric: no clock read unless exporting.
     let scan_start = otel::enabled().then(Instant::now);
     // Root span of the whole scan; every phase and scanner span nests under it. Options

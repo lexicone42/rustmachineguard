@@ -431,9 +431,14 @@ The scanners of each phase run side by side (`--jobs`, default the machine's ava
 parallelism, at most 8), and the global phase and the primary home pass share one pool of
 that many threads, so the two phases overlap (extra `--search-dirs` passes follow, one at
 a time); the report, including the order of every list and every diagnostics count, is
-the same whatever the job count. `--trace` lines of scanners
+the same whatever the job count. Two scanners also split their own work over the same
+number of threads: `gitconfig` walks each registered project for buried git directories
+on its own thread (each project keeps its own 4,000-directory budget), and `skills`
+reads, hashes and analyses the files its walks judged readable on helper threads (the
+walk itself, with its budgets and its symlink judgement, stays on one thread); results
+are put back in the sequential order. `--trace` lines of scanners
 running at the same time interleave; `--jobs 1` gives the old one-scanner-at-a-time
-trace.
+trace, every scanner on one thread.
 
 ### Telemetry (OpenTelemetry)
 

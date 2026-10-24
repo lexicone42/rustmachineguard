@@ -2287,9 +2287,10 @@ pub mod telemetry {
     /// (`--jobs`) never count each other's reads or spend each other's budget. A thread
     /// outside any [`timed`] call (a unit test calling a scanner directly) has its own.
     ///
-    /// The counters are atomics behind an `Arc` only so that a scanner that hands work
-    /// to a helper thread can carry its scope there ([`current_scope`],
-    /// [`ScopeHandle::enter`]); no scanner does today.
+    /// The counters are atomics behind an `Arc` so that a scanner that hands work to a
+    /// helper thread carries its scope there ([`current_scope`], [`ScopeHandle::enter`];
+    /// [`par_map`] does it for every helper): the gitconfig project walks and the skills
+    /// file reads.
     #[derive(Debug)]
     pub struct ScannerScope {
         read: AtomicU64,
@@ -2565,6 +2566,66 @@ pub mod telemetry {
             }
             stat
         }
+    }
+
+    /// Threads a scanner may use for its own work, counting the one it runs on: the
+    /// scan's `--jobs` ([`set_helper_jobs`]). 1 (the default, and what a unit test calling
+    /// a scanner directly gets) keeps every scanner single-threaded.
+    static HELPER_JOBS: AtomicUsize = AtomicUsize::new(1);
+
+    /// Set the scan's `--jobs` for [`helper_jobs`] (main, once, before scanning).
+    pub fn set_helper_jobs(jobs: usize) {
+        HELPER_JOBS.store(jobs.max(1), Ordering::Relaxed);
+    }
+
+    /// The scan's `--jobs`: the most threads one scanner's [`par_map`] uses.
+    pub fn helper_jobs() -> usize {
+        HELPER_JOBS.load(Ordering::Relaxed).max(1)
+    }
+
+    /// `items.map(f)` on up to `jobs` threads (this one and `jobs - 1` helpers), results
+    /// in the items' order whichever thread finished first. `jobs <= 1`, or fewer than
+    /// two items, is the plain loop on this thread.
+    ///
+    /// Every helper enters the running scanner's [`ScannerScope`] (its reads, `truncated`
+    /// flag and hook and probe budget are the scanner's) and attaches this thread's span
+    /// context (a span or exec span opened in `f` nests where it would sequentially). `f`
+    /// must not spend an order-dependent budget (hooks, probes): which item gets the last
+    /// unit would depend on thread timing. A helper that cannot be spawned is not an
+    /// error: the others, this thread included, take its items.
+    pub fn par_map<T: Send, R: Send>(items: Vec<T>, jobs: usize, f: impl Fn(T) -> R + Sync) -> Vec<R> {
+        use std::sync::Mutex;
+        let n = items.len();
+        if jobs <= 1 || n <= 1 {
+            return items.into_iter().map(f).collect();
+        }
+        let scope = current_scope();
+        let cx = crate::otel::current_context();
+        let slots: Vec<Mutex<Option<T>>> = items.into_iter().map(|t| Mutex::new(Some(t))).collect();
+        let out: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
+        let next = AtomicUsize::new(0);
+        let work = || {
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(slot) = slots.get(i) else { break };
+                let item = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each item is taken once");
+                let r = f(item);
+                *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            }
+        };
+        std::thread::scope(|s| {
+            for _ in 1..jobs.min(n) {
+                let (scope, cx, work) = (&scope, &cx, &work);
+                // The main thread's stack size, as the scan pool's workers have.
+                let _ = std::thread::Builder::new().name("rmguard-helper".into()).stack_size(8 << 20).spawn_scoped(s, move || {
+                    let _scope = scope.enter();
+                    let _cx = cx.attach();
+                    work();
+                });
+            }
+            work();
+        });
+        out.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
     }
 
     pub fn skipped(scanner: &'static str) -> ScannerStat {
@@ -3278,5 +3339,50 @@ mod scanner_scope_tests {
         let json = serde_json::to_value(&diag[1]).unwrap();
         assert!(json.get("truncated").is_none(), "false is not serialized: {json}");
         assert_eq!(serde_json::to_value(&diag[0]).unwrap()["truncated"], true);
+    }
+}
+
+#[cfg(test)]
+mod par_map_tests {
+    use super::telemetry::{self, par_map};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// At `jobs` 4 the items run on more than one thread at once, every helper counts its
+    /// reads and its `truncated` for the scanner whose scope the caller is in, and the
+    /// results come back in the items' order; at `jobs` 1 everything runs on this thread.
+    #[test]
+    fn helpers_run_concurrently_inside_the_callers_scope_and_keep_order() {
+        for jobs in [1usize, 4] {
+            let (out, pending) = telemetry::run("par_map_test", None, || {
+                let in_flight = AtomicUsize::new(0);
+                let peak = AtomicUsize::new(0);
+                let me = std::thread::current().id();
+                let r = par_map((0..16u64).collect(), jobs, |i| {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // Wait (bounded) for a second item to be in flight, so concurrency is
+                    // observed rather than hoped for.
+                    let t = Instant::now();
+                    while jobs > 1 && peak.load(Ordering::SeqCst) < 2 && t.elapsed() < Duration::from_secs(5) {
+                        std::hint::spin_loop();
+                    }
+                    telemetry::note_read(std::path::Path::new("/par-map-test"), "ok");
+                    if i == 13 {
+                        telemetry::mark_truncated();
+                    }
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    (i * 10, std::thread::current().id() == me)
+                });
+                let all_here = r.iter().all(|(_, here)| *here);
+                assert_eq!(all_here, jobs == 1, "jobs {jobs}: items ran on this thread only = {all_here}");
+                assert_eq!(peak.load(Ordering::SeqCst) >= 2, jobs > 1, "jobs {jobs}: peak in flight");
+                r.into_iter().map(|(v, _)| v).collect::<Vec<_>>()
+            });
+            let stat = pending.finalize();
+            assert_eq!(out, (0..16u64).map(|i| i * 10).collect::<Vec<_>>(), "jobs {jobs}: order");
+            assert_eq!(stat.files_read, 16, "jobs {jobs}: helper reads count for the scanner");
+            assert!(stat.truncated, "jobs {jobs}: a helper's mark_truncated reaches the scanner row");
+        }
     }
 }
