@@ -2,6 +2,7 @@
 name = "rustmachineguard"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 description = "AI-agent posture scanner for developer machines: inventory, threat catalog, MCP probing, scan diffing, CycloneDX Blueprint, compliance evidence"
 license = "Apache-2.0"
 # Began (2026-03) as a Rust rewrite of https://github.com/step-security/dev-machine-guard (Apache-2.0); see NOTICE.
