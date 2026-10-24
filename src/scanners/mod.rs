@@ -239,7 +239,7 @@ fn spawn_waiter(mut child: std::process::Child, tx: std::sync::mpsc::Sender<Chil
 /// Get version from a binary by running `binary --version` with a 5-second timeout.
 pub fn get_binary_version(binary: &str) -> Option<String> {
     let mut x = crate::otel::exec_span("version_probe", std::ffi::OsStr::new(binary));
-    let mut child = match child_command(binary)
+    let child = match child_command(binary)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -393,11 +393,10 @@ fn fold_char(ch: char) -> char {
     }
     // Fullwidth ASCII (U+FF01..U+FF5E) maps onto ASCII by a fixed offset.
     let cp = ch as u32;
-    if (0xFF01..=0xFF5E).contains(&cp) {
-        if let Some(a) = char::from_u32(cp - 0xFEE0) {
+    if (0xFF01..=0xFF5E).contains(&cp)
+        && let Some(a) = char::from_u32(cp - 0xFEE0) {
             return a;
         }
-    }
     ch
 }
 

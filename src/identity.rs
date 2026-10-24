@@ -72,13 +72,12 @@ impl AgentIdentity {
 /// Detect SPIFFE workload-identity infrastructure on the host (env socket, well-known
 /// socket paths, or a `spire-agent` binary). Reads the live environment/filesystem.
 pub fn detect_spiffe() -> SpiffeStatus {
-    if let Ok(sock) = std::env::var("SPIFFE_ENDPOINT_SOCKET") {
-        if !sock.is_empty() {
+    if let Ok(sock) = std::env::var("SPIFFE_ENDPOINT_SOCKET")
+        && !sock.is_empty() {
             return SpiffeStatus::Present {
                 source: "SPIFFE_ENDPOINT_SOCKET env".into(),
             };
         }
-    }
     for path in SPIFFE_SOCKETS {
         if std::path::Path::new(path).exists() {
             return SpiffeStatus::Present {

@@ -3,6 +3,9 @@ use crate::platform::PlatformInfo;
 use crate::scanners::{file_perms, Scanner};
 use std::path::PathBuf;
 
+/// Returns the inline API-key NAMES (never values) found in an agent config file's text.
+type InlineKeyDetector = fn(&str) -> Vec<String>;
+
 /// Detects at-rest credential files for AI coding tools (OAuth tokens, API-key
 /// stores) and flags loose file permissions. These tokens authenticate the agent's
 /// identity and billing; a world-readable `~/.claude/.credentials.json` is a concrete,
@@ -91,7 +94,7 @@ impl Scanner for AiCredentialsScanner {
         // advise against -- writing the key into the config itself; the documented forms
         // are `${{ secrets.NAME }}` (Continue) and environment variables / .env (Aider).
         // Only the key NAMES are recorded, never a value.
-        let inline: [(&str, PathBuf, fn(&str) -> Vec<String>); 3] = [
+        let inline: [(&str, PathBuf, InlineKeyDetector); 3] = [
             ("Continue", home.join(".continue/config.yaml"), continue_inline_api_keys),
             ("Continue", home.join(".continue/config.json"), continue_inline_api_keys),
             ("Aider", home.join(".aider.conf.yml"), aider_inline_api_keys),

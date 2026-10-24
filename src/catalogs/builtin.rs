@@ -19,5 +19,4 @@
 ///   malicious-packages (Kamil Mańkowski / kam193), the Eclipse Foundation Open VSX and
 ///   Microsoft VS Marketplace registry teams, and the vendor security teams at
 ///   Anthropic, OpenAI, Google, Block, Ollama, Anomaly, PrefectHQ and the MCP project.
-
 pub const BUILTIN_CATALOG: &str = include_str!("builtin_catalog.json");

@@ -59,6 +59,7 @@ fn run(mut cmd: Command) -> (Output, Duration) {
 /// cost alone, independent of how long the scan itself took on this machine. (Comparing
 /// two whole runs instead put run-to-run scan noise, about the size of the bound, into
 /// the measurement.)
+#[cfg(feature = "otel")] // only the export-cost tests (otel-only) measure the tail
 fn run_measuring_tail(mut cmd: Command) -> (Output, Duration) {
     use std::io::Read;
     use std::process::Stdio;

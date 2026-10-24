@@ -56,10 +56,10 @@ impl Scanner for McpScanner {
         }
 
         let claude_json = platform.home_dir().join(".claude.json");
-        if crate::scanners::probe_file(&claude_json) {
-            if let Some(content) = crate::scanners::read_bounded(&claude_json) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(projects) = v.get("projects").and_then(|v| v.as_object()) {
+        if crate::scanners::probe_file(&claude_json)
+            && let Some(content) = crate::scanners::read_bounded(&claude_json)
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(projects) = v.get("projects").and_then(|v| v.as_object()) {
                         for (proj_path, _) in projects {
                             let mcp_json = std::path::PathBuf::from(proj_path).join(".mcp.json");
                             if !crate::scanners::probe_file(&mcp_json) {
@@ -92,9 +92,6 @@ impl Scanner for McpScanner {
                             });
                         }
                     }
-                }
-            }
-        }
 
         results
     }

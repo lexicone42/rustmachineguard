@@ -49,13 +49,13 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
             .as_object()?
             .keys()
             .map(PathBuf::from)
-            .filter(|p| crate::scanners::probe_dir(&p))
+            .filter(|p| crate::scanners::probe_dir(p))
             .collect(),
     )
 }
 
 fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
-    if !crate::scanners::probe_file(&path) {
+    if !crate::scanners::probe_file(path) {
         return;
     }
     let Some(content) = read_bounded(path) else {
@@ -167,13 +167,11 @@ pub fn strip_jsonc(input: &str) -> String {
     let mut cleaned = String::with_capacity(out.len());
     let bytes: Vec<char> = out.chars().collect();
     for (i, &c) in bytes.iter().enumerate() {
-        if c == ',' {
-            if let Some(&next) = bytes[i + 1..].iter().find(|c| !c.is_whitespace()) {
-                if next == '}' || next == ']' {
+        if c == ','
+            && let Some(&next) = bytes[i + 1..].iter().find(|c| !c.is_whitespace())
+                && (next == '}' || next == ']') {
                     continue;
                 }
-            }
-        }
         cleaned.push(c);
     }
     cleaned

@@ -1162,8 +1162,7 @@ pub fn shown_prompt(prompt: &str) -> String {
     };
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
-    let mut k = 0;
-    for (s, tok) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)) {
+    for (k, (s, tok)) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)).enumerate() {
         out.push_str(&base[last..s]);
         if redact[k] {
             match tok.split_once([':', '=']) {
@@ -1177,7 +1176,6 @@ pub fn shown_prompt(prompt: &str) -> String {
             out.push_str(tok);
         }
         last = s + tok.len();
-        k += 1;
     }
     out.push_str(&base[last..]);
     sanitize_display(&out, 300)

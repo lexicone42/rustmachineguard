@@ -272,7 +272,7 @@ impl Scanner for AiToolsScanner {
                 for (name, paths) in fallback_paths {
                     if *name == def.name {
                         for p in *paths {
-                            if crate::scanners::probe_file(&p) {
+                            if crate::scanners::probe_file(p) {
                                 found_binary = Some(p.clone());
                                 break;
                             }
@@ -282,13 +282,11 @@ impl Scanner for AiToolsScanner {
             }
 
             // Reject shims that aren't actually installed
-            if def.verify_binary {
-                if let Some(ref path) = found_binary {
-                    if !verify_binary_works(path) {
+            if def.verify_binary
+                && let Some(ref path) = found_binary
+                    && !verify_binary_works(path) {
                         found_binary = None;
                     }
-                }
-            }
 
             let has_config = def
                 .config_dir_check
@@ -308,7 +306,7 @@ impl Scanner for AiToolsScanner {
                 let config_dir = def
                     .config_dir_check
                     .map(|f| f(platform))
-                    .filter(|p| crate::scanners::probe_dir(&p))
+                    .filter(|p| crate::scanners::probe_dir(p))
                     .map(|p| p.display().to_string());
 
                 results.push(AiTool {
@@ -328,9 +326,9 @@ impl Scanner for AiToolsScanner {
             }
         }
 
-        if let Some(app_path) = platform.claude_desktop_app() {
-            if let Some(version) = read_claude_desktop_version(&app_path) {
-                if version_gte(&version, (0, 7)) {
+        if let Some(app_path) = platform.claude_desktop_app()
+            && let Some(version) = read_claude_desktop_version(&app_path)
+                && version_gte(&version, (0, 7)) {
                     results.push(AiTool {
                         name: "Claude Cowork".to_string(),
                         vendor: "Anthropic".to_string(),
@@ -342,8 +340,6 @@ impl Scanner for AiToolsScanner {
                         is_running: false,
                     });
                 }
-            }
-        }
 
         for (name, vendor, path) in platform.ai_desktop_app_paths() {
             if crate::scanners::probe_exists(&path) {
@@ -388,7 +384,7 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        if crate::scanners::probe_file(&app_path) {
+        if crate::scanners::probe_file(app_path) {
             return crate::scanners::get_binary_version(app_path.to_str().unwrap_or(""));
         }
     }

@@ -8,7 +8,7 @@ fn redact(s: &str) -> String {
 use crate::models::{PackageConfigAudit, PackageConfigFinding};
 use crate::platform::PlatformInfo;
 use crate::scanners::Scanner;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct PackageConfigsScanner;
 
@@ -21,8 +21,8 @@ impl Scanner for PackageConfigsScanner {
 
         // .npmrc locations
         for path in npmrc_paths(&home) {
-            if crate::scanners::probe_file(&path) {
-                if let Some(content) = crate::scanners::read_bounded(&path) {
+            if crate::scanners::probe_file(&path)
+                && let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_npmrc(&content);
                     if !findings.is_empty() {
                         results.push(PackageConfigAudit {
@@ -32,13 +32,12 @@ impl Scanner for PackageConfigsScanner {
                         });
                     }
                 }
-            }
         }
 
         // pip config
         for path in pip_config_paths(&home) {
-            if crate::scanners::probe_file(&path) {
-                if let Some(content) = crate::scanners::read_bounded(&path) {
+            if crate::scanners::probe_file(&path)
+                && let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_pip_config(&content);
                     if !findings.is_empty() {
                         results.push(PackageConfigAudit {
@@ -48,7 +47,6 @@ impl Scanner for PackageConfigsScanner {
                         });
                     }
                 }
-            }
         }
 
         // Bun's global config is `~/.bunfig.toml`; the un-dotted name is the
@@ -57,8 +55,7 @@ impl Scanner for PackageConfigsScanner {
         if let Some(bunfig) = [home.join(".bunfig.toml"), home.join("bunfig.toml")]
             .into_iter()
             .find(|p| crate::scanners::probe_file(p))
-        {
-            if let Some(content) = crate::scanners::read_bounded(&bunfig) {
+            && let Some(content) = crate::scanners::read_bounded(&bunfig) {
                 let findings = audit_bunfig(&content);
                 if !findings.is_empty() {
                     results.push(PackageConfigAudit {
@@ -68,12 +65,11 @@ impl Scanner for PackageConfigsScanner {
                     });
                 }
             }
-        }
 
         // .yarnrc / .yarnrc.yml
         for (name, path) in yarn_config_paths(&home) {
-            if crate::scanners::probe_file(&path) {
-                if let Some(content) = crate::scanners::read_bounded(&path) {
+            if crate::scanners::probe_file(&path)
+                && let Some(content) = crate::scanners::read_bounded(&path) {
                     let findings = audit_yarn_config(&content, &name);
                     if !findings.is_empty() {
                         results.push(PackageConfigAudit {
@@ -83,21 +79,20 @@ impl Scanner for PackageConfigsScanner {
                         });
                     }
                 }
-            }
         }
 
         results
     }
 }
 
-fn npmrc_paths(home: &PathBuf) -> Vec<PathBuf> {
+fn npmrc_paths(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".npmrc"),
         PathBuf::from("/etc/npmrc"),
     ]
 }
 
-fn pip_config_paths(home: &PathBuf) -> Vec<PathBuf> {
+fn pip_config_paths(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".config/pip/pip.conf"),
         home.join(".pip/pip.conf"),
@@ -105,7 +100,7 @@ fn pip_config_paths(home: &PathBuf) -> Vec<PathBuf> {
     ]
 }
 
-fn yarn_config_paths(home: &PathBuf) -> Vec<(String, PathBuf)> {
+fn yarn_config_paths(home: &Path) -> Vec<(String, PathBuf)> {
     vec![
         ("classic".to_string(), home.join(".yarnrc")),
         ("berry".to_string(), home.join(".yarnrc.yml")),
@@ -124,7 +119,7 @@ pub fn audit_npmrc(content: &str) -> Vec<PackageConfigFinding> {
         let lower = line.to_lowercase();
 
         if lower.starts_with("registry=") || lower.contains(":registry=") {
-            let val = line.splitn(2, '=').nth(1).unwrap_or("");
+            let val = line.split_once('=').map(|x| x.1).unwrap_or("");
             if !crate::scanners::is_official_registry(val, &["registry.npmjs.org"]) {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
@@ -180,7 +175,7 @@ pub fn audit_pip_config(content: &str) -> Vec<PackageConfigFinding> {
         let lower = line.to_lowercase();
 
         if lower.starts_with("index-url") || lower.starts_with("extra-index-url") {
-            let val = line.splitn(2, '=').nth(1).unwrap_or("").trim();
+            let val = line.split_once('=').map(|x| x.1).unwrap_or("").trim();
             if !val.contains("pypi.org") {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
@@ -214,16 +209,14 @@ pub fn audit_bunfig(content: &str) -> Vec<PackageConfigFinding> {
         return findings;
     };
 
-    if let Some(install) = table.get("install").and_then(|v| v.as_table()) {
-        if let Some(registry) = install.get("registry").and_then(|v| v.as_str()) {
-            if !crate::scanners::is_official_registry(registry, &["registry.npmjs.org"]) {
+    if let Some(install) = table.get("install").and_then(|v| v.as_table())
+        && let Some(registry) = install.get("registry").and_then(|v| v.as_str())
+            && !crate::scanners::is_official_registry(registry, &["registry.npmjs.org"]) {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
                     description: format!("Custom bun registry: {}", redact(registry)),
                 });
             }
-        }
-    }
 
     if let Some(scopes) = table.get("install").and_then(|v| v.as_table()).and_then(|t| t.get("scopes")).and_then(|v| v.as_table()) {
         for (scope, cfg) in scopes {
@@ -248,7 +241,7 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
             let lower = line.to_lowercase();
 
             if lower.starts_with("registry") {
-                let val = line.splitn(2, ' ').nth(1).unwrap_or("").trim_matches('"');
+                let val = line.split_once(' ').map(|x| x.1).unwrap_or("").trim_matches('"');
                 if !crate::scanners::is_official_registry(
                     val,
                     &["registry.yarnpkg.com", "registry.npmjs.org"],
@@ -274,7 +267,7 @@ pub fn audit_yarn_config(content: &str, variant: &str) -> Vec<PackageConfigFindi
             let lower = line.to_lowercase();
 
             if lower.starts_with("npmregistryserver:") {
-                let val = line.splitn(2, ':').nth(1).unwrap_or("").trim().trim_matches('"');
+                let val = line.split_once(':').map(|x| x.1).unwrap_or("").trim().trim_matches('"');
                 if !crate::scanners::is_official_registry(
                     val,
                     &["registry.yarnpkg.com", "registry.npmjs.org"],

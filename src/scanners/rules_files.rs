@@ -71,11 +71,10 @@ impl Scanner for RulesFilesScanner {
         scan_directory_for_rules(&home, &mut results);
 
         // Scan current working directory if different from home
-        if let Ok(cwd) = std::env::current_dir() {
-            if cwd != home {
+        if let Ok(cwd) = std::env::current_dir()
+            && cwd != home {
                 scan_directory_for_rules(&cwd, &mut results);
             }
-        }
 
         // Dedupe by path
         let mut seen = std::collections::HashSet::new();
@@ -88,8 +87,8 @@ impl Scanner for RulesFilesScanner {
 fn scan_directory_for_rules(dir: &std::path::Path, results: &mut Vec<RulesFile>) {
     for name in RULES_FILE_NAMES {
         let path = dir.join(name);
-        if crate::scanners::probe_file(&path) {
-            if let Some(content) = read_bounded(&path) {
+        if crate::scanners::probe_file(&path)
+            && let Some(content) = read_bounded(&path) {
                 let hash = sha256_hex(&content);
                 let git_tracked = is_git_tracked(&path);
                 let findings = check_dangerous_patterns(&content);
@@ -103,7 +102,6 @@ fn scan_directory_for_rules(dir: &std::path::Path, results: &mut Vec<RulesFile>)
                     findings,
                 });
             }
-        }
     }
 }
 
@@ -114,7 +112,7 @@ fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
     let dirs: Vec<PathBuf> = projects
         .keys()
         .map(PathBuf::from)
-        .filter(|p| crate::scanners::probe_dir(&p))
+        .filter(|p| crate::scanners::probe_dir(p))
         .collect();
     if dirs.is_empty() {
         None

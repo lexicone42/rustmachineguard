@@ -1,7 +1,7 @@
 use crate::models::BrowserExtension;
 use crate::platform::PlatformInfo;
 use crate::scanners::Scanner;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct BrowserExtensionsScanner;
 
@@ -36,7 +36,7 @@ impl Scanner for BrowserExtensionsScanner {
     }
 }
 
-fn chromium_profile_dirs(home: &PathBuf) -> Vec<(String, PathBuf)> {
+fn chromium_profile_dirs(home: &Path) -> Vec<(String, PathBuf)> {
     #[allow(unused_mut)]
     let mut dirs = vec![
         ("Chrome".to_string(), home.join(".config/google-chrome")),

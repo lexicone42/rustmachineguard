@@ -3993,7 +3993,7 @@ fn managed_hooks_only_silences_what_only_claude_code_runs() {
         let f: Vec<Finding> = collect_findings(&report).into_iter().filter(|f| f.category == "Hook").collect();
         (stdout, f)
     };
-    let any = |f: &[Finding], pred: &dyn Fn(&Finding) -> bool| f.iter().any(|x| pred(x));
+    let any = |f: &[Finding], pred: &dyn Fn(&Finding) -> bool| f.iter().any(pred);
 
     // Control: no policy. Every surface is graded.
     let (_, f) = run(None, None);
@@ -4922,7 +4922,8 @@ fn credential_values_in_hook_commands_are_never_probed_as_paths() {
     register_projects(&home, &[&proj]);
     let (stdout, trace, report) = scan_traced(&home, &["settings"]);
     let _ = fs::remove_dir_all(&home);
-    for c in ["CANARY"] {
+    {
+        let c = "CANARY";
         assert!(!stdout.contains(c), "{c} reached the report: {stdout}");
         assert!(!trace.contains(c), "{c} reached the trace: {trace}");
     }

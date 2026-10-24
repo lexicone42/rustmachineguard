@@ -99,7 +99,7 @@ fn extract_project_dirs(parsed: &serde_json::Value) -> Option<Vec<PathBuf>> {
         projects
             .keys()
             .map(PathBuf::from)
-            .filter(|p| crate::scanners::probe_dir(&p))
+            .filter(|p| crate::scanners::probe_dir(p))
             .collect(),
     )
 }
@@ -1037,7 +1037,7 @@ fn classify_claude_command(command: &str, settings_path: &Path, program_only: bo
 /// [`referenced_paths`] tokens. Everything else in a command line is an argument.
 fn program_tokens(command: &str) -> Vec<&str> {
     let mut out = Vec::new();
-    for simple in command.split(|c: char| matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '\n')) {
+    for simple in command.split([';', '|', '&', '(', ')', '`', '\n']) {
         let word = simple
             .split_whitespace()
             .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))

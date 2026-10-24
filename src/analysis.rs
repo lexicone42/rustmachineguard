@@ -925,8 +925,8 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     }
 
     // Agent identity posture: static long-lived keys are the ASI03 anti-pattern.
-    if let Some(id) = &report.agent_identity {
-        if !id.static_api_keys.is_empty() {
+    if let Some(id) = &report.agent_identity
+        && !id.static_api_keys.is_empty() {
             let static_only = id.static_only();
             f.push(Finding {
                 // Advisory by default; elevated when static keys are the ONLY auth in use.
@@ -946,7 +946,6 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 evidence: None,
             });
         }
-    }
 
     // Composition-level toxic-flow surface.
     if let Some(tf) = analyze_toxic_flow(report) {

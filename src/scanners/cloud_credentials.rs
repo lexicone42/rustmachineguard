@@ -24,8 +24,8 @@ impl Scanner for CloudCredentialsScanner {
 
         // AWS config (may have SSO profiles)
         let aws_config = aws_creds.parent().map(|p| p.join("config"));
-        if let Some(ref cfg) = aws_config {
-            if crate::scanners::probe_file(&cfg) {
+        if let Some(ref cfg) = aws_config
+            && crate::scanners::probe_file(cfg) {
                 let profiles = extract_ini_sections(cfg)
                     .into_iter()
                     .map(|p| p.strip_prefix("profile ").unwrap_or(&p).to_string())
@@ -37,7 +37,6 @@ impl Scanner for CloudCredentialsScanner {
                     profiles,
                 });
             }
-        }
 
         // GCP
         let gcloud_dir = platform.gcloud_config_dir();

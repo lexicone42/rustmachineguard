@@ -51,7 +51,7 @@ jobs:
       - run: cargo test --doc --no-default-features
 
   clippy:
-    name: clippy (deny correctness)
+    name: clippy (deny warnings)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -59,10 +59,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # The codebase carries accepted style-lint warnings (older idiom, kept for
-      # consistency); correctness lints are denied — those are near-always bugs.
-      - run: cargo clippy --all-targets -- -D clippy::correctness
-      - run: cargo clippy --all-targets --no-default-features -- -D clippy::correctness
+      # The crate is clippy-clean at the default lint set; any deliberate exception
+      # carries a targeted #[allow(clippy::...)] with its reason at the site.
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   fuzz-build:
     name: fuzz targets still compile

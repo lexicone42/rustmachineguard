@@ -50,7 +50,7 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     let bin_name = ide_bin_name(ide);
 
     // If install_path is a binary (Linux), use it directly
-    if crate::scanners::probe_file(&install_path) {
+    if crate::scanners::probe_file(install_path) {
         return get_binary_version(install_path.to_str().unwrap_or(bin_name));
     }
 

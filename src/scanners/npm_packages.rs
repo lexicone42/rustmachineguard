@@ -95,7 +95,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     for proj in projects {
         roots.push(proj.join("node_modules"));
     }
-    roots.retain(|p| crate::scanners::probe_dir(&p));
+    roots.retain(|p| crate::scanners::probe_dir(p));
     roots
 }
 
@@ -108,7 +108,7 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
             .as_object()?
             .keys()
             .map(PathBuf::from)
-            .filter(|p| crate::scanners::probe_dir(&p))
+            .filter(|p| crate::scanners::probe_dir(p))
             .collect(),
     )
 }

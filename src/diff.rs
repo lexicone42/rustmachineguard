@@ -28,142 +28,142 @@ impl ScanDiff {
 }
 
 pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
-    let mut sections = Vec::new();
+    let sections = vec![
+        diff_array_section(
+            "MCP Servers",
+            collect_mcp_servers(baseline),
+            collect_mcp_servers(current),
+            "name",
+            // `url` distinguishes a plaintext downgrade (https -> http maps to the same
+            // `transport`) and a redirect to a new host; `inline_secret_env_keys` and
+            // `git_tracked` catch a trusted config gaining a committed credential.
+            &[
+                "transport",
+                "package_name",
+                "package_version",
+                "package_ecosystem",
+                "url",
+                "inline_secret_env_keys",
+                "git_tracked",
+            ],
+        ),
 
-    sections.push(diff_array_section(
-        "MCP Servers",
-        collect_mcp_servers(baseline),
-        collect_mcp_servers(current),
-        "name",
-        // `url` distinguishes a plaintext downgrade (https -> http maps to the same
-        // `transport`) and a redirect to a new host; `inline_secret_env_keys` and
-        // `git_tracked` catch a trusted config gaining a committed credential.
-        &[
-            "transport",
-            "package_name",
-            "package_version",
-            "package_ecosystem",
-            "url",
-            "inline_secret_env_keys",
-            "git_tracked",
-        ],
-    ));
+        diff_array_section(
+            "AI Tools",
+            get_array(baseline, "ai_agents_and_tools"),
+            get_array(current, "ai_agents_and_tools"),
+            "name",
+            &["version", "is_running"],
+        ),
 
-    sections.push(diff_array_section(
-        "AI Tools",
-        get_array(baseline, "ai_agents_and_tools"),
-        get_array(current, "ai_agents_and_tools"),
-        "name",
-        &["version", "is_running"],
-    ));
+        diff_array_section(
+            "IDE Extensions",
+            get_array(baseline, "ide_extensions"),
+            get_array(current, "ide_extensions"),
+            "id",
+            &["version"],
+        ),
 
-    sections.push(diff_array_section(
-        "IDE Extensions",
-        get_array(baseline, "ide_extensions"),
-        get_array(current, "ide_extensions"),
-        "id",
-        &["version"],
-    ));
+        diff_array_section(
+            "Browser Extensions",
+            get_array(baseline, "browser_extensions"),
+            get_array(current, "browser_extensions"),
+            "id",
+            &["version"],
+        ),
 
-    sections.push(diff_array_section(
-        "Browser Extensions",
-        get_array(baseline, "browser_extensions"),
-        get_array(current, "browser_extensions"),
-        "id",
-        &["version"],
-    ));
+        diff_rules_files(
+            get_array(baseline, "rules_files"),
+            get_array(current, "rules_files"),
+        ),
 
-    sections.push(diff_rules_files(
-        get_array(baseline, "rules_files"),
-        get_array(current, "rules_files"),
-    ));
+        diff_skills(
+            get_array(baseline, "agent_skills"),
+            get_array(current, "agent_skills"),
+        ),
 
-    sections.push(diff_skills(
-        get_array(baseline, "agent_skills"),
-        get_array(current, "agent_skills"),
-    ));
+        diff_array_section(
+            "SSH Keys",
+            get_array(baseline, "ssh_keys"),
+            get_array(current, "ssh_keys"),
+            "path",
+            &["key_type", "has_passphrase"],
+        ),
 
-    sections.push(diff_array_section(
-        "SSH Keys",
-        get_array(baseline, "ssh_keys"),
-        get_array(current, "ssh_keys"),
-        "path",
-        &["key_type", "has_passphrase"],
-    ));
+        diff_array_section(
+            "Cloud Credentials",
+            get_array(baseline, "cloud_credentials"),
+            get_array(current, "cloud_credentials"),
+            "config_path",
+            &["provider", "credential_type"],
+        ),
 
-    sections.push(diff_array_section(
-        "Cloud Credentials",
-        get_array(baseline, "cloud_credentials"),
-        get_array(current, "cloud_credentials"),
-        "config_path",
-        &["provider", "credential_type"],
-    ));
+        diff_array_section(
+            "Exposure Findings",
+            get_array(baseline, "exposure_findings"),
+            get_array(current, "exposure_findings"),
+            "name",
+            &["ecosystem", "version", "advisory"],
+        ),
 
-    sections.push(diff_array_section(
-        "Exposure Findings",
-        get_array(baseline, "exposure_findings"),
-        get_array(current, "exposure_findings"),
-        "name",
-        &["ecosystem", "version", "advisory"],
-    ));
+        diff_mcp_probes(
+            get_array(baseline, "mcp_probes"),
+            get_array(current, "mcp_probes"),
+        ),
 
-    sections.push(diff_mcp_probes(
-        get_array(baseline, "mcp_probes"),
-        get_array(current, "mcp_probes"),
-    ));
+        // Agent settings are the persistence-tampering surface: a hook, a permission-mode
+        // flip, a gateway override, or an inline secret appearing between scans is exactly
+        // the kind of quiet change --diff exists to surface.
+        diff_array_section(
+            "Agent Settings",
+            get_array(baseline, "agent_settings"),
+            get_array(current, "agent_settings"),
+            "path",
+            &[
+                "permission_mode",
+                "auto_approve_mcp",
+                "git_tracked",
+                "hooks",
+                "gateway_overrides",
+                "inline_secret_env_keys",
+                "helper_commands",
+                "login_gateway",
+                "provenance",
+                // The hook-policy switches silence or unsilence every non-managed Claude
+                // Code hook; serde defaults make an older baseline read false / empty.
+                "allow_managed_hooks_only",
+                "disable_all_hooks",
+                "force_enabled_plugins",
+            ],
+        ),
 
-    // Agent settings are the persistence-tampering surface: a hook, a permission-mode
-    // flip, a gateway override, or an inline secret appearing between scans is exactly
-    // the kind of quiet change --diff exists to surface.
-    sections.push(diff_array_section(
-        "Agent Settings",
-        get_array(baseline, "agent_settings"),
-        get_array(current, "agent_settings"),
-        "path",
-        &[
-            "permission_mode",
-            "auto_approve_mcp",
-            "git_tracked",
-            "hooks",
-            "gateway_overrides",
-            "inline_secret_env_keys",
-            "helper_commands",
-            "login_gateway",
-            "provenance",
-            // The hook-policy switches silence or unsilence every non-managed Claude
-            // Code hook; serde defaults make an older baseline read false / empty.
-            "allow_managed_hooks_only",
-            "disable_all_hooks",
-            "force_enabled_plugins",
-        ],
-    ));
+        // Plugin marketplaces: a source flipping to auto-update, or a new third-party
+        // source appearing, is remote-code-hot-load drift (EAA-009).
+        diff_array_section(
+            "Plugin Marketplaces",
+            get_array(baseline, "marketplaces"),
+            get_array(current, "marketplaces"),
+            "name",
+            &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count", "pin_issues"],
+        ),
 
-    // Plugin marketplaces: a source flipping to auto-update, or a new third-party
-    // source appearing, is remote-code-hot-load drift (EAA-009).
-    sections.push(diff_array_section(
-        "Plugin Marketplaces",
-        get_array(baseline, "marketplaces"),
-        get_array(current, "marketplaces"),
-        "name",
-        &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count", "pin_issues"],
-    ));
-
-    // A .env gaining an agent-home relocation or a gateway, and a profile or service
-    // unit starting to bind Ollama beyond loopback, are drift like a new hook.
-    sections.push(diff_array_section(
-        ".env Files",
-        get_array(baseline, "env_files"),
-        get_array(current, "env_files"),
-        "path",
-        &["git_tracked", "agent_overrides"],
-    ));
-    sections.push(diff_array_section(
-        "Shell Configs",
-        get_array(baseline, "shell_configs"),
-        get_array(current, "shell_configs"),
-        "config_path",
-        &["ollama_host"],
-    ));
+        // A .env gaining an agent-home relocation or a gateway, and a profile or service
+        // unit starting to bind Ollama beyond loopback, are drift like a new hook.
+        diff_array_section(
+            ".env Files",
+            get_array(baseline, "env_files"),
+            get_array(current, "env_files"),
+            "path",
+            &["git_tracked", "agent_overrides"],
+        ),
+        diff_array_section(
+            "Shell Configs",
+            get_array(baseline, "shell_configs"),
+            get_array(current, "shell_configs"),
+            "config_path",
+            &["ollama_host"],
+        ),
+    ];
 
     let summary_changes = diff_summary(baseline, current);
 

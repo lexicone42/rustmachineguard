@@ -462,7 +462,7 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
         projects
             .keys()
             .map(PathBuf::from)
-            .filter(|p| crate::scanners::probe_dir(&p))
+            .filter(|p| crate::scanners::probe_dir(p))
             .collect(),
     )
 }
