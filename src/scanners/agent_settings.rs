@@ -297,12 +297,35 @@ impl Homes {
         &self.0.last().expect("at least $HOME").0
     }
 
-    /// [`crate::scanners::persistence::is_sensitive_read_target`] against any home.
+    /// [`crate::scanners::persistence::is_sensitive_read_target`] judged against the home
+    /// that contains `p` when one does, else against every home. Judged against the OTHER
+    /// home, a `--search-dirs` home's own dotfiles fall through to the system and
+    /// other-user rules: `/Users/alt/dotfiles/x` is "another user's home" seen from
+    /// `/home/me`, and a macOS temp home under `/private/var` is "system" (the macOS CI
+    /// failure of 2ab0c6d). A home's files are judged by that home's rules alone.
     fn sensitive(&self, p: &Path) -> bool {
-        self.0.iter().any(|(h, rh)| {
-            crate::scanners::persistence::is_sensitive_read_target(p, h)
-                || crate::scanners::persistence::is_sensitive_read_target(p, rh)
-        })
+        match self.base_for(p) {
+            Some(base) => crate::scanners::persistence::is_sensitive_read_target(p, base),
+            None => self.0.iter().any(|(h, rh)| {
+                crate::scanners::persistence::is_sensitive_read_target(p, h)
+                    || crate::scanners::persistence::is_sensitive_read_target(p, rh)
+            }),
+        }
+    }
+
+    /// The lexical or canonical home `p` is under, whichever form `p` uses.
+    fn base_for(&self, p: &Path) -> Option<&Path> {
+        self.containing(p).map(|(h, rh)| if p.starts_with(h) { h.as_path() } else { rh.as_path() })
+    }
+
+    /// [`crate::scanners::persistence::sensitive_read_kind`] with the same home rule.
+    fn read_kind(&self, p: &Path) -> Option<&'static str> {
+        match self.base_for(p) {
+            Some(base) => crate::scanners::persistence::sensitive_read_kind(p, base),
+            None => crate::scanners::persistence::worst_read_kind(
+                self.0.iter().map(|(_, rh)| crate::scanners::persistence::sensitive_read_kind(p, rh)),
+            ),
+        }
     }
 
     /// The (lexical, canonical) home `p` is under, if any.
@@ -446,12 +469,8 @@ pub(crate) fn read_hook_file(
             Some((h, rh)) => c.strip_prefix(h).map_or_else(|_| c.to_path_buf(), |rel| rh.join(rel)),
             None => c.to_path_buf(),
         };
-        let refused = homes.0.iter().any(|(_, rh)| {
-            matches!(
-                crate::scanners::persistence::sensitive_read_kind(&real_c, rh),
-                Some("credential" | "other-home" | "system")
-            )
-        }) && !real_c.starts_with("/nix/store");
+        let refused = matches!(homes.read_kind(&real_c), Some("credential" | "other-home" | "system"))
+            && !real_c.starts_with("/nix/store");
         if real_c != expected && real_c != c && refused {
             let rest = path.strip_prefix(c).unwrap_or(Path::new(""));
             return SettingsRead::Link(crate::models::EnvSymlink {
@@ -1317,6 +1336,39 @@ pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<Agen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `--search-dirs` home's own files are judged by that home's rules, not by where
+    /// the home happens to live: seen from `$HOME`, `/private/var/.../alt` would be
+    /// "system" and `/Users/alt` "another user's home" (macOS CI on 2ab0c6d refused the
+    /// control link of `search_dirs_hook_links_are_judged_against_the_scanned_home`).
+    #[test]
+    fn link_targets_under_a_scanned_home_are_judged_by_that_home() {
+        let homes = Homes(vec![
+            (PathBuf::from("/home/me"), PathBuf::from("/home/me")),
+            (PathBuf::from("/var/folders/t/alt"), PathBuf::from("/private/var/folders/t/alt")),
+            (PathBuf::from("/Users/alt2"), PathBuf::from("/Users/alt2")),
+        ]);
+        for ok in ["/private/var/folders/t/alt/dotfiles/gemini.json", "/var/folders/t/alt/dotfiles/x.json", "/Users/alt2/dotfiles/x.json", "/home/me/dotfiles/x.json"] {
+            assert!(!homes.sensitive(Path::new(ok)), "{ok}");
+            assert_eq!(homes.read_kind(Path::new(ok)), None, "{ok}");
+        }
+        for (bad, kind) in [
+            ("/private/var/folders/t/alt/.ssh/id_ed25519", "credential"),
+            ("/Users/alt2/.aws/credentials", "credential"),
+            ("/Users/alt2/.claude/settings.json", "agent-config"),
+            ("/home/other/notes.md", "other-home"),
+            ("/Users/other/x.json", "other-home"),
+            ("/private/etc/hosts", "system"),
+            ("/var/lib/x.json", "system"),
+        ] {
+            assert_eq!(homes.read_kind(Path::new(bad)), Some(kind), "{bad}");
+        }
+        // Everything refused by kind is refused by the boolean too, except agent-config
+        // (an agent home is a read-through-link question for the caller, not a credential).
+        assert!(homes.sensitive(Path::new("/home/other/notes.md")));
+        assert!(homes.sensitive(Path::new("/private/etc/hosts")));
+        assert!(homes.sensitive(Path::new("/Users/alt2/.aws/credentials")));
+    }
 
     #[test]
     fn gateway_override_flags_non_official_host() {
