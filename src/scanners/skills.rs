@@ -348,8 +348,9 @@ fn dedupe_results(results: &mut Vec<AgentSkill>) {
 
 /// Project directories worth walking as "project" content: not HOME itself or an
 /// ancestor of it (its `.claude` IS the user's global config, walked with the user's
-/// policy), compared canonically so a symlinked HOME is caught too.
-fn project_dirs_excluding_home(dirs: Vec<PathBuf>, home: &Path) -> Vec<PathBuf> {
+/// policy), compared canonically so a symlinked HOME is caught too. Shared with the
+/// gitconfig scanner, which does not walk HOME for nested git dirs either.
+pub(crate) fn project_dirs_excluding_home(dirs: Vec<PathBuf>, home: &Path) -> Vec<PathBuf> {
     let real_home = canon_or_lexical(home);
     dirs.into_iter()
         .filter(|d| {

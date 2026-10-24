@@ -6107,3 +6107,88 @@ fn walk_budget_marks_the_scanner_row_truncated() {
     let row = report["diagnostics"].as_array().unwrap().iter().find(|r| r["scanner"] == "gitconfig").unwrap().clone();
     assert!(row.get("truncated").is_none(), "a small walk is not truncated: {row}");
 }
+
+// ── gitconfig: HOME is never walked as a project ─────────────────────────────────
+
+/// A gitdir with an attack-shaped `core.fsmonitor`: reported as `nested-repo` wherever a
+/// project walk reaches it.
+fn plant_nested_payload(dir: &Path) {
+    fs::create_dir_all(dir.join("objects")).unwrap();
+    fs::create_dir_all(dir.join("refs")).unwrap();
+    write(&dir.join("HEAD"), "ref: refs/heads/main\n");
+    write(&dir.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n");
+}
+
+/// HOME, or an ancestor of HOME, registered as a project (here also the cwd) is not walked
+/// for nested git dirs: the skills scanner's rule, shared. A payload reachable only by
+/// walking HOME or its parent is not reported, and the payload inside a real project under
+/// HOME is reported exactly once (at 505d9fc the HOME and parent walks reached it too,
+/// so it was reported three times, and both other payloads were reported).
+#[test]
+fn gitconfig_does_not_walk_home_or_its_ancestor_as_a_project() {
+    let root = temp_home("gc-home");
+    let home = root.join("home");
+    let proj = home.join("work/proj");
+    plant_nested_payload(&root.join("side/payload"));
+    plant_nested_payload(&home.join("Downloads/a/b/payload"));
+    plant_nested_payload(&proj.join("vendor/payload"));
+    register_projects(&home, &[&root, &home, &proj]);
+    let (_, report) = scan(&home, &["gitconfig"]);
+    let _ = fs::remove_dir_all(&root);
+    let nested: Vec<&str> = report.git_autorun_configs.iter().filter(|c| c.nested).map(|c| c.path.as_str()).collect();
+    assert_eq!(
+        nested.iter().filter(|p| p.ends_with("/work/proj/vendor/payload")).count(),
+        1,
+        "the registered project's payload, once: {nested:?}"
+    );
+    assert!(!nested.iter().any(|p| p.contains("/Downloads/")), "HOME was walked as a project: {nested:?}");
+    assert!(!nested.iter().any(|p| p.contains("/side/")), "HOME's parent was walked as a project: {nested:?}");
+}
+
+// ── node: JavaScript tool versions from package.json ─────────────────────────────
+
+/// Run only the node scanner with PATH = `path`; returns (name, version) rows.
+fn node_rows(home: &Path, path: &Path) -> Vec<(String, Option<String>)> {
+    let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| *l != "node").collect();
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", &skip.join(",")])
+        .env("HOME", home)
+        .env("PATH", path)
+        .current_dir(home)
+        .output()
+        .expect("run rmguard");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let report: ScanReport = serde_json::from_slice(&out.stdout).expect("report json");
+    report.node_package_managers.into_iter().map(|m| (m.name, m.version)).collect()
+}
+
+/// `pnpm` on PATH is a symlink into `node_modules/pnpm/bin/pnpm.cjs`, as an npm global
+/// install leaves it: the version is that package's `package.json` version, and the tool
+/// is not run. The fake tool, if run, prints another version and leaves a marker file, so
+/// a spawn cannot go unnoticed (at 505d9fc: version 6.6.6, marker present). A manifest
+/// whose `name` is not `pnpm` is not trusted: the scanner falls back to the spawn.
+#[test]
+fn node_js_tool_version_is_read_from_package_json_without_a_spawn() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp_home("nodever");
+    let pkg = home.join("lib/node_modules/pnpm");
+    let marker = home.join("spawned");
+    let script = pkg.join("bin/pnpm.cjs");
+    write(&script, &format!("#!/bin/sh\n: > '{}'\necho 6.6.6\n", marker.display()));
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    write(&pkg.join("package.json"), r#"{"name":"pnpm","version":"10.28.1","bin":{"pnpm":"bin/pnpm.cjs"}}"#);
+    let bin = home.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink("../lib/node_modules/pnpm/bin/pnpm.cjs", bin.join("pnpm")).unwrap();
+
+    let rows = node_rows(&home, &bin);
+    assert_eq!(rows, vec![("pnpm".to_string(), Some("10.28.1".to_string()))]);
+    assert!(!marker.exists(), "pnpm was spawned although its package.json answered");
+
+    write(&pkg.join("package.json"), r#"{"name":"not-pnpm","version":"10.28.1"}"#);
+    let rows = node_rows(&home, &bin);
+    let spawned = marker.exists();
+    let _ = fs::remove_dir_all(&home);
+    assert_eq!(rows, vec![("pnpm".to_string(), Some("6.6.6".to_string()))], "name mismatch must fall back to the spawn");
+    assert!(spawned, "the fallback spawn did not run");
+}

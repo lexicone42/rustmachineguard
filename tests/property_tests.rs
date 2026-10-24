@@ -4935,6 +4935,32 @@ fn nested_repo_pruning_is_by_marker_not_by_name() {
 }
 
 
+/// A cargo `target/` (a `CACHEDIR.TAG` at its top, https://bford.info/cachedir/) is listed
+/// but not descended into, and counted as pruned (`rmguard.walk.pruned`); the same tree
+/// without the tag is walked and its buried gitdir found.
+#[test]
+fn nested_walk_counts_cache_tagged_dirs_as_pruned() {
+    let root = &std::env::temp_dir().join(format!("rmg-prune-count-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(root);
+    let git = root.join("target/debug/payload");
+    std::fs::create_dir_all(git.join("objects")).unwrap();
+    std::fs::create_dir_all(git.join("refs")).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(git.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n").unwrap();
+    std::fs::write(root.join("target/CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n").unwrap();
+    let mut out = Vec::new();
+    let (dirs, pruned) = rustmachineguard::scanners::git_config::nested_walk_counts_for_test(root, &mut out);
+    assert!(out.is_empty(), "the gitdir under a tagged target/ was reported: {out:?}");
+    assert_eq!((dirs, pruned), (2, 1), "root and target/ listed, target/ pruned");
+
+    std::fs::remove_file(root.join("target/CACHEDIR.TAG")).unwrap();
+    let mut out = Vec::new();
+    let (_, pruned) = rustmachineguard::scanners::git_config::nested_walk_counts_for_test(root, &mut out);
+    let _ = std::fs::remove_dir_all(root);
+    assert_eq!(pruned, 0);
+    assert!(out.iter().any(|c| c.path.ends_with("/target/debug/payload")), "untagged target/ must be walked: {out:?}");
+}
+
 /// A git dir is what GIT says it is -- HEAD plus objects/ and refs/ -- and nothing an
 /// attacker plants around it may stop the walk short. Each case here was a working
 /// evasion of the previous walk, found by the adversarial review.

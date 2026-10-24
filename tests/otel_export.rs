@@ -813,6 +813,12 @@ mod enabled {
     /// side by side); at `--jobs 1` no two scanner spans overlap. The gitconfig span
     /// carries `rmguard.scanner.truncated = true` (its nested walk hit the directory
     /// budget) and every other scanner span `false`.
+    ///
+    /// `phase.global_scanners` and the primary `phase.home_pass` are both children of
+    /// `rmguard.scan` and overlap in time at `--jobs 4` (they share one pool), and do not
+    /// at `--jobs 1`. The nested walk exports `rmguard.walk.pruned` (the project's
+    /// `node_modules/`), and a `pnpm` installed as an npm package gets a `version.read`
+    /// span under `scanner.node` with `rmguard.version.source = package_json`.
     #[test]
     fn otel_concurrent_phases_keep_the_span_shape() {
         let home = temp_home("jobs");
@@ -833,16 +839,26 @@ mod enabled {
         write(&big.join(".git/HEAD"), "ref: refs/heads/main\n");
         std::fs::create_dir_all(big.join(".git/objects")).unwrap();
         std::fs::create_dir_all(big.join(".git/refs")).unwrap();
+        std::fs::create_dir_all(big.join("node_modules/dep")).unwrap();
         let claude = serde_json::json!({ "projects": { big.to_string_lossy(): {} } });
         write(&home.join(".claude.json"), &claude.to_string());
+        // pnpm as an npm global install leaves it: a link into node_modules/pnpm/.
+        let pnpm = home.join("npm-global/lib/node_modules/pnpm");
+        write(&pnpm.join("bin/pnpm.cjs"), "#!/bin/sh\nexit 3\n");
+        std::fs::set_permissions(pnpm.join("bin/pnpm.cjs"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        write(&pnpm.join("package.json"), r#"{"name":"pnpm","version":"10.28.1"}"#);
+        let fake_bin = home.join("npm-global/bin");
+        std::fs::create_dir_all(&fake_bin).unwrap();
+        std::os::unix::fs::symlink("../lib/node_modules/pnpm/bin/pnpm.cjs", fake_bin.join("pnpm")).unwrap();
 
         const GLOBAL: &[&str] = &["ai", "frameworks", "ide", "node", "containers", "notebooks"];
         const EXPOSURE: &[&str] = &["pypkgs", "npmpkgs", "jbplugins"];
         let mut overlapped = BTreeMap::new();
+        let mut phases_overlapped = BTreeMap::new();
         for jobs in ["4", "1"] {
             let collector = Collector::start();
             let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json", "--jobs", jobs]);
-            cmd.current_dir(&home);
+            cmd.current_dir(&home).env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()));
             let (out, _) = run(cmd);
             let bodies = collector.finish();
             assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
@@ -904,8 +920,42 @@ mod enabled {
                 }
             }
             overlapped.insert(jobs, any);
+
+            // The primary pair of phases: siblings under the root, side by side at --jobs 4.
+            let global = all.iter().find(|s| s.name == "phase.global_scanners").expect("global phase");
+            let home_pass = all
+                .iter()
+                .find(|s| s.name == "phase.home_pass" && attr_int(&s.attributes, "rmguard.root.index") == Some(0))
+                .expect("primary home pass");
+            for ph in [global, home_pass] {
+                assert_eq!(parent(ph).map(|p| p.name.as_str()), Some("rmguard.scan"), "--jobs {jobs}: parent of {}", ph.name);
+            }
+            phases_overlapped.insert(
+                jobs,
+                global.start_time_unix_nano < home_pass.end_time_unix_nano
+                    && home_pass.start_time_unix_nano < global.end_time_unix_nano,
+            );
+
+            let walk = all.iter().find(|s| s.name == "gitconfig.nested_walk").expect("nested walk span");
+            assert!(attr_int(&walk.attributes, "rmguard.walk.pruned").is_some_and(|n| n >= 1), "--jobs {jobs}: walk.pruned");
+
+            let reads: Vec<&Span> = all.iter().filter(|s| s.name == "version.read").collect();
+            let pnpm_read = reads
+                .iter()
+                .find(|s| attr_str(&s.attributes, "rmguard.exec.program").as_deref() == Some("pnpm"))
+                .unwrap_or_else(|| panic!("--jobs {jobs}: no version.read for pnpm"));
+            assert_eq!(parent(pnpm_read).map(|p| p.name.as_str()), Some("scanner.node"));
+            assert_eq!(attr_str(&pnpm_read.attributes, "rmguard.version.source").as_deref(), Some("package_json"));
+            for r in &reads {
+                let src = attr_str(&r.attributes, "rmguard.version.source");
+                assert!(matches!(src.as_deref(), Some("package_json" | "spawn")), "{src:?}");
+            }
+            let row = report["node_package_managers"].as_array().unwrap().iter().find(|m| m["name"] == "pnpm").unwrap();
+            assert_eq!(row["version"], "10.28.1");
         }
         let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(phases_overlapped.get("4"), Some(&true), "the global and home phases did not overlap at --jobs 4");
+        assert_eq!(phases_overlapped.get("1"), Some(&false), "the global and home phases overlapped at --jobs 1");
         assert_eq!(overlapped.get("4"), Some(&true), "no two scanner spans overlapped at --jobs 4");
         assert_eq!(overlapped.get("1"), Some(&false), "scanner spans overlapped at --jobs 1");
     }

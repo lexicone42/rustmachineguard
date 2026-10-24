@@ -78,7 +78,9 @@ rmguard.scan                                   (root; one trace per run)
 │   │   ├── exec.version_probe                 (`<tool> --version`)
 │   │   ├── exec.verify_binary
 │   │   └── exec.process_list                  (`ps -A -o ucomm=`, once per scan)
-│   └── scanner.node ...
+│   └── scanner.node
+│       ├── version.read                       (npm, yarn, pnpm: version from package.json)
+│       └── exec.version_probe                 (node, bun; a JS tool whose package.json did not answer)
 ├── phase.home_pass                            (rmguard.root.index=0, root.kind=home)
 │   ├── scanner.mcp
 │   ├── scanner.envfiles
@@ -93,7 +95,7 @@ rmguard.scan                                   (root; one trace per run)
 │   └── scanner.gitconfig
 │       ├── gitconfig.repos                    (every project's own .git/config)
 │       │   └── exec.output_with_timeout       (`git config --list`)
-│       └── gitconfig.nested_walk              (the buried-git-dir walk of every project)
+│       └── gitconfig.nested_walk              (buried-git-dir walk; every project but HOME)
 │           └── exec.output_with_timeout
 ├── phase.home_pass                            (index=1.., root.kind=search_dir; one per --search-dirs)
 ├── phase.dedupe
@@ -119,9 +121,15 @@ attributes carry the same counts.
 Within `phase.global_scanners` and each `phase.home_pass` the scanners run side by side
 on up to `--jobs` threads (default: the machine's available parallelism, at most 8), so
 their spans overlap in time; with `--jobs 1` they run one after another on the main
-thread and never overlap. The tree is the same either way: each worker makes the
-phase's span context current before it runs a scanner, so every `scanner.*` span is a
-child of its `phase.*` span, and every span a scanner opens (`exec.*`, `skills.walk`,
+thread and never overlap. `phase.global_scanners` and the primary `phase.home_pass`
+(index 0) share one pool of `--jobs` threads, so those two phase spans overlap too: both
+are children of `rmguard.scan`, both start when the pool starts, and each ends when the
+last of its own scanners finished. (They are independent: the two phases store disjoint
+report fields, and rows are pushed after both, global rows first.) With `--jobs 1` they
+run one after the other, as before; `--search-dirs` passes always follow the pair, one
+at a time. The tree is the same either way: a thread makes the scanner's own phase span
+context current before it runs a scanner, so every `scanner.*` span is a child of its
+`phase.*` span, and every span a scanner opens (`exec.*`, `skills.walk`,
 ...) is a child of that scanner. A scanner span's counts are set, and the span ended
 at start + its measured duration, once the phase has joined and the rows are final, in
 the fixed scanner order (the reads of a cache shared by several scanners, a
@@ -136,6 +144,17 @@ open no span for it. It replaced one `pgrep -x <name>` per question (ten spawns 
 about 120 ms a scan on the machine it was measured on; the snapshot is one spawn of
 about 9 ms). The match is the one `pgrep -x` made: the whole process name, exactly,
 case-sensitively.
+
+`scanner.node` reads the version of npm, yarn and pnpm from disk when it can: the PATH
+entry is resolved through its symlinks, and when it lands in `node_modules/<tool>/` whose
+`package.json` names the tool and holds a plain semver version, that is the version, and
+nothing is spawned (pnpm's `--version` cost 262 ms and npm's 79 ms on the machine this
+was measured on; the read costs well under a millisecond). Each attempt is a
+`version.read` span with `rmguard.exec.program` (the tool, from the same closed table)
+and `rmguard.version.source`: `package_json` when the file answered, `spawn` when it did
+not, in which case the `exec.version_probe` that follows, a sibling under
+`scanner.node`, is the answer. node and bun are native binaries and only get the
+`exec.version_probe`.
 
 `gitconfig` runs in two passes so the trace can tell its two costs apart: every
 project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
@@ -161,7 +180,7 @@ the old per-project order, so the report is unchanged.
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` |
-| `rmguard.exec.program` | exec.*, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
+| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
 | `rmguard.skills.projects` | scanner.skills | number of project directories walked (no path, no index) |
@@ -175,6 +194,8 @@ the old per-project order, so the report is unchanged.
 | `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk |
 | `rmguard.items` | skills.walk | inventory entries the walk produced (before the scanner's dedupe) |
 | `rmguard.walk.dirs` | gitconfig.nested_walk | directories listed, summed over projects |
+| `rmguard.walk.pruned` | gitconfig.nested_walk | directories not descended into as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |
+| `rmguard.version.source` | version.read | `package_json` (the version came from the tool's own package.json) \| `spawn` (it did not; `<tool> --version` is run) |
 | `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |
 | `rmguard.repos` | gitconfig.repos, gitconfig.nested_walk | projects whose own config was checked; nested git directories found |
 | `rmguard.transcripts.framework` | transcripts.store | `claude-code` \| `codex` \| `gemini-cli` |

@@ -148,6 +148,7 @@ const VALID_SKIP: &[&str] = &[
 /// pushed, in the phase's fixed scanner order after every job has finished
 /// ([`run_jobs`]), so nothing in the report depends on which job finished first.
 struct Job<'a> {
+    label: &'static str,
     run: Box<dyn FnOnce() -> Done<'a> + Send + 'a>,
 }
 
@@ -175,6 +176,7 @@ fn job<'a, T: Send + 'a>(
     store: fn(&mut ScanReport, Vec<T>),
 ) -> Job<'a> {
     Job {
+        label,
         run: Box::new(move || {
             let (out, pending) = telemetry::run(label, root, scan);
             Done { pending, store: Box::new(move |r: &mut ScanReport| store(r, out)) }
@@ -182,53 +184,143 @@ fn job<'a, T: Send + 'a>(
     }
 }
 
-/// Run a phase's jobs on up to `jobs` threads (this one and `jobs - 1` workers), then
-/// store every result and push every diagnostics row in the jobs' order. `jobs <= 1`
-/// is the plain sequential loop, on this thread, in order.
+/// Labels dispatched before the rest of a pool, whatever phase they belong to: the
+/// scanners that, on a developer machine, take longest (the gitconfig project walk, the
+/// skills plugin walk, the node toolchain probes). Started first, they overlap with all the
+/// short ones instead of waiting behind them. Only the order jobs are TAKEN in depends on
+/// this; results and rows are stored in the fixed scanner order whatever it says.
+const DISPATCH_FIRST: &[&str] = &["gitconfig", "skills", "node"];
+
+/// One phase of a pool: its jobs, in the fixed order their results are stored in, and the
+/// span context (`phase.*`) their `scanner.*` spans nest under.
+struct Phase<'a> {
+    cx: otel::ParentContext,
+    list: Vec<Job<'a>>,
+}
+
+/// Run every job of `phases` on up to `jobs` threads (this one and `jobs - 1` workers)
+/// sharing one queue, and hand back each phase's finished jobs in that phase's order with
+/// the instant each one finished. `jobs <= 1` is the plain sequential loop, on this
+/// thread, phase after phase, each in order.
 ///
-/// Each worker makes the phase's span context current before it runs a job, so a
-/// `scanner.*` span is a child of the `phase.*` span that is current here, and every
-/// span the scanner opens nests under it on the worker. A worker that cannot be spawned
-/// is not an error: the jobs it would have taken are run by the others, this thread
-/// included.
-fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
+/// Before it runs a job, a thread makes that job's phase context current, so a
+/// `scanner.*` span is a child of its own `phase.*` span whichever thread runs it, and
+/// every span the scanner opens nests under it on that thread. Jobs are taken in the
+/// [`DISPATCH_FIRST`] order, then in phase order. A worker that cannot be spawned is not an
+/// error: the jobs it would have taken are run by the others, this thread included.
+fn run_pool<'a>(phases: Vec<Phase<'a>>, jobs: usize) -> Vec<Vec<(Done<'a>, Instant)>> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    if jobs <= 1 || list.len() <= 1 {
-        for j in list {
-            (j.run)().apply(report);
+    let total: usize = phases.iter().map(|p| p.list.len()).sum();
+    let mut cxs = Vec::with_capacity(phases.len());
+    let mut slots: Vec<(usize, &'static str, Mutex<Option<Job<'a>>>)> = Vec::with_capacity(total);
+    for (pi, p) in phases.into_iter().enumerate() {
+        cxs.push(p.cx);
+        slots.extend(p.list.into_iter().map(|j| (pi, j.label, Mutex::new(Some(j)))));
+    }
+    let done: Vec<Mutex<Option<(Done<'a>, Instant)>>> = slots.iter().map(|_| Mutex::new(None)).collect();
+    let run_one = |i: usize| {
+        let (pi, _, slot) = &slots[i];
+        let j = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each job is taken once");
+        let d = {
+            let _cx = cxs[*pi].attach();
+            (j.run)()
+        };
+        *done[i].lock().unwrap_or_else(|e| e.into_inner()) = Some((d, Instant::now()));
+    };
+    if jobs <= 1 || total <= 1 {
+        (0..total).for_each(run_one);
+    } else {
+        let mut order: Vec<usize> = (0..total).collect();
+        // A stable sort: past the DISPATCH_FIRST labels, phase order then scanner order.
+        order.sort_by_key(|&i| DISPATCH_FIRST.iter().position(|f| *f == slots[i].1).unwrap_or(DISPATCH_FIRST.len()));
+        let next = AtomicUsize::new(0);
+        let work = || {
+            while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                run_one(i);
+            }
+        };
+        std::thread::scope(|s| {
+            for _ in 1..jobs.min(total) {
+                // The main thread's stack size: a scanner's parse or walk must not get less
+                // room on a worker than it had when the phase ran sequentially.
+                let _ = std::thread::Builder::new().name("rmguard-scan".into()).stack_size(8 << 20).spawn_scoped(s, work);
+            }
+            work();
+        });
+    }
+    let mut out: Vec<Vec<(Done<'a>, Instant)>> = cxs.iter().map(|_| Vec::new()).collect();
+    for ((pi, _, _), d) in slots.iter().zip(done) {
+        out[*pi].push(d.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every job ran"));
+    }
+    out
+}
+
+/// Run one phase's jobs ([`run_pool`]) under the span that is current here, then store
+/// every result and push every diagnostics row in the jobs' order.
+fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
+    for phase in run_pool(vec![Phase { cx: otel::current_context(), list }], jobs) {
+        for (d, _) in phase {
+            d.apply(report);
         }
+    }
+}
+
+/// The primary scan's two phases, `phase.global_scanners` and the first
+/// `phase.home_pass`, run side by side in one pool of `jobs` threads ([`run_pool`]).
+///
+/// They are independent: the global scanners store only `ai_agents_and_tools`,
+/// `ai_frameworks`, `ide_installations`, `node_package_managers`, `container_tools` and
+/// `notebook_servers`; the home scanners only `ide_extensions`, `mcp_configs`,
+/// `shell_configs`, `ssh_keys`, `cloud_credentials`, `browser_extensions`,
+/// `package_config_audits`, `rules_files`, `agent_skills`, `agent_settings`,
+/// `ai_credentials`, `env_files`, `persistence_artifacts`, `transcripts`, `marketplaces`,
+/// `vscode_tasks` and `git_autorun_configs`; every store runs here, after both phases.
+/// Both push diagnostics rows, global rows first, then home rows, each in scanner order,
+/// as when the phases ran one after the other. The shared caches they could both touch
+/// are not shared in practice (the process-list snapshot is asked for only by global
+/// scanners, the git-tracked listings only by home scanners) and are race-safe anyway.
+///
+/// Each phase span is a child of the span current here (`rmguard.scan`), starts when the
+/// pool starts and ends when the last of its scanners finished. `jobs <= 1` runs the two
+/// phases one after the other, each span ending before the next starts, as before.
+fn run_primary_phases(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
+    let global_attrs = || vec![Attr::str(Key::Phase, "global_scanners")];
+    let home_attrs = || vec![Attr::str(Key::Phase, "home_pass"), Attr::int(Key::RootIndex, 0), Attr::str(Key::RootKind, "home")];
+    if jobs <= 1 {
+        {
+            let _p = otel::span("phase.global_scanners", global_attrs);
+            run_jobs(global_jobs(plat, skip), jobs, report);
+        }
+        let _p = otel::span("phase.home_pass", home_attrs);
+        run_jobs(home_jobs(plat, skip), jobs, report);
         return;
     }
-    let parent = otel::current_context();
-    let slots: Vec<Mutex<Option<Job<'_>>>> = list.into_iter().map(|j| Mutex::new(Some(j))).collect();
-    let done: Vec<Mutex<Option<Done<'_>>>> = slots.iter().map(|_| Mutex::new(None)).collect();
-    let next = AtomicUsize::new(0);
-    let work = || loop {
-        let i = next.fetch_add(1, Ordering::Relaxed);
-        let Some(slot) = slots.get(i) else { break };
-        let j = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each job is taken once");
-        let d = (j.run)();
-        *done[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
+    let start = Instant::now();
+    // Open each phase span, capture it as the parent of its scanners, and detach it, so
+    // the second is a sibling of the first under the root span, not its child.
+    let open = |label: &'static str, attrs: &dyn Fn() -> Vec<Attr>| {
+        let g = otel::span_with_at("phase.", label, start, attrs);
+        let cx = otel::current_context();
+        (g.detach(), cx)
     };
-    std::thread::scope(|s| {
-        for _ in 1..jobs.min(slots.len()) {
-            // The main thread's stack size: a scanner's parse or walk must not get less
-            // room on a worker than it had when the phase ran sequentially.
-            let _ = std::thread::Builder::new().name("rmguard-scan".into()).stack_size(8 << 20).spawn_scoped(s, || {
-                let _cx = parent.attach();
-                work();
-            });
+    let (global_span, global_cx) = open("global_scanners", &global_attrs);
+    let (home_span, home_cx) = open("home_pass", &home_attrs);
+    let phases = vec![
+        Phase { cx: global_cx, list: global_jobs(plat, skip) },
+        Phase { cx: home_cx, list: home_jobs(plat, skip) },
+    ];
+    for (span, done) in [global_span, home_span].into_iter().zip(run_pool(phases, jobs)) {
+        let end = done.iter().map(|(_, t)| *t).max().unwrap_or(start);
+        for (d, _) in done {
+            d.apply(report);
         }
-        work();
-    });
-    for d in done {
-        d.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every job ran").apply(report);
+        span.finish_after(end.saturating_duration_since(start));
     }
 }
 
 /// Scanners that operate from a home directory (re-run per --search-dirs entry).
-fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
+fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
     let mut list = Vec::new();
     if !skip.contains(&"extensions") {
         list.push(job("extensions", Some(plat.home_dir()), move || scanners::extensions::ExtensionsScanner.scan(plat), |r, v| r.ide_extensions.extend(v)));
@@ -281,11 +373,11 @@ fn run_home_rooted_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize,
     if !skip.contains(&"gitconfig") {
         list.push(job("gitconfig", Some(plat.home_dir()), move || scanners::git_config::GitConfigScanner.scan(plat), |r, v| r.git_autorun_configs.extend(v)));
     }
-    run_jobs(list, jobs, report);
+    list
 }
 
 /// Scanners that don't depend on home dir (run once).
-fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
+fn global_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
     let mut list = Vec::new();
     if !skip.contains(&"ai") {
         list.push(job("ai", None, move || scanners::ai_tools::AiToolsScanner.scan(plat), |r, v| r.ai_agents_and_tools = v));
@@ -305,7 +397,7 @@ fn run_global_scanners(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, repo
     if !skip.contains(&"notebooks") {
         list.push(job("notebooks", None, move || scanners::notebook_servers::NotebookServersScanner.scan(plat), |r, v| r.notebook_servers = v));
     }
-    run_jobs(list, jobs, report);
+    list
 }
 
 /// `--jobs`, or the machine's parallelism clamped to 1..=8.
@@ -502,19 +594,11 @@ fn main() {
         },
     };
 
-    // Global scanners (PATH-based, platform-level): run once
-    {
-        let _p = otel::span("phase.global_scanners", || vec![Attr::str(Key::Phase, "global_scanners")]);
-        run_global_scanners(primary_plat.as_ref(), &skip, jobs, &mut report);
-    }
+    // Global scanners (PATH-based, platform-level) and the primary home pass, side by
+    // side: see run_primary_phases for why they are independent.
+    run_primary_phases(primary_plat.as_ref(), &skip, jobs, &mut report);
 
-    // Home-rooted scanners: run for primary home + each --search-dirs entry
-    {
-        let _p = otel::span("phase.home_pass", || {
-            vec![Attr::str(Key::Phase, "home_pass"), Attr::int(Key::RootIndex, 0), Attr::str(Key::RootKind, "home")]
-        });
-        run_home_rooted_scanners(primary_plat.as_ref(), &skip, jobs, &mut report);
-    }
+    // Extra home passes, one per --search-dirs entry, after the primary pair.
     for (i, extra_home) in search_dirs.iter().enumerate() {
         let _p = otel::span("phase.home_pass", || {
             vec![
@@ -524,7 +608,7 @@ fn main() {
             ]
         });
         let alt_plat = platform::platform_for_home(extra_home.clone());
-        run_home_rooted_scanners(alt_plat.as_ref(), &skip, jobs, &mut report);
+        run_jobs(home_jobs(alt_plat.as_ref(), &skip), jobs, &mut report);
     }
 
     // Deduplicate results that might appear from overlapping roots

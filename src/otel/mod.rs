@@ -160,12 +160,14 @@ pub enum Key {
     WalkBytesHashed,
     WalkHooks,
     WalkBudgetExhausted,
+    WalkPruned,
     Repos,
     SkillsProjects,
     TranscriptsFramework,
     TranscriptsKind,
     ScannerTruncated,
     Jobs,
+    VersionSource,
 }
 
 impl Key {
@@ -210,12 +212,14 @@ impl Key {
         Key::WalkBytesHashed,
         Key::WalkHooks,
         Key::WalkBudgetExhausted,
+        Key::WalkPruned,
         Key::Repos,
         Key::SkillsProjects,
         Key::TranscriptsFramework,
         Key::TranscriptsKind,
         Key::ScannerTruncated,
         Key::Jobs,
+        Key::VersionSource,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -263,12 +267,14 @@ impl Key {
             Key::WalkBytesHashed => "rmguard.walk.bytes_hashed",
             Key::WalkHooks => "rmguard.walk.hooks",
             Key::WalkBudgetExhausted => "rmguard.walk.budget_exhausted",
+            Key::WalkPruned => "rmguard.walk.pruned",
             Key::Repos => "rmguard.repos",
             Key::SkillsProjects => "rmguard.skills.projects",
             Key::TranscriptsFramework => "rmguard.transcripts.framework",
             Key::TranscriptsKind => "rmguard.transcripts.kind",
             Key::ScannerTruncated => "rmguard.scanner.truncated",
             Key::Jobs => "rmguard.jobs",
+            Key::VersionSource => "rmguard.version.source",
         }
     }
 }
@@ -702,7 +708,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 46, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 48, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are a tool inventory and are not exported"

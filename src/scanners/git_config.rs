@@ -65,19 +65,28 @@ impl Scanner for GitConfigScanner {
             }
             span.set(|| vec![Attr::int(Key::Repos, dirs.len() as i64)]);
         }
+        // HOME, or an ancestor of it, registered as a project (or the cwd when rmguard
+        // runs from HOME) is not walked for nested git dirs: the skills scanner's rule
+        // (HOME is never a project). Its walk was every directory under HOME up to the
+        // budget, in no meaningful order, and ran out of budget on any real HOME. Its
+        // repo-local config (a dotfiles repo at ~/.git) is still checked above.
+        let walkable = crate::scanners::skills::project_dirs_excluding_home(dirs.clone(), &home);
         let mut nested: Vec<Vec<GitAutorunConfig>> = Vec::with_capacity(dirs.len());
         {
             let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
             let mut stats = WalkStats::default();
             for dir in &dirs {
                 let mut o = Vec::new();
-                scan_nested_repos(dir, &mut o, &mut stats);
+                if walkable.contains(dir) {
+                    scan_nested_repos(dir, &mut o, &mut stats);
+                }
                 nested.push(o);
             }
             span.set(|| {
                 vec![
                     Attr::int(Key::WalkEntries, stats.entries as i64),
                     Attr::int(Key::WalkDirs, stats.dirs as i64),
+                    Attr::int(Key::WalkPruned, stats.pruned as i64),
                     Attr::int(Key::Repos, stats.repos as i64),
                     Attr::bool(Key::WalkBudgetExhausted, stats.budget_exhausted),
                 ]
@@ -96,6 +105,10 @@ struct WalkStats {
     dirs: u64,
     /// Nested git directories found (git's own HEAD + objects/ + refs/ test).
     repos: u64,
+    /// Directories not descended into as generated content: skipped by name
+    /// (`node_modules`, ...) or listed and found to hold a `CACHEDIR.TAG` or
+    /// `pyvenv.cfg`.
+    pruned: u64,
     /// A project's walk stopped at its directory budget.
     budget_exhausted: bool,
 }
@@ -231,8 +244,11 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
         ".npm", ".cargo", "site-packages", "dist-packages",
     ];
     /// A directory whose listing contains one of these was produced by a tool, not
-    /// committed: `pyvenv.cfg` marks a virtualenv, `CACHEDIR.TAG` marks cargo's target/
-    /// and most caches. The gitdir check runs BEFORE this skip, so planting a marker in
+    /// committed: `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's
+    /// `venv`, https://docs.python.org/3/library/venv.html), `CACHEDIR.TAG` marks cargo's
+    /// target/ and most caches (the Cache Directory Tagging Specification,
+    /// https://bford.info/cachedir/, which cargo, pip, uv and others follow). Only the
+    /// name in the listing is checked; neither file is opened. The gitdir check runs BEFORE this skip, so planting a marker in
     /// the payload directory itself does not hide it; planting one in an ancestor does,
     /// which is the same adversarial floor as exhausting the directory budget.
     const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
@@ -297,8 +313,14 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
                 } else if name == "refs" {
                     has_refs = true;
                 }
-                if !kind.is_symlink() && !PRUNE_BY_NAME.iter().any(|p| name == *p) {
-                    children.push((name, entry.path()));
+                // A symlinked directory is never descended through (above), and is not
+                // counted as pruned.
+                if !kind.is_symlink() {
+                    if PRUNE_BY_NAME.iter().any(|p| name == *p) {
+                        stats.pruned += 1;
+                    } else {
+                        children.push((name, entry.path()));
+                    }
                 }
             }
         }
@@ -328,6 +350,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
             }
         }
         if generated && !is_git_dir {
+            stats.pruned += 1;
             continue; // a virtualenv or build cache: nothing in it was shipped by the repo
         }
         // Keep descending through a nested git dir too -- a decoy with a boring config
@@ -425,6 +448,14 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     scan_nested_repos(root, out, &mut WalkStats::default());
+}
+
+/// [`scan_nested_repos_for_test`] that also returns the walk's (directories listed,
+/// directories pruned) counts.
+pub fn nested_walk_counts_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) -> (u64, u64) {
+    let mut stats = WalkStats::default();
+    scan_nested_repos(root, out, &mut stats);
+    (stats.dirs, stats.pruned)
 }
 
 #[cfg(test)]
