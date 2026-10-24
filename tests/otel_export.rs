@@ -1118,7 +1118,8 @@ mod enabled {
                 "reference text\n",
             );
         }
-        // A project whose nested-git walk lists more than 4,000 directories.
+        // A project whose nested-git walk lists more than 4,000 directories, run at
+        // `--walk-budget 4000` (below) so the fixture stays small.
         let big = home.join("big");
         for i in 0..70 {
             for j in 0..60 {
@@ -1157,7 +1158,7 @@ mod enabled {
             let mut cmd = rmguard(
                 &home,
                 Some(collector.port),
-                &["--otel", "--format", "json", "--jobs", jobs],
+                &["--otel", "--format", "json", "--jobs", jobs, "--walk-budget", "4000"],
             );
             cmd.current_dir(&home)
                 .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()));
@@ -1666,8 +1667,8 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A project whose nested-git walk lists more than the 4,000-directory budget
-    /// (70 x 60 leaf directories plus their parents), as in
+    /// A project whose nested-git walk lists more than a 4,000-directory budget (70 x 60
+    /// leaf directories plus their parents; the tests pass `--walk-budget 4000`), as in
     /// `otel_concurrent_phases_keep_the_span_shape`.
     fn over_budget_project(dir: &Path) {
         for i in 0..70 {
@@ -1716,6 +1717,8 @@ mod enabled {
                     SLOW_SKIP,
                     "--search-dirs",
                     extra.to_str().unwrap(),
+                    "--walk-budget",
+                    "4000",
                 ],
             );
             // An empty cwd, so the cwd adds nothing to the primary pass. (Before the cwd

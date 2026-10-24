@@ -112,6 +112,15 @@ struct Cli {
     /// diagnostics rows keep the fixed scanner order.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=64))]
     jobs: Option<u16>,
+
+    /// Directories listed per project by the gitconfig nested-repository walk (default
+    /// 25,000); the other walk caps (the skills bundle walk's files and entries, the
+    /// transcript file counts) scale in the same ratio. Coverage over speed: a larger
+    /// budget walks bigger untagged data trees to the end at the order of 10 ms per
+    /// thousand directories on one thread; a walk that still reaches it stops and is marked `partial`
+    /// (`truncated` in JSON). Must be at least 1.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    walk_budget: Option<u64>,
 }
 
 /// Severity threshold for `--fail-on`, ordered most- to least-severe.
@@ -719,6 +728,9 @@ fn main() {
     // gitconfig project walks, the skills file reads): `--jobs 1` keeps every scanner
     // single-threaded.
     telemetry::set_helper_jobs(jobs);
+    telemetry::set_walk_budget(cli.walk_budget.map_or(telemetry::DEFAULT_WALK_BUDGET, |b| {
+        usize::try_from(b).unwrap_or(usize::MAX)
+    }));
     // Only for the rmguard.scan.duration metric: no clock read unless exporting.
     let scan_start = otel::enabled().then(Instant::now);
     // Root span of the whole scan; every phase and scanner span nests under it. Options

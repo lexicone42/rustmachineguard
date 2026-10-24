@@ -9384,31 +9384,27 @@ fn reports_are_identical_whatever_the_job_count() {
     }
 }
 
-/// P6: a gitconfig walk that hits its directory budget (4,000 directories listed per
-/// project) marks the gitconfig row `truncated`, the terminal table says `partial` with
-/// its footnote; a small project leaves the field out entirely.
+/// P6: a gitconfig walk that hits its directory budget marks the gitconfig row
+/// `truncated`, the terminal table says `partial` with its footnote, which names the flag
+/// that raises the budget; a small project leaves the field out entirely. The fixture
+/// (5,040 leaf directories) is over the old 4,000-directory budget, reproduced with
+/// `--walk-budget 4000` so the fixture stays small.
 #[test]
 fn walk_budget_marks_the_scanner_row_truncated() {
     let home = temp_home("truncated");
     let big = home.join("big");
     for i in 0..70 {
-        for j in 0..60 {
+        for j in 0..72 {
             fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
         }
     }
     register_projects(&home, &[&big]);
     let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| *l != "gitconfig").collect();
-    let report = scan_args(&home, &skip, &[]);
-    let row = report["diagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["scanner"] == "gitconfig")
-        .unwrap()
-        .clone();
+    let report = scan_args(&home, &skip, &["--walk-budget", "4000"]);
+    let row = gitconfig_row(&report);
     assert_eq!(row["truncated"], true, "{row}");
     let table = Command::new(env!("CARGO_BIN_EXE_rmguard"))
-        .args(["--verbose", "--skip", &skip.join(",")])
+        .args(["--verbose", "--walk-budget", "4000", "--skip", &skip.join(",")])
         .env("HOME", &home)
         .env("PATH", "/usr/bin:/bin")
         .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
@@ -9423,7 +9419,7 @@ fn walk_budget_marks_the_scanner_row_truncated() {
         .unwrap_or_else(|| panic!("{table}"));
     assert!(line.contains(" partial"), "{line}");
     assert!(
-        table.contains("walk budget reached; results for that scanner may be incomplete"),
+        table.contains("walk budget reached; results for that scanner may be incomplete (raise with --walk-budget)"),
         "{table}"
     );
 
@@ -9431,14 +9427,88 @@ fn walk_budget_marks_the_scanner_row_truncated() {
     fs::create_dir_all(big.join("src/lib")).unwrap();
     let report = scan_args(&home, &skip, &[]);
     let _ = fs::remove_dir_all(&home);
-    let row = report["diagnostics"]
+    let row = gitconfig_row(&report);
+    assert!(row.get("truncated").is_none(), "a small walk is not truncated: {row}");
+}
+
+/// The gitconfig diagnostics row of a JSON report.
+fn gitconfig_row(report: &serde_json::Value) -> serde_json::Value {
+    report["diagnostics"]
         .as_array()
         .unwrap()
         .iter()
         .find(|r| r["scanner"] == "gitconfig")
         .unwrap()
-        .clone();
-    assert!(row.get("truncated").is_none(), "a small walk is not truncated: {row}");
+        .clone()
+}
+
+/// The default walk budget (25,000 directories per project) walks a 5,040-directory
+/// project, over the old 4,000 cap, to the end: the row is not truncated and a buried
+/// git dir in it is reported. `--walk-budget` is honoured both ways on a small tree: 300
+/// stops a 350-directory walk (truncated), and leaves a 250-directory one complete.
+/// `--walk-budget 0` is rejected. Fails on 94e3267 (no such flag; and the default walk
+/// stops at 4,000 there).
+#[test]
+fn walk_budget_default_and_flag() {
+    let home = temp_home("walkbudget");
+    let big = home.join("big");
+    for i in 0..70 {
+        for j in 0..72 {
+            fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
+        }
+    }
+    plant_nested_payload(&big.join("d69/e71/pay"));
+    register_projects(&home, &[&big]);
+    let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| *l != "gitconfig").collect();
+    let report = scan_args(&home, &skip, &[]);
+    let row = gitconfig_row(&report);
+    assert!(
+        row.get("truncated").is_none(),
+        "the default budget covers 5,040 dirs: {row}"
+    );
+    let nested: Vec<&str> = report["git_autorun_configs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["nested"] == true)
+        .filter_map(|c| c["path"].as_str())
+        .collect();
+    assert!(
+        nested.iter().any(|p| p.ends_with("/big/d69/e71/pay")),
+        "the buried git dir in the big project: {nested:?}"
+    );
+
+    // A tree of `n` directories under the project, the project itself included.
+    let tree = |n: usize| {
+        let _ = fs::remove_dir_all(&big);
+        fs::create_dir_all(&big).unwrap();
+        for i in 0..n - 1 {
+            fs::create_dir_all(big.join(format!("d{i}"))).unwrap();
+        }
+    };
+    tree(350);
+    let row = gitconfig_row(&scan_args(&home, &skip, &["--walk-budget", "300"]));
+    assert_eq!(row["truncated"], true, "350 dirs at --walk-budget 300: {row}");
+    tree(250);
+    let row = gitconfig_row(&scan_args(&home, &skip, &["--walk-budget", "300"]));
+    assert!(row.get("truncated").is_none(), "250 dirs at --walk-budget 300: {row}");
+
+    let zero = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--walk-budget", "0"])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+        .current_dir(&home)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&home);
+    assert!(!zero.status.success(), "--walk-budget 0 accepted");
+    assert!(zero.stdout.is_empty(), "--walk-budget 0 still scanned");
+    assert!(
+        String::from_utf8_lossy(&zero.stderr).contains("--walk-budget"),
+        "{}",
+        String::from_utf8_lossy(&zero.stderr)
+    );
 }
 
 // ── gitconfig: HOME is never walked as a project ─────────────────────────────────
@@ -9839,7 +9909,9 @@ fn nested_paths(report: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// More than the gitconfig walk's 4,000-directory budget (70 x 60 leaves plus parents).
+/// More than a 4,000-directory gitconfig walk budget (70 x 60 leaves plus parents). The
+/// tests that use it pass `--walk-budget 4000` ([`OLD_BUDGET`]), the pre-flag default, so
+/// the fixture stays small and a walk of it is still truncated.
 fn over_budget_tree(dir: &Path) {
     for i in 0..70 {
         for j in 0..60 {
@@ -9847,6 +9919,9 @@ fn over_budget_tree(dir: &Path) {
         }
     }
 }
+
+/// `--walk-budget 4000`: the budget [`over_budget_tree`] is built to exceed.
+const OLD_BUDGET: [&str; 2] = ["--walk-budget", "4000"];
 
 const CWD_PASS_KEEP: &[&str] = &["gitconfig", "envfiles", "vscodetasks", "skills", "rules", "settings"];
 
@@ -9895,7 +9970,12 @@ fn plant_cwd_pass_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
 #[test]
 fn cwd_is_a_project_of_the_primary_pass_only() {
     let (root, home, extra) = plant_cwd_pass_fixture("cwdpass");
-    let report = scan_from(&home, &home, CWD_PASS_KEEP, &["--search-dirs", extra.to_str().unwrap()]);
+    let report = scan_from(
+        &home,
+        &home,
+        CWD_PASS_KEEP,
+        &["--search-dirs", extra.to_str().unwrap(), OLD_BUDGET[0], OLD_BUDGET[1]],
+    );
     let _ = fs::remove_dir_all(&root);
 
     let rows = pass_rows(&report, "gitconfig");
@@ -9959,7 +10039,12 @@ fn a_scan_home_registered_in_another_home_is_not_walked() {
     register_projects(&extra, &[&home, &root, &eproj]);
     let cwd = root.join("cwd");
     fs::create_dir_all(&cwd).unwrap();
-    let report = scan_from(&home, &cwd, CWD_PASS_KEEP, &["--search-dirs", extra.to_str().unwrap()]);
+    let report = scan_from(
+        &home,
+        &cwd,
+        CWD_PASS_KEEP,
+        &["--search-dirs", extra.to_str().unwrap(), OLD_BUDGET[0], OLD_BUDGET[1]],
+    );
     let _ = fs::remove_dir_all(&root);
 
     let nested = nested_paths(&report);
@@ -10045,9 +10130,14 @@ fn cwd_pass_reports_are_identical_whatever_the_job_count() {
         &home,
         &home,
         CWD_PASS_KEEP,
-        &["--jobs", "1", "--search-dirs", &extra_arg],
+        &["--jobs", "1", "--search-dirs", &extra_arg, OLD_BUDGET[0], OLD_BUDGET[1]],
     ));
-    let default = without_clock(scan_from(&home, &home, CWD_PASS_KEEP, &["--search-dirs", &extra_arg]));
+    let default = without_clock(scan_from(
+        &home,
+        &home,
+        CWD_PASS_KEEP,
+        &["--search-dirs", &extra_arg, OLD_BUDGET[0], OLD_BUDGET[1]],
+    ));
     let _ = fs::remove_dir_all(&root);
     // The fixture exercises the rule (at 9712b54 the extra row was truncated here).
     let rows = pass_rows(&one, "gitconfig");

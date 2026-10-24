@@ -10,8 +10,15 @@ use std::path::Path;
 /// count, size, and permissions ONLY — it never reads transcript content.
 pub struct TranscriptsScanner;
 
-/// Cap the recursive walk so a pathological tree can't hang the scan.
-const MAX_WALK_FILES: usize = 20_000;
+/// Cap the recursive walk so a pathological tree can't hang the scan: files counted per
+/// store at `--walk-budget` [`BASE_WALK_BUDGET`](crate::scanners::telemetry::BASE_WALK_BUDGET),
+/// scaled to the scan's budget ([`max_walk_files`]): 125,000 at the default.
+const BASE_WALK_FILES: usize = 20_000;
+
+/// Files one store's count may take at the scan's `--walk-budget`.
+fn max_walk_files() -> usize {
+    crate::scanners::telemetry::walk_cap(BASE_WALK_FILES, crate::scanners::telemetry::walk_budget())
+}
 
 impl Scanner for TranscriptsScanner {
     type Output = Vec<AgentTranscriptStore>;
@@ -94,18 +101,19 @@ fn inspect_store(framework: &str, path: &Path, kind: &str, walk: &mut Walk) -> O
     })
 }
 
-/// Count regular files and total bytes under `dir`, bounded to MAX_WALK_FILES.
+/// Count regular files and total bytes under `dir`, bounded to [`max_walk_files`].
 /// `entries` is incremented once per directory entry visited.
 fn walk_counts(dir: &Path, entries_seen: &mut u64) -> (usize, u64) {
     let mut count = 0usize;
     let mut bytes = 0u64;
+    let max_files = max_walk_files();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = crate::scanners::probe_read_dir(&d) else {
             continue;
         };
         for entry in entries.flatten() {
-            if count >= MAX_WALK_FILES {
+            if count >= max_files {
                 return (count, bytes);
             }
             *entries_seen += 1;
@@ -148,6 +156,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// The file cap scales with `--walk-budget`: 20,000 at the old 4,000-directory
+    /// budget, 125,000 at the default.
+    #[test]
+    fn walk_file_cap_scales_with_the_walk_budget() {
+        use crate::scanners::telemetry::{BASE_WALK_BUDGET, DEFAULT_WALK_BUDGET, walk_cap};
+        assert_eq!(walk_cap(BASE_WALK_FILES, BASE_WALK_BUDGET), 20_000);
+        assert_eq!(max_walk_files(), 125_000);
+        assert_eq!(walk_cap(BASE_WALK_FILES, DEFAULT_WALK_BUDGET), 125_000);
+        assert_eq!(walk_cap(BASE_WALK_FILES, 1), 5, "rounded down, never 0");
+        assert_eq!(walk_cap(1, 1), 1, "at least 1");
+        assert_eq!(walk_cap(BASE_WALK_FILES, usize::MAX), usize::MAX, "saturates");
     }
 
     #[test]

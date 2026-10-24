@@ -26,6 +26,10 @@ pub struct PluginContext {
     /// `--jobs` ([`helper_jobs`](crate::scanners::telemetry::helper_jobs)); 0 or 1 is
     /// this thread only.
     jobs: usize,
+    /// The scan's `--walk-budget`
+    /// ([`walk_budget`](crate::scanners::telemetry::walk_budget)), which scales the bundle
+    /// walk's caps ([`bundle_caps`]).
+    walk_budget: usize,
 }
 
 /// The per-scan constants of the symlink judgement: the canonical HOME and the user's
@@ -53,6 +57,7 @@ impl PluginContext {
             home: home.to_path_buf(),
             plugins_dir: plugins_dir.clone(),
             jobs: crate::scanners::telemetry::helper_jobs(),
+            walk_budget: crate::scanners::telemetry::walk_budget(),
             ..Default::default()
         };
         if let Some(text) = read_bounded(&plugins_dir.join("known_marketplaces.json"))
@@ -410,13 +415,27 @@ pub(crate) fn project_containment_root(dir: &Path, home: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// Cap on qualifying files (manifests, commands, scripts) per bundle walk.
-const MAX_BUNDLE_FILES: usize = 5_000;
+/// Cap on qualifying files (manifests, commands, scripts) per bundle walk, at
+/// `--walk-budget` [`BASE_WALK_BUDGET`](crate::scanners::telemetry::BASE_WALK_BUDGET);
+/// the walk's cap is this scaled to the scan's budget ([`bundle_caps`]): 31,250 at the
+/// default.
+const BASE_BUNDLE_FILES: usize = 5_000;
 /// Cap on directory entries visited per bundle walk, so a pathological tree can't hang
-/// the scan. Counted separately from qualifying files: on a real machine the plugin tree
-/// holds ~5,000 non-skill files (docs, images, test data), and a single shared budget
-/// ran out before the walk reached the installed plugin cache.
-const MAX_BUNDLE_ENTRIES: usize = 50_000;
+/// the scan, at the base budget (312,500 at the default). Counted separately from
+/// qualifying files: on a real machine the plugin tree holds ~5,000 non-skill files
+/// (docs, images, test data), and a single shared budget ran out before the walk reached
+/// the installed plugin cache.
+const BASE_BUNDLE_ENTRIES: usize = 50_000;
+
+/// (qualifying files, directory entries) one bundle walk may take at `--walk-budget`
+/// `budget`: the base caps scaled in the budget's ratio.
+fn bundle_caps(budget: usize) -> (usize, usize) {
+    use crate::scanners::telemetry::walk_cap;
+    (
+        walk_cap(BASE_BUNDLE_FILES, budget),
+        walk_cap(BASE_BUNDLE_ENTRIES, budget),
+    )
+}
 /// Frontmatter larger than this is not parsed.
 const MAX_FRONTMATTER: usize = 16 * 1024;
 /// Dynamic commands kept per file.
@@ -1262,8 +1281,7 @@ fn scan_skill_bundles(
         return;
     }
     let mut cache = WalkCache::default();
-    let mut budget = MAX_BUNDLE_FILES;
-    let mut entries_left = MAX_BUNDLE_ENTRIES;
+    let (mut budget, mut entries_left) = bundle_caps(ctx.walk_budget);
     let mut stack = vec![root.to_path_buf()];
     // Followed top-level directory links: (lexical link path, what to record on the
     // files found under it).
@@ -2749,6 +2767,19 @@ mod tests {
         assert_eq!(res, res4, "path resolutions moved off the walk thread or changed");
     }
 
+    /// The bundle caps scale with `--walk-budget` in the nested-repo walk's ratio: the
+    /// old 5,000 files / 50,000 entries at 4,000, 6.25x that at the default 25,000.
+    #[test]
+    fn bundle_caps_scale_with_the_walk_budget() {
+        use crate::scanners::telemetry::{BASE_WALK_BUDGET, DEFAULT_WALK_BUDGET};
+        assert_eq!(bundle_caps(BASE_WALK_BUDGET), (5_000, 50_000));
+        assert_eq!(bundle_caps(DEFAULT_WALK_BUDGET), (31_250, 312_500));
+        assert_eq!(
+            PluginContext::load(Path::new("/nonexistent")).walk_budget,
+            DEFAULT_WALK_BUDGET
+        );
+    }
+
     /// A bundle walk that runs out of its file budget still reports every file it judged
     /// before stopping (they are read and analysed after the walk), marks the scanner
     /// `truncated`, and gives the same entries at `jobs` 1 and `jobs` 4.
@@ -2760,7 +2791,9 @@ mod tests {
         let dir = home.join(".claude").join("skills").join("big");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), "---\nname: big\n---\nBig.\n").unwrap();
-        for f in 0..MAX_BUNDLE_FILES + 10 {
+        let (max_files, _) = bundle_caps(crate::scanners::telemetry::BASE_WALK_BUDGET);
+        assert_eq!(max_files, BASE_BUNDLE_FILES);
+        for f in 0..max_files + 10 {
             std::fs::write(dir.join(format!("f{f}.sh")), format!("echo {f}\n")).unwrap();
         }
         let root = home.join(".claude").join("skills");
@@ -2768,6 +2801,8 @@ mod tests {
         for jobs in [1, 4] {
             let mut ctx = PluginContext::load(&home);
             ctx.jobs = jobs;
+            // The pre-`--walk-budget` caps, so the fixture stays 5,010 files.
+            ctx.walk_budget = crate::scanners::telemetry::BASE_WALK_BUDGET;
             let (out, pending) = crate::scanners::telemetry::run("skills", None, || {
                 WALK.with(|c| c.set(WalkCounts::default()));
                 let mut results = Vec::new();
@@ -2780,7 +2815,7 @@ mod tests {
             });
             let stat = pending.finalize();
             assert!(stat.truncated, "jobs {jobs}: truncated");
-            assert_eq!(stat.files_read as usize, MAX_BUNDLE_FILES, "jobs {jobs}: files read");
+            assert_eq!(stat.files_read as usize, max_files, "jobs {jobs}: files read");
             runs.push(
                 out.iter()
                     .map(|r| serde_json::to_string(r).unwrap())
@@ -2788,7 +2823,7 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&base);
-        assert_eq!(runs[0].len(), MAX_BUNDLE_FILES);
+        assert_eq!(runs[0].len(), max_files);
         assert!(
             runs[0].iter().all(|j| !j.contains("\"unreadable\"")),
             "every judged file read and hashed"

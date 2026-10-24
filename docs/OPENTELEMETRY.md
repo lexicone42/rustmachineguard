@@ -203,9 +203,13 @@ not, in which case the `exec.version_probe` that follows, a sibling under
 project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
 buried inside each project (`gitconfig.nested_walk`). The findings are joined back in
 the old per-project order, so the report is unchanged. The projects are walked side by
-side on up to `--jobs` threads, each with its own directory budget and counts; the
-span's counts are the per-project counts summed in project order, and
-`rmguard.walk.budget_exhausted` is true when any project's walk stopped at its budget.
+side on up to `--jobs` threads, each with its own directory budget (`--walk-budget`,
+default 25,000 directories listed per project) and counts; the span's counts are the
+per-project counts summed in project order, and `rmguard.walk.budget_exhausted` is true
+when any project's walk stopped at its budget. The skills bundle walk's file and entry
+budgets scale with the same flag (31,250 files and 312,500 entries at the default).
+Raising `--walk-budget` trades scan time for coverage; a walk that still reaches it sets
+`rmguard.walk.budget_exhausted` and its scanner's `rmguard.scanner.truncated`.
 An `exec.*` span a helper thread opens (a nested repo's `git config`) is a child of
 `gitconfig.nested_walk`, as it was sequentially.
 
@@ -252,7 +256,7 @@ starts a thread.
 | `rmguard.walk.files` | skills.walk, transcripts.store | skills: files read through the shared reader; transcripts: regular files counted (never opened) |
 | `rmguard.walk.bytes_hashed` | skills.walk | bytes of file content hashed for the inventory's sha256 |
 | `rmguard.walk.hooks` | skills.walk | frontmatter hooks found |
-| `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk |
+| `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk (budgets set by `--walk-budget`) |
 | `rmguard.items` | skills.walk | inventory entries the walk produced (before the scanner's dedupe) |
 | `rmguard.walk.dirs` | gitconfig.nested_walk | directories listed, summed over projects |
 | `rmguard.walk.pruned` | gitconfig.nested_walk | directories not descended into as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |

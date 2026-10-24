@@ -1094,7 +1094,10 @@ fn render_diagnostics_inner(report: &ScanReport) -> String {
          --trace to see every path it tried.\n",
     );
     if report.diagnostics.iter().any(|d| d.truncated) {
-        out.push_str("  \"partial\" = walk budget reached; results for that scanner may be incomplete.\n");
+        out.push_str(
+            "  \"partial\" = walk budget reached; results for that scanner may be incomplete \
+             (raise with --walk-budget).\n",
+        );
     }
     out.push('\n');
     out

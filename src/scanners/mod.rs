@@ -2877,6 +2877,40 @@ pub mod telemetry {
         HELPER_JOBS.load(Ordering::Relaxed).max(1)
     }
 
+    /// The default `--walk-budget`: directories listed per project by the gitconfig
+    /// nested-repo walk. Coverage over speed: a project with a 25,000-directory data tree
+    /// costs about 200 ms on one thread, and the walk is still a hard cap.
+    pub const DEFAULT_WALK_BUDGET: usize = 25_000;
+
+    /// The `--walk-budget` every other walk cap is written against: at this value each
+    /// cap is the one rmguard shipped before the flag existed (the nested-repo walk's
+    /// 4,000 directories), and every cap scales with the flag in the same ratio
+    /// ([`walk_cap`]).
+    pub const BASE_WALK_BUDGET: usize = 4_000;
+
+    /// The scan's `--walk-budget` ([`set_walk_budget`]). A unit test calling a scanner
+    /// directly gets [`DEFAULT_WALK_BUDGET`].
+    static WALK_BUDGET: AtomicUsize = AtomicUsize::new(DEFAULT_WALK_BUDGET);
+
+    /// Set the scan's `--walk-budget` (main, once, before scanning). 0 is raised to 1:
+    /// the CLI rejects 0, and a budget is never "unlimited".
+    pub fn set_walk_budget(budget: usize) {
+        WALK_BUDGET.store(budget.max(1), Ordering::Relaxed);
+    }
+
+    /// The scan's `--walk-budget`.
+    pub fn walk_budget() -> usize {
+        WALK_BUDGET.load(Ordering::Relaxed).max(1)
+    }
+
+    /// A walk cap written as `base` at [`BASE_WALK_BUDGET`], scaled to `budget` in the
+    /// same ratio (rounded down, at least 1, saturating): `walk_cap(5_000, 25_000)` is
+    /// 31,250.
+    pub fn walk_cap(base: usize, budget: usize) -> usize {
+        let scaled = base as u128 * budget as u128 / BASE_WALK_BUDGET as u128;
+        usize::try_from(scaled).unwrap_or(usize::MAX).max(1)
+    }
+
     /// `items.map(f)` on up to `jobs` threads (this one and `jobs - 1` helpers), results
     /// in the items' order whichever thread finished first. `jobs <= 1`, or fewer than
     /// two items, is the plain loop on this thread.

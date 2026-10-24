@@ -66,7 +66,8 @@ impl Scanner for GitConfigScanner {
         let nested = {
             let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
             let jobs = crate::scanners::telemetry::helper_jobs();
-            let (nested, stats) = walk_projects(&dirs, &walkable, jobs);
+            let max_dirs = crate::scanners::telemetry::walk_budget();
+            let (nested, stats) = walk_projects(&dirs, &walkable, jobs, max_dirs);
             span.set(|| {
                 vec![
                     Attr::int(Key::WalkEntries, stats.entries as i64),
@@ -88,14 +89,20 @@ impl Scanner for GitConfigScanner {
 
 /// The nested walk of every project in `dirs` that is in `walkable`, on up to `jobs`
 /// threads ([`par_map`](crate::scanners::telemetry::par_map)), one project per task, each
-/// with its own directory budget and its own [`WalkStats`]. Findings come back per
+/// with its own budget of `max_dirs` directories (`--walk-budget`) and its own
+/// [`WalkStats`]. Findings come back per
 /// project in `dirs` order and the stats are summed in that order, so neither depends on
 /// which project finished first; `jobs` 1 is the sequential loop.
-fn walk_projects(dirs: &[PathBuf], walkable: &[PathBuf], jobs: usize) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
+fn walk_projects(
+    dirs: &[PathBuf],
+    walkable: &[PathBuf],
+    jobs: usize,
+    max_dirs: usize,
+) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
     let per_project = crate::scanners::telemetry::par_map(dirs.iter().collect(), jobs, |dir: &PathBuf| {
         let (mut o, mut stats) = (Vec::new(), WalkStats::default());
         if walkable.contains(dir) {
-            scan_nested_repos(dir, &mut o, &mut stats);
+            scan_nested_repos(dir, &mut o, &mut stats, max_dirs);
         }
         (o, stats)
     });
@@ -268,8 +275,11 @@ fn config_needs_git(cfg: &Path) -> bool {
 /// directory shipped inside a repo can itself be a git dir (HEAD/config/objects/refs are
 /// all legal tracked filenames), and git auto-discovers it from the cwd. Its config is
 /// attacker-authored in a way the project's own `.git/config` is not.
-fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut WalkStats) {
-    const MAX_DIRS: usize = 4_000;
+///
+/// At most `max_dirs` directories are listed (`--walk-budget`, default
+/// [`DEFAULT_WALK_BUDGET`](crate::scanners::telemetry::DEFAULT_WALK_BUDGET)); a walk that
+/// reaches it stops and marks the scanner `truncated`.
+fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut WalkStats, max_dirs: usize) {
     /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
     /// a project's directories live, and that no sane repo ships as tracked content.
     /// Deliberately NOT here: `env`, `venv`, `target`, `build`, `dist` -- those are
@@ -301,7 +311,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
     /// adversarial floor as exhausting the directory budget.
     const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
     let own_git = root.join(".git");
-    let mut budget = MAX_DIRS;
+    let mut budget = max_dirs.max(1);
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         // Budget is spent per directory LISTED, never per file: charging it per entry
@@ -516,14 +526,15 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// Test hook for the nested-repo walk, which is otherwise reachable only through a full
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
-    scan_nested_repos(root, out, &mut WalkStats::default());
+    let max_dirs = crate::scanners::telemetry::walk_budget();
+    scan_nested_repos(root, out, &mut WalkStats::default(), max_dirs);
 }
 
 /// [`scan_nested_repos_for_test`] that also returns the walk's (directories listed,
 /// directories pruned) counts.
 pub fn nested_walk_counts_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) -> (u64, u64) {
     let mut stats = WalkStats::default();
-    scan_nested_repos(root, out, &mut stats);
+    scan_nested_repos(root, out, &mut stats, crate::scanners::telemetry::walk_budget());
     (stats.dirs, stats.pruned)
 }
 
@@ -606,6 +617,7 @@ fn is_bare_gitdir(dir: &Path) -> bool {
 #[cfg(test)]
 mod walk_projects_tests {
     use super::{WalkStats, walk_projects};
+    use crate::scanners::telemetry::{BASE_WALK_BUDGET, DEFAULT_WALK_BUDGET};
     use std::path::{Path, PathBuf};
 
     /// A buried bare git dir at `<project>/<rel>` whose `core.fsmonitor` runs a script
@@ -647,8 +659,8 @@ mod walk_projects_tests {
         }
         // proj2 is registered but not walked (HOME-as-project): no findings, no counts.
         let walkable: Vec<PathBuf> = dirs.iter().filter(|d| !d.ends_with("proj2")).cloned().collect();
-        let (n1, s1) = walk_projects(&dirs, &walkable, 1);
-        let (n4, s4) = walk_projects(&dirs, &walkable, 4);
+        let (n1, s1) = walk_projects(&dirs, &walkable, 1, DEFAULT_WALK_BUDGET);
+        let (n4, s4) = walk_projects(&dirs, &walkable, 4, DEFAULT_WALK_BUDGET);
         let _ = std::fs::remove_dir_all(&b);
         let (f1, f4) = (findings(&n1), findings(&n4));
         assert_eq!(f1, f4, "findings differ between jobs 1 and jobs 4");
@@ -671,7 +683,8 @@ mod walk_projects_tests {
         assert!(!s1.budget_exhausted);
     }
 
-    /// One project past its 4,000-directory budget and one well inside it, at `jobs` 4:
+    /// One project past a 4,000-directory budget (the pre-`--walk-budget` cap, passed
+    /// explicitly so the fixture stays 4,200 directories) and one well inside it, at `jobs` 4:
     /// the scanner row is `truncated` (set on whichever thread walked the big project),
     /// the big project stopped at exactly its own budget, and the small project's walk is
     /// complete, its buried repos all found, as at `jobs` 1.
@@ -694,7 +707,7 @@ mod walk_projects_tests {
         let mut seen: Vec<(Vec<Vec<String>>, WalkStats, bool)> = Vec::new();
         for jobs in [1, 4] {
             let (out, pending) = crate::scanners::telemetry::run("gitconfig", None, || {
-                let (n, s) = walk_projects(&dirs, &dirs, jobs);
+                let (n, s) = walk_projects(&dirs, &dirs, jobs, BASE_WALK_BUDGET);
                 vec![(n, s)]
             });
             let stat = pending.finalize();
@@ -702,7 +715,12 @@ mod walk_projects_tests {
             seen.push((findings(&n), s, stat.truncated));
         }
         // The small project alone, for its complete count.
-        let (_, alone) = walk_projects(std::slice::from_ref(&small), std::slice::from_ref(&small), 1);
+        let (_, alone) = walk_projects(
+            std::slice::from_ref(&small),
+            std::slice::from_ref(&small),
+            1,
+            BASE_WALK_BUDGET,
+        );
         let _ = std::fs::remove_dir_all(&b);
         let (f4, s4, truncated4) = &seen[1];
         assert_eq!(seen[0].0, *f4, "findings differ between jobs 1 and jobs 4");
@@ -715,11 +733,44 @@ mod walk_projects_tests {
         assert!(s4.budget_exhausted);
         assert_eq!(
             s4.dirs,
-            4_000 + alone.dirs,
+            BASE_WALK_BUDGET as u64 + alone.dirs,
             "the big project's own budget, the small one complete"
         );
         assert_eq!(f4[0].len(), 0);
         assert_eq!(f4[1].len(), 2, "small project findings: {:?}", f4[1]);
         assert!(f4[1][0].contains("small-") && f4[1][1].contains("small-"));
+    }
+
+    /// The default budget is 25,000 directories per project (coverage over speed), and
+    /// the scanner reads the scan's `--walk-budget` as that default when nothing set it.
+    #[test]
+    fn default_walk_budget_is_25000_directories() {
+        assert_eq!(DEFAULT_WALK_BUDGET, 25_000);
+        assert_eq!(BASE_WALK_BUDGET, 4_000);
+        assert_eq!(crate::scanners::telemetry::walk_budget(), DEFAULT_WALK_BUDGET);
+    }
+
+    /// A project of 4,200 directories, over the old 4,000 cap, is walked to the end at the
+    /// default budget: not exhausted, every directory listed, and a buried repo in it
+    /// found.
+    #[test]
+    fn default_budget_walks_past_the_old_cap() {
+        let b = base("default");
+        let big = b.join("big");
+        for i in 0..70 {
+            for j in 0..60 {
+                std::fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
+            }
+        }
+        plant(&big, "d0/e0/pay", "deep");
+        let dirs = vec![big.clone()];
+        let (n, s) = walk_projects(&dirs, &dirs, 1, DEFAULT_WALK_BUDGET);
+        let (_, capped) = walk_projects(&dirs, &dirs, 1, BASE_WALK_BUDGET);
+        let _ = std::fs::remove_dir_all(&b);
+        assert!(!s.budget_exhausted, "{s:?}");
+        assert!(capped.budget_exhausted, "the old cap stops short: {capped:?}");
+        // big + 70 d* + 4,200 e* + the payload's own dirs (pay, objects, refs).
+        assert!(s.dirs > 4_270, "{s:?}");
+        assert_eq!(n[0].len(), 1, "{:?}", findings(&n));
     }
 }
