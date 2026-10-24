@@ -177,13 +177,12 @@ impl Scanner for SkillsScanner {
             scan_skill_dir(&global_commands, "claude-code", "global", None, &ctx, r)
         });
 
-        // Known projects plus the current directory. HOME (or an ancestor) registered as a
-        // project is left out: its .claude is the global config walked above and below.
-        let mut project_dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            project_dirs.push(cwd);
-        }
-        let project_dirs = project_dirs_excluding_home(project_dirs, &home);
+        // Known projects plus, in the primary pass, the current directory. A scan home (or
+        // an ancestor of one) registered as a project is left out: its .claude is a home's
+        // global config, walked above and below (or by its own pass).
+        let scope = platform.pass_scope();
+        let project_dirs = scope
+            .excluding_scan_homes(scope.with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default()));
         // Each project with the root its skills are contained in: the enclosing git work
         // tree (a monorepo app registered at mono/apps/web shares skills from mono/shared).
         let project_dirs: Vec<(PathBuf, PathBuf)> = project_dirs
@@ -271,7 +270,7 @@ impl Scanner for SkillsScanner {
 
         // Dedupe by scope and path, with the DIRECTORY canonicalized (not the file: two
         // links to one target are two skills). HOME and its ancestors are never walked as
-        // a project (project_dirs_excluding_home), so a global and a project entry with
+        // a project (PassScope::excluding_scan_homes), so a global and a project entry with
         // one key are two loading surfaces joined by a link: a repository's
         // `.claude/commands -> ~/...` must not be hidden behind the user's own entry.
         dedupe_results(&mut results);
@@ -390,20 +389,6 @@ fn dedupe_results(results: &mut Vec<AgentSkill>) {
         };
         seen.insert((r.scope.clone(), key))
     });
-}
-
-/// Project directories worth walking as "project" content: not HOME itself or an
-/// ancestor of it (its `.claude` IS the user's global config, walked with the user's
-/// policy), compared canonically so a symlinked HOME is caught too. Shared with the
-/// gitconfig scanner, which does not walk HOME for nested git dirs either.
-pub(crate) fn project_dirs_excluding_home(dirs: Vec<PathBuf>, home: &Path) -> Vec<PathBuf> {
-    let real_home = canon_or_lexical(home);
-    dirs.into_iter()
-        .filter(|d| {
-            let real = canon_or_lexical(d);
-            !real_home.starts_with(&real) && !home.starts_with(d)
-        })
-        .collect()
 }
 
 /// The root a project's skill links are contained in, and whose `.git` answers their

@@ -191,7 +191,8 @@ fn manifest_path(root: &Path, s: &str) -> Option<PathBuf> {
     (p.starts_with(root) && p != root).then_some(p)
 }
 
-/// Every new hook surface. `project_dirs` are the registered projects plus the cwd.
+/// Every new hook surface. `project_dirs` are the registered projects plus, in the
+/// primary pass, the cwd.
 pub(crate) fn scan(
     platform: &dyn PlatformInfo,
     home: &Path,
@@ -199,15 +200,15 @@ pub(crate) fn scan(
     claude_json: Option<&serde_json::Value>,
     out: &mut Vec<AgentSettings>,
 ) {
-    // HOME (or an ancestor) registered as a project is the user's own configuration, read
-    // below with the user ladder; it is not walked again as repository content.
-    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    // A scan home (or an ancestor of one) registered as a project is a user's own
+    // configuration, read below with the user ladder (or by that home's own pass); it is
+    // not walked again as repository content.
     let mut projects: Vec<Project> = Vec::new();
     for d in project_dirs {
-        let real = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
-        if home.starts_with(d) || real_home.starts_with(&real) {
+        if platform.pass_scope().is_scan_home_or_ancestor(d) {
             continue;
         }
+        let real = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
         if projects
             .iter()
             .any(|p| std::fs::canonicalize(&p.dir).unwrap_or_else(|_| p.dir.clone()) == real)

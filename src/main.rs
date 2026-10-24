@@ -738,7 +738,9 @@ fn main() {
 
     let (primary_plat, device) = {
         let _p = otel::span("phase.device_info", || vec![Attr::str(Key::Phase, "device_info")]);
-        let plat = platform::current_platform();
+        // The working directory is a project of this pass only; every scan home (this one
+        // and each --search-dirs entry) is kept out of every pass's project walks.
+        let plat = platform::primary_platform(&search_dirs);
         let device = plat.device_info();
         (plat, device)
     };
@@ -831,7 +833,7 @@ fn main() {
                 Attr::str(Key::RootKind, "search_dir"),
             ]
         });
-        let alt_plat = platform::platform_for_home(extra_home.clone());
+        let alt_plat = platform::search_dir_platform(extra_home.clone(), primary_plat.as_ref());
         run_jobs(home_jobs(alt_plat.as_ref(), &skip), jobs, &mut report);
     }
 
@@ -1273,4 +1275,32 @@ fn dedupe_report(report: &mut ScanReport) {
     // --search-dirs home pass finds them again.
     let mut seen = HashSet::new();
     report.agent_settings.retain(|x| seen.insert(x.path.clone()));
+
+    // A project registered in two homes is a project of both passes, and the /tmp worm
+    // paths are the same for every pass. The working directory is a project of the
+    // primary pass only and no pass walks a scan home as a project, so these keys only
+    // ever meet a project two homes share.
+    let mut seen = HashSet::new();
+    report.git_autorun_configs.retain(|x| {
+        seen.insert((
+            x.path.clone(),
+            x.origin.clone(),
+            x.key.clone(),
+            x.value.clone(),
+            x.scope.clone(),
+        ))
+    });
+
+    let mut seen = HashSet::new();
+    report.env_files.retain(|x| seen.insert(x.path.clone()));
+
+    let mut seen = HashSet::new();
+    report
+        .vscode_tasks
+        .retain(|x| seen.insert((x.path.clone(), x.label.clone(), x.command.clone())));
+
+    let mut seen = HashSet::new();
+    report
+        .persistence_artifacts
+        .retain(|x| seen.insert((x.kind.clone(), x.path.clone(), x.detail.clone())));
 }

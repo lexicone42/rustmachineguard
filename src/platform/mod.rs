@@ -4,7 +4,93 @@ mod linux;
 mod macos;
 
 use crate::models::DeviceInfo;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// What one home pass scans beyond its home's own files: the working directory, which is
+/// a project of the PRIMARY pass only (an extra `--search-dirs` pass scans the projects
+/// registered in that home and never the cwd), and every home this scan visits, none of
+/// which (nor any ancestor of one) any pass walks as a project. Without this, rmguard run
+/// from HOME with one `--search-dirs` entry walked all of HOME as a project of the extra
+/// pass, and reported the cwd's nested repos, skills and settings a second time.
+#[derive(Clone, Debug)]
+pub struct PassScope {
+    cwd_project: Option<PathBuf>,
+    /// Each home as given, with its canonical path (lexical when it does not resolve).
+    scan_homes: Vec<(PathBuf, PathBuf)>,
+}
+
+impl PassScope {
+    /// The primary pass for `home`: the current working directory is a project.
+    pub fn primary(home: &Path) -> Self {
+        Self {
+            cwd_project: std::env::current_dir().ok(),
+            scan_homes: vec![home_entry(home)],
+        }
+    }
+
+    /// An extra (`--search-dirs`) pass for `home`, in a scan that also visits `others`
+    /// (the primary home and the other extra homes): no working directory.
+    pub fn search_dir(home: &Path, others: &[PathBuf]) -> Self {
+        Self {
+            cwd_project: None,
+            scan_homes: vec![home_entry(home)],
+        }
+        .with_scan_homes(others)
+    }
+
+    /// `homes` added to the homes this scan visits (the primary pass learns the
+    /// `--search-dirs` entries this way).
+    pub fn with_scan_homes(mut self, homes: &[PathBuf]) -> Self {
+        for h in homes {
+            if !self.scan_homes.iter().any(|(given, _)| given == h) {
+                self.scan_homes.push(home_entry(h));
+            }
+        }
+        self
+    }
+
+    /// The working directory when this is the primary pass, else None.
+    pub fn cwd_project(&self) -> Option<&Path> {
+        self.cwd_project.as_deref()
+    }
+
+    /// Every home this scan visits, as given.
+    pub fn scan_homes(&self) -> impl Iterator<Item = &Path> {
+        self.scan_homes.iter().map(|(given, _)| given.as_path())
+    }
+
+    /// `registered` (a home's registered projects) plus the working directory when this
+    /// is the primary pass. Every scanner's project list is built here.
+    pub fn with_cwd(&self, mut registered: Vec<PathBuf>) -> Vec<PathBuf> {
+        if let Some(cwd) = &self.cwd_project {
+            registered.push(cwd.clone());
+        }
+        registered
+    }
+
+    /// Whether `dir` is one of this scan's homes or an ancestor of one, compared both as
+    /// given and canonically (a symlinked HOME is caught too). Such a directory is never
+    /// walked as a project: its agent directories are a home's own configuration.
+    pub fn is_scan_home_or_ancestor(&self, dir: &Path) -> bool {
+        let real = canon_or_lexical(dir);
+        self.scan_homes
+            .iter()
+            .any(|(given, real_home)| given.starts_with(dir) || real_home.starts_with(&real))
+    }
+
+    /// `dirs` without any scan home or ancestor of one ([`Self::is_scan_home_or_ancestor`]).
+    pub fn excluding_scan_homes(&self, dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+        dirs.into_iter().filter(|d| !self.is_scan_home_or_ancestor(d)).collect()
+    }
+}
+
+fn canon_or_lexical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+}
+
+fn home_entry(home: &Path) -> (PathBuf, PathBuf) {
+    (home.to_path_buf(), canon_or_lexical(home))
+}
 
 /// `(nodename, release)` from `uname(2)`: the hostname and kernel version with no
 /// process spawned, so no `hostname` or `uname` on PATH is ever run (it used to be, by
@@ -67,6 +153,8 @@ impl Ide {
 pub trait PlatformInfo: Send + Sync {
     fn device_info(&self) -> DeviceInfo;
     fn home_dir(&self) -> PathBuf;
+    /// This pass's working-directory project and the scan's homes: see [`PassScope`].
+    fn pass_scope(&self) -> &PassScope;
 
     // IDE install locations
     fn ide_install_path(&self, ide: Ide) -> Option<PathBuf>;
@@ -124,19 +212,44 @@ pub fn current_platform() -> Box<dyn PlatformInfo> {
     }
 }
 
-/// Get the platform implementation rooted at a specific home directory (for --search-dirs).
+/// Get the platform implementation rooted at a specific home directory, as an extra
+/// (`--search-dirs`) pass visiting no other home: the working directory is not a project.
 pub fn platform_for_home(home: PathBuf) -> Box<dyn PlatformInfo> {
+    let scope = PassScope::search_dir(&home, &[]);
+    platform_with_scope(home, scope)
+}
+
+/// The primary pass of a scan that also visits `search_dirs`: the user's HOME, with the
+/// working directory as a project, and every `--search-dirs` home kept out of its project
+/// walks.
+pub fn primary_platform(search_dirs: &[PathBuf]) -> Box<dyn PlatformInfo> {
+    let plat = current_platform();
+    let home = plat.home_dir();
+    let scope = plat.pass_scope().clone().with_scan_homes(search_dirs);
+    platform_with_scope(home, scope)
+}
+
+/// The extra pass for `home` (a `--search-dirs` entry) of the scan whose primary pass is
+/// `primary`: no working directory, and every home of the scan kept out of its project
+/// walks.
+pub fn search_dir_platform(home: PathBuf, primary: &dyn PlatformInfo) -> Box<dyn PlatformInfo> {
+    let others: Vec<PathBuf> = primary.pass_scope().scan_homes().map(Path::to_path_buf).collect();
+    let scope = PassScope::search_dir(&home, &others);
+    platform_with_scope(home, scope)
+}
+
+fn platform_with_scope(home: PathBuf, scope: PassScope) -> Box<dyn PlatformInfo> {
     #[cfg(target_os = "macos")]
     {
-        Box::new(macos::MacOsPlatform::with_home(home))
+        Box::new(macos::MacOsPlatform::with_scope(home, scope))
     }
     #[cfg(target_os = "linux")]
     {
-        Box::new(linux::LinuxPlatform::with_home(home))
+        Box::new(linux::LinuxPlatform::with_scope(home, scope))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = home;
+        let _ = (home, scope);
         compile_error!("Only macOS and Linux are supported");
     }
 }

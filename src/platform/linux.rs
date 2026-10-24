@@ -1,21 +1,24 @@
-use super::{Ide, PlatformInfo};
+use super::{Ide, PassScope, PlatformInfo};
 use crate::models::DeviceInfo;
 use std::path::PathBuf;
 
 pub struct LinuxPlatform {
     home: PathBuf,
+    scope: PassScope,
 }
 
 impl LinuxPlatform {
+    /// The primary pass: the user's HOME, with the working directory as a project.
     pub fn new() -> Self {
-        Self {
-            home: dirs::home_dir().expect("cannot determine home directory — set $HOME"),
-        }
+        let home = dirs::home_dir().expect("cannot determine home directory — set $HOME");
+        let scope = PassScope::primary(&home);
+        Self { home, scope }
     }
 
-    /// Create a Linux platform rooted at a specific home directory (for --search-dirs).
-    pub fn with_home(home: PathBuf) -> Self {
-        Self { home }
+    /// A platform rooted at `home` (the user's, or a `--search-dirs` entry) for one pass
+    /// of a scan described by `scope`.
+    pub fn with_scope(home: PathBuf, scope: PassScope) -> Self {
+        Self { home, scope }
     }
 
     fn read_os_release_field(field: &str) -> Option<String> {
@@ -53,6 +56,10 @@ impl PlatformInfo for LinuxPlatform {
 
     fn home_dir(&self) -> PathBuf {
         self.home.clone()
+    }
+
+    fn pass_scope(&self) -> &PassScope {
+        &self.scope
     }
 
     fn ide_install_path(&self, ide: Ide) -> Option<PathBuf> {

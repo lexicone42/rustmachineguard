@@ -44,16 +44,18 @@ impl Scanner for AgentSettingsScanner {
             &mut results,
         );
 
-        // Project-scoped settings from known projects + the current directory.
-        // ~/.claude.json is read once: its `projects` keys, and its `hooks` for Devin CLI.
+        // Project-scoped settings from known projects + (in the primary pass) the current
+        // directory. ~/.claude.json is read once: its `projects` keys, and its `hooks` for
+        // Devin CLI. A scan home (or an ancestor of one) is not a project: run from HOME,
+        // the "project" would be the user's own ~/.claude, read above (its
+        // settings.local.json as "user-local"), and another pass's HOME is that pass's.
         let claude_json =
             read_bounded(&home.join(".claude.json")).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
-        let mut project_dirs = claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            project_dirs.push(cwd);
-        }
-        let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
-        for dir in project_dirs.clone() {
+        let scope = platform.pass_scope();
+        let project_dirs = scope.excluding_scan_homes(
+            scope.with_cwd(claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default()),
+        );
+        for dir in &project_dirs {
             parse_settings(
                 &dir.join(".claude").join("settings.json"),
                 "project",
@@ -61,18 +63,13 @@ impl Scanner for AgentSettingsScanner {
                 &home,
                 &mut results,
             );
-            // Run from HOME, the "project" is the user's own ~/.claude: its
-            // settings.local.json is theirs, read above as "user-local".
-            let at_home = dir == home || std::fs::canonicalize(&dir).is_ok_and(|d| d == real_home);
-            if !at_home {
-                parse_settings(
-                    &dir.join(".claude").join("settings.local.json"),
-                    "local",
-                    "claude-code",
-                    &home,
-                    &mut results,
-                );
-            }
+            parse_settings(
+                &dir.join(".claude").join("settings.local.json"),
+                "local",
+                "claude-code",
+                &home,
+                &mut results,
+            );
         }
 
         // Cursor's control plane: same risks, different filenames and schema.

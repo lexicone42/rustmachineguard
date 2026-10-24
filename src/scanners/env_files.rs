@@ -126,10 +126,9 @@ impl Scanner for EnvFilesScanner {
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Vec<EnvFile> {
         let home = platform.home_dir();
-        let mut dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            dirs.push(cwd);
-        }
+        let dirs = platform
+            .pass_scope()
+            .with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default());
 
         let mut results = Vec::new();
         let mut seen = std::collections::HashSet::new();

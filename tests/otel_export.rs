@@ -1718,8 +1718,9 @@ mod enabled {
                     extra.to_str().unwrap(),
                 ],
             );
-            // An empty cwd: the cwd is scanned as a project in every home pass, and HOME
-            // as the cwd would be walked (into home/big) by the extra pass.
+            // An empty cwd, so the cwd adds nothing to the primary pass. (Before the cwd
+            // became a project of the primary pass only, HOME as the cwd was walked, into
+            // home/big, by the extra pass too.)
             cmd.current_dir(&cwd);
             let (out, _) = run(cmd);
             let bodies = collector.finish();

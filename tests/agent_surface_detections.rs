@@ -9797,3 +9797,264 @@ fn diff_names_a_threat_catalog_version_change() {
     );
     assert!(text.contains("No changes detected"), "{text}");
 }
+
+// ── The working directory is a project of the primary home pass only ─────────────
+
+/// Run rmguard with HOME = `home` from `cwd`, only `keep` scanners enabled, plus `args`.
+fn scan_from(home: &Path, cwd: &Path, keep: &[&str], args: &[&str]) -> serde_json::Value {
+    let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| !keep.contains(l)).collect();
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args(["--format", "json", "--skip", &skip.join(",")])
+        .args(args)
+        .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+        .env("NO_COLOR", "1")
+        .current_dir(cwd)
+        .output()
+        .expect("run rmguard");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).expect("report json")
+}
+
+/// The `label` rows of `report`, one per home pass: the primary pass's first, then each
+/// `--search-dirs` pass's, in argument order.
+fn pass_rows<'a>(report: &'a serde_json::Value, label: &str) -> Vec<&'a serde_json::Value> {
+    report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["scanner"] == label)
+        .collect()
+}
+
+/// The `nested-repo` gitconfig findings' paths.
+fn nested_paths(report: &serde_json::Value) -> Vec<String> {
+    report["git_autorun_configs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["nested"] == true)
+        .map(|c| c["path"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// More than the gitconfig walk's 4,000-directory budget (70 x 60 leaves plus parents).
+fn over_budget_tree(dir: &Path) {
+    for i in 0..70 {
+        for j in 0..60 {
+            fs::create_dir_all(dir.join(format!("d{i}/e{j}"))).unwrap();
+        }
+    }
+}
+
+const CWD_PASS_KEEP: &[&str] = &["gitconfig", "envfiles", "vscodetasks", "skills", "rules", "settings"];
+
+/// rmguard run from HOME with one `--search-dirs` home. HOME holds an over-budget
+/// registered project and a small registered one with a nested-repo payload, plus a
+/// `.env`, an auto-run task, a skill, a rules file and a settings hook of its own; the
+/// extra home registers one small project with its own payload. Returns (root, home,
+/// extra).
+fn plant_cwd_pass_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let root = temp_home(tag);
+    let home = root.join("home");
+    let extra = root.join("extra");
+    let big = home.join("big");
+    let small = home.join("small");
+    over_budget_tree(&big);
+    plant_nested_payload(&small.join("vendor/payload"));
+    register_projects(&home, &[&big, &small]);
+    write(&home.join(".env"), "OPENAI_BASE_URL=https://gateway.example/v1\n");
+    write(
+        &home.join(".vscode/tasks.json"),
+        r#"{"version":"2.0.0","tasks":[{"label":"x","type":"shell","command":"./x.sh","runOptions":{"runOn":"folderOpen"}}]}"#,
+    );
+    write(
+        &home.join(".claude/skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nDemo.\n",
+    );
+    write(&home.join("CLAUDE.md"), "Always run tests.\n");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo done"}]}]}}"#,
+    );
+    let eproj = extra.join("proj");
+    plant_nested_payload(&eproj.join("vendor/payload"));
+    register_projects(&extra, &[&eproj]);
+    (root, home, extra)
+}
+
+/// The cwd is a project of the primary pass only. Run from HOME with one `--search-dirs`
+/// home, the extra pass's gitconfig row is not truncated and counts exactly the extra
+/// home's one nested repo; the primary row is truncated (its registered `big`); no nested
+/// finding appears twice; and the extra pass finds none of HOME's .env, auto-run task,
+/// skill, rules file or settings (each extra row has 0 items). At 9712b54 the extra pass
+/// added the cwd (HOME) as its own project and walked all of HOME: its gitconfig row was
+/// truncated, and its envfiles, vscodetasks, skills, rules and settings rows each counted
+/// HOME's file again (and the .env and task were in the report twice).
+#[test]
+fn cwd_is_a_project_of_the_primary_pass_only() {
+    let (root, home, extra) = plant_cwd_pass_fixture("cwdpass");
+    let report = scan_from(&home, &home, CWD_PASS_KEEP, &["--search-dirs", extra.to_str().unwrap()]);
+    let _ = fs::remove_dir_all(&root);
+
+    let rows = pass_rows(&report, "gitconfig");
+    assert_eq!(rows.len(), 2, "one gitconfig row per home pass: {rows:?}");
+    assert_eq!(
+        rows[0]["truncated"], true,
+        "the primary pass walks home/big: {}",
+        rows[0]
+    );
+    assert!(
+        rows[1].get("truncated").is_none(),
+        "the extra pass walked more than its own project: {}",
+        rows[1]
+    );
+    assert_eq!(rows[1]["items"], 1, "the extra pass's nested repos: {}", rows[1]);
+
+    let nested = nested_paths(&report);
+    for suffix in ["/home/small/vendor/payload", "/extra/proj/vendor/payload"] {
+        assert_eq!(
+            nested.iter().filter(|p| p.ends_with(suffix)).count(),
+            1,
+            "{suffix} once: {nested:?}"
+        );
+    }
+    let mut unique = nested.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), nested.len(), "a nested repo reported twice: {nested:?}");
+
+    for label in ["envfiles", "vscodetasks", "skills", "rules", "settings"] {
+        let rows = pass_rows(&report, label);
+        assert_eq!(rows.len(), 2, "{label}: {rows:?}");
+        assert!(rows[0]["items"].as_u64().unwrap() >= 1, "{label}: primary {}", rows[0]);
+        assert_eq!(
+            rows[1]["items"], 0,
+            "{label}: the extra pass scanned the cwd: {}",
+            rows[1]
+        );
+    }
+    for key in ["env_files", "vscode_tasks"] {
+        let n = report[key].as_array().unwrap().len();
+        assert_eq!(n, 1, "{key}: {:#}", report[key]);
+    }
+}
+
+/// A project registered in a `--search-dirs` home that is the primary HOME itself, or an
+/// ancestor of it, is not walked or read as a project by the extra pass: HOME's own
+/// skill, rules file and settings are not counted by it, and a payload reachable only by
+/// walking HOME is not reported. The extra home's own project still is. At 9712b54 only
+/// the extra pass's own home (and its ancestors) was excluded, so the extra pass walked
+/// all of HOME (its gitconfig row truncated, HOME's Downloads payload reported) and read
+/// HOME's skill, rules file and settings as its project's. The cwd is an empty directory
+/// here, so the cwd plays no part.
+#[test]
+fn a_scan_home_registered_in_another_home_is_not_walked() {
+    let (root, home, extra) = plant_cwd_pass_fixture("homereg");
+    fs::remove_dir_all(home.join("big")).unwrap();
+    plant_nested_payload(&home.join("Downloads/a/payload"));
+    over_budget_tree(&home.join("Downloads/b"));
+    let eproj = extra.join("proj");
+    register_projects(&extra, &[&home, &root, &eproj]);
+    let cwd = root.join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    let report = scan_from(&home, &cwd, CWD_PASS_KEEP, &["--search-dirs", extra.to_str().unwrap()]);
+    let _ = fs::remove_dir_all(&root);
+
+    let nested = nested_paths(&report);
+    assert!(
+        !nested.iter().any(|p| p.contains("/home/Downloads/")),
+        "the primary HOME was walked as a project: {nested:?}"
+    );
+    assert_eq!(
+        nested
+            .iter()
+            .filter(|p| p.ends_with("/extra/proj/vendor/payload"))
+            .count(),
+        1,
+        "{nested:?}"
+    );
+    let rows = pass_rows(&report, "gitconfig");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[1].get("truncated").is_none(), "{}", rows[1]);
+    assert_eq!(rows[1]["items"], 1, "{}", rows[1]);
+    for label in ["skills", "rules", "settings"] {
+        let rows = pass_rows(&report, label);
+        assert_eq!(
+            rows[1]["items"], 0,
+            "{label}: the extra pass read HOME as a project: {}",
+            rows[1]
+        );
+    }
+}
+
+/// The cross-pass dedupe still removes what two passes legitimately both find: a project
+/// registered in both homes is a project of both passes (each row counts its nested repo,
+/// .env, task, skill and rules file), and the report carries each once, keyed as in
+/// `dedupe_report` (gitconfig by path, origin, key, value and scope; .env by path; tasks
+/// by path, label and command; skills and rules by path). At 9712b54 the nested repo, the
+/// .env and the task were in the report twice (no key for them).
+#[test]
+fn a_project_two_homes_share_is_reported_once() {
+    let root = temp_home("shared");
+    let home = root.join("home");
+    let extra = root.join("extra");
+    let shared = root.join("shared");
+    plant_nested_payload(&shared.join("vendor/payload"));
+    write(&shared.join(".env"), "OPENAI_BASE_URL=https://gateway.example/v1\n");
+    write(
+        &shared.join(".vscode/tasks.json"),
+        r#"{"version":"2.0.0","tasks":[{"label":"x","type":"shell","command":"./x.sh","runOptions":{"runOn":"folderOpen"}}]}"#,
+    );
+    write(
+        &shared.join(".claude/skills/p/SKILL.md"),
+        "---\nname: p\n---\nShared.\n",
+    );
+    write(&shared.join("CLAUDE.md"), "Always run tests.\n");
+    register_projects(&home, &[&shared]);
+    register_projects(&extra, &[&shared]);
+    let cwd = root.join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    let report = scan_from(&home, &cwd, CWD_PASS_KEEP, &["--search-dirs", extra.to_str().unwrap()]);
+    let _ = fs::remove_dir_all(&root);
+
+    for label in ["gitconfig", "envfiles", "vscodetasks", "skills", "rules"] {
+        let rows = pass_rows(&report, label);
+        assert_eq!(rows.len(), 2, "{label}: {rows:?}");
+        for r in &rows {
+            assert!(r["items"].as_u64().unwrap() >= 1, "{label}: each pass finds it: {r}");
+        }
+    }
+    assert_eq!(nested_paths(&report).len(), 1, "{:#}", report["git_autorun_configs"]);
+    for key in ["env_files", "vscode_tasks", "agent_skills", "rules_files"] {
+        assert_eq!(report[key].as_array().unwrap().len(), 1, "{key}: {:#}", report[key]);
+    }
+}
+
+/// The fixture of [`cwd_is_a_project_of_the_primary_pass_only`] gives the same report at
+/// `--jobs 1` and at the default job count (timestamps and durations removed), run from
+/// HOME with the extra home: which pass adds the cwd does not depend on scheduling. At
+/// 9712b54 the reports were also identical, but the extra pass's gitconfig row was
+/// truncated (asserted against, so the test fails there).
+#[test]
+fn cwd_pass_reports_are_identical_whatever_the_job_count() {
+    let (root, home, extra) = plant_cwd_pass_fixture("cwdjobs");
+    let extra_arg = extra.to_string_lossy().into_owned();
+    let one = without_clock(scan_from(
+        &home,
+        &home,
+        CWD_PASS_KEEP,
+        &["--jobs", "1", "--search-dirs", &extra_arg],
+    ));
+    let default = without_clock(scan_from(&home, &home, CWD_PASS_KEEP, &["--search-dirs", &extra_arg]));
+    let _ = fs::remove_dir_all(&root);
+    // The fixture exercises the rule (at 9712b54 the extra row was truncated here).
+    let rows = pass_rows(&one, "gitconfig");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[1].get("truncated").is_none(), "{}", rows[1]);
+    assert_eq!(
+        serde_json::to_string_pretty(&one).unwrap(),
+        serde_json::to_string_pretty(&default).unwrap()
+    );
+}

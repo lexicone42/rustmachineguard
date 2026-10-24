@@ -87,11 +87,10 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
             roots.push(e.path().join("lib/node_modules"));
         }
     }
-    // Project-local installs in registered project roots and the cwd.
-    let mut projects = project_dirs(&home.join(".claude.json")).unwrap_or_default();
-    if let Ok(cwd) = std::env::current_dir() {
-        projects.push(cwd);
-    }
+    // Project-local installs in registered project roots and (primary pass) the cwd.
+    let projects = platform
+        .pass_scope()
+        .with_cwd(project_dirs(&home.join(".claude.json")).unwrap_or_default());
     for proj in projects {
         roots.push(proj.join("node_modules"));
     }

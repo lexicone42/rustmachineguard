@@ -170,11 +170,9 @@ impl Scanner for PersistenceScanner {
         }
 
         // Project-rooted shapes.
-        let mut projects =
-            crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            projects.push(cwd);
-        }
+        let projects = platform
+            .pass_scope()
+            .with_cwd(crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default());
         let mut seen_projects = std::collections::HashSet::new();
         let path_searches_cwd = path_searches_cwd(std::env::var_os("PATH").as_deref());
         for proj in projects {

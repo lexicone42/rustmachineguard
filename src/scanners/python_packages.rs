@@ -75,11 +75,10 @@ pub(crate) fn site_package_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
             roots.push(e.path().join("site-packages"));
         }
     }
-    // Virtualenvs in registered project roots and the cwd.
-    let mut projects = project_dirs(&home.join(".claude.json")).unwrap_or_default();
-    if let Ok(cwd) = std::env::current_dir() {
-        projects.push(cwd);
-    }
+    // Virtualenvs in registered project roots and (primary pass) the cwd.
+    let projects = platform
+        .pass_scope()
+        .with_cwd(project_dirs(&home.join(".claude.json")).unwrap_or_default());
     for proj in projects {
         for venv in [".venv", "venv", "env", ".env"] {
             let lib = proj.join(venv).join("lib");

@@ -61,19 +61,18 @@ impl Scanner for RulesFilesScanner {
 
         // Scan well-known project directories from ~/.claude.json
         let claude_json = home.join(".claude.json");
-        if let Some(project_dirs) = extract_project_dirs(&claude_json) {
-            for dir in project_dirs {
-                scan_directory_for_rules(&dir, &mut results);
-            }
+        let scope = platform.pass_scope();
+        let registered = extract_project_dirs(&claude_json).unwrap_or_default();
+        for dir in scope.excluding_scan_homes(registered) {
+            scan_directory_for_rules(&dir, &mut results);
         }
 
         // Also scan the home directory itself
         scan_directory_for_rules(&home, &mut results);
 
-        // Scan current working directory if different from home
-        if let Ok(cwd) = std::env::current_dir()
-            && cwd != home
-        {
+        // The current working directory, in the primary pass only, unless it is a scan
+        // home (read as that home) or an ancestor of one.
+        for cwd in scope.excluding_scan_homes(scope.with_cwd(Vec::new())) {
             scan_directory_for_rules(&cwd, &mut results);
         }
 

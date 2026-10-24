@@ -38,10 +38,8 @@ impl Scanner for GitConfigScanner {
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Vec<GitAutorunConfig> {
         let home = platform.home_dir();
-        let mut dirs = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        if let Ok(cwd) = std::env::current_dir() {
-            dirs.push(cwd);
-        }
+        let scope = platform.pass_scope();
+        let mut dirs = scope.with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default());
         let mut seen = std::collections::HashSet::new();
         dirs.retain(|d| seen.insert(d.clone()));
         // Two passes, each under its own span, so the trace separates git config reads
@@ -58,12 +56,13 @@ impl Scanner for GitConfigScanner {
             }
             span.set(|| vec![Attr::int(Key::Repos, dirs.len() as i64)]);
         }
-        // HOME, or an ancestor of it, registered as a project (or the cwd when rmguard
-        // runs from HOME) is not walked for nested git dirs: the skills scanner's rule
-        // (HOME is never a project). Its walk was every directory under HOME up to the
-        // budget, in no meaningful order, and ran out of budget on any real HOME. Its
-        // repo-local config (a dotfiles repo at ~/.git) is still checked above.
-        let walkable = crate::scanners::skills::project_dirs_excluding_home(dirs.clone(), &home);
+        // Any scan home (this pass's or another pass's), or an ancestor of one, registered
+        // as a project (or the cwd when rmguard runs from HOME) is not walked for nested
+        // git dirs: the skills scanner's rule (a home is never a project). Its walk was
+        // every directory under HOME up to the budget, in no meaningful order, and ran out
+        // of budget on any real HOME. Its repo-local config (a dotfiles repo at ~/.git) is
+        // still checked above.
+        let walkable = scope.excluding_scan_homes(dirs.clone());
         let nested = {
             let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
             let jobs = crate::scanners::telemetry::helper_jobs();
