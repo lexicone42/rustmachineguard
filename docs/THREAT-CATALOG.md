@@ -244,6 +244,8 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
   `rmguard --version`, in the JSON report's `catalog.builtin_version`, and under `--otel`
   as `rmguard.catalog.version`, which is how a fleet tells a catalog update from a change
   on its machines
+- Update the version and the entry count in this document's intro in the same change:
+  `catalog_doc_states_the_current_version_and_count` fails until they match
 
 To contribute additional entries, please open a PR with:
 1. The JSON entry in `builtin_catalog.json`

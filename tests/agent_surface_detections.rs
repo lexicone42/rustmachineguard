@@ -9732,3 +9732,68 @@ fn tracked_env_with_short_secret_names_is_critical() {
     assert!(e.secret_keys.is_empty(), "{dump}");
     assert_eq!((e.key_count, f.len(), f[0].severity), (9, 1, Severity::Low), "{dump}");
 }
+
+// ── --diff: threat catalog version ───────────────────────────────────────────────
+
+/// `--diff` against a baseline whose built-in catalog version differs prints one
+/// `threat catalog: OLD -> NEW` line first and no entry change; the same version prints
+/// no catalog line; a baseline without the `catalog` block (before b21286f) prints the
+/// "predates" line. Exit status is 0 in every case. On 6af8a1e no catalog line is
+/// printed, so the first and third cases fail.
+#[test]
+fn diff_names_a_threat_catalog_version_change() {
+    use rustmachineguard::catalogs::BUILTIN_CATALOG_VERSION;
+    let home = temp_home("diff-catalog");
+    write(
+        &home.join(".claude/settings.json"),
+        r#"{"permissions":{"defaultMode":"default"}}"#,
+    );
+    let keep = ["settings"];
+    let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| !keep.contains(l)).collect();
+    let current: serde_json::Value = serde_json::from_str(&scan_format(&home, &keep, "json")).unwrap();
+    assert_eq!(current["catalog"]["builtin_version"], BUILTIN_CATALOG_VERSION);
+    let diff_against = |base: &serde_json::Value| {
+        let path = home.join("base.json");
+        fs::write(&path, base.to_string()).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--diff", path.to_str().unwrap(), "--skip", &skip.join(",")])
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard --diff");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let mut older = current.clone();
+    older["catalog"]["builtin_version"] = serde_json::json!("2026-01-01");
+    let text = diff_against(&older);
+    assert_eq!(
+        text.lines().next().unwrap_or_default(),
+        format!(
+            "threat catalog: 2026-01-01 -> {BUILTIN_CATALOG_VERSION} (findings may change without any change on this machine)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("No changes detected between baseline and current scan."),
+        "{text}"
+    );
+
+    let text = diff_against(&current);
+    assert!(!text.contains("threat catalog"), "{text}");
+    assert!(text.contains("No changes detected"), "{text}");
+
+    let mut legacy = current.clone();
+    legacy.as_object_mut().unwrap().remove("catalog");
+    let text = diff_against(&legacy);
+    let _ = fs::remove_dir_all(&home);
+    assert_eq!(
+        text.lines().next(),
+        Some("threat catalog: baseline predates catalog versioning"),
+        "{text}"
+    );
+    assert!(text.contains("No changes detected"), "{text}");
+}

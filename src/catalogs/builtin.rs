@@ -67,6 +67,40 @@ mod tests {
         );
     }
 
+    /// docs/THREAT-CATALOG.md states the catalog's version and entry count in its intro
+    /// ("The catalog (version `V`) currently contains N entries"). Both are pinned here to
+    /// [`BUILTIN_CATALOG_VERSION`] and the built-in catalog's length, so a catalog bump
+    /// without the doc update fails the tests. Whitespace is normalized, so the sentence
+    /// may be reflowed across lines.
+    #[test]
+    fn catalog_doc_states_the_current_version_and_count() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/THREAT-CATALOG.md");
+        let doc = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let text = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        const LEAD: &str = "The catalog (version `";
+        assert_eq!(
+            text.matches(LEAD).count(),
+            1,
+            "{path}: the intro must state the version once, as {LEAD}V`) currently contains N entries"
+        );
+        let rest = &text[text.find(LEAD).unwrap() + LEAD.len()..];
+        let (version, rest) = rest.split_once('`').expect("closing backtick");
+        let count: String = rest
+            .strip_prefix(") currently contains ")
+            .unwrap_or_else(|| panic!("{path}: expected \") currently contains N entries\" after the version"))
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let entries = crate::scanners::exposure::ExposureCatalog::load_from_str(BUILTIN_CATALOG)
+            .unwrap()
+            .len();
+        assert_eq!(
+            (version, count.parse::<usize>().ok()),
+            (BUILTIN_CATALOG_VERSION, Some(entries)),
+            "{path}: update the intro to version `{BUILTIN_CATALOG_VERSION}` and {entries} entries"
+        );
+    }
+
     #[test]
     fn catalog_version_is_a_date() {
         let v = BUILTIN_CATALOG_VERSION;

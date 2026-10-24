@@ -5,6 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct ScanDiff {
     pub sections: Vec<SectionDiff>,
     pub summary_changes: Vec<String>,
+    /// One line when the threat catalog the findings were matched against differs from
+    /// the baseline's (see [`diff_catalog`]). Not an entry change: [`ScanDiff::is_empty`]
+    /// ignores it, so it changes nothing but the output's first line.
+    pub catalog_change: Option<String>,
 }
 
 #[derive(Debug)]
@@ -158,15 +162,50 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
     ScanDiff {
         sections,
         summary_changes,
+        catalog_change: diff_catalog(baseline, current),
+    }
+}
+
+/// The built-in catalog version of a report's `catalog` block, for display: `None` when
+/// the report has no block (written before catalog versioning), else the version, or
+/// `not loaded` (`--no-builtin-catalog`).
+fn catalog_version(report: &Value) -> Option<String> {
+    let block = report.get("catalog")?;
+    Some(match block.get("builtin_version") {
+        Some(Value::String(v)) => v.clone(),
+        None | Some(Value::Null) => "not loaded".to_string(),
+        Some(_) => "unrecognized".to_string(),
+    })
+}
+
+/// One line when the threat catalog changed between the baseline and this scan, since
+/// exposure findings can then appear or vanish with nothing changed on the machine.
+/// A baseline without a `catalog` block predates catalog versioning; when neither
+/// report has one there is nothing to compare.
+fn diff_catalog(baseline: &Value, current: &Value) -> Option<String> {
+    let cur = catalog_version(current)?;
+    match catalog_version(baseline) {
+        None => Some("threat catalog: baseline predates catalog versioning".to_string()),
+        Some(base) if base != cur => Some(format!(
+            "threat catalog: {base} -> {cur} (findings may change without any change on this machine)"
+        )),
+        Some(_) => None,
     }
 }
 
 pub fn render_diff(diff: &ScanDiff) -> String {
     let mut out = String::new();
 
+    // First, before any entry: the baseline's version string is file text, so it is
+    // sanitized like every other line from a baseline.
+    if let Some(line) = &diff.catalog_change {
+        out.push_str(&crate::scanners::sanitize_display(line, 400));
+        out.push_str("\n\n");
+    }
+
     if diff.is_empty() {
         out.push_str("No changes detected between baseline and current scan.\n");
-        return out;
+        return crate::output::terminal::scrub_all(&out);
     }
 
     out.push_str("=== Scan Diff Report ===\n\n");
@@ -971,5 +1010,68 @@ mod hook_diff_tests {
             render_diff(&diff_reports(&cmd, &http)).contains("http"),
             "a kind change is drift"
         );
+    }
+
+    /// A catalog version change is one line at the top of the --diff output and no entry
+    /// change; identical versions print nothing about the catalog; a baseline without the
+    /// `catalog` block (written before b21286f) says it predates versioning. The
+    /// baseline's version is file text and is sanitized. (On 6af8a1e no such line
+    /// exists: `ScanDiff` has no `catalog_change`, and the output is "No changes".)
+    #[test]
+    fn catalog_version_change_is_one_line_at_the_top() {
+        use serde_json::json;
+        let report = |catalog: Option<Value>| {
+            let mut r = json!({
+                "agent_settings": [{"path": "/h/.claude/settings.json", "hooks": []}],
+                "summary": {"agent_settings_count": 1},
+            });
+            if let Some(c) = catalog {
+                r["catalog"] = c;
+            }
+            r
+        };
+        let block = |v: Value| json!({"builtin_version": v, "builtin_entries": 228, "user_entries": 0});
+        let cur = report(Some(block(json!("2026-11-03"))));
+
+        let d = diff_reports(&report(Some(block(json!("2026-10-22")))), &cur);
+        assert!(d.is_empty(), "a catalog change is not an entry change");
+        let text = render_diff(&d);
+        assert_eq!(
+            text.lines().next(),
+            Some("threat catalog: 2026-10-22 -> 2026-11-03 (findings may change without any change on this machine)"),
+            "{text}"
+        );
+        assert!(text.contains("No changes detected"), "{text}");
+        assert_eq!(text.matches("threat catalog").count(), 1, "{text}");
+
+        let text = render_diff(&diff_reports(&cur, &cur));
+        assert!(!text.contains("threat catalog"), "{text}");
+        assert!(text.starts_with("No changes detected"), "{text}");
+
+        let text = render_diff(&diff_reports(&report(None), &cur));
+        assert_eq!(
+            text.lines().next(),
+            Some("threat catalog: baseline predates catalog versioning"),
+            "{text}"
+        );
+
+        // --no-builtin-catalog on one side.
+        let text = render_diff(&diff_reports(&report(Some(block(Value::Null))), &cur));
+        assert!(text.starts_with("threat catalog: not loaded -> 2026-11-03 "), "{text}");
+
+        // With entry changes too, the catalog line still comes first.
+        let mut moved = cur.clone();
+        moved["agent_settings"][0]["path"] = json!("/h/other/settings.json");
+        let text = render_diff(&diff_reports(&report(None), &moved));
+        assert!(text.starts_with("threat catalog: baseline predates"), "{text}");
+        assert!(text.contains("=== Scan Diff Report ==="), "{text}");
+
+        // A hostile baseline version cannot reach the terminal raw.
+        let text = render_diff(&diff_reports(
+            &report(Some(block(json!("x\u{1b}]0;PWN\u{7}\nforged: line")))),
+            &cur,
+        ));
+        assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'), "{text:?}");
+        assert!(!text.lines().any(|l| l.starts_with("forged")), "{text:?}");
     }
 }

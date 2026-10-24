@@ -1666,6 +1666,99 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A project whose nested-git walk lists more than the 4,000-directory budget
+    /// (70 x 60 leaf directories plus their parents), as in
+    /// `otel_concurrent_phases_keep_the_span_shape`.
+    fn over_budget_project(dir: &Path) {
+        for i in 0..70 {
+            for j in 0..60 {
+                std::fs::create_dir_all(dir.join(format!("d{i}/e{j}"))).unwrap();
+            }
+        }
+    }
+
+    /// `rmguard.scan.truncated_scanners` sums a scanner's `truncated` flag over every
+    /// home pass: with the primary HOME's project and a `--search-dirs` home's project
+    /// both over the gitconfig walk budget, the report has two gitconfig rows, both
+    /// `truncated`, and the exported `gitconfig` point is 2; with the extra home's
+    /// project small, one row is truncated and the point is 1. Every other scanner's
+    /// point equals its rows' sum (0). A guard test: 6af8a1e already keeps the running
+    /// per-scanner sum (a gauge recording each row's own flag instead exports 1 for the
+    /// first case, which this catches).
+    #[test]
+    fn otel_truncated_scanners_sum_across_home_passes() {
+        let root = temp_home("trsum");
+        let home = root.join("home");
+        let extra = root.join("extra");
+        let cwd = root.join("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        for (h, proj) in [(&home, home.join("big")), (&extra, extra.join("big"))] {
+            over_budget_project(&proj);
+            let claude = serde_json::json!({ "projects": { proj.to_string_lossy(): {} } });
+            write(&h.join(".claude.json"), &claude.to_string());
+        }
+        let gitconfig = vec![("rmguard.scanner".to_string(), "gitconfig".to_string())];
+        for (case, want_point, want_rows) in [("both over budget", 2, [true, true]), ("extra small", 1, [true, false])]
+        {
+            if !want_rows[1] {
+                std::fs::remove_dir_all(extra.join("big")).unwrap();
+                std::fs::create_dir_all(extra.join("big/src/lib")).unwrap();
+            }
+            let collector = Collector::start();
+            let mut cmd = rmguard(
+                &home,
+                Some(collector.port),
+                &[
+                    "--otel",
+                    "--format",
+                    "json",
+                    "--skip",
+                    SLOW_SKIP,
+                    "--search-dirs",
+                    extra.to_str().unwrap(),
+                ],
+            );
+            // An empty cwd: the cwd is scanned as a project in every home pass, and HOME
+            // as the cwd would be walked (into home/big) by the extra pass.
+            cmd.current_dir(&cwd);
+            let (out, _) = run(cmd);
+            let bodies = collector.finish();
+            assert!(
+                out.status.success(),
+                "{case}: exit {:?}; stderr:\n{}",
+                out.status,
+                stderr(&out)
+            );
+            let report = json(&out);
+            let rows: Vec<&serde_json::Value> = report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["scanner"] == "gitconfig")
+                .collect();
+            let mut flags: Vec<bool> = rows.iter().map(|r| r["truncated"] == true).collect();
+            flags.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(flags, want_rows, "{case}: gitconfig rows {rows:?}");
+
+            let mr = metrics(&bodies);
+            let (points, _) = gauge_points(&mr, "rmguard.scan.truncated_scanners").expect("truncated_scanners");
+            assert_eq!(points.get(&gitconfig), Some(&want_point), "{case}: {points:?}");
+            let mut want: Points = BTreeMap::new();
+            for row in report["diagnostics"].as_array().unwrap() {
+                if row["skipped"] == true {
+                    continue;
+                }
+                let key = vec![(
+                    "rmguard.scanner".to_string(),
+                    row["scanner"].as_str().unwrap().to_string(),
+                )];
+                *want.entry(key).or_default() += i64::from(row["truncated"] == true);
+            }
+            assert_eq!(points, want, "{case}: truncated_scanners vs diagnostics");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Machine identity is the operator's: `--otel-instance` sets the resource's
     /// `service.instance.id` (traces and metrics) to exactly the flag's value and the
     /// root span says identity was supplied; with neither the flag nor
