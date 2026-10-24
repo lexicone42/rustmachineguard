@@ -414,8 +414,8 @@ fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
         list.push(job(
             "mcp",
             Some(plat.home_dir()),
-            move || scanners::mcp::McpScanner.scan(plat),
-            |r, v| r.mcp_configs.extend(v),
+            move || scanners::mcp::scan_home(plat),
+            scanners::mcp::store,
         ));
     }
     if !skip.contains(&"shell") {
@@ -769,6 +769,7 @@ fn main() {
         ide_installations: Vec::new(),
         ide_extensions: Vec::new(),
         mcp_configs: Vec::new(),
+        mcp_observed_servers: Vec::new(),
         node_package_managers: Vec::new(),
         shell_configs: Vec::new(),
         ssh_keys: Vec::new(),
@@ -817,6 +818,8 @@ fn main() {
             env_files_count: 0,
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
+            mcp_plugin_servers_count: 0,
+            mcp_connectors_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
@@ -855,6 +858,7 @@ fn main() {
         dedupe_report(&mut report);
     }
     rustmachineguard::analysis::apply_managed_hook_policy(&mut report);
+    scanners::mcp::post_scan(&mut report);
 
     // Exposure catalog matching — built-in catalog + optional user catalog
     let catalog_phase = otel::span("phase.catalog_load", || vec![Attr::str(Key::Phase, "catalog_load")]);
@@ -916,7 +920,8 @@ fn main() {
     if let Some(ref catalog) = catalog {
         let _p = otel::span("phase.exposure", || vec![Attr::str(Key::Phase, "exposure")]);
         for mcp in &report.mcp_configs {
-            for server in &mcp.servers {
+            // A disabled plugin's server and a claude.ai connector are inventory only.
+            for server in mcp.servers.iter().filter(|s| s.is_active() && !s.ever_connected) {
                 report
                     .exposure_findings
                     .extend(catalog.check_mcp_server(server, &mcp.config_path));
@@ -974,9 +979,11 @@ fn main() {
             });
             report.summary.npm_packages_count = pkgs.len();
             for pkg in &pkgs {
-                report
-                    .exposure_findings
-                    .extend(catalog.check_extension("npm", &pkg.name, &pkg.version, &pkg.location));
+                for mut f in catalog.check_extension("npm", &pkg.name, &pkg.version, &pkg.location) {
+                    // A match inside ~/.npm/_npx/<hash>/ is dormant code; name what it came with.
+                    scanners::exposure::annotate_cache(&mut f);
+                    report.exposure_findings.push(f);
+                }
             }
         }
 

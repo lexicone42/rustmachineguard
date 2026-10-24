@@ -60,7 +60,7 @@ cargo build --release
 | **IDE Installations** | Developer editors | VS Code, Cursor, Windsurf, Zed, Antigravity |
 | **IDE Extensions** | Installed extensions | VS Code-style and Zed format parsing with version info. Extensions that claim to be declarative (every category is Themes, Snippets, Keymaps or Language Packs; or, with no categories, every contribution is data) are flagged when they ship a native `.node` addon; a theme extension (one that contributes themes) is also flagged for a `main`/`browser` entry point while contributing no commands or settings to explain it. The entry-point check applies to theme extensions only: a Snippets, Keymaps or Language Pack extension with an entry point is not reported. Themes that do contribute commands or settings (Material Icon Theme, One Dark Pro) and themes that list a non-declarative category stay in the inventory; ordinary extensions with native addons (Pylance, Jupyter) are not walked. `package.json` is read only as a regular file whose real path stays inside the extension directory (a symlinked manifest is never opened) |
 | **JetBrains Plugins** | User-installed IDE plugins, by plugin ID | Reads `META-INF/plugin.xml` from each plugin jar under the JetBrains plugin directories (Linux, macOS, Toolbox installs) — identity only, plugin code never read. Catalogs the 15 Marketplace plugins that exfiltrated AI API keys in 2025–26 |
-| **MCP Configurations** | Model Context Protocol servers | Claude Desktop, Claude Code (`settings.json` + `~/.claude.json` project scope), Cursor, Windsurf, Antigravity, Zed, VS Code, Open Interpreter (YAML), Codex (TOML) |
+| **MCP Configurations** | Model Context Protocol servers | Claude Desktop, Claude Code (`settings.json` + `~/.claude.json` project scope), Cursor, Windsurf, Antigravity, Zed, VS Code, Open Interpreter (YAML), Codex (TOML); Claude Code plugin servers (`.mcp.json` and `plugin.json` `mcpServers` of installed plugins), claude.ai connectors (`claudeAiMcpEverConnected`), and the servers Claude Code's MCP logs show have run (directory names only) — see [MCP servers beyond config files](#mcp-servers-beyond-config-files) |
 | **Package Managers** | Node.js ecosystem | npm, yarn, pnpm, bun, Node.js. npm, yarn and pnpm are npm packages: when the PATH entry resolves (through its symlinks) to a file inside `node_modules/<tool>/` and that package's `package.json` names the tool and holds a plain semver `version`, the version is read from there (a symlinked `package.json` is not followed) instead of running `<tool> --version` (a node start each); a corepack shim, a native build or any other layout is run as before. bun and node are native binaries and are run |
 | **Shell Configs** | AI-related env vars | API keys (redacted), tool aliases. `OLLAMA_HOST` is classified the way Ollama parses it, in shell profiles, `.env` files, systemd units (user units and the official `ollama.service` + drop-ins) and launchd jobs. systemd units are parsed with systemd's grammar (whitespace around `=`, backslash continuations, comments inside a continuation) and merged the way systemd merges them: the unit file, then its drop-ins in lexical order, the last assignment winning, an empty `Environment=` or `UnsetEnvironment=OLLAMA_HOST` unsetting it; each unit is reported once, for its effective value, at the file that supplies it (a `systemctl edit` override restoring loopback over a packaged unit's `0.0.0.0` is quiet); unit and launchd files are opened with `O_NOFOLLOW`. An expansion (`$VAR`, backticks) is shown only as `<shell expansion>`; the host:port is cut at `/`, `?` and `#`, and the port is shown only when it parses as one (otherwise `:<unparseable>`). A wildcard bind (`0.0.0.0`, `[::]`, `:port`) is Medium in a profile, unit or job and Low in a `.env` (normal inside a container). The `.env` grade is a deliberate deviation from the original specification, which asked for a warning in every source: a `.env` only binds the server if the server starts from that environment, which is the container case, so it is worded as advisory; a specific non-loopback address or host is Medium only in the server's own unit or job (`ExecStart` is `ollama serve`, the unit is `ollama.service`, a launchd job runs it, or a launchd job runs `launchctl setenv OLLAMA_HOST`, which is how the macOS app is configured), because in a profile or `.env` it is a client pointed at another machine. Loopback, unset and client targets stay quiet. No network probing |
 | **SSH Keys** | Key inventory with passphrase audit | RSA, ECDSA, Ed25519/OpenSSH with passphrase detection |
@@ -83,6 +83,47 @@ cargo build --release
 | **Plugin Marketplaces** | Remote plugin/skill hot-load sources (EAA-009) | Claude Code plugin marketplaces — source (git/github), official-vs-third-party, installed-plugin counts; auto-updating third-party sources (unreviewed remote code) flagged. Plugin4Shell check: commit-shaped branch/tag/remote refs, HEAD or FETCH_HEAD on such a branch, and manifest pins that are not commits (a branch or tag name, an abbreviated commit ID, or an empty pin, each worded as what it is); a commit-named ref (HEAD's branch included) is Critical when its tip is a different commit or unresolved and Medium when it points at the commit it is named after; a marketplace whose `ref` is a commit ID is Low, since marketplace sources have no `sha` field to pin with, read from plain git files that are never followed through a symlink (git is never run) |
 
 MCP server and `settings.json` configs are additionally checked for **plaintext HTTP transport** (tokens/traffic sent unencrypted), **over-broad filesystem scope** (a `server-filesystem` rooted at `/` or `$HOME` — near-whole-machine access), **hardcoded credentials in an `env` block** (a secret-looking key set to a literal instead of `${VAR}` — reported by **name** only, never value; escalated to a **committed-secret Critical** when the config is git-tracked, mirroring a git-tracked `.env`), and **download-and-execute launch commands** (a server that boots via `curl … | bash`). AI base-URL overrides are checked for **hostile gateway routing** (EAA-007).
+
+### MCP servers beyond config files
+
+Most MCP servers on a Claude Code machine are not in any file the user wrote. rmguard also
+reads, for every plugin version listed in `~/.claude/plugins/installed_plugins.json`, the
+plugin's `.mcp.json` and its `.claude-plugin/plugin.json` `mcpServers` (an inline map or a
+`./file.json`, merged in Claude Code's order; a path that does not start with `./`, leaves
+the plugin root, or is a symlink is not read; `.mcpb`/`.dxt` bundles are not unpacked; see
+[plugins-reference](https://code.claude.com/docs/en/plugins-reference#mcpservers) and
+[MCP: plugin-provided servers](https://code.claude.com/docs/en/mcp#plugin-provided-mcp-servers)).
+Each server is a row with `config_source: "plugin"`, the `plugin@marketplace` it comes
+from and `enabled` (false when `enabledPlugins` turns the plugin off, true again when
+managed settings force-enable it). A disabled plugin's servers are inventory only. An
+enabled plugin's server is graded like a configured one, and one that a package runner
+launches with no fixed version (`npx pkg@latest`, `npx pkg`, `uvx --from git+https://...`
+at the branch HEAD, `docker run image:latest`) is a Medium "plugin MCP server runs an
+unpinned package": the plugin may be pinned to a reviewed commit while its server is
+whatever the registry serves at the next start. The claude.ai connectors Claude Code
+lists in `~/.claude.json` `claudeAiMcpEverConnected` are rows with `config_source:
+"claude.ai connector"` and transport `remote (vendor-hosted)`. That key is Claude Code's
+own state, not a documented setting: it says a connector was **ever connected**, not that
+it is enabled now, so `enabled` is left unknown unless `disableClaudeAiConnectors` is set
+(see [Use MCP servers from claude.ai](https://code.claude.com/docs/en/mcp#use-mcp-servers-from-claude-ai)).
+Connectors are inventory only. Finally, the directory names under
+`~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/` (macOS:
+`~/Library/Caches/claude-cli-nodejs`) are listed as `mcp_observed_servers` (name, number
+of projects, newest mtime); no log file is opened. A server that has run per those names
+but matches no config, plugin or connector row is a Low advisory: it may be a connector
+Claude Code no longer lists or a plugin since removed. `env` and `headers` blocks are
+shown by shape only (`Authorization: Bearer ${API_KEY}`; a reference default becomes
+`${KEY:-<redacted>}`, any literal `<redacted>`). The summary counts plugin servers and
+connectors (`mcp_plugin_servers_count`, `mcp_connectors_count`) inside
+`mcp_servers_count`. These rows are never probed: `--probe-mcp` stays limited to the
+user's own config files.
+
+The toxic-flow (lethal trifecta) finding is built from what is connected: successful
+probes, MCP servers that are not marked off, mapped by a small closed table of well-known
+names (Gmail, Drive, Calendar, Docs: private data; Playwright, browser, fetch: network
+sink and untrusted content; filesystem; shell/exec), and the skills of the user and of
+installed, enabled plugins. Marketplace clones of plugins that are not installed stay in
+the inventory and supply nothing. The finding's evidence names the servers on each leg.
 
 ### Hook surfaces
 

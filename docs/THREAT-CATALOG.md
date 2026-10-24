@@ -73,8 +73,21 @@ The catalog is compiled into the binary at build time from
 `src/catalogs/builtin_catalog.json`. Each entry specifies an ecosystem, package name,
 optional version constraint, and an advisory string citing the source.
 
-During scanning, every discovered MCP server, IDE extension, and browser extension is
-checked against the catalog. Matches appear as exposure findings in all output formats.
+During scanning, every discovered MCP server (configured, and an enabled Claude Code
+plugin's own `.mcp.json` / `plugin.json` `mcpServers`; a disabled plugin's servers and
+claude.ai connectors are inventory only), IDE extension, and browser extension is checked
+against the catalog, and so is every installed npm and PyPI package. Matches appear as
+exposure findings in all output formats.
+
+A row that names an exact version, or no version, is a malicious release: its match is
+Critical ("Known-bad"). A row with a `version_range` is a vulnerable version, and its
+match is Critical ("Vulnerable ... package version") in an active install. When it is
+found only in an npx cache (`~/.npm/_npx/<hash>/`, code `npx` fetched once and runs again
+only when the same `npx` line is re-run) and no enabled configured or plugin MCP server
+launches the package the cache was fetched for, it is High, titled "Vulnerable MCP SDK
+version in npx cache (dormant unless re-run)" for the `@modelcontextprotocol/*` SDK
+packages, and names that package (from the cache's `package.json` `_npx.packages`, else its
+`dependencies`). The finding's evidence keeps the catalog row's range and the advisory IDs.
 
 ## Sources and Attribution
 

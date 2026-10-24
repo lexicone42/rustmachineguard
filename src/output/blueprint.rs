@@ -1843,7 +1843,7 @@ impl BlueprintDocument {
                     cve_score.entry(cve.clone()).or_insert(*sc);
                 }
             }
-            let title = format!("Known-bad {} package: {} {}", e.ecosystem, e.name, e.version);
+            let title = crate::analysis::exposure_finding(report, e).title;
             cves_by_title.insert(title, rated.into_iter().map(|(c, _)| c).collect());
         }
         // The hostile-gateway (EAA-007) finding maps to a known CVE.

@@ -214,6 +214,13 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
     let mut idx: i64 = 0;
 
     for config in configs {
+        // Plugin servers and claude.ai connectors are inventoried from their manifests
+        // and Claude Code's state; probing stays limited to the user's own config files.
+        if config.config_source == crate::models::MCP_SOURCE_PLUGIN
+            || config.config_source == crate::models::MCP_SOURCE_CONNECTOR
+        {
+            continue;
+        }
         for server in &config.servers {
             if server.transport != "stdio" {
                 continue;
@@ -1112,5 +1119,32 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
+    }
+}
+
+#[cfg(test)]
+mod source_scope_tests {
+    use super::*;
+    use crate::models::{MCP_SOURCE_CONNECTOR, MCP_SOURCE_PLUGIN, McpServerDetail};
+
+    /// Plugin and connector rows are never spawned by `--probe-mcp`: the probe returns no
+    /// result for them (a spawned command would at least report a failed probe).
+    #[test]
+    fn plugin_and_connector_rows_are_not_probed() {
+        let row = |source: &str| McpConfig {
+            config_source: source.to_string(),
+            config_path: "/x".into(),
+            vendor: "v".into(),
+            server_names: vec!["s".into()],
+            server_count: 1,
+            git_tracked: false,
+            servers: vec![McpServerDetail {
+                name: "s".into(),
+                transport: "stdio".into(),
+                command: Some("/nonexistent/rmguard-probe-canary".into()),
+                ..Default::default()
+            }],
+        };
+        assert!(probe_mcp_servers(&[row(MCP_SOURCE_PLUGIN), row(MCP_SOURCE_CONNECTOR)]).is_empty());
     }
 }

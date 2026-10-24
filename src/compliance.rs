@@ -72,8 +72,8 @@ pub const CONTROLS: &[Control] = &[
         id: "UNAUTHORIZED",
         title: "Detect open / unauthorized MCP servers",
         coverage: Coverage::Partial,
-        how: "Enumerates configured servers and (opt-in) live-probes them; registry check flags unregistered/shadow. Does not sweep the network for listeners.",
-        finding_categories: &["Registry"],
+        how: "Enumerates configured servers, Claude Code plugin servers and claude.ai connectors, lists the servers Claude Code's MCP logs show have run, and (opt-in) live-probes configured servers; registry check flags unregistered/shadow, and a logged server no config defines is reported. Does not sweep the network for listeners.",
+        finding_categories: &["Registry", "MCP inventory"],
     },
     Control {
         framework: "NSA/CISA MCP Security CSI (2026-06)",
@@ -96,8 +96,8 @@ pub const CONTROLS: &[Control] = &[
         id: "SIGN-VERIFY",
         title: "Sign and verify servers / version-pin",
         coverage: Coverage::Partial,
-        how: "Verifies servers against the official registry (provenance) and detects unpinned/deprecated packages, and plugin pins that are not commits (Plugin4Shell). Does not itself sign; ingests attestations when available.",
-        finding_categories: &["Registry", "Plugin pin"],
+        how: "Verifies servers against the official registry (provenance) and detects unpinned/deprecated packages (an enabled plugin's MCP server launched at @latest, with no version, or at a git branch HEAD), and plugin pins that are not commits (Plugin4Shell). Does not itself sign; ingests attestations when available.",
+        finding_categories: &["Registry", "Plugin pin", "MCP command"],
     },
     Control {
         framework: "NSA/CISA MCP Security CSI (2026-06)",
@@ -571,8 +571,7 @@ mod tests {
             version: "1".into(),
             advisory: "x".into(),
             found_in: "/m".into(),
-            root_kind: None,
-            root_name: None,
+            ..Default::default()
         }];
         r.rules_files = vec![RulesFile {
             path: "/r".into(),

@@ -239,8 +239,8 @@ starts a thread.
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
 | `rmguard.scanner` | scanner.*, metrics | scanner label (`mcp`, `packages`, ...) |
 | `rmguard.finding.severity` | `rmguard.findings` | `critical` \| `high` \| `medium` \| `low` |
-| `rmguard.finding.category` | `rmguard.findings` | one of the 36 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
-| `rmguard.inventory.kind` | `rmguard.inventory` | one of the 32 report summary counts, named without `_count` (`mcp_servers`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
+| `rmguard.finding.category` | `rmguard.findings` | one of the 37 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
+| `rmguard.inventory.kind` | `rmguard.inventory` | one of the 34 report summary counts, named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
@@ -374,7 +374,7 @@ The severity totals are also on the root span as ints (`rmguard.findings.critica
 
 The labels are closed sets defined in code, each pinned by a test:
 `rmguard.finding.severity` is the `Severity` enum's lowercase label;
-`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (36 entries), the
+`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (37 entries), the
 category strings exactly as the terminal, HTML and compliance reports show them. A unit test walks `src/analysis.rs`
 for every `category: "..."` literal and every `(severity, "...", title)` tuple and fails
 if one is not in the table (or a table entry is never emitted), a second checks the

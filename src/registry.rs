@@ -324,6 +324,7 @@ mod tests {
             package_version: None,
             url: None,
             inline_secret_env_keys: vec![],
+            ..Default::default()
         }
     }
 

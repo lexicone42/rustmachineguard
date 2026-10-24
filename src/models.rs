@@ -13,6 +13,11 @@ pub struct ScanReport {
     pub ide_installations: Vec<IdeInstallation>,
     pub ide_extensions: Vec<IdeExtension>,
     pub mcp_configs: Vec<McpConfig>,
+    /// MCP servers that have run, per Claude Code's MCP log directories
+    /// (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/`): directory NAMES only,
+    /// never a log file's contents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_observed_servers: Vec<McpObservedServer>,
     pub node_package_managers: Vec<NodePackageManager>,
     pub shell_configs: Vec<ShellConfig>,
     pub ssh_keys: Vec<SshKey>,
@@ -240,7 +245,36 @@ pub struct McpConfig {
     pub servers: Vec<McpServerDetail>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Where a server's definition came from when no config file of the user's holds it:
+/// `McpConfig::config_source` for a Claude Code plugin's `.mcp.json` / `plugin.json`
+/// `mcpServers` (code.claude.com/docs/en/plugins-reference#mcpservers).
+pub const MCP_SOURCE_PLUGIN: &str = "plugin";
+/// `McpConfig::config_source` for the claude.ai connectors Claude Code lists as ever
+/// connected (`claudeAiMcpEverConnected` in `~/.claude.json`; code.claude.com/docs/en/mcp,
+/// "Use MCP servers from claude.ai").
+pub const MCP_SOURCE_CONNECTOR: &str = "claude.ai connector";
+/// The transport of a claude.ai connector: Anthropic connects to it, not this machine.
+pub const MCP_TRANSPORT_CONNECTOR: &str = "remote (vendor-hosted)";
+
+/// One `mcp-logs-<server>` directory name seen under Claude Code's per-project log cache.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct McpObservedServer {
+    /// The directory name after `mcp-logs-` (sanitized). Claude Code writes plugin
+    /// servers as `plugin-<plugin>-<server>` and connectors as `claude-ai-<Name>`.
+    pub name: String,
+    /// Project log directories it appears in.
+    pub projects: usize,
+    /// Newest modification time of those log directories (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_mtime: Option<i64>,
+    /// The log cache it was found in (sanitized).
+    pub log_root: String,
+    /// A configured, plugin or connector server of this scan has this log name.
+    #[serde(default)]
+    pub configured: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct McpServerDetail {
     pub name: String,
     pub transport: String,
@@ -261,6 +295,39 @@ pub struct McpServerDetail {
     /// than referenced via `${VAR}`. Empty when the env block is absent or clean.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inline_secret_env_keys: Vec<String>,
+    /// NAMES of secret-looking `headers` set to a hardcoded literal (never values).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_secret_header_keys: Vec<String>,
+    /// The `env` block by SHAPE: `NAME=${REF}`, `NAME=$REF` or `NAME=<redacted>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    /// The `headers` block by SHAPE: `Name: Bearer ${REF}` or `Name: <redacted>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// Plugin servers: the plugin that ships it, `plugin@marketplace` (sanitized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// Plugin servers: whether the plugin is enabled (`enabledPlugins`, managed
+    /// force-enables applied). Connectors: `Some(false)` under `disableClaudeAiConnectors`,
+    /// else unknown (`None`). Configured servers: `None` (loaded as configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// claude.ai connectors: Claude Code lists it in `claudeAiMcpEverConnected`. This
+    /// says the connector was connected at some point, not that it is enabled now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ever_connected: bool,
+    /// Why the launch runs whatever version is current: "@latest", "no version",
+    /// "git HEAD", "docker :latest". Only stdio launchers through a package runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpinned: Option<String>,
+}
+
+impl McpServerDetail {
+    /// Nothing marks this server off: not a disabled plugin's, not under
+    /// `disableClaudeAiConnectors`.
+    pub fn is_active(&self) -> bool {
+        self.enabled != Some(false)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -873,7 +940,7 @@ pub struct ExposureEntry {
 }
 
 /// A matched exposure finding.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ExposureFinding {
     pub ecosystem: String,
     pub name: String,
@@ -890,6 +957,18 @@ pub struct ExposureFinding {
     /// directory name, sanitized. Absent for system, user, project and uv-python roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_name: Option<String>,
+    /// The catalog row's `version_range` when the match is a vulnerable version range
+    /// (not a malware row that names an exact version or every version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_range: Option<String>,
+    /// "npx cache" when `found_in` is inside `~/.npm/_npx/<hash>/`: code npx fetched
+    /// once, which runs again only when the same `npx` line is re-run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
+    /// The package(s) the npx cache was created for (its `package.json` `_npx.packages`
+    /// or `dependencies`), names only, sanitized.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_parent: Vec<String>,
 }
 
 /// The kind of Python install root a distribution was found in. A closed set: the
@@ -936,6 +1015,12 @@ pub struct Summary {
     pub ide_extensions_count: usize,
     pub mcp_configs_count: usize,
     pub mcp_servers_count: usize,
+    /// Of `mcp_servers_count`, servers shipped by Claude Code plugins.
+    #[serde(default)]
+    pub mcp_plugin_servers_count: usize,
+    /// Of `mcp_servers_count`, claude.ai connectors Claude Code lists as ever connected.
+    #[serde(default)]
+    pub mcp_connectors_count: usize,
     pub node_package_managers_count: usize,
     pub shell_configs_count: usize,
     pub ssh_keys_count: usize,
@@ -986,7 +1071,7 @@ impl Summary {
     /// number the summary's own; `agent_hooks_by_framework` (keyed by framework names)
     /// is the one summary field not here. `summary_inventory_tests::inventory_is_every_summary_count`
     /// fails when a `_count` field is added without a row.
-    pub fn inventory(&self) -> [(&'static str, usize); 32] {
+    pub fn inventory(&self) -> [(&'static str, usize); 34] {
         [
             ("ai_agents_and_tools", self.ai_agents_and_tools_count),
             ("ai_frameworks", self.ai_frameworks_count),
@@ -994,6 +1079,8 @@ impl Summary {
             ("ide_extensions", self.ide_extensions_count),
             ("mcp_configs", self.mcp_configs_count),
             ("mcp_servers", self.mcp_servers_count),
+            ("mcp_plugin_servers", self.mcp_plugin_servers_count),
+            ("mcp_connectors", self.mcp_connectors_count),
             ("node_package_managers", self.node_package_managers_count),
             ("shell_configs", self.shell_configs_count),
             ("ssh_keys", self.ssh_keys_count),
@@ -1033,6 +1120,8 @@ impl ScanReport {
             ide_extensions_count: self.ide_extensions.len(),
             mcp_configs_count: self.mcp_configs.len(),
             mcp_servers_count: self.mcp_configs.iter().map(|c| c.server_count).sum(),
+            mcp_plugin_servers_count: self.mcp_servers_from(MCP_SOURCE_PLUGIN),
+            mcp_connectors_count: self.mcp_servers_from(MCP_SOURCE_CONNECTOR),
             node_package_managers_count: self.node_package_managers.len(),
             shell_configs_count: self.shell_configs.len(),
             ssh_keys_count: self.ssh_keys.len(),
@@ -1067,6 +1156,15 @@ impl ScanReport {
                 .filter(|h| h.kind == crate::scanners::hook_sources::SETTINGS_COMMAND_KIND)
                 .count(),
         };
+    }
+
+    /// Servers of the configs whose `config_source` is `source`.
+    fn mcp_servers_from(&self, source: &str) -> usize {
+        self.mcp_configs
+            .iter()
+            .filter(|c| c.config_source == source)
+            .map(|c| c.server_count)
+            .sum()
     }
 
     /// Hooks that never run (see [`Summary::agent_hooks_inactive_count`]).

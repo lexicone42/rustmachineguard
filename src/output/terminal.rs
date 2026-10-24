@@ -160,6 +160,15 @@ fn render_inner(report: &ScanReport) -> String {
     summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);
     summary_line(&mut out, "Plugin Marketplaces", s.marketplaces_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
+    for (label, n) in [
+        ("of which plugin servers ·", s.mcp_plugin_servers_count),
+        ("of which claude.ai connectors ·", s.mcp_connectors_count),
+        ("servers that have run per logs ·", report.mcp_observed_servers.len()),
+    ] {
+        if n > 0 {
+            out.push_str(&format!("  {:>35}  {}\n", label.dimmed(), n));
+        }
+    }
     if s.rules_file_findings_count > 0 {
         out.push_str(&format!(
             "  {:>35}  {}\n",
@@ -191,6 +200,9 @@ fn render_inner(report: &ScanReport) -> String {
         ));
         out.push_str(&format!("    sources: {}\n", tf.sources.join(", ").yellow()));
         out.push_str(&format!("    sinks:   {}\n", tf.sinks.join(", ").yellow()));
+        for (cap, who) in &tf.contributors {
+            out.push_str(&format!("    {} {}: {}\n", "·".dimmed(), cap, who));
+        }
         out.push_str("    Any prompt injection reaching the agent could read private data and exfiltrate it.\n");
         out.push('\n');
     }
@@ -284,7 +296,7 @@ fn render_inner(report: &ScanReport) -> String {
     }
 
     // MCP Configs
-    if !report.mcp_configs.is_empty() {
+    if !report.mcp_configs.is_empty() || !report.mcp_observed_servers.is_empty() {
         section_header(&mut out, "MCP Configurations");
         for mcp in &report.mcp_configs {
             out.push_str(&format!(
@@ -304,18 +316,65 @@ fn render_inner(report: &ScanReport) -> String {
                         }
                         _ => String::new(),
                     };
+                    let mut tags = Vec::new();
+                    match server.enabled {
+                        Some(true) => tags.push("enabled".to_string()),
+                        Some(false) => tags.push("disabled (inactive)".to_string()),
+                        None => {}
+                    }
+                    if server.ever_connected {
+                        tags.push("ever connected".to_string());
+                    }
+                    if let Some(u) = &server.unpinned {
+                        tags.push(format!("unpinned: {u}"));
+                    }
+                    let tags = if tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", tags.join(", "))
+                    };
                     out.push_str(&format!(
-                        "    {} {} [{}]{}\n",
+                        "    {} {} [{}]{}{}\n",
                         "·".dimmed(),
                         server.name,
                         server.transport.dimmed(),
                         pkg_info.yellow(),
+                        tags.dimmed(),
                     ));
+                    if let Some(url) = &server.url {
+                        out.push_str(&format!("        url: {}\n", url.dimmed()));
+                    }
+                    for h in &server.headers {
+                        out.push_str(&format!("        header {}\n", h.dimmed()));
+                    }
+                    for e in &server.env {
+                        out.push_str(&format!("        env {}\n", e.dimmed()));
+                    }
                 }
             } else {
                 for name in &mcp.server_names {
                     out.push_str(&format!("    {} {}\n", "·".dimmed(), name));
                 }
+            }
+        }
+        if !report.mcp_observed_servers.is_empty() {
+            out.push_str(&format!(
+                "  {} servers that have run per logs: {}\n",
+                "→".cyan(),
+                report.mcp_observed_servers.len().to_string().yellow()
+            ));
+            for o in &report.mcp_observed_servers {
+                out.push_str(&format!(
+                    "    {} {} ({} project(s)){}\n",
+                    "·".dimmed(),
+                    o.name,
+                    o.projects,
+                    if o.configured {
+                        String::new()
+                    } else {
+                        " — not in any known config".yellow().to_string()
+                    }
+                ));
             }
         }
         out.push('\n');

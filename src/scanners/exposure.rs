@@ -56,8 +56,8 @@ impl ExposureCatalog {
                 version: server.package_version.clone().unwrap_or_else(|| "unknown".to_string()),
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: config_path.to_string(),
-                root_kind: None,
-                root_name: None,
+                matched_range: matched_range(entry),
+                ..Default::default()
             });
         }
 
@@ -83,8 +83,8 @@ impl ExposureCatalog {
                 version: version.to_string(),
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: found_in.to_string(),
-                root_kind: None,
-                root_name: None,
+                matched_range: matched_range(entry),
+                ..Default::default()
             });
         }
 
@@ -141,6 +141,68 @@ pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
 
 fn eq_case_insensitive(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
+}
+
+/// The row's `version_range` when it is what matched: a vulnerable-version row, not a
+/// malware row (an exact `version`, or no constraint at all, names malicious releases).
+fn matched_range(entry: &ExposureEntry) -> Option<String> {
+    if entry.version.is_some() {
+        return None;
+    }
+    entry.version_range.clone()
+}
+
+/// The npx cache directory (`<home>/.npm/_npx/<hash>`) holding `found_in`, if any.
+pub fn npx_cache_root(found_in: &str) -> Option<std::path::PathBuf> {
+    const MARK: &str = "/.npm/_npx/";
+    let at = found_in.find(MARK)?;
+    let rest = &found_in[at + MARK.len()..];
+    let hash = rest
+        .split('/')
+        .next()
+        .filter(|h| !h.is_empty() && *h != "." && *h != "..")?;
+    Some(std::path::PathBuf::from(format!("{}{MARK}{hash}", &found_in[..at])))
+}
+
+/// Mark a finding inside an npx cache, and name the package(s) the cache was created
+/// for from its `package.json` (`_npx.packages`, else `dependencies` keys). Only that
+/// one small manifest is read; package code never is.
+pub fn annotate_cache(f: &mut ExposureFinding) {
+    let Some(root) = npx_cache_root(&f.found_in) else {
+        return;
+    };
+    f.cache = Some("npx cache".to_string());
+    let Some(text) = crate::scanners::read_bounded(&root.join("package.json")) else {
+        return;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let mut names: Vec<String> = json
+        .get("_npx")
+        .and_then(|n| n.get("packages"))
+        .and_then(|p| p.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|spec| crate::scanners::mcp::split_npm_package_version(spec).0)
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty()
+        && let Some(deps) = json.get("dependencies").and_then(|d| d.as_object())
+    {
+        names = deps.keys().cloned().collect();
+    }
+    let mut names: Vec<String> = names
+        .iter()
+        .filter(|n| !n.is_empty())
+        .map(|n| crate::scanners::sanitize_display(n, 128))
+        .collect();
+    names.sort();
+    names.dedup();
+    names.truncate(5);
+    f.cache_parent = names;
 }
 
 /// Decide whether a catalog entry's version constraint matches a candidate version.

@@ -423,6 +423,63 @@ fn render_sections(report: &ScanReport) -> String {
         html.push_str("</table></div>");
     }
 
+    // MCP servers: one row per server, with where it comes from and its state.
+    if report.mcp_configs.iter().any(|c| !c.servers.is_empty()) {
+        card_open(
+            &mut html,
+            "MCP Servers",
+            &["Server", "Source", "Transport", "State", "Package / URL"],
+        );
+        for mcp in &report.mcp_configs {
+            for s in &mcp.servers {
+                let state = match (s.enabled, s.ever_connected) {
+                    (Some(false), _) => "disabled (inactive)".to_string(),
+                    (_, true) => "ever connected".to_string(),
+                    (Some(true), _) => "enabled".to_string(),
+                    (None, false) => "configured".to_string(),
+                };
+                let state = match &s.unpinned {
+                    Some(u) => format!("{state}; unpinned: {u}"),
+                    None => state,
+                };
+                let what = match (&s.package_name, &s.url) {
+                    (Some(p), _) => format!("{}@{}", p, s.package_version.as_deref().unwrap_or("*")),
+                    (None, Some(u)) => u.clone(),
+                    _ => String::new(),
+                };
+                let source = match &s.plugin {
+                    Some(p) => format!("{} {}", mcp.config_source, p),
+                    None => mcp.config_source.clone(),
+                };
+                html.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
+                    html_escape(&s.name),
+                    html_escape(&source),
+                    html_escape(&s.transport),
+                    html_escape(&state),
+                    html_escape(&what)
+                ));
+            }
+        }
+        html.push_str("</table></div>");
+    }
+    if !report.mcp_observed_servers.is_empty() {
+        card_open(
+            &mut html,
+            "MCP Servers That Have Run (per log directory names)",
+            &["Server", "Projects", "In a known config"],
+        );
+        for o in &report.mcp_observed_servers {
+            html.push_str(&format!(
+                "<tr><td>{}</td><td class=\"count\">{}</td><td>{}</td></tr>",
+                html_escape(&o.name),
+                o.projects,
+                if o.configured { "yes" } else { "no" }
+            ));
+        }
+        html.push_str("</table></div>");
+    }
+
     // MCP configs.
     if !report.mcp_configs.is_empty() {
         card_open(

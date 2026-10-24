@@ -114,6 +114,11 @@ impl PluginContext {
         &self.install_paths
     }
 
+    /// `plugin@marketplace` is set to false in `~/.claude/settings.json` `enabledPlugins`.
+    pub(crate) fn is_disabled(&self, key: &str) -> bool {
+        self.disabled.contains(key)
+    }
+
     /// Provenance of a path under `~/.claude/plugins` or `~/.claude/skills/synced`.
     pub(crate) fn provenance(&self, path: &Path) -> Option<SkillProvenance> {
         let synced_root = self.home.join(".claude").join("skills").join("synced");

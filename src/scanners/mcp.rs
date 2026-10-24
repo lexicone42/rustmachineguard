@@ -1,6 +1,10 @@
-use crate::models::{McpConfig, McpServerDetail};
+use crate::models::{
+    MCP_SOURCE_CONNECTOR, MCP_SOURCE_PLUGIN, MCP_TRANSPORT_CONNECTOR, McpConfig, McpObservedServer, McpServerDetail,
+    ScanReport,
+};
 use crate::platform::PlatformInfo;
-use crate::scanners::{Scanner, is_git_tracked};
+use crate::scanners::{Scanner, is_git_tracked, sanitize_display};
+use std::path::{Path, PathBuf};
 
 pub struct McpScanner;
 
@@ -55,10 +59,14 @@ impl Scanner for McpScanner {
             });
         }
 
-        let claude_json = platform.home_dir().join(".claude.json");
-        if crate::scanners::probe_file(&claude_json)
-            && let Some(content) = crate::scanners::read_bounded(&claude_json)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
+        let home = platform.home_dir();
+        let claude_json = home.join(".claude.json");
+        let claude_value = if crate::scanners::probe_file(&claude_json) {
+            crate::scanners::read_bounded(&claude_json).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        } else {
+            None
+        };
+        if let Some(v) = &claude_value
             && let Some(projects) = v.get("projects").and_then(|v| v.as_object())
         {
             for (proj_path, _) in projects {
@@ -94,8 +102,397 @@ impl Scanner for McpScanner {
             }
         }
 
+        results.extend(plugin_servers(&home));
+        results.extend(connector_servers(&home, &claude_json, claude_value.as_ref()));
         results
     }
+}
+
+/// What the `mcp` job stores: config rows and observed (logged) server names.
+pub enum McpOut {
+    Config(McpConfig),
+    Observed(McpObservedServer),
+}
+
+/// The `mcp` job: every config row, then the observed server names of this home.
+pub fn scan_home(platform: &dyn PlatformInfo) -> Vec<McpOut> {
+    let mut out: Vec<McpOut> = McpScanner.scan(platform).into_iter().map(McpOut::Config).collect();
+    out.extend(observed_servers(&platform.home_dir()).into_iter().map(McpOut::Observed));
+    out
+}
+
+/// Store the `mcp` job's rows.
+pub fn store(report: &mut ScanReport, rows: Vec<McpOut>) {
+    for r in rows {
+        match r {
+            McpOut::Config(c) => report.mcp_configs.push(c),
+            McpOut::Observed(o) => report.mcp_observed_servers.push(o),
+        }
+    }
+}
+
+// ── Plugin MCP servers ──────────────────────────────────────────────────────────
+
+/// Server entries a plugin may declare: more are not read.
+const MAX_PLUGIN_SERVERS: usize = 50;
+/// `mcpServers` array entries in a manifest that are followed.
+const MAX_MANIFEST_ENTRIES: usize = 20;
+
+/// The MCP servers of every installed Claude Code plugin version, one config row per
+/// source file: `<installPath>/.mcp.json`, then each `plugin.json` `mcpServers` entry in
+/// order (a `./file.json` reference or an inline map). A server name declared later
+/// replaces an earlier one, as Claude Code merges them
+/// (code.claude.com/docs/en/plugins-reference#mcpservers). Paths must start with `./`
+/// and stay inside the plugin root, and a file is read only when its real path is
+/// inside the root's real path, its last component not a symlink (the same containment
+/// as plugin hooks). `.mcpb` / `.dxt` bundles are not unpacked.
+///
+/// Marketplace clones and orphaned cache versions are not installed, so they are not
+/// read. A plugin set to false in `enabledPlugins` keeps its rows with
+/// `enabled: Some(false)`: inventory only (a managed force-enable is applied after the
+/// scan, see [`post_scan`]).
+pub fn plugin_servers(home: &Path) -> Vec<McpConfig> {
+    let ctx = crate::scanners::skills::PluginContext::load(home);
+    let mut ips: Vec<(PathBuf, String, String)> = ctx.install_paths().to_vec();
+    ips.sort();
+    ips.dedup_by(|a, b| a.0 == b.0);
+    let mut out = Vec::new();
+    // An install path that is (or sits under) a symlink leaving the plugin cache is not
+    // read: containment is judged against the real cache directory.
+    let Ok(real_cache) = std::fs::canonicalize(home.join(".claude").join("plugins").join("cache")) else {
+        return out;
+    };
+    for (ip, plugin, market) in &ips {
+        if !crate::scanners::probe_dir(ip) {
+            continue;
+        }
+        let Ok(real_root) = std::fs::canonicalize(ip) else {
+            continue;
+        };
+        if !real_root.starts_with(&real_cache) || real_root == real_cache {
+            continue;
+        }
+        let key = format!("{plugin}@{market}");
+        let label = sanitize_display(&key, 256);
+        let enabled = !ctx.is_disabled(&key);
+        // (source file, server map), in load order.
+        let mut sources: Vec<(PathBuf, serde_json::Map<String, serde_json::Value>)> = Vec::new();
+        let dot_mcp = ip.join(".mcp.json");
+        if let Some(v) = read_plugin_json(&real_root, &dot_mcp) {
+            sources.push((dot_mcp, server_map(&v)));
+        }
+        let manifest = ip.join(".claude-plugin").join("plugin.json");
+        if let Some(m) = read_plugin_json(&real_root, &manifest) {
+            let declared: Vec<&serde_json::Value> = match m.get("mcpServers") {
+                Some(serde_json::Value::Array(a)) => a.iter().take(MAX_MANIFEST_ENTRIES).collect(),
+                Some(v) => vec![v],
+                None => Vec::new(),
+            };
+            let mut inline = serde_json::Map::new();
+            for d in declared {
+                match d {
+                    serde_json::Value::String(rel) => {
+                        if let Some(p) = manifest_json_path(ip, rel)
+                            && let Some(v) = read_plugin_json(&real_root, &p)
+                        {
+                            sources.push((p, server_map(&v)));
+                        }
+                    }
+                    serde_json::Value::Object(map) => inline.extend(map.clone()),
+                    _ => {}
+                }
+            }
+            if !inline.is_empty() {
+                sources.push((manifest, inline));
+            }
+        }
+        // Later declarations replace earlier ones of the same name.
+        let mut taken = std::collections::HashSet::new();
+        let mut rows: Vec<McpConfig> = Vec::new();
+        for (path, map) in sources.into_iter().rev() {
+            let mut kept = serde_json::Map::new();
+            for (name, cfg) in map {
+                if cfg.is_object() && taken.len() < MAX_PLUGIN_SERVERS && taken.insert(name.clone()) {
+                    kept.insert(name, cfg);
+                }
+            }
+            if kept.is_empty() {
+                continue;
+            }
+            let wrapped = serde_json::json!({ "mcpServers": kept });
+            let server_names: Vec<String> = extract_mcp_servers(&wrapped)
+                .iter()
+                .map(|n| sanitize_display(n, 128))
+                .collect();
+            let mut servers = extract_mcp_server_details(&wrapped);
+            for s in &mut servers {
+                s.plugin = Some(label.clone());
+                s.enabled = Some(enabled);
+            }
+            rows.push(McpConfig {
+                config_source: MCP_SOURCE_PLUGIN.to_string(),
+                config_path: sanitize_display(&path.to_string_lossy(), 512),
+                vendor: format!("Claude Code plugin {label}"),
+                server_count: server_names.len(),
+                server_names,
+                git_tracked: false,
+                servers,
+            });
+        }
+        rows.reverse();
+        out.extend(rows);
+    }
+    out
+}
+
+/// A plugin `.mcp.json` (or a file `mcpServers` names) holds either the documented
+/// `{"mcpServers": {...}}` wrapper or the bare name -> config map (both shapes ship in
+/// Anthropic's own marketplace).
+fn server_map(v: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    if let Some(m) = v.get("mcpServers").and_then(|m| m.as_object()) {
+        return m.clone();
+    }
+    v.as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(_, c)| c.is_object())
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A manifest `mcpServers` path: starts with `./`, ends in `.json`, stays lexically
+/// inside `root`. Bundles (`.mcpb`, `.dxt`) and URLs are not followed.
+fn manifest_json_path(root: &Path, rel: &str) -> Option<PathBuf> {
+    if !rel.starts_with("./") || !rel.ends_with(".json") {
+        return None;
+    }
+    let p = crate::scanners::persistence::lexical_join(root, Path::new(rel));
+    (p.starts_with(root) && p != root).then_some(p)
+}
+
+/// Read and parse a JSON file of a plugin whose real path lies inside the plugin's real
+/// root, its final component not a symlink.
+fn read_plugin_json(real_root: &Path, path: &Path) -> Option<serde_json::Value> {
+    let present = std::fs::symlink_metadata(path).is_ok();
+    crate::scanners::telemetry::note_probe(path, present);
+    if !present {
+        return None;
+    }
+    let real = std::fs::canonicalize(path).ok()?;
+    if !real.starts_with(real_root) {
+        return None;
+    }
+    let text = crate::scanners::read_bounded_nofollow(path, Some(&real))?;
+    serde_json::from_str(&text).ok()
+}
+
+// ── claude.ai connectors ────────────────────────────────────────────────────────
+
+/// Connector names read from `claudeAiMcpEverConnected`.
+const MAX_CONNECTORS: usize = 200;
+
+/// The claude.ai connectors Claude Code lists in `~/.claude.json`
+/// `claudeAiMcpEverConnected` (display names such as `claude.ai Gmail`), as one config
+/// row. The key is Claude Code's own state, not a documented setting: it records the
+/// connectors that were connected at some point, so each row is `ever_connected`, and
+/// whether it is enabled now is unknown (`enabled: None`) unless a user or managed
+/// `disableClaudeAiConnectors: true` turns every fetched connector off
+/// (code.claude.com/docs/en/mcp, "Disable claude.ai connectors").
+pub fn connector_servers(home: &Path, claude_json: &Path, value: Option<&serde_json::Value>) -> Option<McpConfig> {
+    let list = value?.get("claudeAiMcpEverConnected")?.as_array()?;
+    let mut names: Vec<String> = list
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|n| sanitize_display(n, 128))
+        .filter(|n| !n.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names.truncate(MAX_CONNECTORS);
+    if names.is_empty() {
+        return None;
+    }
+    let off = connectors_disabled(home);
+    let servers = names
+        .iter()
+        .map(|n| McpServerDetail {
+            name: n.clone(),
+            transport: MCP_TRANSPORT_CONNECTOR.to_string(),
+            ever_connected: true,
+            enabled: off.then_some(false),
+            ..Default::default()
+        })
+        .collect();
+    Some(McpConfig {
+        config_source: MCP_SOURCE_CONNECTOR.to_string(),
+        // Not the bare `.claude.json` path: that is the user-scope config's row, and rows
+        // are deduplicated by path.
+        config_path: format!(
+            "{} (claudeAiMcpEverConnected)",
+            sanitize_display(&claude_json.to_string_lossy(), 512)
+        ),
+        vendor: "Anthropic (claude.ai)".to_string(),
+        server_count: names.len(),
+        server_names: names,
+        git_tracked: false,
+        servers,
+    })
+}
+
+/// `disableClaudeAiConnectors: true` in the user's settings (any-source-true; managed
+/// settings are applied after the scan in [`post_scan`]).
+fn connectors_disabled(home: &Path) -> bool {
+    let p = home.join(".claude").join("settings.json");
+    crate::scanners::read_bounded(&p)
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("disableClaudeAiConnectors").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+// ── Observed servers (MCP log directory names) ──────────────────────────────────
+
+/// Project directories of the log cache that are listed.
+const MAX_LOG_PROJECTS: usize = 2000;
+/// Entries of one project directory that are looked at.
+const MAX_LOG_ENTRIES: usize = 500;
+/// Distinct observed server names kept.
+const MAX_OBSERVED: usize = 500;
+
+/// Claude Code's per-project MCP log caches under `home`: Linux
+/// `~/.cache/claude-cli-nodejs`, macOS `~/Library/Caches/claude-cli-nodejs`.
+fn log_roots(home: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".cache").join("claude-cli-nodejs"),
+        home.join("Library").join("Caches").join("claude-cli-nodejs"),
+    ]
+}
+
+/// Every `<root>/<project>/mcp-logs-<server>/` directory NAME, aggregated by server:
+/// how many projects it appears in and the newest directory mtime. A bounded two-level
+/// listing; no log file is opened, and symlinks are not followed.
+pub fn observed_servers(home: &Path) -> Vec<McpObservedServer> {
+    let mut by_name: std::collections::BTreeMap<String, McpObservedServer> = std::collections::BTreeMap::new();
+    for root in log_roots(home) {
+        if !crate::scanners::probe_dir(&root) {
+            continue;
+        }
+        let Ok(projects) = crate::scanners::probe_read_dir(&root) else {
+            continue;
+        };
+        let shown_root = sanitize_display(&root.to_string_lossy(), 512);
+        for proj in projects.flatten().take(MAX_LOG_PROJECTS) {
+            if !proj.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(proj.path()) else {
+                continue;
+            };
+            for e in entries.flatten().take(MAX_LOG_ENTRIES) {
+                let file_name = e.file_name();
+                let Some(server) = file_name.to_str().and_then(|n| n.strip_prefix("mcp-logs-")) else {
+                    continue;
+                };
+                if server.is_empty() || !e.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let name = sanitize_display(server, 128);
+                if !by_name.contains_key(&name) && by_name.len() >= MAX_OBSERVED {
+                    continue;
+                }
+                let mtime = e
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+                let row = by_name.entry(name.clone()).or_insert_with(|| McpObservedServer {
+                    name,
+                    log_root: shown_root.clone(),
+                    ..Default::default()
+                });
+                row.projects += 1;
+                row.newest_mtime = row.newest_mtime.max(mtime);
+            }
+        }
+    }
+    by_name.into_values().collect()
+}
+
+/// A server name as Claude Code's log directory spells it, folded for comparison: every
+/// character outside `[A-Za-z0-9]` becomes `-`, lowercased. Observed on disk (the naming
+/// is not documented): `plugin:playwright:playwright` -> `plugin-playwright-playwright`,
+/// `claude.ai Google Drive` -> `claude-ai-Google-Drive`.
+pub fn log_key(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// The log key of a server row: plugin servers register as `plugin:<plugin>:<server>`
+/// (code.claude.com/docs/en/mcp, "Plugin MCP tool names"), everything else by its name.
+pub fn server_log_key(s: &McpServerDetail) -> String {
+    match s.plugin.as_deref().and_then(|p| p.rsplit_once('@')).map(|(p, _)| p) {
+        Some(plugin) => log_key(&format!("plugin:{plugin}:{}", s.name)),
+        None => log_key(&s.name),
+    }
+}
+
+/// After every home pass: apply managed `enabledPlugins` force-enables to plugin
+/// servers, a managed `disableClaudeAiConnectors` to connectors, and mark each observed
+/// server whose log name matches a server of the scan.
+pub fn post_scan(report: &mut ScanReport) {
+    let managed = || {
+        report
+            .agent_settings
+            .iter()
+            .filter(|s| s.source == "managed" && s.framework == "claude-code")
+    };
+    let forced: std::collections::BTreeSet<String> = managed()
+        .flat_map(|s| s.force_enabled_plugins.iter().cloned())
+        .collect();
+    let managed_paths: Vec<String> = managed().map(|s| s.path.clone()).collect();
+    let connectors_off = managed_paths.iter().any(|p| managed_disables_connectors(Path::new(p)));
+    for cfg in &mut report.mcp_configs {
+        for s in &mut cfg.servers {
+            if cfg.config_source == MCP_SOURCE_PLUGIN
+                && s.enabled == Some(false)
+                && s.plugin.as_ref().is_some_and(|p| forced.contains(p))
+            {
+                s.enabled = Some(true);
+            }
+            if cfg.config_source == MCP_SOURCE_CONNECTOR && connectors_off {
+                s.enabled = Some(false);
+            }
+        }
+    }
+    let keys: std::collections::HashSet<String> = report
+        .mcp_configs
+        .iter()
+        .flat_map(|c| c.servers.iter().map(server_log_key))
+        .collect();
+    for o in &mut report.mcp_observed_servers {
+        o.configured = keys.contains(&log_key(&o.name));
+    }
+    let mut seen = std::collections::HashSet::new();
+    report
+        .mcp_observed_servers
+        .retain(|o| seen.insert((o.log_root.clone(), o.name.clone())));
+}
+
+/// A managed settings file sets `disableClaudeAiConnectors: true`.
+fn managed_disables_connectors(path: &Path) -> bool {
+    crate::scanners::read_bounded(path)
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("disableClaudeAiConnectors").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
 }
 
 /// Extract MCP server names from JSON config (also the canonical form for TOML/YAML
@@ -262,6 +659,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
     };
 
     let inline_secret_env_keys = extract_inline_secret_env_keys(cfg.get("env"));
+    let unpinned = command.as_deref().and_then(|c| unpinned_reason(c, &raw_args));
 
     McpServerDetail {
         name: crate::scanners::sanitize_display(name, 128),
@@ -275,6 +673,206 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         package_version: pkg_version,
         url: sanitized_url,
         inline_secret_env_keys,
+        inline_secret_header_keys: inline_secret_header_keys(cfg.get("headers")),
+        env: shapes(cfg.get("env"), "="),
+        headers: shapes(cfg.get("headers"), ": "),
+        unpinned,
+        ..Default::default()
+    }
+}
+
+/// Entries of an `env` / `headers` block that are shown.
+const MAX_SHAPES: usize = 50;
+
+/// An `env` or `headers` block as `NAME<sep>SHAPE` lines, sorted: the name and the
+/// value's shape (see [`value_shape`]), never the value.
+pub fn shapes(block: Option<&serde_json::Value>, sep: &str) -> Vec<String> {
+    let Some(obj) = block.and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = obj
+        .iter()
+        .take(MAX_SHAPES)
+        .map(|(k, v)| {
+            let shape = v
+                .as_str()
+                .map(value_shape)
+                .unwrap_or_else(|| "<non-string>".to_string());
+            format!("{}{sep}{shape}", sanitize_display(k, 128))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The shape of a config value, which never contains the value itself: a pure reference
+/// as the reference (`${NAME}`, `$NAME`, `%NAME%`, `${user_config.KEY}`), a reference
+/// with a default as `${NAME:-<redacted>}` (the default can be a literal credential), an
+/// auth scheme word before a reference kept (`Bearer ${NAME}`), `<empty>`, and anything
+/// else `<redacted>`.
+pub fn value_shape(value: &str) -> String {
+    let v = value.trim();
+    if v.is_empty() {
+        return "<empty>".to_string();
+    }
+    for scheme in ["Bearer ", "Basic ", "Token ", "bearer ", "basic ", "token "] {
+        if let Some(rest) = v.strip_prefix(scheme) {
+            let inner = reference_shape(rest.trim());
+            return format!("{}{}", scheme, inner.unwrap_or_else(|| "<redacted>".to_string()));
+        }
+    }
+    reference_shape(v).unwrap_or_else(|| "<redacted>".to_string())
+}
+
+/// `v` is exactly one environment reference: its shape, else None.
+fn reference_shape(v: &str) -> Option<String> {
+    let ident = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 128
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            && !s.starts_with(|c: char| c.is_ascii_digit())
+    };
+    if let Some(inner) = v.strip_prefix("${").and_then(|r| r.strip_suffix('}')) {
+        if inner.contains(['{', '}', '$']) {
+            return None;
+        }
+        return match inner.split_once(":-") {
+            Some((name, default)) if ident(name) => Some(if default.is_empty() {
+                format!("${{{name}}}")
+            } else {
+                format!("${{{name}:-<redacted>}}")
+            }),
+            None if ident(inner) => Some(format!("${{{inner}}}")),
+            _ => None,
+        };
+    }
+    if let Some(name) = v.strip_prefix('$')
+        && ident(name)
+        && !name.contains('.')
+    {
+        return Some(format!("${name}"));
+    }
+    if let Some(name) = v.strip_prefix('%').and_then(|r| r.strip_suffix('%'))
+        && ident(name)
+    {
+        return Some(format!("%{name}%"));
+    }
+    None
+}
+
+/// Header names that carry a credential by convention.
+fn header_names_a_secret(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "authorization" | "proxy-authorization" | "cookie" | "x-api-key" | "api-key" | "x-auth-token"
+    ) || crate::scanners::env_files::is_secret_key_name(&lower.replace('-', "_"))
+}
+
+/// From a remote server's `headers`, the NAMES (never values) of credential headers set
+/// to a hardcoded literal. `Bearer ${TOKEN}` is a reference; `Bearer abc123` is not.
+pub fn inline_secret_header_keys(headers: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(obj) = headers.and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = obj
+        .iter()
+        .filter(|(k, v)| header_names_a_secret(k) && v.as_str().is_some_and(|s| value_shape(s).contains("<redacted>")))
+        .map(|(k, _)| sanitize_display(k, 128))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Why a stdio launch through a package runner runs whatever version is current, or
+/// None when it names a fixed version (or is not a package-runner launch at all: a
+/// `node ${CLAUDE_PLUGIN_ROOT}/server.js` ships with, and is pinned by, its plugin).
+///
+/// - `npx` / `bunx` / `pnpx`: no version, `@latest`, or another dist-tag or a range;
+/// - `uvx` / `pipx` / `uv run|tool run`: a `git+` source with no commit (`git HEAD`, or a
+///   branch/tag ref), or a package with no `==` / `@` version;
+/// - `docker` / `podman run`: no tag or `:latest`, unless pinned by `@sha256:` digest.
+pub fn unpinned_reason(command: &str, raw_args: &[String]) -> Option<String> {
+    let base = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    match base {
+        "npx" | "bunx" | "pnpx" => {
+            let (_, name, version) = parse_npm_launcher(raw_args);
+            name?;
+            npm_version_reason(version.as_deref())
+        }
+        "uvx" | "pipx" | "uv" => {
+            if base == "uv" && !raw_args.first().is_some_and(|a| a == "run" || a == "tool") {
+                return None;
+            }
+            if let Some(git) = raw_args.iter().find(|a| a.starts_with("git+")) {
+                return git_reason(git);
+            }
+            let rest = if base == "uv" { &raw_args[1..] } else { raw_args };
+            let (_, name, version) = parse_python_launcher(rest);
+            let name = name?;
+            // A local script or project path (`uv run server.py`, `uvx ./tool`) is not a
+            // registry package.
+            if name.ends_with(".py") || name.starts_with(['.', '/', '~', '$']) || name.contains('/') {
+                return None;
+            }
+            version.is_none().then(|| "no version".to_string())
+        }
+        "docker" | "podman" => {
+            let image = raw_args
+                .iter()
+                .skip_while(|a| a.as_str() != "run")
+                .skip(1)
+                .find(|a| !a.starts_with('-'))?;
+            if image.contains("@sha256:") {
+                return None;
+            }
+            let (_, _, tag) = parse_docker_launcher(raw_args);
+            match tag.as_deref() {
+                None | Some("latest") => Some("docker :latest".to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn npm_version_reason(version: Option<&str>) -> Option<String> {
+    match version {
+        None | Some("") => Some("no version".to_string()),
+        Some("latest") => Some("@latest".to_string()),
+        Some(v)
+            if v.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+                && !v.split('.').any(|p| p.eq_ignore_ascii_case("x")) =>
+        {
+            None
+        }
+        Some(v)
+            if v.starts_with(['^', '~', '>', '<', '*', '='])
+                || v.chars().next().is_some_and(|c| c.is_ascii_digit()) =>
+        {
+            Some("a version range".to_string())
+        }
+        Some(_) => Some("a moving dist-tag".to_string()),
+    }
+}
+
+/// A `git+` source: pinned only by a full 40- or 64-hex commit after `@`.
+fn git_reason(spec: &str) -> Option<String> {
+    let after_scheme = spec.split_once("://").map_or(spec, |(_, r)| r);
+    // The authority may hold `git@host`; the ref is after the LAST `@` of the path.
+    let path = after_scheme.split_once('/').map_or("", |(_, p)| p);
+    match path.rsplit_once('@') {
+        None => Some("git HEAD".to_string()),
+        Some((_, r)) => {
+            let r = r.split(['#', '?']).next().unwrap_or(r);
+            let hex = (r.len() == 40 || r.len() == 64) && r.chars().all(|c| c.is_ascii_hexdigit());
+            (!hex).then(|| "a git branch or tag (not a commit)".to_string())
+        }
     }
 }
 
@@ -673,5 +1271,126 @@ mcpServers:
         assert_eq!(details.len(), 1);
         assert_eq!(details[0].inline_secret_env_keys, vec!["API_KEY".to_string()]);
         assert_eq!(details[0].package_name.as_deref(), Some("mcp-server-fetch"));
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Shapes never carry a literal: a reference default and anything that is not a
+    /// reference are `<redacted>`.
+    #[test]
+    fn value_shapes() {
+        for (input, want) in [
+            ("${KEY}", "${KEY}"),
+            ("${KEY:-}", "${KEY}"),
+            ("${KEY:-sk-live-SECRET}", "${KEY:-<redacted>}"),
+            ("$KEY", "$KEY"),
+            ("%KEY%", "%KEY%"),
+            ("${user_config.api_token}", "${user_config.api_token}"),
+            ("Bearer ${TOKEN}", "Bearer ${TOKEN}"),
+            ("Bearer abc123SECRET", "Bearer <redacted>"),
+            ("ghp_SECRETVALUE", "<redacted>"),
+            ("${A}${B}", "<redacted>"),
+            ("prefix-${A}", "<redacted>"),
+            ("", "<empty>"),
+        ] {
+            assert_eq!(value_shape(input), want, "{input}");
+            assert!(!value_shape(input).contains("SECRET"), "{input}");
+        }
+    }
+
+    #[test]
+    fn literal_credential_headers_by_name() {
+        let h = serde_json::json!({
+            "Authorization": "Bearer abc",
+            "X-Api-Key": "${KEY}",
+            "Accept": "application/json"
+        });
+        assert_eq!(inline_secret_header_keys(Some(&h)), vec!["Authorization".to_string()]);
+    }
+
+    #[test]
+    fn unpinned_launches() {
+        let r = |c: &str, a: &[&str]| unpinned_reason(c, &args(a));
+        assert_eq!(r("npx", &["@playwright/mcp@latest"]).as_deref(), Some("@latest"));
+        assert_eq!(r("npx", &["-y", "some-mcp"]).as_deref(), Some("no version"));
+        assert_eq!(r("npx", &["-y", "some-mcp@^1.2.0"]).as_deref(), Some("a version range"));
+        assert_eq!(r("npx", &["-y", "some-mcp@1.x"]).as_deref(), Some("a version range"));
+        assert_eq!(r("npx", &["-y", "some-mcp@next"]).as_deref(), Some("a moving dist-tag"));
+        assert_eq!(r("npx", &["-y", "some-mcp@1.2.3"]), None);
+        assert_eq!(r("npx", &["-y", "@scope/pkg@2.0.0-beta.1"]), None);
+        assert_eq!(
+            r("uvx", &["--from", "git+https://github.com/o/serena", "serena"]).as_deref(),
+            Some("git HEAD")
+        );
+        assert_eq!(
+            r("uvx", &["--from", "git+ssh://git@github.com/o/serena", "serena"]).as_deref(),
+            Some("git HEAD"),
+            "the userinfo `git@` is not a ref"
+        );
+        assert_eq!(
+            r("uvx", &["--from", "git+https://github.com/o/serena@main", "serena"]).as_deref(),
+            Some("a git branch or tag (not a commit)")
+        );
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            r(
+                "uvx",
+                &["--from", &format!("git+https://github.com/o/serena@{sha}"), "serena"]
+            ),
+            None
+        );
+        assert_eq!(r("uvx", &["mcp-server-fetch"]).as_deref(), Some("no version"));
+        assert_eq!(r("uvx", &["mcp-server-fetch==1.0.0"]), None);
+        assert_eq!(r("uv", &["run", "server.py"]), None);
+        assert_eq!(r("uv", &["tool", "run", "mcp-thing"]).as_deref(), Some("no version"));
+        assert_eq!(r("uv", &["pip", "install"]), None);
+        assert_eq!(
+            r("docker", &["run", "-i", "ghcr.io/o/mcp"]).as_deref(),
+            Some("docker :latest")
+        );
+        assert_eq!(r("docker", &["run", "ghcr.io/o/mcp:1.4"]), None);
+        assert_eq!(r("docker", &["run", "ghcr.io/o/mcp@sha256:abcd"]), None);
+        // Bundled with the plugin: pinned by the plugin itself.
+        assert_eq!(r("node", &["${CLAUDE_PLUGIN_ROOT}/server.js"]), None);
+    }
+
+    #[test]
+    fn plugin_server_maps_both_shapes() {
+        let wrapped = serde_json::json!({"mcpServers": {"a": {"command": "x"}}});
+        let bare = serde_json::json!({"a": {"command": "x"}, "note": "not a server"});
+        assert_eq!(server_map(&wrapped).keys().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(server_map(&bare).keys().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn manifest_paths_stay_inside_the_plugin() {
+        let root = Path::new("/p/cache/m/x/1");
+        assert!(manifest_json_path(root, "./mcp/a.json").is_some());
+        assert!(manifest_json_path(root, "mcp/a.json").is_none());
+        assert!(manifest_json_path(root, "./../escape.json").is_none());
+        assert!(manifest_json_path(root, "./bundle.mcpb").is_none());
+        assert!(manifest_json_path(root, "https://example.com/s.json").is_none());
+    }
+
+    #[test]
+    fn log_keys_match_claude_code_directory_names() {
+        let plugin = McpServerDetail {
+            name: "playwright".into(),
+            plugin: Some("playwright@claude-plugins-official".into()),
+            ..Default::default()
+        };
+        assert_eq!(server_log_key(&plugin), log_key("plugin-playwright-playwright"));
+        let conn = McpServerDetail {
+            name: "claude.ai Google Drive".into(),
+            ..Default::default()
+        };
+        assert_eq!(server_log_key(&conn), log_key("claude-ai-Google-Drive"));
     }
 }

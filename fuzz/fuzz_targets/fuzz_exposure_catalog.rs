@@ -14,6 +14,7 @@ fuzz_target!(|data: &[u8]| {
                 package_version: Some("1.0.0".into()),
                 url: None,
                 inline_secret_env_keys: vec![],
+                ..Default::default()
             };
             let _ = catalog.check_mcp_server(&server, "/test");
             let _ = catalog.check_extension("vscode", "pub.ext", "1.0.0", "vscode");

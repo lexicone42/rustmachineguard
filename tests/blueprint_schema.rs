@@ -202,6 +202,7 @@ fn rich_blueprint_conforms() {
                 package_version: Some("1.0.0".into()),
                 url: None,
                 inline_secret_env_keys: vec![],
+                ..Default::default()
             }],
         }];
         r.agent_skills = vec![AgentSkill {
@@ -267,8 +268,7 @@ fn rich_blueprint_conforms() {
             version: "1.0.0".into(),
             advisory: "test advisory".into(),
             found_in: "/p/.mcp.json".into(),
-            root_kind: None,
-            root_name: None,
+            ..Default::default()
         }];
         r.mcp_probes = vec![McpProbeResult {
             server_name: "fs".into(),
@@ -320,6 +320,7 @@ fn shadowing_blueprint_conforms() {
                     package_version: None,
                     url: None,
                     inline_secret_env_keys: vec![],
+                    ..Default::default()
                 }],
             });
             r.mcp_probes.push(McpProbeResult {
@@ -398,8 +399,7 @@ fn every_emitted_behavior_is_a_taxonomy_value() {
             version: "1".into(),
             advisory: "a".into(),
             found_in: "Firefox".into(),
-            root_kind: None,
-            root_name: None,
+            ..Default::default()
         }];
     });
     let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -436,6 +436,7 @@ fn make_report(
         ide_installations: vec![],
         ide_extensions: vec![],
         mcp_configs: vec![],
+        mcp_observed_servers: Vec::new(),
         node_package_managers: vec![],
         shell_configs: vec![],
         ssh_keys: vec![],
@@ -487,6 +488,8 @@ fn make_report(
             env_files_count: 0,
             rules_file_findings_count: 0,
             mcp_servers_count: 0,
+            mcp_plugin_servers_count: 0,
+            mcp_connectors_count: 0,
             exposure_findings_count: 0,
             transcript_stores_count: 0,
             marketplaces_count: 0,
@@ -647,6 +650,7 @@ fn colliding_ids_get_distinct_bom_refs_and_still_validate() {
                 package_version: None,
                 url: None,
                 inline_secret_env_keys: vec![],
+                ..Default::default()
             }],
         };
         r.mcp_configs = vec![cfg("/p/.mcp.json", "project"), cfg("/h/.claude.json", "global")];
@@ -773,6 +777,7 @@ fn blueprint_never_emits_removed_service_constructs() {
                 package_version: None,
                 url: Some("https://mcp.example.com".into()),
                 inline_secret_env_keys: vec![],
+                ..Default::default()
             }],
         }];
     });

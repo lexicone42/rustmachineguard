@@ -93,6 +93,7 @@ pub const FINDING_CATEGORIES: &[&str] = &[
     "Extension code",
     "Ollama exposure",
     "Secret hygiene",
+    "MCP inventory",
 ];
 
 /// `category` as its [`FINDING_CATEGORIES`] entry, or `other` for a string outside the
@@ -145,10 +146,16 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP MCP Top 10 · EAA-006",
         },
         "MCP command" => Guidance {
-            what: "This MCP server's launch command downloads and executes code at startup (a curl|bash-style bootstrap).",
-            why: "Every launch fetches and runs whatever the remote endpoint currently serves — a supply-chain foothold the server author (or anyone who compromises that endpoint) can weaponize silently.",
-            fix: "Pin the server to a vetted, versioned package instead of a fetch-and-run bootstrap; review the launch command shown below before trusting it.",
-            reference: "EAA-006 · supply-chain",
+            what: "This MCP server's launch command fetches code at startup: a curl|bash-style bootstrap, or (for an enabled plugin's server) a package runner with no fixed version (`npx pkg@latest`, `npx pkg`, `uvx --from git+https://...` at the branch HEAD, `docker run image:latest`).",
+            why: "Every launch fetches and runs whatever the remote endpoint or registry currently serves. A plugin pinned to a reviewed commit still runs new, unreviewed server code when its MCP launch line floats, so whoever publishes the next release (or compromises the publisher) runs code on this machine.",
+            fix: "Pin the server to a vetted, versioned package (`npx pkg@1.2.3`, `uvx --from git+https://...@<commit>`, an image digest). For a plugin, ask the plugin's maintainer to pin it, or disable the plugin's server in /mcp until it is pinned; review the launch command shown below before trusting it.",
+            reference: "EAA-006 · supply-chain · code.claude.com/docs/en/plugins-reference#mcpservers",
+        },
+        "MCP inventory" => Guidance {
+            what: "Claude Code's MCP log cache (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/`) shows that a server ran, but no config, enabled or disabled plugin, or claude.ai connector this scan read defines a server of that name. Only directory names are read, never the logs.",
+            why: "Often benign: the server may come from a claude.ai connector Claude Code no longer lists, a plugin that was since uninstalled, a project `.mcp.json` outside the registered projects, or `--mcp-config`. It is worth knowing what code has run with agent access.",
+            fix: "Run `claude mcp list` (and `/mcp` inside a session) in the projects listed to see where the server comes from. Remove its config or the plugin if it is no longer wanted; the log directory itself can be deleted.",
+            reference: "code.claude.com/docs/en/mcp",
         },
         "Secret leak" => Guidance {
             what: "A secret-bearing file (a .env or a config with an inline credential) is tracked by git — i.e. committed into a repository. A tracked .env whose keys could not be read (unreadable, or a symlink rmguard does not open) is treated the same way, since nothing shows it is clean.",
@@ -486,19 +493,33 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     // Known-malicious / vulnerable package matches — the most actionable signal.
     for e in &report.exposure_findings {
-        f.push(Finding {
-            severity: Severity::Critical,
-            category: "Exposure".into(),
-            title: format!("Known-bad {} package: {} {}", e.ecosystem, e.name, e.version),
-            location: e.found_in.clone(),
-            evidence: None,
-        });
+        f.push(exposure_finding(report, e));
     }
 
-    // MCP server configuration risks (transport encryption, over-broad scope).
+    // MCP server configuration risks (transport encryption, over-broad scope). A disabled
+    // plugin's servers and the claude.ai connectors are inventory only.
     let home = report.device.home_dir.as_str();
     for mcp in &report.mcp_configs {
-        for s in &mcp.servers {
+        for s in mcp.servers.iter().filter(|s| s.is_active() && !s.ever_connected) {
+            if mcp.config_source == crate::models::MCP_SOURCE_PLUGIN
+                && let Some(reason) = &s.unpinned
+            {
+                let pkg = s.package_name.as_deref().unwrap_or("its package");
+                f.push(Finding {
+                    severity: Severity::Medium,
+                    category: "MCP command".into(),
+                    title: format!(
+                        "plugin MCP server runs an unpinned package: '{}' from plugin '{}' runs {} ({reason}) — each start can fetch new code",
+                        s.name,
+                        s.plugin.as_deref().unwrap_or("?"),
+                        pkg
+                    ),
+                    location: mcp.config_path.clone(),
+                    evidence: Some(crate::scanners::redact_secrets_in_text(
+                        format!("{} {}", s.command.as_deref().unwrap_or(""), s.args.join(" ")).trim(),
+                    )),
+                });
+            }
             // Plaintext remote transport: credentials/data sent unencrypted.
             if let Some(url) = &s.url
                 && url.to_lowercase().starts_with("http://")
@@ -540,8 +561,14 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             // Credentials hardcoded inline in the config `env` block (names only). A
             // git-tracked config makes this a committed secret — the same escalation
             // as a git-tracked `.env`, so it becomes Critical "Secret leak".
-            if !s.inline_secret_env_keys.is_empty() {
-                let keys = s.inline_secret_env_keys.join(", ");
+            if !s.inline_secret_env_keys.is_empty() || !s.inline_secret_header_keys.is_empty() {
+                let keys = s
+                    .inline_secret_env_keys
+                    .iter()
+                    .chain(&s.inline_secret_header_keys)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let finding = if mcp.git_tracked {
                     Finding {
                         severity: Severity::Critical,
@@ -1131,6 +1158,21 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         });
     }
 
+    // Servers that ran (per Claude Code's MCP log directory names) but that no config,
+    // plugin or connector of this scan defines.
+    for o in report.mcp_observed_servers.iter().filter(|o| !o.configured) {
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "MCP inventory".into(),
+            title: format!(
+                "MCP server '{}' ran but is not in any known config (logs in {} project(s); it may be a claude.ai connector or a removed plugin)",
+                o.name, o.projects
+            ),
+            location: o.log_root.clone(),
+            evidence: None,
+        });
+    }
+
     // Composition-level toxic-flow surface.
     if let Some(tf) = analyze_toxic_flow(report) {
         f.push(Finding {
@@ -1142,7 +1184,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 tf.sinks.join("/")
             ),
             location: report.device.hostname.clone(),
-            evidence: None,
+            evidence: Some(tf.evidence()),
         });
     }
 
@@ -2670,19 +2712,281 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
 }
 
 /// Capability categories that read sensitive/private data (a flow "source").
-const SOURCES: &[&str] = &["filesystem", "database", "environment", "source_control"];
+const SOURCES: &[&str] = &[
+    "filesystem",
+    "database",
+    "environment",
+    "source_control",
+    "private_data",
+];
 /// Capability categories that can send data off the host (a flow "sink").
-const SINKS: &[&str] = &["network", "communication"];
+const SINKS: &[&str] = &["network", "communication", "code_exec"];
+/// The third leg of the trifecta: content an attacker can write (web pages).
+const UNTRUSTED: &str = "untrusted_content";
 
 /// The "lethal trifecta" / toxic-flow surface: when the connected agent surface
 /// holds BOTH a sensitive-data source and an exfiltration sink, any prompt injection
 /// that reaches the agent can read private data and send it out. Each individual
 /// capability is benign and authorized; the *combination across connected servers and
 /// skills* is the risk — which a single MCP client never sees.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToxicFlowSurface {
     pub sources: Vec<String>,
     pub sinks: Vec<String>,
+    /// Untrusted-content capabilities present (`untrusted_content`), the third leg.
+    pub untrusted: Vec<String>,
+    /// What supplies each leg, as `(capability, contributor)`: MCP servers by name and
+    /// origin first, then skill files as one count per capability.
+    pub contributors: Vec<(String, String)>,
+}
+
+/// The contributor label of skill files ([`analyze_toxic_flow`]).
+const SKILL_COUNT_SUFFIX: &str = " skill file(s) of the user and enabled plugins";
+
+fn is_skill_count(who: &str) -> bool {
+    who.ends_with(SKILL_COUNT_SUFFIX)
+}
+
+impl ToxicFlowSurface {
+    /// One line naming what supplies each leg: MCP servers first (a server pair is the
+    /// concrete flow), then skill files as counts.
+    pub fn evidence(&self) -> String {
+        let servers: Vec<&(String, String)> = self.contributors.iter().filter(|(_, w)| !is_skill_count(w)).collect();
+        let skills: Vec<&(String, String)> = self.contributors.iter().filter(|(_, w)| is_skill_count(w)).collect();
+        let render = |rows: &[&(String, String)], caps: &[String]| -> Vec<String> {
+            caps.iter()
+                .filter_map(|c| {
+                    let who: Vec<&str> = rows.iter().filter(|(k, _)| k == c).map(|(_, w)| w.as_str()).collect();
+                    (!who.is_empty()).then(|| format!("{c} from {}", who.join(", ")))
+                })
+                .collect()
+        };
+        let mut parts = Vec::new();
+        for (label, caps) in [
+            ("sources", &self.sources),
+            ("sinks", &self.sinks),
+            ("untrusted content", &self.untrusted),
+        ] {
+            let mut leg = render(&servers, caps);
+            leg.extend(render(&skills, caps));
+            if !leg.is_empty() {
+                parts.push(format!("{label}: {}", leg.join("; ")));
+            }
+        }
+        parts.join(" | ")
+    }
+}
+
+/// Capabilities of an MCP server judged by its name and package name alone: a small,
+/// closed table of well-known servers (the server is never contacted). Words are the
+/// lowercase runs of letters and digits.
+pub fn mcp_server_capabilities(s: &crate::models::McpServerDetail) -> Vec<&'static str> {
+    let text = format!("{} {}", s.name, s.package_name.as_deref().unwrap_or("")).to_ascii_lowercase();
+    let words: BTreeSet<&str> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let any = |ws: &[&str]| ws.iter().any(|w| words.contains(w));
+    let mut caps = Vec::new();
+    if any(&["gmail", "drive", "gdrive", "calendar", "docs", "outlook"]) {
+        caps.push("private_data");
+    }
+    if any(&[
+        "playwright",
+        "puppeteer",
+        "browser",
+        "browserbase",
+        "chrome",
+        "fetch",
+        "curl",
+    ]) {
+        caps.push("network");
+        caps.push(UNTRUSTED);
+    }
+    if any(&["filesystem"]) {
+        caps.push("filesystem");
+    }
+    if any(&["shell", "exec", "terminal"]) {
+        caps.push("code_exec");
+    }
+    caps
+}
+
+/// A server row's origin, for evidence.
+fn server_origin(cfg: &crate::models::McpConfig, s: &crate::models::McpServerDetail) -> String {
+    if cfg.config_source == crate::models::MCP_SOURCE_PLUGIN {
+        format!("plugin MCP server of {}", s.plugin.as_deref().unwrap_or("?"))
+    } else if cfg.config_source == crate::models::MCP_SOURCE_CONNECTOR {
+        "claude.ai connector, ever connected".to_string()
+    } else {
+        format!("MCP server in {}", cfg.config_source)
+    }
+}
+
+/// A skill counts toward the surface when it loads: the user's own and a project's
+/// (no plugin provenance), synced skills, and skills of an installed, enabled plugin
+/// version. Marketplace clones and orphaned versions of plugins that are not installed
+/// stay in the inventory but do not load, so they supply no capability.
+fn skill_loads(skill: &crate::models::AgentSkill) -> bool {
+    match &skill.provenance {
+        None => true,
+        Some(p) => p.marketplace.is_none() || p.active || p.synced,
+    }
+}
+
+/// Aggregate the capabilities of what is actually connected and report a toxic-flow
+/// surface when both a source and a sink are present: successful probes; MCP servers
+/// that are not marked off (an enabled plugin's, a configured one, a claude.ai connector
+/// Claude Code lists as ever connected) through [`mcp_server_capabilities`]; and the
+/// declared capabilities of skills that load ([`skill_loads`]).
+pub fn analyze_toxic_flow(report: &ScanReport) -> Option<ToxicFlowSurface> {
+    use std::collections::BTreeMap;
+    // capability -> contributors, in insertion order of kind (servers, then skills).
+    let mut by_cap: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut add = |cap: &str, who: String| {
+        let key: &str = [SOURCES, SINKS, &[UNTRUSTED]]
+            .iter()
+            .flat_map(|t| t.iter())
+            .find(|c| **c == cap)
+            .copied()
+            .unwrap_or("");
+        if key.is_empty() {
+            return;
+        }
+        let list = by_cap.entry(key).or_default();
+        if !list.contains(&who) {
+            list.push(who);
+        }
+    };
+    for probe in &report.mcp_probes {
+        if probe.success {
+            for c in &probe.observed_capabilities {
+                add(c, format!("probed MCP server '{}'", probe.server_name));
+            }
+        }
+    }
+    for cfg in &report.mcp_configs {
+        for s in cfg.servers.iter().filter(|s| s.is_active()) {
+            for c in mcp_server_capabilities(s) {
+                add(c, format!("{} ({})", s.name, server_origin(cfg, s)));
+            }
+        }
+    }
+    let mut skill_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for skill in report.agent_skills.iter().filter(|k| skill_loads(k)) {
+        for c in &skill.capabilities {
+            if let Some(k) = SOURCES.iter().chain(SINKS).find(|k| **k == c.as_str()) {
+                *skill_counts.entry(k).or_default() += 1;
+            }
+        }
+    }
+    for (c, n) in skill_counts {
+        add(c, format!("{n}{SKILL_COUNT_SUFFIX}"));
+    }
+
+    // Capabilities a named server supplies come first, so the title leads with the
+    // concrete pair rather than with keyword counts over skill files.
+    let present = |table: &[&str]| -> Vec<String> {
+        let mut v: Vec<&str> = table.iter().copied().filter(|c| by_cap.contains_key(c)).collect();
+        v.sort_by_key(|c| by_cap[c].iter().all(|w| is_skill_count(w)));
+        v.into_iter().map(str::to_string).collect()
+    };
+    let sources = present(SOURCES);
+    let sinks = present(SINKS);
+    if sources.is_empty() || sinks.is_empty() {
+        return None;
+    }
+    let untrusted = present(&[UNTRUSTED]);
+    let contributors = by_cap
+        .iter()
+        .flat_map(|(c, who)| who.iter().map(move |w| (c.to_string(), w.clone())))
+        .collect();
+    Some(ToxicFlowSurface {
+        sources,
+        sinks,
+        untrusted,
+        contributors,
+    })
+}
+
+/// Advisory IDs (CVE-..., GHSA-...) named in a catalog advisory, in order, deduplicated.
+fn advisory_ids(advisory: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in advisory.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        let ok = (raw.starts_with("CVE-") && raw.len() >= 13) || (raw.starts_with("GHSA-") && raw.len() == 19);
+        if ok && !out.iter().any(|x| x == raw) {
+            out.push(raw.to_string());
+        }
+    }
+    out
+}
+
+/// The npx cache a finding is in runs again only when the same `npx` line does: it is
+/// active when an active configured or plugin MCP server launches one of the packages
+/// the cache was created for.
+fn npx_cache_is_active(report: &ScanReport, e: &crate::models::ExposureFinding) -> bool {
+    report.mcp_configs.iter().flat_map(|c| &c.servers).any(|s| {
+        s.is_active()
+            && !s.ever_connected
+            && s.package_ecosystem.as_deref() == Some("npm")
+            && s.package_name.as_ref().is_some_and(|n| e.cache_parent.contains(n))
+    })
+}
+
+/// The finding for one catalog match. A malware row (an exact version, or every version)
+/// and a vulnerable version in an active install are Critical. A vulnerable-version-range
+/// match found only in an npx cache that no active server launches is High: the code is
+/// on disk but runs only if that `npx` line is run again. The evidence keeps the catalog
+/// row's range and advisory IDs.
+pub fn exposure_finding(report: &ScanReport, e: &crate::models::ExposureFinding) -> Finding {
+    let ids = advisory_ids(&e.advisory);
+    let mut evidence = match &e.matched_range {
+        Some(r) => format!("catalog row: {} {} {r}", e.ecosystem, e.name),
+        None => format!("catalog row: {} {} (malicious release)", e.ecosystem, e.name),
+    };
+    if !ids.is_empty() {
+        evidence.push_str(&format!("; advisories: {}", ids.join(", ")));
+    }
+    let parent = if e.cache_parent.is_empty() {
+        String::new()
+    } else {
+        format!(" (fetched with {})", e.cache_parent.join(", "))
+    };
+    let dormant = e.cache.is_some() && !npx_cache_is_active(report, e);
+    let (severity, title) = match (&e.matched_range, dormant) {
+        (Some(_), true) => {
+            let what = if e.name.starts_with("@modelcontextprotocol/") {
+                "Vulnerable MCP SDK version".to_string()
+            } else {
+                format!("Vulnerable {} package version", e.ecosystem)
+            };
+            (
+                Severity::High,
+                format!(
+                    "{what} in npx cache (dormant unless re-run): {} {}{parent}",
+                    e.name, e.version
+                ),
+            )
+        }
+        (Some(_), false) => (
+            Severity::Critical,
+            format!(
+                "Vulnerable {} package version: {} {}{parent}",
+                e.ecosystem, e.name, e.version
+            ),
+        ),
+        (None, _) => (
+            Severity::Critical,
+            format!("Known-bad {} package: {} {}{parent}", e.ecosystem, e.name, e.version),
+        ),
+    };
+    Finding {
+        severity,
+        category: "Exposure".into(),
+        title,
+        location: e.found_in.clone(),
+        evidence: Some(evidence),
+    }
 }
 
 /// True if `arg` is a filesystem root broad enough to expose the whole machine or the
@@ -2694,41 +2998,6 @@ pub fn is_broad_root(arg: &str, home: &str) -> bool {
     }
     matches!(a, "~" | "$HOME" | "${HOME}" | "/home" | "/Users" | "/root")
         || (!home.is_empty() && a == home.trim_end_matches('/'))
-}
-
-/// Aggregate observed (probed) + declared (skill) capabilities across the whole scan
-/// and report a toxic-flow surface when both a source and a sink are present.
-pub fn analyze_toxic_flow(report: &ScanReport) -> Option<ToxicFlowSurface> {
-    let mut caps: BTreeSet<&str> = BTreeSet::new();
-    for probe in &report.mcp_probes {
-        if probe.success {
-            for c in &probe.observed_capabilities {
-                caps.insert(c.as_str());
-            }
-        }
-    }
-    for skill in &report.agent_skills {
-        for c in &skill.capabilities {
-            caps.insert(c.as_str());
-        }
-    }
-
-    let sources: Vec<String> = SOURCES
-        .iter()
-        .filter(|s| caps.contains(**s))
-        .map(|s| s.to_string())
-        .collect();
-    let sinks: Vec<String> = SINKS
-        .iter()
-        .filter(|s| caps.contains(**s))
-        .map(|s| s.to_string())
-        .collect();
-
-    if !sources.is_empty() && !sinks.is_empty() {
-        Some(ToxicFlowSurface { sources, sinks })
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
