@@ -44,3 +44,11 @@ impl Scanner for NodePackagesScanner {
         results
     }
 }
+
+/// Binaries rmguard may run, for the telemetry test in `crate::scanners`.
+#[cfg(test)]
+pub(crate) fn spawned_binaries() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = PACKAGE_MANAGERS.iter().flat_map(|(_, b)| b.iter().copied()).collect();
+    v.push("node");
+    v
+}

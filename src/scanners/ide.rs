@@ -46,13 +46,7 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     }
 
     // On Linux, try running the binary with --version
-    let bin_name = match ide {
-        Ide::VsCode => "code",
-        Ide::Cursor => "cursor",
-        Ide::Windsurf => "windsurf",
-        Ide::Zed => "zed",
-        Ide::Antigravity => "antigravity",
-    };
+    let bin_name = ide_bin_name(ide);
 
     // If install_path is a binary (Linux), use it directly
     if crate::scanners::probe_file(&install_path) {
@@ -60,4 +54,15 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
     }
 
     get_binary_version(bin_name)
+}
+
+/// The launcher an IDE is probed through when its install path is not itself a binary.
+pub(crate) fn ide_bin_name(ide: Ide) -> &'static str {
+    match ide {
+        Ide::VsCode => "code",
+        Ide::Cursor => "cursor",
+        Ide::Windsurf => "windsurf",
+        Ide::Zed => "zed",
+        Ide::Antigravity => "antigravity",
+    }
 }

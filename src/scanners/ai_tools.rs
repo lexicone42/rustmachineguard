@@ -213,7 +213,7 @@ const TOOLS: &[ToolDef] = &[
 
 /// Verify a binary is real (not a shim that says "not installed").
 fn verify_binary_works(path: &std::path::Path) -> bool {
-    let mut x = crate::otel::exec_span("verify_binary");
+    let mut x = crate::otel::exec_span("verify_binary", path.as_os_str());
     let output = crate::scanners::child_command(path)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
@@ -414,4 +414,14 @@ pub fn version_gte(version: &str, target: (u32, u32)) -> bool {
     let major = parts[0];
     let minor = parts.get(1).copied().unwrap_or(0);
     (major, minor) >= target
+}
+
+/// (binaries rmguard may run, process names it asks about), for the telemetry and
+/// process-snapshot tests in `crate::scanners`.
+#[cfg(test)]
+pub(crate) fn spawn_and_process_names() -> (Vec<&'static str>, Vec<&'static str>) {
+    (
+        TOOLS.iter().flat_map(|d| d.binary_names.iter().copied()).collect(),
+        TOOLS.iter().filter_map(|d| d.process_name).collect(),
+    )
 }

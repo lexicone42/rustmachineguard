@@ -145,7 +145,8 @@ fn default_run_never_connects_even_with_otel_env() {
 
 /// The reviewer's reproduction, generalized: a hostile MCP server command plus a fake
 /// tool on PATH under the names rmguard runs (`ghcs` for the Copilot CLI's verify and
-/// `--version` probes, `tabby` to trigger `pgrep`, `pgrep` and `git` themselves). Each
+/// `--version` probes, `tabby` to trigger the process-list snapshot, `ps` and `git`
+/// themselves). Each
 /// one dumps its environment. With OTEL_EXPORTER_OTLP_HEADERS holding a canary API key,
 /// no dump may contain any OTEL_ variable, with or without `--otel`.
 #[test]
@@ -161,7 +162,7 @@ fn children_never_inherit_otel_env() {
             "#!/bin/sh\n{{ echo \"ARGV0=$(basename \"$0\")\"; env; }} >> '{}'\necho \"$(basename \"$0\") 1.2.3\"\nexit 0\n",
             dump.display()
         );
-        for name in ["ghcs", "tabby", "pgrep", "git"] {
+        for name in ["ghcs", "tabby", "ps", "git"] {
             let f = bin.join(name);
             std::fs::write(&f, &recorder).unwrap();
             std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -198,10 +199,10 @@ fn children_never_inherit_otel_env() {
             .unwrap_or_else(|e| panic!("{tag}: no fake tool ran ({e}); stderr:\n{}", stderr(&out)));
         // Positive controls: the dumps are real environments from the sites under test.
         assert!(probe_env.contains("HOME="), "{tag}: {probe_env}");
-        for site in ["ARGV0=ghcs", "ARGV0=pgrep"] {
+        for site in ["ARGV0=ghcs", "ARGV0=ps"] {
             assert!(child_env.contains(site), "{tag}: {site} never ran:\n{child_env}");
         }
-        for (what, text) in [("probed MCP server", &probe_env), ("--version/pgrep/git child", &child_env)] {
+        for (what, text) in [("probed MCP server", &probe_env), ("--version/ps/git child", &child_env)] {
             assert!(!text.contains("E2EOTELHEADERKEY"), "{tag}: the collector key reached a {what}:\n{text}");
             assert!(
                 !text.lines().any(|l| l.to_ascii_uppercase().starts_with("OTEL_")),
@@ -603,6 +604,206 @@ mod enabled {
         let plain = json(&plain);
         let keys = |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(keys(&report), keys(&plain));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn write(p: &Path, text: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// The sub-spans that explain where a scanner's time goes: one `skills.walk` per
+    /// walk, `gitconfig.repos` / `gitconfig.nested_walk`, one `transcripts.store` per
+    /// store, every `exec.*` naming its program from the closed table, and a single
+    /// process-list snapshot where ten `pgrep` spawns used to be. Every attribute value
+    /// is a closed label, a count or a bool.
+    #[test]
+    fn otel_sub_spans_explain_scanner_time() {
+        use std::collections::BTreeMap;
+        let home = temp_home("subspans");
+        let proj = home.join("proj");
+        // A git repository whose config mentions `include`, so git config is spawned on
+        // it, with a nested bare git dir planted inside (the CVE-2026-45033 shape).
+        write(&proj.join(".git/config"), "[core]\n\tbare = false\n[include]\n\tpath = extra\n");
+        write(&proj.join(".git/HEAD"), "ref: refs/heads/main\n");
+        std::fs::create_dir_all(proj.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(proj.join(".git/refs")).unwrap();
+        let nested = proj.join("vendor/payload");
+        write(&nested.join("HEAD"), "ref: refs/heads/main\n");
+        write(&nested.join("config"), "[core]\n\tbare = true\n");
+        std::fs::create_dir_all(nested.join("objects")).unwrap();
+        std::fs::create_dir_all(nested.join("refs")).unwrap();
+        let claude = serde_json::json!({ "projects": { proj.to_string_lossy(): {} } });
+        write(&home.join(".claude.json"), &claude.to_string());
+        // A skill bundle (manifest with a frontmatter hook, plus a script), a command, a
+        // project skill.
+        write(
+            &home.join(".claude/skills/demo/SKILL.md"),
+            "---\nname: demo\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: echo hi\n---\nDemo skill.\n",
+        );
+        write(&home.join(".claude/skills/demo/scripts/run.sh"), "#!/bin/sh\necho run\n");
+        write(&home.join(".claude/commands/go.md"), "Go somewhere.\n");
+        write(&proj.join(".claude/skills/p/SKILL.md"), "---\nname: p\n---\nProject skill.\n");
+        // One transcript store with two files.
+        write(&home.join(".claude/projects/x/a.jsonl"), "hello");
+        write(&home.join(".claude/projects/x/b.jsonl"), "world!");
+
+        let collector = Collector::start();
+        let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json"]);
+        cmd.current_dir(&home);
+        let (out, _) = run(cmd);
+        let bodies = collector.finish();
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        let report = json(&out);
+        let tr = traces(&bodies);
+        let mr = metrics(&bodies);
+        let all = spans(&tr);
+        let by_id: HashMap<&[u8], &Span> = all.iter().map(|s| (s.span_id.as_slice(), s)).collect();
+        let parent = |s: &Span| by_id.get(s.parent_span_id.as_slice()).copied();
+        let named = |n: &str| all.iter().filter(|s| s.name == n).collect::<Vec<_>>();
+        let one = |n: &str| {
+            let v = named(n);
+            assert_eq!(v.len(), 1, "spans named {n}");
+            v[0]
+        };
+
+        // T1: every exec span names its program, from the closed table or `other`.
+        let mut programs = BTreeMap::new();
+        for s in all.iter().filter(|s| s.name.starts_with("exec.")) {
+            let p = attr_str(&s.attributes, "rmguard.exec.program").unwrap_or_else(|| panic!("{} has no program", s.name));
+            assert!(
+                p == "other" || rustmachineguard::otel::EXEC_PROGRAMS.contains(&p.as_str()),
+                "{} program {p:?} is not a closed value",
+                s.name
+            );
+            *programs.entry(p).or_insert(0) += 1;
+        }
+        // T5: one process-list snapshot per scan, and no pgrep at all.
+        assert!(named("exec.pgrep").is_empty(), "pgrep is spawned again");
+        let snaps = named("exec.process_list");
+        assert!(snaps.len() <= 1, "{} process-list snapshots", snaps.len());
+        if let Some(s) = snaps.first() {
+            assert_eq!(attr_str(&s.attributes, "rmguard.exec.program").as_deref(), Some("ps"));
+        }
+
+        // T2: one skills.walk per walk call, all under scanner.skills, closed labels.
+        let skills = one("scanner.skills");
+        assert_eq!(attr_int(&skills.attributes, "rmguard.skills.projects"), Some(1));
+        let walks = named("skills.walk");
+        let mut kinds = BTreeSet::new();
+        let (mut files, mut hooks, mut hashed, mut items) = (0, 0, 0, 0);
+        for w in &walks {
+            assert_eq!(parent(w).map(|p| p.name.as_str()), Some("scanner.skills"));
+            let a = &w.attributes;
+            let kind = attr_str(a, "rmguard.walk.kind").unwrap();
+            let scope = attr_str(a, "rmguard.walk.scope").unwrap();
+            assert!(["commands", "agents", "hooks", "codex", "skills", "plugins"].contains(&kind.as_str()), "{kind}");
+            assert!(["global", "project"].contains(&scope.as_str()), "{scope}");
+            let link = attr_str(a, "rmguard.walk.root_link").unwrap();
+            assert!(["plain", "followed", "refused"].contains(&link.as_str()), "{link}");
+            assert!(matches!(attr(a, "rmguard.walk.budget_exhausted"), Some(any_value::Value::BoolValue(false))));
+            for k in ["rmguard.walk.entries", "rmguard.walk.files", "rmguard.walk.bytes_hashed", "rmguard.walk.hooks"] {
+                assert!(attr_int(a, k).is_some_and(|n| n >= 0), "{k} missing on {kind}/{scope}");
+            }
+            files += attr_int(a, "rmguard.walk.files").unwrap();
+            hooks += attr_int(a, "rmguard.walk.hooks").unwrap();
+            hashed += attr_int(a, "rmguard.walk.bytes_hashed").unwrap();
+            items += attr_int(a, "rmguard.items").unwrap();
+            kinds.insert((kind, scope));
+        }
+        for k in [("commands", "global"), ("commands", "project"), ("agents", "global"), ("agents", "project"),
+                  ("hooks", "global"), ("skills", "global"), ("skills", "project"), ("plugins", "global")] {
+            assert!(kinds.contains(&(k.0.to_string(), k.1.to_string())), "no {k:?} walk; got {kinds:?}");
+        }
+        // 1 global + 1 project commands walk, agents likewise, hooks, global skills,
+        // plugins, project skills (no ~/.codex, so no codex walk).
+        assert_eq!(walks.len(), 8, "{kinds:?}");
+        let skill_rows = report["agent_skills"].as_array().unwrap();
+        let report_hooks: usize = skill_rows.iter().map(|r| r["hooks"].as_array().map_or(0, Vec::len)).sum();
+        let report_bytes: i64 = skill_rows.iter().map(|r| r["size_bytes"].as_i64().unwrap()).sum();
+        assert_eq!(items as usize, skill_rows.len(), "walk items vs the report's skills");
+        assert_eq!(hooks as usize, report_hooks, "walk hooks vs the report");
+        assert!(report_hooks >= 1, "the frontmatter hook was not found: {skill_rows:#?}");
+        assert_eq!(hashed, report_bytes, "bytes hashed vs the report's sizes");
+        // The four skill files; the scanner's own extra reads (~/.claude.json for the
+        // project list) happen outside any walk.
+        assert_eq!(files, 4, "files read by the walks");
+        assert!(files < attr_int(&skills.attributes, "rmguard.files.read").unwrap());
+
+        // T3: repo-local and nested walks are separate; git execs nest under them.
+        let gc = one("scanner.gitconfig");
+        let repos = one("gitconfig.repos");
+        let nested_walk = one("gitconfig.nested_walk");
+        assert_eq!(parent(repos).map(|p| p.span_id.clone()), Some(gc.span_id.clone()));
+        assert_eq!(parent(nested_walk).map(|p| p.span_id.clone()), Some(gc.span_id.clone()));
+        assert_eq!(attr_int(&repos.attributes, "rmguard.repos"), Some(2), "proj and the cwd");
+        let na = &nested_walk.attributes;
+        assert!(attr_int(na, "rmguard.repos").is_some_and(|n| n >= 1), "the planted nested git dir");
+        assert!(attr_int(na, "rmguard.walk.dirs").is_some_and(|n| n >= 4));
+        assert!(attr_int(na, "rmguard.walk.entries").is_some_and(|n| n >= 10));
+        assert!(matches!(attr(na, "rmguard.walk.budget_exhausted"), Some(any_value::Value::BoolValue(false))));
+        for e in all.iter().filter(|s| s.name.starts_with("exec.")) {
+            let mut cur = e;
+            let mut chain = Vec::new();
+            while let Some(p) = parent(cur) {
+                chain.push(p.name.as_str());
+                cur = p;
+            }
+            if chain.contains(&"scanner.gitconfig") {
+                assert!(
+                    matches!(chain[0], "gitconfig.repos" | "gitconfig.nested_walk"),
+                    "a gitconfig exec sits directly under {}",
+                    chain[0]
+                );
+            }
+        }
+        let git_in_repos = all.iter().filter(|s| s.name.starts_with("exec.") && parent(s).is_some_and(|p| p.name == "gitconfig.repos")).count();
+        if std::path::Path::new("/usr/bin/git").exists() {
+            assert!(git_in_repos >= 1, "the proj config mentions include, so git config ran under gitconfig.repos");
+        }
+
+        // T4: one transcripts.store span per store, with the walked numbers.
+        let stores = named("transcripts.store");
+        assert_eq!(stores.len(), 6);
+        let proj_store = stores
+            .iter()
+            .find(|s| attr_str(&s.attributes, "rmguard.transcripts.kind").as_deref() == Some("conversation transcripts"))
+            .unwrap();
+        let a = &proj_store.attributes;
+        assert_eq!(attr_str(a, "rmguard.transcripts.framework").as_deref(), Some("claude-code"));
+        assert_eq!(attr_int(a, "rmguard.walk.files"), Some(2));
+        assert_eq!(attr_int(a, "rmguard.walk.bytes"), Some(11));
+        assert_eq!(attr_int(a, "rmguard.walk.entries"), Some(3), "x/ and its two files");
+        // An int 0 is an int, not a bool: an absent store still says files = 0.
+        let empty = stores.iter().find(|s| attr_str(&s.attributes, "rmguard.transcripts.framework").as_deref() == Some("codex")).unwrap();
+        assert_eq!(attr_int(&empty.attributes, "rmguard.walk.files"), Some(0));
+
+        // The exec metric is grouped by program too.
+        let mut saw_program_on_metric = false;
+        for r in &mr {
+            for rm in &r.resource_metrics {
+                for sm in &rm.scope_metrics {
+                    for m in sm.metrics.iter().filter(|m| m.name == "rmguard.exec.duration") {
+                        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+                        if let Some(Data::Histogram(h)) = &m.data {
+                            for p in &h.data_points {
+                                let prog = attr_str(&p.attributes, "rmguard.exec.program").expect("program on exec metric");
+                                assert!(prog == "other" || rustmachineguard::otel::EXEC_PROGRAMS.contains(&prog.as_str()));
+                                saw_program_on_metric = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(saw_program_on_metric || programs.is_empty(), "exec spans but no exec metric points");
+
+        // No path, no fixture text: only closed labels and counts.
+        let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
+        let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
+        for needle in [home.to_string_lossy().as_bytes(), b"demo", b"payload", b"echo hi", b"hello", b"go.md"] {
+            assert!(!contains(needle), "{:?} reached the collector", String::from_utf8_lossy(needle));
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

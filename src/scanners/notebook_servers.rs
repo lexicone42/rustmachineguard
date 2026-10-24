@@ -56,3 +56,10 @@ impl Scanner for NotebookServersScanner {
         results
     }
 }
+
+/// (binaries rmguard may run, process names it asks about), for the telemetry and
+/// process-snapshot tests in `crate::scanners`.
+#[cfg(test)]
+pub(crate) fn spawn_and_process_names() -> (Vec<&'static str>, Vec<&'static str>) {
+    (NOTEBOOKS.iter().map(|d| d.binary).collect(), NOTEBOOKS.iter().map(|d| d.process_name).collect())
+}

@@ -128,7 +128,9 @@ impl Scanner for SkillsScanner {
 
         // Claude Code custom commands: ~/.claude/commands/
         let global_commands = home.join(".claude").join("commands");
-        scan_skill_dir(&global_commands, "claude-code", "global", None, &ctx, &mut results);
+        walk_span("commands", "global", &mut results, |r| {
+            scan_skill_dir(&global_commands, "claude-code", "global", None, &ctx, r)
+        });
 
         // Known projects plus the current directory. HOME (or an ancestor) registered as a
         // project is left out: its .claude is the global config walked above and below.
@@ -141,39 +143,57 @@ impl Scanner for SkillsScanner {
         // tree (a monorepo app registered at mono/apps/web shares skills from mono/shared).
         let project_dirs: Vec<(PathBuf, PathBuf)> =
             project_dirs.into_iter().map(|d| (project_containment_root(&d, &home), d)).collect();
+        // A count only: a project's path or position is never exported.
+        crate::otel::annotate_current(|| {
+            vec![crate::otel::Attr::int(crate::otel::Key::SkillsProjects, project_dirs.len() as i64)]
+        });
 
         // Claude Code project commands
         for (root, dir) in &project_dirs {
             let project_commands = dir.join(".claude").join("commands");
-            scan_skill_dir(&project_commands, "claude-code", "project", Some(root), &ctx, &mut results);
+            walk_span("commands", "project", &mut results, |r| {
+                scan_skill_dir(&project_commands, "claude-code", "project", Some(root), &ctx, r)
+            });
         }
 
         // Claude Code subagents: ~/.claude/agents/*.md and <proj>/.claude/agents/*.md, whose
         // frontmatter may declare hooks. Plugin agents are not walked: Claude Code ignores
         // their hooks (code.claude.com/docs/en/sub-agents).
-        scan_agents_tree(&home.join(".claude").join("agents"), "global", None, &ctx, &mut results);
+        walk_span("agents", "global", &mut results, |r| {
+            scan_agents_tree(&home.join(".claude").join("agents"), "global", None, &ctx, r)
+        });
         for (root, dir) in &project_dirs {
-            scan_agents_tree(&dir.join(".claude").join("agents"), "project", Some(root), &ctx, &mut results);
+            walk_span("agents", "project", &mut results, |r| {
+                scan_agents_tree(&dir.join(".claude").join("agents"), "project", Some(root), &ctx, r)
+            });
         }
 
         // Claude Code hooks: ~/.claude/hooks/ and project-level .claude/hooks/
         let global_hooks = home.join(".claude").join("hooks");
-        scan_skill_dir(&global_hooks, "claude-code-hook", "global", None, &ctx, &mut results);
+        walk_span("hooks", "global", &mut results, |r| {
+            scan_skill_dir(&global_hooks, "claude-code-hook", "global", None, &ctx, r)
+        });
 
         // Codex hooks from ~/.codex/
         let codex_dir = home.join(".codex");
         if crate::scanners::probe_dir(&codex_dir) {
-            scan_skill_dir(&codex_dir, "codex", "global", None, &ctx, &mut results);
+            walk_span("codex", "global", &mut results, |r| scan_skill_dir(&codex_dir, "codex", "global", None, &ctx, r));
         }
 
         // Skill BUNDLES (SKILL.md + sibling scripts), which the flat walk above cannot
         // see. `plugins/` covers the marketplace -> plugin -> skill chain: marketplaces
         // are already inventoried as a remote hot-load surface, but the skills they
         // actually install were never walked.
-        scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, &mut results);
-        scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, &mut results);
+        walk_span("skills", "global", &mut results, |r| {
+            scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, r)
+        });
+        walk_span("plugins", "global", &mut results, |r| {
+            scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, r)
+        });
         for (root, dir) in &project_dirs {
-            scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(root), &ctx, &mut results);
+            walk_span("skills", "project", &mut results, |r| {
+                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(root), &ctx, r)
+            });
         }
 
         // Dedupe by scope and path, with the DIRECTORY canonicalized (not the file: two
@@ -191,6 +211,86 @@ impl Scanner for SkillsScanner {
 
         results
     }
+}
+
+/// Counters for the `skills.walk` span of the walk in progress. Scanners run on one
+/// thread, one walk at a time; [`walk_span`] resets them before the walk and reads them
+/// after. Updated only when export is on: off, each update is one relaxed load.
+#[derive(Clone, Copy, Default)]
+struct WalkCounts {
+    /// Directory entries visited.
+    entries: u64,
+    /// Bytes of file content hashed into an inventory entry's sha256.
+    bytes_hashed: u64,
+    /// A file, entry or subdirectory budget stopped the walk early.
+    budget_exhausted: bool,
+    /// How the walk root was judged (`plain` | `followed` | `refused`); the first
+    /// judgement of the walk, which is its root's.
+    root_link: Option<&'static str>,
+}
+
+thread_local! {
+    static WALK: std::cell::Cell<WalkCounts> = std::cell::Cell::new(WalkCounts::default());
+}
+
+fn walk_note(f: impl FnOnce(&mut WalkCounts)) {
+    if !crate::otel::enabled() {
+        return;
+    }
+    WALK.with(|c| {
+        let mut w = c.get();
+        f(&mut w);
+        c.set(w);
+    });
+}
+
+fn note_root_link(link: &RootLink) {
+    let label = match link {
+        RootLink::Plain => "plain",
+        RootLink::Follow(_) => "followed",
+        RootLink::Refuse(_) => "refused",
+    };
+    walk_note(|w| {
+        w.root_link.get_or_insert(label);
+    });
+}
+
+/// Run one walk under a `skills.walk` span. Attributes are closed values and counts:
+/// the walk kind, its scope, how its root was judged, entries visited, files read (the
+/// shared reader's counter), bytes hashed, hooks found, and whether a budget ran out.
+/// A project walk carries no path and no project index.
+fn walk_span(
+    kind: &'static str,
+    scope: &'static str,
+    results: &mut Vec<AgentSkill>,
+    f: impl FnOnce(&mut Vec<AgentSkill>),
+) {
+    use crate::otel::{Attr, Key};
+    if !crate::otel::enabled() {
+        f(results);
+        return;
+    }
+    let before = results.len();
+    let (read0, _) = crate::scanners::telemetry::snapshot();
+    WALK.with(|c| c.set(WalkCounts::default()));
+    let mut span = crate::otel::span("skills.walk", || {
+        vec![Attr::str(Key::WalkKind, kind), Attr::str(Key::WalkScope, scope)]
+    });
+    f(results);
+    let w = WALK.with(|c| c.get());
+    let files = crate::scanners::telemetry::snapshot().0 - read0;
+    let hooks: usize = results[before..].iter().map(|r| r.hooks.len()).sum();
+    span.set(|| {
+        vec![
+            Attr::str(Key::WalkRootLink, w.root_link.unwrap_or("plain")),
+            Attr::int(Key::WalkEntries, w.entries as i64),
+            Attr::int(Key::WalkFiles, files as i64),
+            Attr::int(Key::WalkBytesHashed, w.bytes_hashed as i64),
+            Attr::int(Key::WalkHooks, hooks as i64),
+            Attr::bool(Key::WalkBudgetExhausted, w.budget_exhausted),
+            Attr::int(Key::Items, (results.len() - before) as i64),
+        ]
+    });
 }
 
 /// `path` with its parent directory canonicalized, so the same file reached through a
@@ -705,7 +805,10 @@ fn build_skill(
     }
     let sha256 = match (&content, &read.symlink) {
         (_, Some(l)) if !l.followed => "symlink-not-followed".to_string(),
-        (Some(c), _) => sha256_hex(c),
+        (Some(c), _) => {
+            walk_note(|w| w.bytes_hashed += c.len() as u64);
+            sha256_hex(c)
+        }
         (None, _) => "unreadable".to_string(),
     };
     AgentSkill {
@@ -794,6 +897,7 @@ fn scan_skill_bundles(
         return;
     }
     let root_link = judge_walk_root(root, scope, project_root, &ctx.home);
+    note_root_link(&root_link);
     if let RootLink::Refuse(info) = root_link {
         results.push(refused_root_entry(root, info, framework, scope, project_root, ctx));
         return;
@@ -811,9 +915,11 @@ fn scan_skill_bundles(
         };
         for entry in entries.flatten() {
             if budget == 0 || entries_left == 0 {
+                walk_note(|w| w.budget_exhausted = true);
                 return;
             }
             entries_left -= 1;
+            walk_note(|w| w.entries += 1);
             let path = entry.path();
             // symlink_metadata: never follow a link out of the tree we were pointed at.
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -1021,6 +1127,7 @@ fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: 
         let Ok(rd) = crate::scanners::probe_read_dir(&d) else { continue };
         let mut children: Vec<PathBuf> = rd
             .flatten()
+            .inspect(|_| walk_note(|w| w.entries += 1))
             .map(|e| e.path())
             .filter(|p| !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.')))
             .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
@@ -1028,6 +1135,7 @@ fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: 
         children.sort();
         for c in children {
             if budget == 0 {
+                walk_note(|w| w.budget_exhausted = true);
                 break;
             }
             budget -= 1;
@@ -1050,6 +1158,7 @@ fn scan_skill_dir(
     results: &mut Vec<AgentSkill>,
 ) {
     let root_link = judge_walk_root(dir, scope, project_root, &ctx.home);
+    note_root_link(&root_link);
     if let RootLink::Refuse(info) = root_link {
         if crate::scanners::probe_dir(dir) {
             results.push(refused_root_entry(dir, info, framework, scope, project_root, ctx));
@@ -1065,6 +1174,7 @@ fn scan_skill_dir(
     let is_agents_dir = framework == "claude-code-agent" || dir.file_name().is_some_and(|n| n == "agents");
 
     for entry in entries.flatten() {
+        walk_note(|w| w.entries += 1);
         let path = entry.path();
         // symlink_metadata, not is_file(): a symlinked command is inventoried with its
         // target instead of being followed blindly.

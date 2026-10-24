@@ -28,9 +28,11 @@
 //! `Box::leak`); `src/otel/` and the call sites contain none, and a reviewer should
 //! treat one near an `Attr` or span name as a finding.
 //!
-//! Nothing here reads paths, server or package names, commands, program names,
-//! arguments, environment values, URLs or error text into telemetry. See
-//! docs/OPENTELEMETRY.md.
+//! Nothing here reads paths, server or package names, commands, arguments,
+//! environment values, URLs or error text into telemetry. The one runtime-text input is
+//! [`exec_program`], which maps a spawned program to an entry of the fixed
+//! [`EXEC_PROGRAMS`] table or the literal `other`; the value exported is always the
+//! table's own `&'static str`. See docs/OPENTELEMETRY.md.
 //!
 //! Disabled cost: every entry point checks one `Relaxed` atomic (a constant `false` in a
 //! build without the `otel` feature) and returns before evaluating any closure or
@@ -123,6 +125,21 @@ pub enum Key {
     Diff,
     ExposureFindings,
     ScannersRun,
+    ExecProgram,
+    WalkKind,
+    WalkScope,
+    WalkRootLink,
+    WalkEntries,
+    WalkDirs,
+    WalkFiles,
+    WalkBytes,
+    WalkBytesHashed,
+    WalkHooks,
+    WalkBudgetExhausted,
+    Repos,
+    SkillsProjects,
+    TranscriptsFramework,
+    TranscriptsKind,
 }
 
 impl Key {
@@ -156,6 +173,21 @@ impl Key {
         Key::Diff,
         Key::ExposureFindings,
         Key::ScannersRun,
+        Key::ExecProgram,
+        Key::WalkKind,
+        Key::WalkScope,
+        Key::WalkRootLink,
+        Key::WalkEntries,
+        Key::WalkDirs,
+        Key::WalkFiles,
+        Key::WalkBytes,
+        Key::WalkBytesHashed,
+        Key::WalkHooks,
+        Key::WalkBudgetExhausted,
+        Key::Repos,
+        Key::SkillsProjects,
+        Key::TranscriptsFramework,
+        Key::TranscriptsKind,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -192,6 +224,21 @@ impl Key {
             Key::Diff => "rmguard.diff",
             Key::ExposureFindings => "rmguard.exposure_findings",
             Key::ScannersRun => "rmguard.scanners_run",
+            Key::ExecProgram => "rmguard.exec.program",
+            Key::WalkKind => "rmguard.walk.kind",
+            Key::WalkScope => "rmguard.walk.scope",
+            Key::WalkRootLink => "rmguard.walk.root_link",
+            Key::WalkEntries => "rmguard.walk.entries",
+            Key::WalkDirs => "rmguard.walk.dirs",
+            Key::WalkFiles => "rmguard.walk.files",
+            Key::WalkBytes => "rmguard.walk.bytes",
+            Key::WalkBytesHashed => "rmguard.walk.bytes_hashed",
+            Key::WalkHooks => "rmguard.walk.hooks",
+            Key::WalkBudgetExhausted => "rmguard.walk.budget_exhausted",
+            Key::Repos => "rmguard.repos",
+            Key::SkillsProjects => "rmguard.skills.projects",
+            Key::TranscriptsFramework => "rmguard.transcripts.framework",
+            Key::TranscriptsKind => "rmguard.transcripts.kind",
         }
     }
 }
@@ -374,17 +421,56 @@ pub fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration
     }
 }
 
-/// A subprocess span: `exec.<site>`. The program is not named: its call site already
-/// says what ran, and a list of `--version`-probed program names is an inventory of the
-/// AI tools on the machine, which is a scan finding. Set the outcome before it drops;
-/// its duration is recorded as `rmguard.exec.duration` on drop.
+/// The programs rmguard itself chooses to run, by basename: the value set of
+/// `rmguard.exec.program`. Every `--version` probe, verification run, `git`, the
+/// process-list snapshot and `ssh-keygen`; `tests` in `crate::scanners` keep it in step
+/// with the scanners' binary tables. Anything else (a renamed binary, a desktop app's
+/// own executable name, an MCP server command, which never reaches [`exec_span`]) is
+/// exported as `other`.
+pub const EXEC_PROGRAMS: &[&str] = &[
+    // rmguard's own helpers
+    "git", "ps", "ssh-keygen",
+    // node toolchain (scanner.node)
+    "node", "npm", "yarn", "pnpm", "bun",
+    // AI CLIs and agents (scanner.ai)
+    "claude", "claude-desktop", "copilot", "gh-copilot", "github-copilot-cli", "ghcs", "codex",
+    "gemini", "amazon-q", "cursor-agent", "kiro-cli", "kiro", "aish", "opencode", "aider",
+    "continue", "cody", "openclaw", "clawdbot", "moltbot", "moldbot", "gpt-engineer", "gpte",
+    "interpreter", "goose", "tabby",
+    // local model servers (scanner.frameworks)
+    "ollama", "local-ai", "localai", "lms", "llama-server", "llama-cli", "vllm",
+    "text-generation-launcher", "textgen",
+    // container runtimes (scanner.containers)
+    "docker", "podman", "nerdctl", "limactl", "colima", "rdctl", "finch",
+    // notebook servers (scanner.notebooks)
+    "jupyter-notebook", "jupyter-lab", "jupyter", "marimo",
+    // IDE launchers (scanner.ide)
+    "code", "cursor", "windsurf", "zed", "antigravity",
+];
+
+/// `program`'s basename if it is one of [`EXEC_PROGRAMS`], else `other`. The input is
+/// runtime text (a resolved path such as `/home/u/.local/bin/claude`), but the output
+/// is always one of the table's own `&'static str` entries or the literal `other`: the
+/// path, and any name outside the table, cannot come back out.
+pub fn exec_program(program: &std::ffi::OsStr) -> &'static str {
+    let base = std::path::Path::new(program).file_name().unwrap_or(program);
+    EXEC_PROGRAMS.iter().copied().find(|p| std::ffi::OsStr::new(p) == base).unwrap_or("other")
+}
+
+/// A subprocess span: `exec.<site>`, with `rmguard.exec.program` set to
+/// [`exec_program`]`(program)`: a basename from the fixed table, or `other`. The
+/// program is classified only when export is on. Set the outcome before it drops; its
+/// duration is recorded as `rmguard.exec.duration` on drop.
 #[inline]
-pub fn exec_span(site: &'static str) -> ExecSpan {
+pub fn exec_span(site: &'static str, program: &std::ffi::OsStr) -> ExecSpan {
     if !enabled() {
         return ExecSpan(None);
     }
-    let guard = span_with("exec.", site, || vec![Attr::str(Key::ExecSite, site)]);
-    ExecSpan(Some(ExecInner { guard, start: Instant::now(), site, outcome: None }))
+    let program = exec_program(program);
+    let guard = span_with("exec.", site, || {
+        vec![Attr::str(Key::ExecSite, site), Attr::str(Key::ExecProgram, program)]
+    });
+    ExecSpan(Some(ExecInner { guard, start: Instant::now(), site, program, outcome: None }))
 }
 
 #[must_use = "an exec span ends when dropped"]
@@ -394,6 +480,7 @@ struct ExecInner {
     guard: SpanGuard,
     start: Instant,
     site: &'static str,
+    program: &'static str,
     outcome: Option<&'static str>,
 }
 
@@ -417,7 +504,7 @@ impl ExecSpan {
 impl Drop for ExecSpan {
     fn drop(&mut self) {
         let Some(inner) = self.0.take() else { return };
-        let ExecInner { mut guard, start, site, outcome } = inner;
+        let ExecInner { mut guard, start, site, program, outcome } = inner;
         let elapsed = start.elapsed();
         let outcome = outcome.unwrap_or("unknown");
         guard.set(|| vec![Attr::str(Key::ExecOutcome, outcome)]);
@@ -427,7 +514,11 @@ impl Drop for ExecSpan {
         }
         guard.finish_after(elapsed);
         record(Metric::ExecDuration, elapsed.as_secs_f64(), || {
-            vec![Attr::str(Key::ExecSite, site), Attr::str(Key::ExecOutcome, outcome)]
+            vec![
+                Attr::str(Key::ExecSite, site),
+                Attr::str(Key::ExecProgram, program),
+                Attr::str(Key::ExecOutcome, outcome),
+            ]
         });
     }
 }
@@ -471,7 +562,7 @@ mod tests {
         drop(c);
         annotate_current(|| panic!("annotate evaluated while disabled"));
         record(Metric::Skipped, 1.0, || panic!("record attrs evaluated while disabled"));
-        let mut x = exec_span("site");
+        let mut x = exec_span("site", std::ffi::OsStr::new("git"));
         assert!(x.0.is_none(), "exec span allocated state while disabled");
         x.outcome("ok");
         x.exit_code(0);
@@ -517,12 +608,35 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 29, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 44, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are a tool inventory and are not exported"
         );
+        assert_eq!(Key::ExecProgram.as_str(), "rmguard.exec.program");
         assert_eq!(Key::HttpStatus.as_str(), "http.response.status_code");
         assert_eq!(Key::ErrorType.as_str(), "error.type");
+    }
+
+    /// `rmguard.exec.program` is a closed set: a listed basename, or `other`. Paths are
+    /// reduced to the basename; nothing outside the table comes back, whatever the input.
+    #[test]
+    fn exec_program_is_a_closed_set() {
+        use std::ffi::OsStr;
+        assert_eq!(exec_program(OsStr::new("git")), "git");
+        assert_eq!(exec_program(OsStr::new("/usr/bin/git")), "git");
+        assert_eq!(exec_program(OsStr::new("/home/u/.local/bin/claude")), "claude");
+        assert_eq!(exec_program(OsStr::new("/home/u/E2EOTEL/evil-server")), "other");
+        assert_eq!(exec_program(OsStr::new("node --inspect")), "other");
+        assert_eq!(exec_program(OsStr::new("Claude")), "other", "case-sensitive, like the spawn");
+        assert_eq!(exec_program(OsStr::new("")), "other");
+        assert_eq!(exec_program(OsStr::new("/nonexistent/rmguard-no-git")), "other");
+        let mut seen = std::collections::HashSet::new();
+        for p in EXEC_PROGRAMS {
+            assert!(seen.insert(p), "duplicate {p}");
+            assert!(!p.contains('/') && !p.contains(' ') && !p.is_empty(), "{p:?} is not a basename");
+            assert_eq!(exec_program(OsStr::new(p)), *p);
+        }
+        assert!(!EXEC_PROGRAMS.contains(&"other"));
     }
 }

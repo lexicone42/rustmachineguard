@@ -1,6 +1,7 @@
 use crate::models::AgentTranscriptStore;
 use crate::platform::PlatformInfo;
 use crate::scanners::{file_perms, Scanner};
+use crate::otel::{Attr, Key};
 use std::path::Path;
 
 /// Inventories agent transcript / conversation-state stores — the EAA-005 collection
@@ -32,26 +33,50 @@ impl Scanner for TranscriptsScanner {
 
         let mut out = Vec::new();
         for (framework, path, kind) in stores {
-            if let Some(store) = inspect_store(framework, &path, kind) {
+            // Closed values only: the framework and kind are the literals above; the
+            // path is never exported.
+            let mut span = crate::otel::span("transcripts.store", || {
+                vec![Attr::str(Key::TranscriptsFramework, framework), Attr::str(Key::TranscriptsKind, kind)]
+            });
+            let mut walk = Walk::default();
+            if let Some(store) = inspect_store(framework, &path, kind, &mut walk) {
                 out.push(store);
             }
+            span.set(|| {
+                vec![
+                    Attr::int(Key::WalkEntries, walk.entries as i64),
+                    Attr::int(Key::WalkFiles, walk.files as i64),
+                    Attr::int(Key::WalkBytes, walk.bytes as i64),
+                ]
+            });
         }
         out
     }
 }
 
-fn inspect_store(framework: &str, path: &Path, kind: &str) -> Option<AgentTranscriptStore> {
+/// What inspecting one store walked: directory entries seen, regular files counted and
+/// their summed size (the numbers the report carries; nothing is opened).
+#[derive(Default)]
+struct Walk {
+    entries: u64,
+    files: u64,
+    bytes: u64,
+}
+
+fn inspect_store(framework: &str, path: &Path, kind: &str, walk: &mut Walk) -> Option<AgentTranscriptStore> {
     if !crate::scanners::probe_exists(path) {
         return None;
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
     let (file_count, total_size_bytes) = if meta.is_dir() {
-        walk_counts(path)
+        walk_counts(path, &mut walk.entries)
     } else if meta.is_file() {
         (1, meta.len())
     } else {
         return None; // symlink / device / socket — skip
     };
+    walk.files = file_count as u64;
+    walk.bytes = total_size_bytes;
     if file_count == 0 {
         return None; // empty dir — nothing collected here
     }
@@ -67,7 +92,8 @@ fn inspect_store(framework: &str, path: &Path, kind: &str) -> Option<AgentTransc
 }
 
 /// Count regular files and total bytes under `dir`, bounded to MAX_WALK_FILES.
-fn walk_counts(dir: &Path) -> (usize, u64) {
+/// `entries` is incremented once per directory entry visited.
+fn walk_counts(dir: &Path, entries_seen: &mut u64) -> (usize, u64) {
     let mut count = 0usize;
     let mut bytes = 0u64;
     let mut stack = vec![dir.to_path_buf()];
@@ -79,6 +105,7 @@ fn walk_counts(dir: &Path) -> (usize, u64) {
             if count >= MAX_WALK_FILES {
                 return (count, bytes);
             }
+            *entries_seen += 1;
             // symlink_metadata so we don't follow symlinks out of the tree.
             let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
                 continue;
@@ -128,7 +155,9 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("b.jsonl"), b"world!").unwrap(); // 6 bytes
         fs::write(sub.join("c.jsonl"), b"xyz").unwrap(); // 3 bytes
-        let (count, bytes) = walk_counts(d.path());
+        let mut seen = 0;
+        let (count, bytes) = walk_counts(d.path(), &mut seen);
+        assert_eq!(seen, 4, "three files and one directory");
         assert_eq!(count, 3);
         assert_eq!(bytes, 14);
     }
@@ -137,7 +166,7 @@ mod tests {
     fn inspect_store_reports_a_populated_dir() {
         let d = TmpDir::new("inspect-dir");
         fs::write(d.path().join("t.jsonl"), b"abcd").unwrap();
-        let store = inspect_store("claude-code", d.path(), "conversation transcripts")
+        let store = inspect_store("claude-code", d.path(), "conversation transcripts", &mut Walk::default())
             .expect("populated dir should yield a store");
         assert_eq!(store.framework, "claude-code");
         assert_eq!(store.kind, "conversation transcripts");
@@ -149,10 +178,10 @@ mod tests {
     fn inspect_store_skips_empty_and_missing() {
         let d = TmpDir::new("inspect-empty");
         // Empty directory: nothing collected here.
-        assert!(inspect_store("codex", d.path(), "sessions").is_none());
+        assert!(inspect_store("codex", d.path(), "sessions", &mut Walk::default()).is_none());
         // Missing path.
         let missing = d.path().join("does-not-exist");
-        assert!(inspect_store("codex", &missing, "sessions").is_none());
+        assert!(inspect_store("codex", &missing, "sessions", &mut Walk::default()).is_none());
     }
 
     #[test]
@@ -160,7 +189,7 @@ mod tests {
         let d = TmpDir::new("inspect-file");
         let f = d.path().join("history.jsonl");
         fs::write(&f, b"one\ntwo\n").unwrap(); // 8 bytes
-        let store = inspect_store("codex", &f, "command history")
+        let store = inspect_store("codex", &f, "command history", &mut Walk::default())
             .expect("a non-empty file should yield a store");
         assert_eq!(store.file_count, 1);
         assert_eq!(store.total_size_bytes, 8);
@@ -174,14 +203,14 @@ mod tests {
         fs::write(d.path().join("t.jsonl"), b"secret transcript").unwrap();
         // Make the store dir world-readable.
         fs::set_permissions(d.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        let store = inspect_store("claude-code", d.path(), "conversation transcripts").unwrap();
+        let store = inspect_store("claude-code", d.path(), "conversation transcripts", &mut Walk::default()).unwrap();
         assert!(store.world_readable);
 
         // And private (0700) is not flagged.
         let d2 = TmpDir::new("inspect-private");
         fs::write(d2.path().join("t.jsonl"), b"secret transcript").unwrap();
         fs::set_permissions(d2.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let store2 = inspect_store("claude-code", d2.path(), "conversation transcripts").unwrap();
+        let store2 = inspect_store("claude-code", d2.path(), "conversation transcripts", &mut Walk::default()).unwrap();
         assert!(!store2.world_readable);
     }
 }

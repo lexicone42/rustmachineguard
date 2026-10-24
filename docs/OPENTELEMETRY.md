@@ -29,7 +29,7 @@ The variables only choose **where** `--otel` sends:
   `http://localhost:4318`. https works (rustls, the same TLS stack as `--verify-registry`).
 - `OTEL_EXPORTER_OTLP_HEADERS` (e.g. an API key for a hosted backend) is honored. It is
   never handed on: every process rmguard starts (a probed MCP server, a `--version`
-  probe, `git`, `pgrep`, `ssh-keygen`) gets an environment with **every** `OTEL_*`
+  probe, `git`, `ps`, `ssh-keygen`) gets an environment with **every** `OTEL_*`
   variable removed, with or without `--otel`. A probed server command is written by
   whoever wrote the MCP config, and must not be able to read your collector key.
 - `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` are honored. What you add there is
@@ -76,7 +76,8 @@ rmguard.scan                                   (root; one trace per run)
 ├── phase.global_scanners
 │   ├── scanner.ai
 │   │   ├── exec.version_probe                 (`<tool> --version`)
-│   │   └── exec.verify_binary
+│   │   ├── exec.verify_binary
+│   │   └── exec.process_list                  (`ps -A -o ucomm=`, once per scan)
 │   └── scanner.node ...
 ├── phase.home_pass                            (rmguard.root.index=0, root.kind=home)
 │   ├── scanner.mcp
@@ -84,8 +85,16 @@ rmguard.scan                                   (root; one trace per run)
 │   │   └── exec.git_tracked                   (`git ls-files --error-unmatch`)
 │   ├── scanner.ssh
 │   │   └── exec.ssh_keygen
+│   ├── scanner.skills
+│   │   └── skills.walk                        (one per walk: commands, agents, hooks,
+│   │                                           codex, skills, plugins; global and per project)
+│   ├── scanner.transcripts
+│   │   └── transcripts.store                  (one per store, present or not)
 │   └── scanner.gitconfig
-│       └── exec.output_with_timeout           (`git config --list`, ...)
+│       ├── gitconfig.repos                    (every project's own .git/config)
+│       │   └── exec.output_with_timeout       (`git config --list`)
+│       └── gitconfig.nested_walk              (the buried-git-dir walk of every project)
+│           └── exec.output_with_timeout
 ├── phase.home_pass                            (index=1.., root.kind=search_dir; one per --search-dirs)
 ├── phase.dedupe
 ├── phase.catalog_load
@@ -107,6 +116,18 @@ A `scanner.<label>` span's duration equals that scanner's `duration_ms` in the J
 `diagnostics` (the span is ended at exactly start + the measured elapsed time), and its
 attributes carry the same counts.
 
+The process list is read once per scan, by whichever scanner asks first (normally
+`ai`); `frameworks`, `containers` and `notebooks` answer from the same snapshot and
+open no span for it. It replaced one `pgrep -x <name>` per question (ten spawns and
+about 120 ms a scan on the machine it was measured on; the snapshot is one spawn of
+about 9 ms). The match is the one `pgrep -x` made: the whole process name, exactly,
+case-sensitively.
+
+`gitconfig` runs in two passes so the trace can tell its two costs apart: every
+project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
+buried inside each project (`gitconfig.nested_walk`). The findings are joined back in
+the old per-project order, so the report is unchanged.
+
 ## Attributes
 
 | Key | On | Value |
@@ -123,9 +144,25 @@ attributes carry the same counts.
 | `rmguard.scanner` | scanner.*, metrics | scanner label (`mcp`, `packages`, ...) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
-| `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `pgrep` \| `ssh_keygen` |
+| `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` |
+| `rmguard.exec.program` | exec.*, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
+| `rmguard.skills.projects` | scanner.skills | number of project directories walked (no path, no index) |
+| `rmguard.walk.kind` | skills.walk | `commands` \| `agents` \| `hooks` \| `codex` \| `skills` \| `plugins` |
+| `rmguard.walk.scope` | skills.walk | `global` \| `project` |
+| `rmguard.walk.root_link` | skills.walk | `plain` (no symlink to the root, or no root) \| `followed` (a linked root that is walked) \| `refused` (a linked root that is inventoried unread) |
+| `rmguard.walk.entries` | skills.walk, gitconfig.nested_walk, transcripts.store | directory entries visited |
+| `rmguard.walk.files` | skills.walk, transcripts.store | skills: files read through the shared reader; transcripts: regular files counted (never opened) |
+| `rmguard.walk.bytes_hashed` | skills.walk | bytes of file content hashed for the inventory's sha256 |
+| `rmguard.walk.hooks` | skills.walk | frontmatter hooks found |
+| `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk |
+| `rmguard.items` | skills.walk | inventory entries the walk produced (before the scanner's dedupe) |
+| `rmguard.walk.dirs` | gitconfig.nested_walk | directories listed, summed over projects |
+| `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |
+| `rmguard.repos` | gitconfig.repos, gitconfig.nested_walk | projects whose own config was checked; nested git directories found |
+| `rmguard.transcripts.framework` | transcripts.store | `claude-code` \| `codex` \| `gemini-cli` |
+| `rmguard.transcripts.kind` | transcripts.store | `conversation transcripts` \| `command history` \| `todo state` \| `sessions` \| `session state` |
 | `rmguard.mcp.server_index` | mcp.probe | position among probed servers (not the name) |
 | `rmguard.mcp.outcome` | mcp.probe, metric | `ok` \| `empty_command` \| `spawn_failed` \| `timeout` (deadline or watchdog) \| `closed` (server exited: EOF or broken pipe) \| `error` (anything else, including every server-reported error) |
 | `rmguard.mcp.tools`, `rmguard.mcp.resources` | mcp.probe | counts |
@@ -139,9 +176,18 @@ Failed spans carry `Status::Error` with a fixed category as the description, suc
 `spawn_failed`, `timeout` or `lookup_failed`. A non-zero exit is not an error: for
 `git ls-files` it means "not tracked".
 
-Subprocess spans name the call site, not the program. A list of the programs whose
-`--version` answered is an inventory of the AI tools installed on the machine, which is
-a scan finding, so `process.executable.name` is not exported.
+Subprocess spans name the call site and, since the trace could not otherwise say
+which of three `version_probe` spans took 250 ms, the program, as a closed value:
+`rmguard.exec.program` is the basename only when it is in the fixed table of programs
+rmguard chooses to run, and `other` for anything else (a renamed binary, a path outside
+the table). It is never a path, an argument or an MCP server command; `mcp.probe` spans
+still do not name the server. `process.executable.name` (free text) is not exported.
+
+This is a deliberate change from earlier versions, and it is posture metadata of the
+same kind as the counts below: rmguard runs `<tool> --version` only for tools it found,
+so the programs on a trace's `version_probe` spans say which of the table's AI tools,
+model servers, container runtimes and IDEs are installed. They never say where, which
+version, or anything outside the table.
 
 Resource attributes: `service.name=rmguard` (unless `OTEL_SERVICE_NAME` is set),
 `service.version`, `os.type` (`linux` \| `darwin`), `host.arch` (`amd64` \| `arm64` \| raw),
@@ -159,9 +205,14 @@ Exported once, as a cumulative snapshot when the scan ends.
 | `rmguard.scanner.files_missing` | counter | `{file}` | `rmguard.scanner` |
 | `rmguard.scanner.items` | counter | `{item}` | `rmguard.scanner` |
 | `rmguard.scanner.skipped` | counter | `{scanner}` | `rmguard.scanner` |
-| `rmguard.exec.duration` | histogram | s | `rmguard.exec.site`, `rmguard.exec.outcome` |
+| `rmguard.exec.duration` | histogram | s | `rmguard.exec.site`, `rmguard.exec.program`, `rmguard.exec.outcome` |
 | `rmguard.mcp.probe.duration` | histogram | s | `rmguard.mcp.outcome` |
 | `rmguard.registry.lookup.duration` | histogram | s | `rmguard.registry.verdict` |
+
+That is nine names, but a plain scan exports seven: `rmguard.mcp.probe.duration` appears
+only with `--probe-mcp` (and at least one stdio server probed), and
+`rmguard.registry.lookup.duration` only with `--verify-registry` (and at least one
+lookup). An instrument with no recorded value is not exported.
 
 Histogram buckets (s): 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30.
 
@@ -178,7 +229,8 @@ so none of that map goes out:
 
 - file paths, including diagnostics `root` and your home directory;
 - MCP server names, commands, arguments and environment;
-- names of programs rmguard ran (an installed-tool inventory);
+- names of programs rmguard ran, except a basename from the fixed
+  `rmguard.exec.program` table (see above); everything else is `other`;
 - package names and versions, registry URLs and response bodies;
 - error message text from servers, ureq or the OS (only the fixed categories above);
 - host names, user names, file contents, secret values;
@@ -196,7 +248,9 @@ mean those numbers are untrusted input to your backend, not facts about rmguard.
 This is enforced by construction rather than by review. In `src/otel/mod.rs`, attribute
 keys are a closed enum. Attribute values can be built only from `&'static str`,
 integers and booleans; there is no constructor that takes runtime text, so nothing a
-scan read can be passed in (a `compile_fail` doc test in that module checks that a
+scan read can be passed in (the one function that looks at runtime text,
+`otel::exec_program`, returns an entry of its own fixed table or `other`, never its
+input) (a `compile_fail` doc test in that module checks that a
 `String` label does not compile). Span names are static, or a static prefix and a static
 label (`scanner.<label>`, `exec.<site>`) that `otel::span_with` joins itself; it takes
 two `&'static str` and nothing else, and a second `compile_fail` doc test checks that a
@@ -210,6 +264,26 @@ rmguard does, and one near an `Attr` or a span name is a review finding. No cont
 server name (with an ANSI escape), a command, an argument, an env value, a `.env` file
 and an Aider config. It then asserts that none of them, and not the HOME path, appears
 anywhere in the raw OTLP bodies.
+
+## Looking at your own trace
+
+`scripts/otel-tree.py` is a self-contained receiver for reading one scan's trace
+without a collector. It needs only `uv` (its dependencies, `opentelemetry-proto` and
+`protobuf`, are declared inline):
+
+```bash
+cargo build --release
+uv run scripts/otel-tree.py --port 0 -- target/release/rmguard --otel --format json -o /dev/null
+# or listen, and run rmguard yourself:
+uv run scripts/otel-tree.py --port 4318 &
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 rmguard --otel
+```
+
+It listens on 127.0.0.1 only, waits for the `rmguard.scan` span, and prints the span
+tree with durations and attributes (runs of identical leaf spans, such as one walk per
+project, are folded into one `xN` line), totals by span name, exec time by program and
+site, and for each phase and scanner the time no child span covers: the part of the
+scan the trace does not yet explain. `--save FILE` writes the decoded spans as JSON.
 
 ## Failure behavior
 
@@ -236,6 +310,8 @@ anywhere in the raw OTLP bodies.
   is still in flight at shutdown; 2 s is the hard cap either way.
 - When export is off, every instrumentation point is one relaxed atomic load and a
   branch. No closure runs, nothing is allocated, and no thread or socket exists. (The
+  `gitconfig` and `transcripts` walks also bump a few local integer counters per
+  directory entry either way; the skills walk's counters are behind the same check.) (The
   one exception is the child-environment scrub, which is on whether or not export is:
   the names of any `OTEL_*` variables are collected once per run, on the first spawn,
   and reused. std has no names-only iterator, so that single pass copies each

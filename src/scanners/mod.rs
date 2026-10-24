@@ -33,55 +33,89 @@ pub mod vscode_tasks;
 use crate::platform::PlatformInfo;
 use std::time::Duration;
 
-/// Convenience: check if a process with the given name is running.
-/// Falls back to /proc scan on Linux if pgrep is unavailable.
+/// Is a process with exactly this name running?
+///
+/// This used to spawn `pgrep -x <name>` once per question: ten spawns and about 120 ms a
+/// scan (one for `ai`, seven for `frameworks`, two for `containers`). It now asks one
+/// process-name snapshot, taken on the first call and kept for the rest of the run
+/// ([`process_names`]). The answer is the one `pgrep -x` gave: `-x` anchors the pattern
+/// to the whole process NAME (the kernel's 15-byte `comm` on Linux, `p_comm` on macOS),
+/// never the command line, case-sensitively. pgrep reads the pattern as a regular
+/// expression, so plain string equality is the same match only for names without regex
+/// metacharacters; `process_snapshot_tests` checks every name the scanners ask about.
 pub fn is_process_running(name: &str) -> bool {
+    process_list_has(process_names(), name)
+}
+
+/// Exact, case-sensitive name equality: `pgrep -x` for a metacharacter-free name.
+pub(crate) fn process_list_has(names: &[String], name: &str) -> bool {
+    !name.is_empty() && names.iter().any(|n| n == name)
+}
+
+/// The names of every running process, read once per run. A process list cannot be
+/// stale in a way that matters within one scan, and nothing rmguard reports depends on
+/// a process started or stopped during the two seconds it runs.
+fn process_names() -> &'static [String] {
+    static SNAPSHOT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    SNAPSHOT.get_or_init(snapshot_process_names)
+}
+
+/// One `ps -A -o ucomm=` through the hardened, time-capped runner: every process, its
+/// accounting name only (the field `pgrep -x` matches: `comm` on Linux procps, `p_comm`
+/// on macOS), no header. Falls back to reading `/proc/<pid>/comm` on Linux when ps is
+/// missing or fails (busybox ps has no `-o ucomm`).
+fn snapshot_process_names() -> Vec<String> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // Try pgrep first
-        let mut x = crate::otel::exec_span("pgrep");
-        match child_command("pgrep").arg("-x").arg(name).output() {
-            Ok(output) => {
-                note_exit(&mut x, &output.status);
-                return output.status.success();
-            }
-            Err(_) => x.outcome("spawn_failed"),
-        }
-        drop(x);
-
-        // Fallback: scan /proc on Linux
-        #[cfg(target_os = "linux")]
+        let mut cmd = child_command("ps");
+        cmd.args(["-A", "-o", "ucomm="]);
+        if let Some(out) = output_with_timeout_at(&mut cmd, Duration::from_secs(5), "process_list")
+            && out.status.success()
         {
-            return proc_has_process(name);
+            return parse_process_list(&out.stdout);
         }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            return false;
-        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        proc_process_names()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
     }
 }
 
-/// Scan /proc for a process by comm name (Linux fallback when pgrep is unavailable).
+/// One name per line. procps appends ` <defunct>` to a zombie's name; `pgrep -x` still
+/// matched the bare name, so the suffix is removed.
+pub(crate) fn parse_process_list(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(|l| {
+            let l = l.trim();
+            l.strip_suffix(" <defunct>").unwrap_or(l).to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Every `/proc/<pid>/comm` (Linux fallback when ps is unavailable): the same field
+/// pgrep reads.
 #[cfg(target_os = "linux")]
-fn proc_has_process(name: &str) -> bool {
+fn proc_process_names() -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
+        return Vec::new();
     };
+    let mut out = Vec::new();
     for entry in entries.flatten() {
         let fname = entry.file_name();
-        let fname = fname.to_string_lossy();
-        if !fname.chars().all(|c| c.is_ascii_digit()) {
+        if !fname.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let comm_path = entry.path().join("comm");
-        if let Ok(comm) = std::fs::read_to_string(&comm_path) {
-            if comm.trim() == name {
-                return true;
-            }
+        if let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) {
+            out.push(comm.trim().to_string());
         }
     }
-    false
+    out
 }
 
 /// Every child process rmguard runs is built here, so none of them inherits the user's
@@ -204,7 +238,7 @@ fn spawn_waiter(mut child: std::process::Child, tx: std::sync::mpsc::Sender<Chil
 
 /// Get version from a binary by running `binary --version` with a 5-second timeout.
 pub fn get_binary_version(binary: &str) -> Option<String> {
-    let mut x = crate::otel::exec_span("version_probe");
+    let mut x = crate::otel::exec_span("version_probe", std::ffi::OsStr::new(binary));
     let mut child = match child_command(binary)
         .arg("--version")
         .stdout(std::process::Stdio::piped())
@@ -2730,7 +2764,7 @@ fn output_with_cap(
 ) -> Option<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut x = crate::otel::exec_span(site);
+    let mut x = crate::otel::exec_span(site, cmd.get_program());
     let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(c) => c,
         Err(_) => {
@@ -2858,5 +2892,110 @@ mod capped_output_tests {
         let mut small = child_command("/bin/sh");
         small.args(["-c", "head -c 5000 /dev/zero"]);
         assert!(output_with_timeout_capped(&mut small, t, "test", 1000).is_none());
+    }
+}
+
+#[cfg(test)]
+mod process_snapshot_tests {
+    use super::*;
+
+    /// Every process name a detector asks about, with the scanner that asks.
+    fn asked() -> Vec<(&'static str, &'static str)> {
+        let mut v = Vec::new();
+        v.extend(ai_tools::spawn_and_process_names().1.into_iter().map(|n| ("ai", n)));
+        v.extend(ai_frameworks::spawn_and_process_names().1.into_iter().map(|n| ("frameworks", n)));
+        v.extend(container_tools::spawn_and_process_names().1.into_iter().map(|n| ("containers", n)));
+        v.extend(notebook_servers::spawn_and_process_names().1.into_iter().map(|n| ("notebooks", n)));
+        // `ai` also asks about each desktop app by its file stem (both platforms' lists).
+        for stem in ["Claude", "GitHub Copilot", "claude-desktop", "github-copilot"] {
+            v.push(("ai", stem));
+        }
+        v
+    }
+
+    /// What `pgrep -x <pattern>` matched: the pattern as an extended regex anchored at
+    /// both ends, against the process name. Implemented for the subset the detectors
+    /// use (literal text, `.` as any byte), which `names_are_regex_literals` pins.
+    fn old_pgrep_x(names: &[String], pattern: &str) -> bool {
+        names.iter().any(|n| {
+            n.len() == pattern.len() && n.bytes().zip(pattern.bytes()).all(|(a, p)| p == b'.' || a == p)
+        })
+    }
+
+    /// pgrep read its argument as a regex. String equality equals that match only
+    /// when no name holds a metacharacter; one that did (`.`, `+`, `[`...) would need
+    /// escaping to keep its old meaning, or a regex here.
+    #[test]
+    fn names_are_regex_literals() {
+        for (scanner, n) in asked() {
+            assert!(
+                !n.chars().any(|c| ".[]()*+?{}|^$\\".contains(c)),
+                "{scanner}: process name {n:?} has a regex metacharacter"
+            );
+            // Linux pgrep: "pattern ... longer than 15 characters will result in zero
+            // matches". A name past 15 bytes was never matched there, and is not now.
+            assert!(n.len() <= 16, "{scanner}: {n:?} can never match a process name");
+        }
+    }
+
+    /// A canned `ps -A -o ucomm=` listing: the new in-process match gives, for every
+    /// detector's name, the answer the old per-name `pgrep -x` call gave.
+    #[test]
+    fn snapshot_match_equals_old_pgrep_per_detector() {
+        let listing = b"systemd\n  kthreadd\nollama\ntext-generation\ndockerd\ncontainerd-shim\n\
+podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvllm \nps\n\n";
+        let names = parse_process_list(listing);
+        assert!(names.contains(&"podman".to_string()), "zombie suffix not removed: {names:?}");
+        assert!(names.contains(&"kthreadd".to_string()), "leading padding not trimmed");
+        let mut hits = Vec::new();
+        for (scanner, n) in asked() {
+            // The zombie: pgrep matched it by name, so must we.
+            let old = old_pgrep_x(&names, n);
+            assert_eq!(process_list_has(&names, n), old, "{scanner}: {n}");
+            if old {
+                hits.push(n);
+            }
+        }
+        hits.sort();
+        hits.dedup();
+        // Exact, anchored, case-sensitive: `containerd-shim` is not `containerd`,
+        // `limactlx` is not `limactl`, `COLIMA` is not `colima`; the 15-byte truncated
+        // comm `text-generation` is what the frameworks entry asks for.
+        assert_eq!(
+            hits,
+            ["Claude", "GitHub Copilot", "dockerd", "jupyter-noteboo", "ollama", "podman", "text-generation", "vllm"]
+        );
+        assert!(!process_list_has(&names, ""), "an empty name (no file stem) matches nothing");
+        assert!(!process_list_has(&names, "containerd"));
+        assert!(!process_list_has(&names, "colima"));
+    }
+
+    /// On this machine, one snapshot answers like the pgrep it replaced, for the
+    /// current process (whose name the test harness knows) and a name nobody runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_snapshot_sees_this_process() {
+        let me = std::fs::read_to_string("/proc/self/comm").unwrap();
+        let me = me.trim();
+        assert!(is_process_running(me), "{me} not in the snapshot");
+        assert!(!is_process_running("rmguard-no-such-process"));
+        let names = proc_process_names();
+        assert!(process_list_has(&names, me));
+    }
+
+    /// Every program a scanner may `--version` probe or verify is in the closed
+    /// `rmguard.exec.program` table, so the trace names it rather than `other`.
+    #[test]
+    fn every_spawned_program_is_in_the_exec_program_table() {
+        let mut programs: Vec<&str> = vec!["git", "ps", "ssh-keygen", "claude-desktop"];
+        programs.extend(ai_tools::spawn_and_process_names().0);
+        programs.extend(ai_frameworks::spawn_and_process_names().0);
+        programs.extend(container_tools::spawn_and_process_names().0);
+        programs.extend(notebook_servers::spawn_and_process_names().0);
+        programs.extend(node_packages::spawned_binaries());
+        programs.extend(crate::platform::Ide::ALL.iter().map(|&i| ide::ide_bin_name(i)));
+        for p in programs {
+            assert_eq!(crate::otel::exec_program(std::ffi::OsStr::new(p)), p, "{p} missing from EXEC_PROGRAMS");
+        }
     }
 }

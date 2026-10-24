@@ -1,6 +1,7 @@
 use crate::models::GitAutorunConfig;
 use crate::platform::PlatformInfo;
 use crate::scanners::{read_bounded, Scanner};
+use crate::otel::{Attr, Key};
 use std::path::{Path, PathBuf};
 
 /// Detects git configuration that makes an ordinary git command execute an attacker's
@@ -48,17 +49,55 @@ impl Scanner for GitConfigScanner {
         if let Ok(cwd) = std::env::current_dir() {
             dirs.push(cwd);
         }
-        let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for dir in dirs {
-            if !seen.insert(dir.clone()) {
-                continue;
+        dirs.retain(|d| seen.insert(d.clone()));
+        // Two passes, each under its own span, so the trace separates git config reads
+        // from the directory walk. Findings are kept per project and joined in the old
+        // order (each project's repo-local findings, then its nested ones): the report
+        // is the same as the single interleaved pass produced.
+        let mut local: Vec<Vec<GitAutorunConfig>> = Vec::with_capacity(dirs.len());
+        {
+            let mut span = crate::otel::span("gitconfig.repos", Vec::new);
+            for dir in &dirs {
+                let mut o = Vec::new();
+                scan_repo_local(dir, &mut o);
+                local.push(o);
             }
-            scan_repo_local(&dir, &mut out);
-            scan_nested_repos(&dir, &mut out);
+            span.set(|| vec![Attr::int(Key::Repos, dirs.len() as i64)]);
         }
-        out
+        let mut nested: Vec<Vec<GitAutorunConfig>> = Vec::with_capacity(dirs.len());
+        {
+            let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
+            let mut stats = WalkStats::default();
+            for dir in &dirs {
+                let mut o = Vec::new();
+                scan_nested_repos(dir, &mut o, &mut stats);
+                nested.push(o);
+            }
+            span.set(|| {
+                vec![
+                    Attr::int(Key::WalkEntries, stats.entries as i64),
+                    Attr::int(Key::WalkDirs, stats.dirs as i64),
+                    Attr::int(Key::Repos, stats.repos as i64),
+                    Attr::bool(Key::WalkBudgetExhausted, stats.budget_exhausted),
+                ]
+            });
+        }
+        local.into_iter().zip(nested).flat_map(|(l, n)| l.into_iter().chain(n)).collect()
     }
+}
+
+/// Counts for the `gitconfig.nested_walk` span, summed over every project walked.
+#[derive(Default)]
+struct WalkStats {
+    /// Directory entries seen.
+    entries: u64,
+    /// Directories listed.
+    dirs: u64,
+    /// Nested git directories found (git's own HEAD + objects/ + refs/ test).
+    repos: u64,
+    /// A project's walk stopped at its directory budget.
+    budget_exhausted: bool,
 }
 
 fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
@@ -179,7 +218,7 @@ fn config_needs_git(cfg: &Path) -> bool {
 /// directory shipped inside a repo can itself be a git dir (HEAD/config/objects/refs are
 /// all legal tracked filenames), and git auto-discovers it from the cwd. Its config is
 /// attacker-authored in a way the project's own `.git/config` is not.
-fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
+fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut WalkStats) {
     const MAX_DIRS: usize = 4_000;
     /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
     /// a project's directories live, and that no sane repo ships as tracked content.
@@ -205,12 +244,14 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
         // let a few thousand junk files exhaust the walk before it reached a buried git
         // dir -- an attacker-controllable way to hide from the CVE-2026-45033 check.
         if budget == 0 {
+            stats.budget_exhausted = true;
             return;
         }
         budget -= 1;
         let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
         };
+        stats.dirs += 1;
         // One listing answers both questions -- "is this a git dir?" and "what do I
         // descend into?" -- using the entry type the listing already carries. The
         // previous version stat'ed every entry and then stat'ed config and HEAD again
@@ -219,6 +260,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             (false, false, false, false, false);
         let mut children = Vec::new();
         for entry in entries.flatten() {
+            stats.entries += 1;
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
@@ -272,6 +314,9 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>) {
             has_head && has_objects && has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
         if dir == own_git {
             continue; // the project's own .git is handled by scan_repo_local
+        }
+        if is_git_dir {
+            stats.repos += 1;
         }
         if is_git_dir && has_config {
             let cfg = dir.join("config");
@@ -378,7 +423,7 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// Test hook for the nested-repo walk, which is otherwise reachable only through a full
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
-    scan_nested_repos(root, out);
+    scan_nested_repos(root, out, &mut WalkStats::default());
 }
 
 #[cfg(test)]

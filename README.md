@@ -445,15 +445,18 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel
   socket (programs it runs for `--version` are their own programs; `ollama --version`,
   for one, talks to its local server). `OTEL_SDK_DISABLED=true` overrides the flag.
 - **Your collector key stays with rmguard:** every child process (probed MCP servers,
-  `--version` probes, `git`, `pgrep`, `ssh-keygen`) starts with all `OTEL_*` variables
+  `--version` probes, `git`, `ps`, `ssh-keygen`) starts with all `OTEL_*` variables
   removed, so `OTEL_EXPORTER_OTLP_HEADERS` never reaches a config-authored command.
-- **What is exported:** scanner labels, phase names, subprocess call-site names, counts,
-  durations, and fixed outcome categories (`ok`, `timeout`, `spawn_failed`,
+- **What is exported:** scanner labels, phase names, subprocess call-site names, the
+  spawned program's basename when it is one of a fixed table of programs rmguard runs
+  (else `other`), closed walk labels (`skills.walk` kind/scope, transcript store
+  framework), counts, durations, and fixed outcome categories (`ok`, `timeout`, `spawn_failed`,
   `lookup_failed`, `error.type=connect`, an HTTP status code). Resource: `service.name`,
   `service.version`, `os.type`, `host.arch`.
 - **What is never exported:** file paths (including your home directory), MCP server
-  names, commands, arguments and environment, names of the programs rmguard ran (that
-  list would be an inventory of installed tools), package names, registry URLs or
+  names, commands, arguments and environment, any program name outside that fixed
+  table (the table's names on `--version` probes do say which of those tools are
+  installed; see docs/OPENTELEMETRY.md), package names, registry URLs or
   responses, error message text, host names, user names, file contents, `--trace`
   lines, or any secret value. MCP servers and registry lookups are identified only by
   their position.
@@ -461,8 +464,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel
   capped at 2 s; one `warning:` line on stderr says what failed; the exit code is
   unchanged.
 
-The hook surfaces add no spans: their reads go through the same readers, so they count
-in the `settings` and `skills` scanner spans and diagnostics.
+The hook surfaces add no spans of their own: their reads go through the same readers, so
+they count in the `settings` and `skills` scanner spans and diagnostics (and in the
+`skills.walk` span of the walk that found them). `scripts/otel-tree.py` prints one
+scan's span tree locally (`uv run scripts/otel-tree.py -- rmguard --otel`).
 
 Every span, attribute and metric is listed in [docs/OPENTELEMETRY.md](docs/OPENTELEMETRY.md).
 The exporter is the `otel` cargo feature (on by default); `--no-default-features`
@@ -503,7 +508,7 @@ Capabilities that no MCP client performs at install time:
 
 | Platform | Status |
 |---|---|
-| Linux | Supported (XDG paths, `/etc/os-release`, `pgrep`) |
+| Linux | Supported (XDG paths, `/etc/os-release`, `ps`) |
 | macOS | Supported (`/Applications/`, `sw_vers`, `defaults read`) |
 
 CI runs the full test suite on both.
