@@ -934,15 +934,24 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     for e in &report.env_files {
         // A .env is graded by what was actually read. The values are never read, so a
         // secret is judged by the key NAMES (secret-named or a connection string, plus
-        // ANTHROPIC_CUSTOM_HEADERS). When the file was opened and parsed and no name is
-        // credential-shaped (only PORT / NODE_ENV / LOG_LEVEL, or no keys at all), a
-        // committed or world-readable .env is a Low advisory. A file whose keys were not
-        // read (a symlink, never opened, or a file that could not be read) keeps the
-        // Critical / High grade, since nothing shows it is clean. `key_count > 0` also
-        // proves a read, so a report from before `read_ok` existed grades as it did.
+        // ANTHROPIC_CUSTOM_HEADERS). When the file was opened, EVERY content line parsed as
+        // `KEY=value`, and no name is credential-shaped (only PORT / NODE_ENV / LOG_LEVEL,
+        // or no content at all), a committed or world-readable .env is a Low advisory. A
+        // file whose keys were not read (a symlink, never opened, or a file that could not
+        // be read), or that has lines rmguard could not parse (`spring.datasource.password=x`,
+        // `OPENAI_API_KEY: sk-...`), keeps the Critical / High grade, since nothing shows
+        // it is clean. `key_count > 0` also proves a read, so a report from before
+        // `read_ok` existed grades as it did.
         let credential_named = !e.secret_keys.is_empty() || e.agent_overrides.iter().any(|o| o.kind == "headers");
         let keys_read = e.symlink.is_none() && (e.read_ok || e.key_count > 0);
-        let clean = keys_read && !credential_named;
+        let clean = keys_read && !credential_named && e.unparsed_lines == 0;
+        let unparsed = |what: &str| {
+            format!(
+                ".env is {what} and has {} line{} rmguard could not parse as KEY=value",
+                e.unparsed_lines,
+                if e.unparsed_lines == 1 { "" } else { "s" }
+            )
+        };
         if e.git_tracked && clean {
             let title = if e.key_count == 0 {
                 ".env is git-tracked and empty — check that no credential is added to it later".to_string()
@@ -960,10 +969,12 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 evidence: None,
             });
         } else if e.git_tracked {
-            let title = if keys_read {
-                format!(".env is git-tracked ({} keys) — committed secrets", e.key_count)
-            } else {
+            let title = if !keys_read {
                 ".env is git-tracked and its keys could not be read (unreadable, or a symlink rmguard does not open); treated as committed secrets".to_string()
+            } else if !credential_named {
+                format!("{}; treated as committed secrets", unparsed("git-tracked"))
+            } else {
+                format!(".env is git-tracked ({} keys) — committed secrets", e.key_count)
             };
             f.push(Finding {
                 severity: Severity::Critical,
@@ -984,10 +995,15 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 evidence: None,
             });
         } else if e.world_readable {
+            let title = if keys_read && !credential_named {
+                format!("{}; treated as exposed secrets", unparsed("world-readable"))
+            } else {
+                format!(".env is world-readable ({} keys)", e.key_count)
+            };
             f.push(Finding {
                 severity: Severity::High,
                 category: "Secret exposure".into(),
-                title: format!(".env is world-readable ({} keys)", e.key_count),
+                title,
                 location: e.path.clone(),
                 evidence: None,
             });

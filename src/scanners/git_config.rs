@@ -289,14 +289,17 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
         "site-packages",
         "dist-packages",
     ];
-    /// A directory whose listing contains one of these was produced by a tool, not
-    /// committed: `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's
-    /// `venv`, https://docs.python.org/3/library/venv.html), `CACHEDIR.TAG` marks cargo's
-    /// target/ and most caches (the Cache Directory Tagging Specification,
-    /// https://bford.info/cachedir/, which cargo, pip, uv and others follow). Only the
-    /// name in the listing is checked; neither file is opened. The gitdir check runs BEFORE this skip, so planting a marker in
-    /// the payload directory itself does not hide it; planting one in an ancestor does,
-    /// which is the same adversarial floor as exhausting the directory budget.
+    /// A directory holding one of these, VALID, was produced by a tool, not committed:
+    /// `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's `venv`,
+    /// https://docs.python.org/3/library/venv.html), `CACHEDIR.TAG` marks cargo's target/
+    /// and most caches (the Cache Directory Tagging Specification,
+    /// https://bford.info/cachedir/, which cargo, pip, uv and others follow). A name alone
+    /// is not enough (review of b21286f: a committed empty `CACHEDIR.TAG` hid a buried
+    /// gitdir): the marker must be a regular file, opened without following a link, that
+    /// [`is_generated_marker`] accepts. The walk root itself is never pruned, and the
+    /// gitdir check runs BEFORE this skip, so planting a marker in the payload directory
+    /// itself does not hide it; planting a VALID one in an ancestor does, which is the same
+    /// adversarial floor as exhausting the directory budget.
     const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
     let own_git = root.join(".git");
     let mut budget = MAX_DIRS;
@@ -319,8 +322,8 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
         // descend into?" -- using the entry type the listing already carries. The
         // previous version stat'ed every entry and then stat'ed config and HEAD again
         // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
-        let (mut has_config, mut has_head, mut has_objects, mut has_refs, mut generated) =
-            (false, false, false, false, false);
+        let (mut has_config, mut has_head, mut has_objects, mut has_refs) = (false, false, false, false);
+        let mut markers: Vec<std::path::PathBuf> = Vec::new();
         let mut children = Vec::new();
         for entry in entries.flatten() {
             stats.entries += 1;
@@ -351,7 +354,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
                 if name == "config" {
                     has_config = true;
                 } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
-                    generated = true;
+                    markers.push(entry.path());
                 }
             } else if is_dir {
                 if name == "objects" {
@@ -394,7 +397,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
                 collect(&text, &dir, "nested-repo", true, out);
             }
         }
-        if generated && !is_git_dir {
+        if !is_git_dir && dir != root && markers.iter().any(|m| is_generated_marker(m)) {
             stats.pruned += 1;
             continue; // a virtualenv or build cache: nothing in it was shipped by the repo
         }
@@ -407,6 +410,29 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
             }
             stack.push(path);
         }
+    }
+}
+
+/// The first bytes of a valid `CACHEDIR.TAG` (https://bford.info/cachedir/): "The cache
+/// directory tag file must begin with the following 43 octets".
+const CACHEDIR_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+
+/// Whether a generated-tree marker is the real thing, read without following a link and
+/// bounded: a `CACHEDIR.TAG` that begins with the spec's signature (64 bytes read), or a
+/// non-empty `pyvenv.cfg` with a `home = ...` line (4 KiB read; the key as Python's
+/// `site` module parses it: the text before `=`, stripped, case-insensitive).
+fn is_generated_marker(path: &Path) -> bool {
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("CACHEDIR.TAG") => {
+            crate::scanners::read_head_bytes_nofollow(path, 64).is_some_and(|b| b.starts_with(CACHEDIR_SIGNATURE))
+        }
+        Some("pyvenv.cfg") => crate::scanners::read_head_bytes_nofollow(path, 4096).is_some_and(|b| {
+            String::from_utf8_lossy(&b).lines().any(|l| {
+                l.split_once('=')
+                    .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("home"))
+            })
+        }),
+        _ => false,
     }
 }
 

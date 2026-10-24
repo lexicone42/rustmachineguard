@@ -955,7 +955,7 @@ mod tests {
         assert_eq!(Key::ALL.len(), 57, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
-            "program names are a tool inventory and are not exported"
+            "program names are exported only as the closed `rmguard.exec.program` set, never the open process.executable.name"
         );
         assert_eq!(Key::ExecProgram.as_str(), "rmguard.exec.program");
         assert_eq!(Key::HttpStatus.as_str(), "http.response.status_code");

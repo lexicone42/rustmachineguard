@@ -789,7 +789,7 @@ pub(crate) fn is_agent_credential_path(p: &Path, agent_home: Option<&Path>) -> b
 }
 
 /// Trees outside HOME that hold system configuration, process state or other users' data.
-const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
+pub(crate) const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
     "/etc",
     "/proc",
     "/sys",
@@ -854,6 +854,15 @@ pub(crate) fn sensitive_read_kind(resolved: &Path, home: &Path) -> Option<&'stat
             .iter()
             .any(|p| rel.starts_with(p))
             .then_some("credential");
+    }
+    sensitive_read_kind_outside_home(resolved)
+}
+
+/// [`sensitive_read_kind`] for a path judged under no home: a credential name, a system
+/// tree (`"system"`) or another user's home (`"other-home"`).
+pub(crate) fn sensitive_read_kind_outside_home(resolved: &Path) -> Option<&'static str> {
+    if is_sensitive_read_name(resolved) {
+        return Some("credential");
     }
     if SENSITIVE_SYSTEM_ROOTS.iter().any(|r| resolved.starts_with(r)) {
         return Some("system");

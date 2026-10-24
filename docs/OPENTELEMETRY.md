@@ -73,7 +73,8 @@ for telling instances of one service apart; the collector's Prometheus exporter 
 into the `instance` label). It is **the one exported value that is not a closed set**:
 it is your text, typed on the command line (or by your fleet tooling), exported as given
 (surrounding whitespace removed; empty, longer than 128 characters or containing a
-control character is a usage error). rmguard never fills it in itself: not from the host
+control, bidi, zero-width or other invisible formatting character, anything the
+display sanitizer would rewrite, is a usage error). rmguard never fills it in itself: not from the host
 name, the user, a machine id file or anything it scanned. Pick something that means
 something to you and nothing to an outsider, such as an asset tag, rather than the host
 name. `--otel-instance` without `--otel` is a usage error.

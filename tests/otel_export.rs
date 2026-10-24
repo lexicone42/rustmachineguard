@@ -368,7 +368,9 @@ fn catalog_version_in_version_and_report() {
 }
 
 /// `--otel-instance` is an export setting: without `--otel` it is a usage error, and
-/// an empty or control-character id is refused rather than exported.
+/// an empty id, or one with a control, bidi, zero-width or other invisible format
+/// character (review of b21286f: only control characters were refused), is refused
+/// rather than exported.
 #[test]
 fn otel_instance_needs_otel_and_a_sane_id() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -378,10 +380,17 @@ fn otel_instance_needs_otel_and_a_sane_id() {
         &["--otel-instance", "box-1", "--format", "json"][..],
         &["--otel", "--otel-instance", "  ", "--format", "json"][..],
         &["--otel", "--otel-instance", "a\u{1b}[31m", "--format", "json"][..],
+        &["--otel", "--otel-instance", "box\u{202e}1-xob", "--format", "json"][..],
+        &["--otel", "--otel-instance", "box\u{2066}-1", "--format", "json"][..],
+        &["--otel", "--otel-instance", "box\u{200b}-1", "--format", "json"][..],
+        &["--otel", "--otel-instance", "box\u{feff}-1", "--format", "json"][..],
     ] {
         let (out, _) = run(rmguard(&home, Some(port), args));
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
         assert!(out.stdout.is_empty(), "{args:?} scanned anyway");
+        if args[0] == "--otel" {
+            assert!(stderr(&out).contains("--otel-instance"), "{args:?}: {}", stderr(&out));
+        }
     }
     assert_never_connected(&listener);
     let _ = std::fs::remove_dir_all(&home);

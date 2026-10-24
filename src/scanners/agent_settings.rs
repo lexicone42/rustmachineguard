@@ -341,46 +341,68 @@ impl Homes {
         &self.0.last().expect("at least $HOME").0
     }
 
-    /// [`crate::scanners::persistence::is_sensitive_read_target`] judged against the home
-    /// that contains `p` when one does, else against every home. Judged against the OTHER
-    /// home, a `--search-dirs` home's own dotfiles fall through to the system and
-    /// other-user rules: `/Users/alt/dotfiles/x` is "another user's home" seen from
-    /// `/home/me`, and a macOS temp home under `/private/var` is "system" (the macOS CI
-    /// failure of 2ab0c6d). A home's files are judged by that home's rules alone.
+    /// [`crate::scanners::persistence::is_sensitive_read_target`] judged against EVERY home
+    /// that contains `p` (in the lexical or canonical form `p` uses), refused when any of
+    /// them refuses it. Judged against a home that does NOT contain it, a `--search-dirs`
+    /// home's own dotfiles would fall through to the system and other-user rules:
+    /// `/Users/alt/dotfiles/x` is "another user's home" seen from `/home/me`, and a macOS
+    /// temp home under `/private/var` is "system" (the macOS CI failure of 2ab0c6d). Every
+    /// containing home counts, not the first: a `--search-dirs` home nested in `$HOME`
+    /// judged only by `$HOME` let `alt/.cursor/hooks.json -> ../.docker/config.json` be
+    /// opened (review of b21286f). A path under no home, or only under a home that is a
+    /// directory of homes or system trees (`--search-dirs /home`, `/`), is also judged by
+    /// the system and other-user rules.
     fn sensitive(&self, p: &Path) -> bool {
-        match self.base_for(p) {
-            Some(base) => crate::scanners::persistence::is_sensitive_read_target(p, base),
-            None => self.0.iter().any(|(h, rh)| {
-                crate::scanners::persistence::is_sensitive_read_target(p, h)
-                    || crate::scanners::persistence::is_sensitive_read_target(p, rh)
-            }),
-        }
+        use crate::scanners::persistence::{is_sensitive_read_target, sensitive_read_kind_outside_home};
+        let bases = self.bases_for(p);
+        bases.iter().any(|b| is_sensitive_read_target(p, b))
+            || (!bases.iter().any(|b| !is_home_of_homes(b)) && sensitive_read_kind_outside_home(p).is_some())
     }
 
-    /// The lexical or canonical home `p` is under, whichever form `p` uses.
-    fn base_for(&self, p: &Path) -> Option<&Path> {
-        self.containing(p)
-            .map(|(h, rh)| if p.starts_with(h) { h.as_path() } else { rh.as_path() })
-    }
-
-    /// [`crate::scanners::persistence::sensitive_read_kind`] with the same home rule.
+    /// [`crate::scanners::persistence::sensitive_read_kind`] with the same home rule: the
+    /// worst kind across the containing homes (and the outside-home kind when no proper
+    /// home contains `p`).
     fn read_kind(&self, p: &Path) -> Option<&'static str> {
-        match self.base_for(p) {
-            Some(base) => crate::scanners::persistence::sensitive_read_kind(p, base),
-            None => crate::scanners::persistence::worst_read_kind(
-                self.0
-                    .iter()
-                    .map(|(_, rh)| crate::scanners::persistence::sensitive_read_kind(p, rh)),
-            ),
-        }
+        use crate::scanners::persistence::{sensitive_read_kind, sensitive_read_kind_outside_home, worst_read_kind};
+        let bases = self.bases_for(p);
+        let outside = (!bases.iter().any(|b| !is_home_of_homes(b))).then(|| sensitive_read_kind_outside_home(p));
+        worst_read_kind(bases.iter().map(|b| sensitive_read_kind(p, b)).chain(outside))
     }
 
-    /// The (lexical, canonical) home `p` is under, if any.
+    /// The lexical or canonical form of every home `p` is under, whichever form `p` uses.
+    fn bases_for(&self, p: &Path) -> Vec<&Path> {
+        self.0
+            .iter()
+            .filter(|(h, _)| !h.as_os_str().is_empty())
+            .filter_map(|(h, rh)| {
+                if p.starts_with(h) {
+                    Some(h.as_path())
+                } else if p.starts_with(rh) {
+                    Some(rh.as_path())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The (lexical, canonical) home `p` is under, if any (the innermost when several are).
     fn containing(&self, p: &Path) -> Option<&(PathBuf, PathBuf)> {
         self.0
             .iter()
-            .find(|(h, rh)| !h.as_os_str().is_empty() && (p.starts_with(h) || p.starts_with(rh)))
+            .filter(|(h, rh)| !h.as_os_str().is_empty() && (p.starts_with(h) || p.starts_with(rh)))
+            .max_by_key(|(h, _)| h.components().count())
     }
+}
+
+/// A "home" that is really a directory of homes or of system trees (`/`, `/home`,
+/// `/Users`, or an ancestor of a system root): its own relative rules do not make another
+/// user's home or `/etc` below it the user's own files.
+fn is_home_of_homes(h: &Path) -> bool {
+    ["/home", "/Users"]
+        .iter()
+        .chain(crate::scanners::persistence::SENSITIVE_SYSTEM_ROOTS)
+        .any(|r| Path::new(r).starts_with(h))
 }
 
 fn is_link(p: &Path) -> bool {
@@ -1521,6 +1543,41 @@ mod tests {
         assert!(homes.sensitive(Path::new("/home/other/notes.md")));
         assert!(homes.sensitive(Path::new("/private/etc/hosts")));
         assert!(homes.sensitive(Path::new("/Users/alt2/.aws/credentials")));
+
+        // A scanned home nested in `$HOME`: judged by BOTH homes, so the inner home's
+        // credential stores are refused even though `$HOME` sees them as `alt/.docker`
+        // (b21286f judged only by the first home and opened them).
+        let nested = Homes(vec![
+            (PathBuf::from("/home/me"), PathBuf::from("/home/me")),
+            (PathBuf::from("/home/me/alt"), PathBuf::from("/home/me/alt")),
+        ]);
+        for (bad, kind) in [
+            ("/home/me/alt/.docker/config.json", "credential"),
+            ("/home/me/alt/.ssh/id_ed25519", "credential"),
+            ("/home/me/.aws/credentials", "credential"),
+        ] {
+            assert!(nested.sensitive(Path::new(bad)), "{bad}");
+            assert_eq!(nested.read_kind(Path::new(bad)), Some(kind), "{bad}");
+        }
+        for ok in ["/home/me/alt/dotfiles/x.json", "/home/me/dotfiles/x.json"] {
+            assert!(!nested.sensitive(Path::new(ok)), "{ok}");
+            assert_eq!(nested.read_kind(Path::new(ok)), None, "{ok}");
+        }
+
+        // A scan directory that is an ANCESTOR of `$HOME` (`--search-dirs /home`): a
+        // directory of homes, so another user's files below it stay other-home.
+        let ancestor = Homes(vec![
+            (PathBuf::from("/home/me"), PathBuf::from("/home/me")),
+            (PathBuf::from("/home"), PathBuf::from("/home")),
+        ]);
+        assert!(ancestor.sensitive(Path::new("/home/other/.config/gh/hosts.yml")));
+        assert_eq!(
+            ancestor.read_kind(Path::new("/home/other/.config/gh/hosts.yml")),
+            Some("other-home")
+        );
+        assert!(ancestor.sensitive(Path::new("/home/me/.docker/config.json")));
+        assert!(!ancestor.sensitive(Path::new("/home/me/dotfiles/x")));
+        assert_eq!(ancestor.read_kind(Path::new("/home/me/dotfiles/x")), None);
     }
 
     #[test]

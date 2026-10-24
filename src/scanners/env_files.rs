@@ -20,16 +20,70 @@ const SECRET_KEY_HINTS: &[&str] = &[
     "KEY",
     "PASSWORD",
     "PASSWD",
+    "PASSPHRASE",
     "CREDENTIAL",
     "AUTH",
     "PRIVATE",
 ];
 
+/// Short secret words that are matched only as the LAST word of a name (or the whole
+/// name), never as a substring: `DB_PASS`, `SMTP_PASS`, `DB_PWD`, `GITHUB_PAT`,
+/// `STRIPE_SK`, `SUPABASE_JWT`, `dbPass` (review of b21286f: a committed .env of only
+/// these was graded clean, and `MY_PASS=x ./notify.sh` was shown verbatim). A substring rule would flag `PASSENGERS`,
+/// `COMPASS`, `PATH`, `TASK_ID`, `DISK_SIZE` and `RISK`; a last-word rule also leaves
+/// `DB_PASS_FILE` (a path) and `JWT_ISSUER` (a name) alone.
+const SECRET_LAST_WORDS: &[&str] = &["PASS", "PWD", "PAT", "JWT", "SK"];
+
+/// The words of a key name, upper-cased: split at `_`, `-`, `.` and every other
+/// non-alphanumeric, and at a lower-to-upper camelCase step (`dbPass` -> DB, PASS).
+fn key_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && prev_lower && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        cur.push(c.to_ascii_uppercase());
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
 /// True if a variable/key NAME looks like it holds a secret (name-only heuristic;
-/// never inspects the value). Shared with the MCP scanner's inline-secret check.
+/// never inspects the value). Shared with the MCP scanner's inline-secret check and
+/// the command redactor. `PWD` on its own is the POSIX working-directory variable, not
+/// a password, and is not flagged (`DB_PWD` is).
 pub fn is_secret_key_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
+    if SECRET_KEY_HINTS.iter().any(|h| upper.contains(h)) {
+        return true;
+    }
+    if upper == "PWD" {
+        return false;
+    }
+    key_words(name)
+        .last()
+        .is_some_and(|w| SECRET_LAST_WORDS.contains(&w.as_str()))
+}
+
+/// A .env key NAME with `WEBHOOK` as one of its words (`SLACK_WEBHOOK_URL`,
+/// `DISCORD_WEBHOOK`): a webhook URL is its own credential. Kept out of
+/// [`is_secret_key_name`], like [`is_connection_string_key_name`]: in a command the
+/// redactor already cuts a webhook URL to its host by shape (`--webhook
+/// https://example.com/<redacted>`), and redacting by name would drop the host too.
+pub fn is_webhook_key_name(name: &str) -> bool {
+    key_words(name).iter().any(|w| w == "WEBHOOK")
 }
 
 /// A .env key NAME that by convention holds a connection string, whose userinfo carries
@@ -115,10 +169,11 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
         crate::scanners::read_bounded_nofollow(path, None)
     };
     let read_ok = content.is_some();
-    let (key_count, secret_keys) = match content.as_deref() {
-        Some(content) => parse_env_keys(content),
-        None => (0, Vec::new()),
-    };
+    let EnvLines {
+        key_count,
+        secret_keys,
+        unparsed_lines,
+    } = content.as_deref().map(parse_env_lines).unwrap_or_default();
     let agent_overrides = content
         .as_deref()
         .map(|c| build_overrides(&parse_env_overrides(c), project_dir, home))
@@ -131,6 +186,7 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
         world_readable,
         key_count,
         read_ok,
+        unparsed_lines,
         secret_keys,
         agent_overrides,
         symlink,
@@ -496,27 +552,79 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
 /// Parse `KEY=value` lines, returning (total key count, secret-looking key NAMES).
 /// Values are never retained.
 pub fn parse_env_keys(content: &str) -> (usize, Vec<String>) {
-    let mut count = 0;
-    let mut secrets = Vec::new();
+    let l = parse_env_lines(content);
+    (l.key_count, l.secret_keys)
+}
+
+/// What [`parse_env_lines`] found in a `.env`: never a value.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EnvLines {
+    /// `KEY=value` lines parsed (a key name of ASCII letters, digits and `_`).
+    pub key_count: usize,
+    /// Secret-looking key NAMES, deduplicated, in file order.
+    pub secret_keys: Vec<String>,
+    /// Non-blank, non-comment lines that are not `KEY=value` (`spring.datasource.password=x`,
+    /// YAML-style `OPENAI_API_KEY: sk-...`): rmguard cannot tell what they hold.
+    pub unparsed_lines: usize,
+}
+
+/// [`parse_env_keys`] that also counts the lines it could not parse. A quoted value that
+/// opens on a `KEY=` line and closes on a later one (dotenv's multi-line values, a PEM
+/// block) is one entry: its continuation lines are not counted as unparsed. The value is
+/// looked at only for its quote characters, never kept.
+pub fn parse_env_lines(content: &str) -> EnvLines {
+    let mut out = EnvLines::default();
+    let mut open_quote: Option<char> = None;
     for line in content.lines() {
+        if let Some(q) = open_quote {
+            if closes_quote(line, q) {
+                open_quote = None;
+            }
+            continue;
+        }
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, _value)) = line.split_once('=') else {
+        let Some((key, value)) = line.split_once('=') else {
+            out.unparsed_lines += 1;
             continue;
         };
         let key = key.trim();
         if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            out.unparsed_lines += 1;
             continue;
         }
-        count += 1;
-        if (is_secret_key_name(key) || is_connection_string_key_name(key)) && !secrets.contains(&key.to_string()) {
-            secrets.push(key.to_string());
+        out.key_count += 1;
+        if (is_secret_key_name(key) || is_connection_string_key_name(key) || is_webhook_key_name(key))
+            && !out.secret_keys.iter().any(|k| k == key)
+        {
+            out.secret_keys.push(key.to_string());
+        }
+        let value = value.trim_start();
+        if let Some(q) = value.chars().next().filter(|c| *c == '"' || *c == '\'')
+            && !closes_quote(&value[1..], q)
+        {
+            open_quote = Some(q);
         }
     }
-    (count, secrets)
+    out
+}
+
+/// `text` holds a closing `q` (for `"`, one not escaped by a backslash).
+fn closes_quote(text: &str, q: char) -> bool {
+    let mut escaped = false;
+    for c in text.chars() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' && q == '"' {
+            escaped = true;
+        } else if c == q {
+            return true;
+        }
+    }
+    false
 }
 
 fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {

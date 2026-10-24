@@ -249,12 +249,37 @@ const DISAMBIGUATORS: &[&str] = &[
     "path",
 ];
 
+/// A row's identity in a --diff section: the row's own key, the disambiguator that
+/// tells colliding rows apart, and the copy number. Kept as separate parts, not joined
+/// into one string: a natural key can contain `|` or `#` (a composite `primary|source`
+/// key, or any text in a hand-edited baseline), so a synthesised `{k}|{d}` or `{k}#2`
+/// could equal another row's natural key and overwrite it (review of b21286f).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RowKey {
+    key: String,
+    disambiguator: String,
+    nth: usize,
+}
+
+impl std::fmt::Display for RowKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.key)?;
+        if !self.disambiguator.is_empty() {
+            write!(f, "|{}", self.disambiguator)?;
+        }
+        if self.nth > 1 {
+            write!(f, "#{}", self.nth)?;
+        }
+        Ok(())
+    }
+}
+
 /// Index rows by `key`, independent of the rows' order. Collecting straight into a map
 /// kept the LAST row of a shared key and dropped the others, so the same rows in another
 /// order printed a different --diff (and a change to the dropped copy never showed).
 /// Colliding rows are told apart by the fewest [`DISAMBIGUATORS`] that make them unique
-/// (`key|vscode`), and anything still equal by its canonical JSON (`key#2`).
-fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> BTreeMap<String, &'a Value> {
+/// (shown `key|vscode`), and anything still equal by its canonical JSON (`key#2`).
+fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> BTreeMap<RowKey, &'a Value> {
     let mut groups: BTreeMap<String, Vec<&'a Value>> = BTreeMap::new();
     for v in rows {
         if let Some(k) = key(v) {
@@ -264,7 +289,13 @@ fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> 
     let mut out = BTreeMap::new();
     for (k, mut vs) in groups {
         if vs.len() == 1 {
-            out.insert(k, vs[0]);
+            let rk = RowKey {
+                key: k,
+                disambiguator: String::new(),
+                nth: 1,
+            };
+            let prev = out.insert(rk, vs[0]);
+            debug_assert!(prev.is_none(), "one entry per natural key");
             continue;
         }
         let disc = |v: &Value, n: usize| -> String {
@@ -281,10 +312,15 @@ fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> 
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         for v in vs {
             let d = disc(v, n);
-            let base = if d.is_empty() { k.clone() } else { format!("{k}|{d}") };
-            let i = seen.entry(base.clone()).or_default();
+            let i = seen.entry(d.clone()).or_default();
             *i += 1;
-            out.insert(if *i == 1 { base } else { format!("{base}#{i}") }, v);
+            let rk = RowKey {
+                key: k.clone(),
+                disambiguator: d,
+                nth: *i,
+            };
+            let prev = out.insert(rk, v);
+            debug_assert!(prev.is_none(), "row keys are unique by construction");
         }
     }
     out
@@ -322,8 +358,8 @@ fn diff_array_section(
     let baseline_map = index_rows(&baseline, composite_key);
     let current_map = index_rows(&current, composite_key);
 
-    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
-    let current_keys: BTreeSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&RowKey> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&RowKey> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -357,7 +393,7 @@ fn diff_array_section(
 
         if !changes.is_empty() {
             changed.push(ChangedItem {
-                name: (*key).clone(),
+                name: key.to_string(),
                 changes,
             });
         }
@@ -413,8 +449,8 @@ fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let baseline_map = index_rows(&baseline, key);
     let current_map = index_rows(&current, key);
 
-    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
-    let current_keys: BTreeSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&RowKey> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&RowKey> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -486,8 +522,8 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let baseline_map = index_rows(&baseline, key);
     let current_map = index_rows(&current, key);
 
-    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
-    let current_keys: BTreeSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&RowKey> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&RowKey> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys
         .difference(&baseline_keys)
@@ -576,8 +612,8 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let baseline_map = index_rows(&baseline, key);
     let current_map = index_rows(&current, key);
 
-    let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
-    let current_keys: BTreeSet<&String> = current_map.keys().collect();
+    let baseline_keys: BTreeSet<&RowKey> = baseline_map.keys().collect();
+    let current_keys: BTreeSet<&RowKey> = current_map.keys().collect();
 
     let added: Vec<String> = current_keys.difference(&baseline_keys).map(|k| k.to_string()).collect();
     let removed: Vec<String> = baseline_keys.difference(&current_keys).map(|k| k.to_string()).collect();
@@ -626,7 +662,7 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 
         if !changes.is_empty() {
             changed.push(ChangedItem {
-                name: (*key).clone(),
+                name: key.to_string(),
                 changes,
             });
         }

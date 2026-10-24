@@ -2537,9 +2537,10 @@ pub fn probe_exists(path: &std::path::Path) -> bool {
 
 /// Scan telemetry. Answers the one question a silent scanner never could: did it look?
 ///
-/// Counters are process-global because scanners run sequentially; [`timed`] snapshots
-/// them around each scanner. If scanning ever goes parallel these must move to
-/// per-scanner state, or every attribution here becomes wrong.
+/// Counters are per scanner run, not process-global: [`timed`] gives each scanner its own
+/// [`ScannerScope`] on the thread it runs on (scanners run side by side under `--jobs`),
+/// and helper threads carry it ([`par_map`], [`ScopeHandle::enter`]), so attribution
+/// stays right when scanning is parallel. Only the trace switch is process-wide.
 pub mod telemetry {
     use crate::models::ScannerStat;
     use std::path::{Path, PathBuf};

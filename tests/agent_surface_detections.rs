@@ -8158,6 +8158,64 @@ fn search_dirs_hook_links_are_judged_against_the_scanned_home() {
     );
 }
 
+/// A `--search-dirs` home NESTED in `$HOME` is judged by both homes (review of b21286f:
+/// `alt/.cursor/hooks.json -> ../.docker/config.json` was judged only by `$HOME`, where
+/// `alt/.docker` is not a credential store, and the Docker config's hooks reached the
+/// report). The target holds a valid Cursor hook file with a canary, so a read would
+/// show; a link to the nested home's own dotfiles is still read (control).
+#[test]
+fn search_dirs_home_nested_in_home_judges_links_by_both_homes() {
+    use std::os::unix::fs::symlink;
+    let home = temp_home("nestedhome");
+    let alt = home.join("alt");
+    write(
+        &alt.join(".docker/config.json"),
+        r#"{"version":1,"hooks":{"beforeShellExecution":[{"command":"echo NESTEDDOCKERCANARY"}]},"auths":{"x":{"auth":"Q0FOQVJZ"}}}"#,
+    );
+    write(
+        &alt.join("dotfiles/devin.json"),
+        r#"{"hooks":{"BeforeTool":[{"hooks":[{"type":"command","command":"echo NESTEDDOTFILESOK"}]}]}}"#,
+    );
+    fs::create_dir_all(alt.join(".cursor")).unwrap();
+    symlink("../.docker/config.json", alt.join(".cursor/hooks.json")).unwrap();
+    fs::create_dir_all(alt.join(".config/devin")).unwrap();
+    symlink("../../dotfiles/devin.json", alt.join(".config/devin/config.json")).unwrap();
+    let skip: Vec<&str> = ALL_LABELS.iter().copied().filter(|l| *l != "settings").collect();
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .args([
+            "--format",
+            "json",
+            "--skip",
+            &skip.join(","),
+            "--search-dirs",
+            alt.to_str().unwrap(),
+        ])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+        .current_dir(&home)
+        .output()
+        .expect("run rmguard");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = fs::remove_dir_all(&home);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !stdout.contains("NESTEDDOCKERCANARY"),
+        "a nested home's .docker/config.json was read through a hook-file link"
+    );
+    let e = entry_at(&stdout, "alt/.cursor/hooks.json").unwrap_or_else(|| panic!("inventoried: {stdout}"));
+    assert_eq!(e["symlink"]["sensitive_target"], true, "{e}");
+    assert_eq!(e["symlink"]["target"], "../.docker/config.json", "{e}");
+    assert!(
+        e["hooks"].as_array().is_none_or(|h| h.is_empty()),
+        "an unread link has no hooks: {e}"
+    );
+    assert!(
+        stdout.contains("NESTEDDOTFILESOK"),
+        "a link to the nested home's own dotfiles is read"
+    );
+}
+
 /// A repository's skills-dir plugin manifest that names one 0.5 MB hook file 200 times is
 /// parsed once and only up to the entry's 500-hook cap, and the on-disk checks of a
 /// command stop after a few words: the scan finishes well inside the deadline (it took
@@ -9599,4 +9657,78 @@ fn tracked_unreadable_env_stays_critical() {
     assert_eq!(f[0].severity, Severity::Critical, "{dump}");
     assert_eq!(f[0].category, "Secret leak", "{dump}");
     assert!(f[0].title.contains("could not be read"), "{dump}");
+}
+
+/// A committed .env whose lines the KEY=value parser cannot read is not "empty" and not
+/// clean (review of b21286f: both were Low "git-tracked and empty"): a Java-style dotted
+/// key and a YAML-style `KEY: value` line are committed secrets rmguard cannot rule out.
+#[test]
+fn tracked_env_with_unparsed_lines_stays_critical() {
+    for (tag, content) in [
+        ("trenv-dotted", "spring.datasource.password=hunter2\n"),
+        ("trenv-yaml", "OPENAI_API_KEY: sk-proj-UNPARSEDCANARY\n"),
+    ] {
+        let Some((f, e)) = env_case(tag, content, 0o600, true) else {
+            eprintln!("git unavailable; skipping");
+            return;
+        };
+        let dump = format!("{tag}: {e:?} {f:#?}");
+        assert!(
+            e.git_tracked && e.read_ok && e.key_count == 0 && e.unparsed_lines == 1,
+            "{dump}"
+        );
+        assert_eq!(f.len(), 1, "{dump}");
+        assert_eq!(f[0].severity, Severity::Critical, "{dump}");
+        assert_eq!(f[0].category, "Secret leak", "{dump}");
+        assert!(!f[0].title.contains("empty"), "{dump}");
+        assert!(
+            f[0].title.contains("1 line rmguard could not parse as KEY=value"),
+            "{dump}"
+        );
+        assert!(!dump.contains("hunter2") && !dump.contains("UNPARSEDCANARY"), "{dump}");
+    }
+    // The world-readable analogue stays High; a multi-line quoted value is one entry.
+    let (f, e) = env_case("wrenv-dotted", "app.secret=x\nPORT=1\n", 0o644, false).unwrap();
+    let dump = format!("{e:?} {f:#?}");
+    assert_eq!(e.unparsed_lines, 1, "{dump}");
+    assert_eq!(
+        (f.len(), f[0].severity, f[0].category.as_str()),
+        (1, Severity::High, "Secret exposure"),
+        "{dump}"
+    );
+    let (f, e) = env_case("wrenv-multiline", "CERT=\"line one\nline two\"\nPORT=1\n", 0o644, false).unwrap();
+    let dump = format!("{e:?} {f:#?}");
+    assert_eq!((e.key_count, e.unparsed_lines), (2, 0), "{dump}");
+    assert_eq!(f[0].severity, Severity::Low, "{dump}");
+}
+
+/// Short secret words are matched as the last word of a key name (review of b21286f:
+/// a committed .env holding only these seven keys was Low "no secret-named keys").
+/// Controls: names that only CONTAIN the letters (`PASSENGERS`, `COMPASS`, `TASK_ID`,
+/// `DISK_SIZE`, `PATH_PREFIX`, `DB_PASS_FILE`, the working-directory `PWD`) are not secrets.
+#[test]
+fn tracked_env_with_short_secret_names_is_critical() {
+    let secrets = [
+        "DB_PASS",
+        "SMTP_PASS",
+        "DB_PWD",
+        "GITHUB_PAT",
+        "STRIPE_SK",
+        "SLACK_WEBHOOK_URL",
+        "JWT",
+    ];
+    let content: String = secrets.iter().map(|k| format!("{k}=x\n")).collect();
+    let Some((f, e)) = env_case("trenv-short", &content, 0o600, true) else {
+        eprintln!("git unavailable; skipping");
+        return;
+    };
+    let dump = format!("{e:?} {f:#?}");
+    assert_eq!(e.secret_keys, secrets, "{dump}");
+    assert_eq!((f.len(), f[0].severity), (1, Severity::Critical), "{dump}");
+    let controls =
+        "TASK_ID=1\nDISK_SIZE=2\nPASSENGERS=3\nCOMPASS=4\nPATH_PREFIX=5\nDB_PASS_FILE=6\nPWD=7\nRISK=8\nJWT_ISSUER=9\n";
+    let (f, e) = env_case("trenv-shortctl", controls, 0o600, true).unwrap();
+    let dump = format!("{e:?} {f:#?}");
+    assert!(e.secret_keys.is_empty(), "{dump}");
+    assert_eq!((e.key_count, f.len(), f[0].severity), (9, 1, Severity::Low), "{dump}");
 }

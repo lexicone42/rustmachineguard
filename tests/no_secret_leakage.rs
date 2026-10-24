@@ -1046,6 +1046,69 @@ fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// Review of b21286f: an assignment whose key is a short secret word (`PASS`, `PWD`,
+/// `PAT`, `SK`, `JWT`, `WEBHOOK`) was shown verbatim in every format. The value goes;
+/// the key and the program stay. Controls: keys that only contain those letters
+/// (`TASK_ID`, `DISK_SIZE`, `PASSENGERS`) keep their values.
+#[test]
+fn short_secret_word_assignments_are_redacted_in_every_format() {
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-shortwords-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let proj = home.join("proj");
+    fs::create_dir_all(proj.join(".claude")).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
+    )
+    .unwrap();
+    let settings = serde_json::json!({"hooks": {
+        "Stop": [{"hooks": [
+            {"type": "command", "command": "MY_PASS=PASSHOOKCANARY ./notify.sh"},
+            {"type": "command", "command": "export DB_PWD=PWDHOOKCANARY; ./db.sh"},
+            {"type": "command", "command": "GITHUB_PAT=PATHOOKCANARY STRIPE_SK=SKHOOKCANARY JWT=JWTHOOKCANARY ./deploy.sh"},
+            {"type": "command", "command": "TASK_ID=TASKVISIBLE1 DISK_SIZE=DISKVISIBLE2 PASSENGERS=PASSENGERSVISIBLE3 ./count.sh"}
+        ]}]
+    }});
+    fs::write(proj.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,skills,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    let run = |format: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(["--format", format, "--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let canaries = [
+        "PASSHOOKCANARY",
+        "PWDHOOKCANARY",
+        "PATHOOKCANARY",
+        "SKHOOKCANARY",
+        "JWTHOOKCANARY",
+    ];
+    for format in ["terminal", "json", "html", "blueprint"] {
+        let text = run(format);
+        let leaked: Vec<&str> = canaries.iter().copied().filter(|c| text.contains(c)).collect();
+        assert!(leaked.is_empty(), "{format}: {leaked:?}");
+        if format == "json" {
+            for shown in ["MY_PASS", "notify.sh", "DB_PWD", "GITHUB_PAT", "STRIPE_SK", "deploy.sh"] {
+                assert!(text.contains(shown), "{shown}: the fixture never reached the report");
+            }
+            for kept in ["TASKVISIBLE1", "DISKVISIBLE2", "PASSENGERSVISIBLE3"] {
+                assert!(text.contains(kept), "{kept}: a non-secret key's value was redacted");
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// Review of 4e3f8c3: an Authorization header written as code (a node/python one-liner,
 /// a JSON object), registry-login `-p`, `--bearer`, and the `config set KEY VALUE` forms
 /// of npm/yarn/pnpm/aws. The value goes; the program, flag, key and scheme stay.

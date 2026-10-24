@@ -587,7 +587,9 @@ fn global_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
 }
 
 /// `--otel-instance`: the operator's text, trimmed, non-empty, at most 128 characters
-/// and free of control characters (it ends up in dashboards and terminal output).
+/// and unchanged by [`scanners::sanitize_display`] (it ends up in dashboards and terminal
+/// output): control characters, bidi overrides and isolates, zero-width and other
+/// invisible format characters are refused, not silently rewritten.
 fn parse_otel_instance(s: &str) -> Result<String, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -596,8 +598,8 @@ fn parse_otel_instance(s: &str) -> Result<String, String> {
     if t.chars().count() > 128 {
         return Err("at most 128 characters".into());
     }
-    if t.chars().any(char::is_control) {
-        return Err("must not contain control characters".into());
+    if scanners::sanitize_display(t, 128) != t {
+        return Err("must not contain control, bidi, zero-width or other invisible formatting characters".into());
     }
     Ok(t.to_string())
 }
