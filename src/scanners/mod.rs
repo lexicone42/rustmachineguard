@@ -2498,18 +2498,42 @@ pub fn is_official_registry(value: &str, official: &[&str]) -> bool {
 
 /// `path.is_file()` that the diagnostics can see. Use this instead of a bare `is_file()`
 /// when deciding whether to read a config file, so a wrong path shows up as a miss.
+///
+/// A path that exists but is not a regular file (a directory met while listing a
+/// directory's entries, a socket) is traced as "not a regular file" and NOT counted as
+/// missing: it was there, it is just not what a file probe reads. Counting it as missing
+/// inflated `files_missing` (every subdirectory of `~/.claude` — `paste-cache`,
+/// `shell-snapshots`, `plans`, ... — was a "missing file" of the persistence scanner's
+/// loader-staging listing).
 pub fn probe_file(path: &std::path::Path) -> bool {
-    let present = path.is_file();
-    telemetry::note_probe(path, present);
-    present
+    probe_kind(path, std::fs::Metadata::is_file, "not a regular file")
 }
 
-/// `path.is_dir()` / `path.exists()` that the diagnostics can see: a `false` counts as a
-/// looked-for path that was not there. See [`probe_file`].
+/// `path.is_dir()` that the diagnostics can see: a `false` counts as a looked-for path
+/// that was not there, unless something else (a file) is there, which is traced as "not a
+/// directory" and not counted. See [`probe_file`].
 pub fn probe_dir(path: &std::path::Path) -> bool {
-    let present = path.is_dir();
-    telemetry::note_probe(path, present);
-    present
+    probe_kind(path, std::fs::Metadata::is_dir, "not a directory")
+}
+
+/// One stat (following symlinks, like `is_file`/`is_dir`): present when `want` holds,
+/// missing when nothing (or a dangling link) is there, and neither when something of
+/// another type is there.
+fn probe_kind(path: &std::path::Path, want: fn(&std::fs::Metadata) -> bool, other: &str) -> bool {
+    match std::fs::metadata(path) {
+        Ok(m) if want(&m) => {
+            telemetry::note_probe(path, true);
+            true
+        }
+        Ok(_) => {
+            telemetry::note_probe_other(path, other);
+            false
+        }
+        Err(_) => {
+            telemetry::note_probe(path, false);
+            false
+        }
+    }
 }
 
 /// `fs::read_dir` that the diagnostics can see: a directory that exists but cannot be
@@ -2732,6 +2756,16 @@ pub mod telemetry {
                 "trace: probe {shown} -> {}",
                 if present { "present" } else { "missing" }
             );
+        }
+    }
+
+    /// Record an existence check that found something of another type than the probe
+    /// looks for (a directory where a file was probed): traced with `what`, counted as
+    /// neither read nor missing.
+    pub fn note_probe_other(path: &Path, what: &str) {
+        if trace_enabled() {
+            let shown = super::sanitize_display(&super::redact_secrets_in_text(&path.display().to_string()), 512);
+            eprintln!("trace: probe {shown} -> {what}");
         }
     }
 

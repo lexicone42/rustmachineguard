@@ -546,7 +546,27 @@ fn render_inner(report: &ScanReport) -> String {
     // Rules Files
     if !report.rules_files.is_empty() {
         section_header(&mut out, &format!("Rules Files ({})", report.rules_files.len()));
-        for rf in &report.rules_files {
+        // Memory files (Serena memories, Claude Code auto and subagent memory) run to
+        // hundreds on a working machine: one line per kind for the clean ones (each is
+        // still hashed in the JSON for --diff), in full only when one has a finding.
+        let mut quiet: std::collections::BTreeMap<(&str, &str, &str), usize> = std::collections::BTreeMap::new();
+        for rf in report
+            .rules_files
+            .iter()
+            .filter(|r| r.kind.is_some() && r.findings.is_empty())
+        {
+            let key = (
+                rf.kind.as_deref().unwrap_or(""),
+                rf.framework.as_deref().unwrap_or(""),
+                rf.scope.as_deref().unwrap_or(""),
+            );
+            *quiet.entry(key).or_default() += 1;
+        }
+        for rf in report
+            .rules_files
+            .iter()
+            .filter(|r| r.kind.is_none() || !r.findings.is_empty())
+        {
             let git = if rf.git_tracked {
                 "git-tracked".green().to_string()
             } else {
@@ -575,6 +595,16 @@ fn render_inner(report: &ScanReport) -> String {
                     finding.pattern,
                 ));
             }
+        }
+        for ((kind, framework, scope), n) in &quiet {
+            out.push_str(&format!(
+                "  {} {} {} {} file(s), {} scope, no findings (hashed; listed in --format json)\n",
+                "→".cyan(),
+                n,
+                framework,
+                kind,
+                scope,
+            ));
         }
         out.push('\n');
     }

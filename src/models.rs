@@ -431,7 +431,7 @@ pub struct PackageConfigFinding {
 }
 
 /// A rules/instruction file that controls agent behavior.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RulesFile {
     pub path: String,
     pub file_name: String,
@@ -440,6 +440,19 @@ pub struct RulesFile {
     pub size_bytes: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<RulesFileFinding>,
+    /// Absent for an instruction file (CLAUDE.md, .cursorrules, ...). "memory" (a Serena
+    /// memory), "auto-memory" (Claude Code's `~/.claude/projects/<project>/memory/`),
+    /// "agent-memory" (a Claude Code subagent's `agent-memory/<name>/`) or
+    /// "prompt-config" (Serena `project.yml` `initial_prompt`): text an agent loads or
+    /// reads on its own, found by walking a directory rather than by a fixed name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The agent that loads it, for a `kind` row: "serena" or "claude-code".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    /// For a `kind` row: "user" (under a scan home), "project" or "local".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// A dangerous pattern found in a rules file.

@@ -226,6 +226,7 @@ fn rich_blueprint_conforms() {
                 severity: "critical".into(),
                 pattern: "curl|wget piped to shell".into(),
             }],
+            ..Default::default()
         }];
         r.ssh_keys = vec![SshKey {
             path: "/h/.ssh/id_rsa".into(),

@@ -1923,6 +1923,7 @@ fn blueprint_emits_the_risk_layer() {
                 severity: "critical".into(),
                 pattern: "curl|wget piped to shell".into(),
             }],
+            ..Default::default()
         }];
         // Source (filesystem) + sink (network) capabilities -> toxic flow -> a risk.
         r.agent_skills = vec![AgentSkill {
@@ -2402,6 +2403,7 @@ fn findings_sort_by_severity_not_insertion_order() {
                 severity: "low".into(),
                 pattern: "meh".into(),
             }],
+            ..Default::default()
         }];
         // filesystem (source) + network (sink) → toxic-flow HIGH, collected last
         r.agent_skills = vec![AgentSkill {
@@ -2451,6 +2453,7 @@ fn findings_map_rules_severity_strings_precisely() {
                     severity: sev_str.into(),
                     pattern: "p".into(),
                 }],
+                ..Default::default()
             }];
         });
         let f = collect_findings(&report);
@@ -2998,6 +3001,7 @@ fn blueprint_behaviors_have_acknowledgment_field() {
                 severity: "critical".into(),
                 pattern: "curl|wget piped to shell".into(),
             }],
+            ..Default::default()
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -3097,6 +3101,7 @@ fn blueprint_rules_file_flow_to_agent() {
             git_tracked: true,
             size_bytes: 100,
             findings: vec![],
+            ..Default::default()
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -3619,6 +3624,7 @@ fn blueprint_no_dangling_refs_full_report() {
                 severity: "critical".into(),
                 pattern: "curl|wget piped to shell".into(),
             }],
+            ..Default::default()
         }];
         r.ssh_keys = vec![SshKey {
             path: "/h/.ssh/id_rsa".into(),

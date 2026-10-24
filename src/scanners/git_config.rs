@@ -102,7 +102,12 @@ fn walk_projects(
     let per_project = crate::scanners::telemetry::par_map(dirs.iter().collect(), jobs, |dir: &PathBuf| {
         let (mut o, mut stats) = (Vec::new(), WalkStats::default());
         if walkable.contains(dir) {
-            scan_nested_repos(dir, &mut o, &mut stats, max_dirs);
+            // Another walked project inside this one is walked on its own (with its own
+            // budget): skip its subtree here. A project recovered from ~/.claude/projects
+            // is often the parent of registered ones (`~/work` above `~/work/app`), whose
+            // walk would otherwise re-list every child project and stop at the budget.
+            let inner: Vec<&PathBuf> = walkable.iter().filter(|w| *w != dir && w.starts_with(dir)).collect();
+            scan_nested_repos(dir, &inner, &mut o, &mut stats, max_dirs);
         }
         (o, stats)
     });
@@ -128,7 +133,7 @@ struct WalkStats {
     repos: u64,
     /// Directories not descended into as generated content: skipped by name
     /// (`node_modules`, ...) or listed and found to hold a `CACHEDIR.TAG` or
-    /// `pyvenv.cfg`.
+    /// `pyvenv.cfg`, or another walked project inside this one (walked on its own).
     pruned: u64,
     /// A project's walk stopped at its directory budget.
     budget_exhausted: bool,
@@ -279,7 +284,13 @@ fn config_needs_git(cfg: &Path) -> bool {
 /// At most `max_dirs` directories are listed (`--walk-budget`, default
 /// [`DEFAULT_WALK_BUDGET`](crate::scanners::telemetry::DEFAULT_WALK_BUDGET)); a walk that
 /// reaches it stops and marks the scanner `truncated`.
-fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut WalkStats, max_dirs: usize) {
+fn scan_nested_repos(
+    root: &Path,
+    inner_projects: &[&PathBuf],
+    out: &mut Vec<GitAutorunConfig>,
+    stats: &mut WalkStats,
+    max_dirs: usize,
+) {
     /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
     /// a project's directories live, and that no sane repo ships as tracked content.
     /// Deliberately NOT here: `env`, `venv`, `target`, `build`, `dist` -- those are
@@ -374,10 +385,11 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
                 // A symlinked directory is never descended through (above), and is not
                 // counted as pruned.
                 if !kind.is_symlink() {
-                    if PRUNE_BY_NAME.iter().any(|p| name == *p) {
+                    let path = entry.path();
+                    if PRUNE_BY_NAME.iter().any(|p| name == *p) || inner_projects.iter().any(|p| **p == path) {
                         stats.pruned += 1;
                     } else {
-                        children.push((name, entry.path()));
+                        children.push((name, path));
                     }
                 }
             }
@@ -527,14 +539,14 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     let max_dirs = crate::scanners::telemetry::walk_budget();
-    scan_nested_repos(root, out, &mut WalkStats::default(), max_dirs);
+    scan_nested_repos(root, &[], out, &mut WalkStats::default(), max_dirs);
 }
 
 /// [`scan_nested_repos_for_test`] that also returns the walk's (directories listed,
 /// directories pruned) counts.
 pub fn nested_walk_counts_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) -> (u64, u64) {
     let mut stats = WalkStats::default();
-    scan_nested_repos(root, out, &mut stats, crate::scanners::telemetry::walk_budget());
+    scan_nested_repos(root, &[], out, &mut stats, crate::scanners::telemetry::walk_budget());
     (stats.dirs, stats.pruned)
 }
 

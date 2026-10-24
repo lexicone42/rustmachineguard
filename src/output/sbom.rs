@@ -227,7 +227,9 @@ impl CycloneDxBom {
 
         // Rules files as data components
         for rf in &report.rules_files {
-            let bom_ref = format!("rules:{}", rf.file_name);
+            // By path: a bom-ref is unique within a BOM, and the same name (CLAUDE.md, a
+            // Serena `project_overview.md` memory) is in many projects.
+            let bom_ref = format!("rules:{}", rf.path);
             let mut properties = vec![
                 BomProperty {
                     name: "rmg:rules-hash".to_string(),

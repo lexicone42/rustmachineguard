@@ -583,6 +583,7 @@ mod tests {
                 severity: "critical".into(),
                 pattern: "p".into(),
             }],
+            ..Default::default()
         }];
         let a = assess(&r);
         let count = |id: &str| a.assessments.iter().find(|x| x.control.id == id).unwrap().finding_count;
