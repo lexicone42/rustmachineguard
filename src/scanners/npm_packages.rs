@@ -1,5 +1,5 @@
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, Scanner};
+use crate::scanners::{Scanner, read_bounded};
 use std::path::{Path, PathBuf};
 
 /// Resolves installed npm packages (name + version) so the catalog's 31 npm rows can
@@ -246,13 +246,17 @@ pub fn is_valid_npm_name(name: &str) -> bool {
             name
         }
     };
-    body.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+    body.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
 /// A version string a catalog can compare: semver / PEP 440 characters only, bounded.
 /// Anything else -- newlines, ANSI escapes, prose -- is attacker text and is dropped.
 pub fn is_valid_version(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '!'))
+    !v.is_empty()
+        && v.len() <= 64
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '!'))
 }
 
 /// Read `name` and `version` from a package.json.

@@ -3,25 +3,25 @@ pub mod ai_credentials;
 pub mod ai_frameworks;
 pub mod ai_tools;
 pub mod browser_extensions;
-pub mod env_files;
 pub mod cloud_credentials;
-pub mod exposure;
 pub mod container_tools;
+pub mod env_files;
+pub mod exposure;
 pub mod extensions;
 pub mod git_config;
 mod helper_redact;
 pub(crate) mod hook_discovery;
 pub mod hook_sources;
 pub mod ide;
+pub mod jetbrains_plugins;
 pub mod marketplaces;
 pub mod mcp;
 pub mod mcp_probe;
 pub mod node_packages;
 pub mod notebook_servers;
+pub mod npm_packages;
 pub mod package_configs;
 pub mod persistence;
-pub mod jetbrains_plugins;
-pub mod npm_packages;
 pub mod python_packages;
 pub mod rules_files;
 pub mod shell_configs;
@@ -188,12 +188,7 @@ enum ChildEvent {
 /// and 20 ms git calls, more than a second of a 3.5 s scan. On timeout or over-cap the
 /// child is killed by pid and then reaped, so no zombie and no pid reuse window: the
 /// pid stays reserved until the waiter's `wait` returns.
-fn wait_child(
-    pid: u32,
-    rx: &std::sync::mpsc::Receiver<ChildEvent>,
-    timeout: Duration,
-    strict: bool,
-) -> ChildWait {
+fn wait_child(pid: u32, rx: &std::sync::mpsc::Receiver<ChildEvent>, timeout: Duration, strict: bool) -> ChildWait {
     use std::sync::mpsc::RecvTimeoutError;
     let deadline = std::time::Instant::now() + timeout;
     let reap = |rx: &std::sync::mpsc::Receiver<ChildEvent>| {
@@ -343,13 +338,30 @@ pub fn scan_suspicious_unicode(s: &str) -> Vec<&'static str> {
 /// genuinely non-Latin text into false matches.
 const CONFUSABLES: &[(char, char)] = &[
     // Cyrillic
-    ('\u{0430}', 'a'), ('\u{0435}', 'e'), ('\u{043e}', 'o'), ('\u{0440}', 'p'),
-    ('\u{0441}', 'c'), ('\u{0445}', 'x'), ('\u{0443}', 'y'), ('\u{0456}', 'i'),
-    ('\u{0455}', 's'), ('\u{04bb}', 'h'), ('\u{0432}', 'b'), ('\u{043a}', 'k'),
-    ('\u{043c}', 'm'), ('\u{0442}', 't'), ('\u{0448}', 'w'),
+    ('\u{0430}', 'a'),
+    ('\u{0435}', 'e'),
+    ('\u{043e}', 'o'),
+    ('\u{0440}', 'p'),
+    ('\u{0441}', 'c'),
+    ('\u{0445}', 'x'),
+    ('\u{0443}', 'y'),
+    ('\u{0456}', 'i'),
+    ('\u{0455}', 's'),
+    ('\u{04bb}', 'h'),
+    ('\u{0432}', 'b'),
+    ('\u{043a}', 'k'),
+    ('\u{043c}', 'm'),
+    ('\u{0442}', 't'),
+    ('\u{0448}', 'w'),
     // Greek
-    ('\u{03bf}', 'o'), ('\u{03c1}', 'p'), ('\u{03b5}', 'e'), ('\u{03b1}', 'a'),
-    ('\u{03bd}', 'v'), ('\u{03c5}', 'u'), ('\u{03ba}', 'k'), ('\u{03c4}', 't'),
+    ('\u{03bf}', 'o'),
+    ('\u{03c1}', 'p'),
+    ('\u{03b5}', 'e'),
+    ('\u{03b1}', 'a'),
+    ('\u{03bd}', 'v'),
+    ('\u{03c5}', 'u'),
+    ('\u{03ba}', 'k'),
+    ('\u{03c4}', 't'),
 ];
 
 /// Fold text into a canonical form for pattern matching.
@@ -394,9 +406,10 @@ fn fold_char(ch: char) -> char {
     // Fullwidth ASCII (U+FF01..U+FF5E) maps onto ASCII by a fixed offset.
     let cp = ch as u32;
     if (0xFF01..=0xFF5E).contains(&cp)
-        && let Some(a) = char::from_u32(cp - 0xFEE0) {
-            return a;
-        }
+        && let Some(a) = char::from_u32(cp - 0xFEE0)
+    {
+        return a;
+    }
     ch
 }
 
@@ -532,7 +545,9 @@ fn redact_code_authorization(text: &str) -> String {
             k += 1;
         }
         // A scheme word and its space are kept.
-        let word_end = text[k..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).map_or(text.len(), |o| k + o);
+        let word_end = text[k..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .map_or(text.len(), |o| k + o);
         let mut v = k;
         if word_end < b.len() && b[word_end] == b' ' && is_scheme_word(&text[k..word_end]) {
             v = word_end + 1;
@@ -587,7 +602,9 @@ fn webhook_path_byte(b: u8) -> bool {
 /// The end of a Discord webhook prefix at `at` (`discord.com/api/[v10/]webhooks/`).
 fn discord_webhook_prefix(lower: &str, at: usize) -> Option<usize> {
     let rest = &lower[at..];
-    let host = ["discord.com/api/", "discordapp.com/api/"].into_iter().find(|h| rest.starts_with(h))?;
+    let host = ["discord.com/api/", "discordapp.com/api/"]
+        .into_iter()
+        .find(|h| rest.starts_with(h))?;
     let b = lower.as_bytes();
     let mut i = at + host.len();
     if b.get(i) == Some(&b'v') {
@@ -637,8 +654,20 @@ pub fn redact_webhook_urls(text: &str) -> String {
 /// Programs whose `-p` takes the password attached (`mysql -uroot -pHunter2`), or as
 /// the next word (`sshpass -p Hunter2 ssh host`).
 const ATTACHED_PASSWORD_PROGRAMS: &[&str] = &[
-    "mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlshow", "mysqlcheck", "mysqlpump", "mysqlsh",
-    "mariadb", "mariadb-dump", "mariadb-admin", "mariadb-import", "mariadb-check", "sshpass",
+    "mysql",
+    "mysqldump",
+    "mysqladmin",
+    "mysqlimport",
+    "mysqlshow",
+    "mysqlcheck",
+    "mysqlpump",
+    "mysqlsh",
+    "mariadb",
+    "mariadb-dump",
+    "mariadb-admin",
+    "mariadb-import",
+    "mariadb-check",
+    "sshpass",
 ];
 
 /// `-p<value>` after any of [`ATTACHED_PASSWORD_PROGRAMS`], or the word after a bare
@@ -656,7 +685,11 @@ fn redact_attached_password(prog: &str, tok: &str, prev: Option<&str>) -> Option
     {
         return Some(format!("-p<redacted>{}", split(v)));
     }
-    if prog == "sshpass" && prev == Some("-p") && !tok.starts_with(['-', ';', '&', '|']) && !tok.starts_with("<redacted>") {
+    if prog == "sshpass"
+        && prev == Some("-p")
+        && !tok.starts_with(['-', ';', '&', '|'])
+        && !tok.starts_with("<redacted>")
+    {
         return Some(format!("<redacted>{}", split(tok)));
     }
     None
@@ -668,12 +701,35 @@ fn redact_attached_password(prog: &str, tok: &str, prev: Option<&str>) -> Option
 /// apiKeyHelper passed straight through; these shapes are distinctive enough to redact
 /// wherever they appear. The prefix is kept (it says WHAT leaked), the tail is not.
 const TOKEN_PREFIXES: &[(&str, usize)] = &[
-    ("sk-ant-", 16), ("sk-proj-", 16), ("sk-svcacct-", 16), ("sk-or-", 16), ("sk-", 20),
-    ("sk_live_", 16), ("sk_test_", 16), ("rk_live_", 16), ("ghp_", 20), ("gho_", 20),
-    ("ghu_", 20), ("ghs_", 20), ("ghr_", 20), ("github_pat_", 20), ("glpat-", 20),
-    ("xoxb-", 10), ("xoxp-", 10), ("xoxa-", 10), ("xoxr-", 10), ("xoxs-", 10), ("xoxe-", 10),
-    ("xapp-", 10), ("AIza", 30), ("npm_", 30), ("hf_", 30), ("pypi-", 32), ("gsk_", 20),
-    ("AKIA", 16), ("ASIA", 16),
+    ("sk-ant-", 16),
+    ("sk-proj-", 16),
+    ("sk-svcacct-", 16),
+    ("sk-or-", 16),
+    ("sk-", 20),
+    ("sk_live_", 16),
+    ("sk_test_", 16),
+    ("rk_live_", 16),
+    ("ghp_", 20),
+    ("gho_", 20),
+    ("ghu_", 20),
+    ("ghs_", 20),
+    ("ghr_", 20),
+    ("github_pat_", 20),
+    ("glpat-", 20),
+    ("xoxb-", 10),
+    ("xoxp-", 10),
+    ("xoxa-", 10),
+    ("xoxr-", 10),
+    ("xoxs-", 10),
+    ("xoxe-", 10),
+    ("xapp-", 10),
+    ("AIza", 30),
+    ("npm_", 30),
+    ("hf_", 30),
+    ("pypi-", 32),
+    ("gsk_", 20),
+    ("AKIA", 16),
+    ("ASIA", 16),
 ];
 
 fn is_token_char(b: u8) -> bool {
@@ -689,7 +745,9 @@ pub fn redact_token_shapes(text: &str) -> String {
     while i < bytes.len() {
         let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
         if boundary
-            && let Some((prefix, min)) = TOKEN_PREFIXES.iter().find(|(p, _)| bytes[i..].starts_with(p.as_bytes()))
+            && let Some((prefix, min)) = TOKEN_PREFIXES
+                .iter()
+                .find(|(p, _)| bytes[i..].starts_with(p.as_bytes()))
         {
             let start = i + prefix.len();
             let end = start + bytes[start..].iter().take_while(|b| is_token_char(**b)).count();
@@ -718,7 +776,9 @@ fn looks_high_entropy(tok: &str) -> bool {
     core.len() >= 24
         && !core.starts_with(['/', '.', '~', '$', '-'])
         && !core.contains("//")
-        && core.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'+' | b'/' | b'=' | b'.'))
+        && core
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'+' | b'/' | b'=' | b'.'))
         && core.bytes().any(|b| b.is_ascii_digit())
         && core.bytes().filter(|b| b.is_ascii_alphabetic()).count() >= 4
         && core.bytes().filter(|b| *b == b'/').count() <= 2
@@ -732,15 +792,23 @@ fn looks_high_entropy(tok: &str) -> bool {
 /// than 6 characters. A UUID or `prefix-<long hex>` key has long non-word segments and
 /// does not qualify.
 fn identifier_like(s: &str) -> bool {
-    if s.bytes().any(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-')) {
+    if s.bytes()
+        .any(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+    {
         return false;
     }
     let segs: Vec<&str> = s.split(['_', '-']).collect();
     if segs.len() < 3 || segs.iter().any(|g| g.is_empty()) {
         return false;
     }
-    let words = segs.iter().filter(|g| g.bytes().all(|b| b.is_ascii_alphabetic())).count();
-    words * 2 >= segs.len() && segs.iter().all(|g| g.bytes().all(|b| b.is_ascii_alphabetic()) || g.len() <= 6)
+    let words = segs
+        .iter()
+        .filter(|g| g.bytes().all(|b| b.is_ascii_alphabetic()))
+        .count();
+    words * 2 >= segs.len()
+        && segs
+            .iter()
+            .all(|g| g.bytes().all(|b| b.is_ascii_alphabetic()) || g.len() <= 6)
 }
 
 /// Redact key-shaped runs INSIDE a token. [`looks_high_entropy`] judges a whole
@@ -770,7 +838,9 @@ fn redact_entropy_runs_in_token(tok: &str) -> String {
             continue;
         }
         let keep = match run.split_once('=') {
-            Some((k, v)) if !k.is_empty() && !v.is_empty() && k.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') => {
+            Some((k, v))
+                if !k.is_empty() && !v.is_empty() && k.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') =>
+            {
                 k.len() + 1
             }
             _ => 0,
@@ -812,7 +882,10 @@ fn redact_command_text_once(text: &str) -> String {
     )));
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
-    for (s, tok) in base.split_whitespace().map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t)) {
+    for (s, tok) in base
+        .split_whitespace()
+        .map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t))
+    {
         out.push_str(&base[last..s]);
         out.push_str(&redact_entropy_runs_in_token(&redact_url_path_keys(tok)));
         last = s + tok.len();
@@ -824,13 +897,27 @@ fn redact_command_text_once(text: &str) -> String {
 /// Flags whose value is a credential whatever the program, though their names are not
 /// all secret-shaped (`--pass`, `--user-key`): the next word, or the `=` value.
 const GENERIC_SECRET_FLAGS: &[&str] = &[
-    "--pass", "--passwd", "--pw", "--passphrase", "--user-key", "--userkey", "--app-token", "--app-key", "--appkey",
+    "--pass",
+    "--passwd",
+    "--pw",
+    "--passphrase",
+    "--user-key",
+    "--userkey",
+    "--app-token",
+    "--app-key",
+    "--appkey",
     "--bearer",
 ];
 
 /// Flags whose value is a webhook URL: its path is the credential, its host is kept.
-const WEBHOOK_FLAGS: &[&str] =
-    &["--webhook", "--webhook-url", "--hook-url", "--slack-webhook", "--discord-webhook", "--teams-webhook"];
+const WEBHOOK_FLAGS: &[&str] = &[
+    "--webhook",
+    "--webhook-url",
+    "--hook-url",
+    "--slack-webhook",
+    "--discord-webhook",
+    "--teams-webhook",
+];
 
 /// A webhook URL value with its path (and query) redacted: `https://host/<redacted>`.
 /// A value that is not a URL is redacted whole.
@@ -841,7 +928,11 @@ fn redact_webhook_value(v: &str) -> String {
     match core.find("://") {
         Some(sc) => {
             let (authority, rest) = split_authority(&core[sc + 3..]);
-            let path = if rest.is_empty() || rest.starts_with("/<redacted>") { rest.to_string() } else { "/<redacted>".to_string() };
+            let path = if rest.is_empty() || rest.starts_with("/<redacted>") {
+                rest.to_string()
+            } else {
+                "/<redacted>".to_string()
+            };
             format!("{head}{}://{authority}{path}{tail}", &core[..sc])
         }
         None if core.is_empty() || core == "<redacted>" => v.to_string(),
@@ -895,13 +986,25 @@ fn redact_generic_secret_flags(text: &str) -> String {
 /// Key-shaped segments of a URL's path redacted one by one (see [`looks_high_entropy`]):
 /// `https://example.com/hook/<key>` keeps its host and the readable segments.
 fn redact_url_path_keys(tok: &str) -> String {
-    let Some(sc) = tok.find("://") else { return tok.to_string() };
+    let Some(sc) = tok.find("://") else {
+        return tok.to_string();
+    };
     let after = &tok[sc + 3..];
     let (authority, rest) = split_authority(after);
-    let end = rest.find(['?', '#', '\'', '"', '`', ')', ';', '&', '|']).unwrap_or(rest.len());
+    let end = rest
+        .find(['?', '#', '\'', '"', '`', ')', ';', '&', '|'])
+        .unwrap_or(rest.len());
     let (path, tail) = rest.split_at(end);
-    let path: Vec<String> =
-        path.split('/').map(|g| if looks_high_entropy(g) { "<redacted>".to_string() } else { g.to_string() }).collect();
+    let path: Vec<String> = path
+        .split('/')
+        .map(|g| {
+            if looks_high_entropy(g) {
+                "<redacted>".to_string()
+            } else {
+                g.to_string()
+            }
+        })
+        .collect();
     format!("{}{authority}{}{tail}", &tok[..sc + 3], path.join("/"))
 }
 
@@ -950,7 +1053,9 @@ fn redact_config_set_values(text: &str) -> String {
     let mut glued: Vec<Option<String>> = vec![None; toks.len()];
     let mut start = 0;
     while start < toks.len() {
-        let end = (start..toks.len()).find(|&k| separator_token(toks[k])).map_or(toks.len(), |k| k + 1);
+        let end = (start..toks.len())
+            .find(|&k| separator_token(toks[k]))
+            .map_or(toks.len(), |k| k + 1);
         let cmd = &toks[start..end];
         let clean = |t: &str| t.trim_matches(['"', '\'', '(', '`', ';', '&', '|']).to_string();
         let words: Vec<String> = cmd.iter().map(|t| clean(t)).collect();
@@ -1015,10 +1120,12 @@ fn redact_config_set_values(text: &str) -> String {
 
 /// Whitespace tokens of `text` with their byte spans.
 fn spans_of(text: &str) -> Vec<(usize, usize)> {
-    text.split_whitespace().map(|t| {
-        let s = t.as_ptr() as usize - text.as_ptr() as usize;
-        (s, s + t.len())
-    }).collect()
+    text.split_whitespace()
+        .map(|t| {
+            let s = t.as_ptr() as usize - text.as_ptr() as usize;
+            (s, s + t.len())
+        })
+        .collect()
 }
 
 fn separator_token(t: &str) -> bool {
@@ -1113,24 +1220,36 @@ fn redact_stdin_password_feeds(text: &str) -> String {
             continue;
         }
         // The consumer: up to the next separator.
-        let consumer: Vec<&str> = toks[p + 1..].iter().copied().take_while(|t| !separator_token(t)).collect();
+        let consumer: Vec<&str> = toks[p + 1..]
+            .iter()
+            .copied()
+            .take_while(|t| !separator_token(t))
+            .collect();
         let reads_secret = consumer.iter().enumerate().any(|(k, t)| {
-            matches!(*t, "--password-stdin" | "--with-token" | "--token-stdin" | "--password-file=-")
-                || (*t == "--password-file" && consumer.get(k + 1) == Some(&"-"))
+            matches!(
+                *t,
+                "--password-stdin" | "--with-token" | "--token-stdin" | "--password-file=-"
+            ) || (*t == "--password-file" && consumer.get(k + 1) == Some(&"-"))
         });
         if !reads_secret {
             continue;
         }
         // The producer: back to the start of its simple command.
         let start = (0..p).rev().find(|&k| separator_token(toks[k])).map_or(0, |k| k + 1);
-        let Some(prog_at) = (start..p).find(|&k| !toks[k].contains('=') || toks[k].starts_with('-')) else { continue };
+        let Some(prog_at) = (start..p).find(|&k| !toks[k].contains('=') || toks[k].starts_with('-')) else {
+            continue;
+        };
         let w = toks[prog_at].trim_matches(['"', '\'', '(']);
         if !matches!(w.rsplit('/').next().unwrap_or(w), "echo" | "printf" | "print") {
             continue;
         }
         for k in prog_at + 1..p {
             let t = toks[k].trim_matches(['"', '\'']);
-            let var = t.strip_prefix('$').is_some_and(|n| n.trim_matches(['{', '}']).bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            let var = t.strip_prefix('$').is_some_and(|n| {
+                n.trim_matches(['{', '}'])
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            });
             if (!toks[k].starts_with('-') || toks[k].len() > 3) && !var {
                 redact[k] = true;
             }
@@ -1179,9 +1298,29 @@ const USER_FLAGS: &[&str] = &["-u", "--user", "--proxy-user", "-U", "--http-user
 /// Modelling only Bearer/Basic let `Authorization: token ghp_x` (GitHub's documented
 /// form) redact the word `token` and pass `ghp_x` through, looking sanitised.
 const AUTH_SCHEMES: &[&str] = &[
-    "bearer", "basic", "token", "oauth", "oauth2", "ssws", "apikey", "api-key", "negotiate",
-    "digest", "ntlm", "hawk", "dpop", "gnap", "hoba", "mutual", "vapid", "signature",
-    "privatetoken", "aws4-hmac-sha256", "goog", "splunk", "zoho-oauthtoken",
+    "bearer",
+    "basic",
+    "token",
+    "oauth",
+    "oauth2",
+    "ssws",
+    "apikey",
+    "api-key",
+    "negotiate",
+    "digest",
+    "ntlm",
+    "hawk",
+    "dpop",
+    "gnap",
+    "hoba",
+    "mutual",
+    "vapid",
+    "signature",
+    "privatetoken",
+    "aws4-hmac-sha256",
+    "goog",
+    "splunk",
+    "zoho-oauthtoken",
 ];
 
 fn is_scheme_word(s: &str) -> bool {
@@ -1205,10 +1344,7 @@ fn is_authorization_marker(s: &str) -> bool {
     // the header name is the TAIL of a k=v or quoted token. bare_key() alone saw
     // `header="Authorization` and never set the scheme lookahead, so the credential
     // after `token`/`SSWS` walked through untouched.
-    s.ends_with(':')
-        && s.rsplit(['=', '"', '\''])
-            .next()
-            .is_some_and(is_authorization_key)
+    s.ends_with(':') && s.rsplit(['=', '"', '\'']).next().is_some_and(is_authorization_key)
 }
 
 fn bare_key(k: &str) -> &str {
@@ -1232,10 +1368,7 @@ fn is_open_marker(s: &str) -> bool {
 /// `X-Api-Key:abc==` keys on `X-Api-Key` (not on the base64 padding), and
 /// `--header=X-Api-Key:X` keys on `X-Api-Key`.
 fn split_pair(tok: &str) -> Option<(&str, char, &str)> {
-    let mut seps: Vec<(usize, char)> = ['=', ':']
-        .iter()
-        .filter_map(|&c| tok.find(c).map(|i| (i, c)))
-        .collect();
+    let mut seps: Vec<(usize, char)> = ['=', ':'].iter().filter_map(|&c| tok.find(c).map(|i| (i, c))).collect();
     seps.sort();
     for &(i, c) in &seps {
         if is_secret_key(&tok[..i]) {
@@ -1292,9 +1425,7 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
 /// so `https://evil.com\@registry.npmjs.org/` has host evil.com. Splitting only on
 /// `/?#` read the host as registry.npmjs.org and called a hostile registry official.
 fn split_authority(after_scheme: &str) -> (&str, &str) {
-    let end = after_scheme
-        .find(['/', '?', '#', '\\'])
-        .unwrap_or(after_scheme.len());
+    let end = after_scheme.find(['/', '?', '#', '\\']).unwrap_or(after_scheme.len());
     after_scheme.split_at(end)
 }
 
@@ -1345,7 +1476,9 @@ fn redact_userinfo(value: &str) -> String {
     // scheme-less userinfo (fuzz_redact_secrets: redaction was not idempotent).
     if let Some(sc) = value.find("://")
         && value[..sc].chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && value[..sc].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        && value[..sc]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
     {
         return redact_url(value);
     }
@@ -1479,7 +1612,14 @@ fn redact_token(
     if is_scheme_word(tok) {
         let after_auth = prev.is_some_and(is_authorization_marker);
         let has_value = next.is_some_and(|n| !n.starts_with('-') && !n.contains("://"));
-        return (tok.to_string(), if after_auth && has_value { Pending::One } else { Pending::None });
+        return (
+            tok.to_string(),
+            if after_auth && has_value {
+                Pending::One
+            } else {
+                Pending::None
+            },
+        );
     }
     // HTTPie / compact JSON: `Authorization:"Bearer X"`, `{"Authorization":"Bearer X"}` --
     // the scheme word is the (quoted) value; keep the token, redact the next.
@@ -1571,9 +1711,9 @@ fn redact_token(
 /// dot-relative script, or a common command word.
 fn looks_like_command(seg: &str) -> bool {
     const COMMANDS: &[&str] = &[
-        "echo", "curl", "wget", "sh", "bash", "zsh", "node", "python", "python3", "npm", "npx",
-        "uv", "uvx", "pip", "git", "rm", "cd", "ls", "cat", "eval", "exec", "source", "export",
-        "chmod", "mkdir", "touch", "nohup", "sudo", "env", "printf", "tee", "true", "false",
+        "echo", "curl", "wget", "sh", "bash", "zsh", "node", "python", "python3", "npm", "npx", "uv", "uvx", "pip",
+        "git", "rm", "cd", "ls", "cat", "eval", "exec", "source", "export", "chmod", "mkdir", "touch", "nohup", "sudo",
+        "env", "printf", "tee", "true", "false",
     ];
     seg.contains('/') || seg.starts_with(['.', '~']) || COMMANDS.contains(&seg)
 }
@@ -1600,10 +1740,7 @@ pub fn split_url_authority(url: &str) -> (&str, &str) {
         None => ("", url),
     };
     // A backslash ends the authority (WHATWG special-scheme rule); see split_authority.
-    let authority = after_scheme
-        .split(['/', '?', '#', '\\'])
-        .next()
-        .unwrap_or(after_scheme);
+    let authority = after_scheme.split(['/', '?', '#', '\\']).next().unwrap_or(after_scheme);
     let host_port = match authority.rsplit_once('@') {
         Some((_userinfo, host)) => host,
         None => authority,
@@ -1631,7 +1768,11 @@ pub(crate) fn host_of(value: &str) -> (String, Option<u16>) {
 
 /// True for `localhost`, 127.0.0.0/8, `::1`, and IPv4-mapped loopback (`::ffff:127.x`).
 pub(crate) fn is_loopback_host(host: &str) -> bool {
-    let h = host.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+    let h = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
     if h.eq_ignore_ascii_case("localhost") {
         return true;
     }
@@ -1648,7 +1789,9 @@ pub(crate) fn is_loopback_host(host: &str) -> bool {
 /// apply only to OLLAMA_HOST, which [`shell_configs::classify_ollama_host`] reads.
 pub(crate) fn is_client_loopback_host(host: &str) -> bool {
     let h = host.trim().trim_start_matches('[').trim_end_matches(']');
-    is_loopback_host(host) || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_unspecified())
+    is_loopback_host(host)
+        || h.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.to_canonical().is_unspecified())
 }
 
 /// Unix permission bits of a file as (octal_string, world_readable, group_readable).
@@ -1659,11 +1802,7 @@ pub fn file_perms(path: &std::path::Path) -> Option<(String, bool, bool)> {
         use std::os::unix::fs::PermissionsExt;
         let meta = std::fs::metadata(path).ok()?;
         let mode = meta.permissions().mode() & 0o777;
-        Some((
-            format!("{:04o}", mode),
-            mode & 0o004 != 0,
-            mode & 0o040 != 0,
-        ))
+        Some((format!("{:04o}", mode), mode & 0o004 != 0, mode & 0o040 != 0))
     }
     #[cfg(not(unix))]
     {
@@ -1710,7 +1849,11 @@ pub fn git_program() -> Option<&'static std::path::Path> {
     static GIT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     GIT.get_or_init(|| {
         let path = absolute_path_entries()?;
-        let names: &[&str] = if cfg!(windows) { &["git.exe", "git.cmd", "git.bat"] } else { &["git"] };
+        let names: &[&str] = if cfg!(windows) {
+            &["git.exe", "git.cmd", "git.bat"]
+        } else {
+            &["git"]
+        };
         std::env::split_paths(&path).find_map(|dir| names.iter().map(|n| dir.join(n)).find(|c| is_executable_file(c)))
     })
     .as_deref()
@@ -1732,8 +1875,10 @@ fn is_executable_file(p: &std::path::Path) -> bool {
 /// starts in turn can resolve to a binary in the directory it runs in. With no git
 /// found the program is a path that cannot exist, so the spawn fails cleanly.
 pub fn git_command() -> std::process::Command {
-    let program = git_program()
-        .map_or_else(|| std::path::PathBuf::from("/nonexistent/rmguard-no-git"), std::path::Path::to_path_buf);
+    let program = git_program().map_or_else(
+        || std::path::PathBuf::from("/nonexistent/rmguard-no-git"),
+        std::path::Path::to_path_buf,
+    );
     let mut cmd = child_command(program);
     match absolute_path_entries() {
         Some(p) => cmd.env("PATH", p),
@@ -1761,7 +1906,10 @@ pub fn system_tool_path(name: &str) -> Option<std::path::PathBuf> {
             return Some(p);
         }
     }
-    SYSTEM_TOOL_DIRS.iter().map(|d| std::path::Path::new(d).join(name)).find(|p| is_executable_file(p))
+    SYSTEM_TOOL_DIRS
+        .iter()
+        .map(|d| std::path::Path::new(d).join(name))
+        .find(|p| is_executable_file(p))
 }
 
 /// A [`child_command`] for system tool `name` by absolute path ([`system_tool_path`]),
@@ -1770,8 +1918,8 @@ pub fn system_tool_path(name: &str) -> Option<std::path::PathBuf> {
 /// [`output_with_timeout`] (or the crate-internal variant with a site name) so it has a
 /// deadline and an exec span.
 pub fn system_command(name: &str) -> std::process::Command {
-    let program = system_tool_path(name)
-        .unwrap_or_else(|| std::path::PathBuf::from(format!("/nonexistent/rmguard-no-{name}")));
+    let program =
+        system_tool_path(name).unwrap_or_else(|| std::path::PathBuf::from(format!("/nonexistent/rmguard-no-{name}")));
     let mut cmd = child_command(program);
     cmd.env("PATH", SYSTEM_TOOL_DIRS.join(":"));
     cmd
@@ -1790,9 +1938,12 @@ pub fn system_command(name: &str) -> std::process::Command {
 pub fn hardened_git() -> std::process::Command {
     let mut cmd = git_command();
     cmd.args([
-        "-c", "core.fsmonitor=false",
-        "-c", "core.hooksPath=/dev/null",
-        "-c", "safe.bareRepository=explicit",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "safe.bareRepository=explicit",
         "--no-optional-locks",
     ])
     .env_remove("GIT_DIR")
@@ -1873,7 +2024,9 @@ fn not_regular_quiet(p: &std::path::Path) -> bool {
 /// read, no symlink at the final component; values are resolved relative to the
 /// config's directory (`~/` against HOME).
 fn config_include_paths(config: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Some(text) = read_bounded_nofollow(config, None) else { return Vec::new() };
+    let Some(text) = read_bounded_nofollow(config, None) else {
+        return Vec::new();
+    };
     let base = config.parent().unwrap_or(std::path::Path::new("/"));
     let mut out = Vec::new();
     let mut in_include = false;
@@ -1944,7 +2097,9 @@ fn git_dir_unsafe_to_spawn(dot_git: &std::path::Path) -> bool {
         dirs.push(persistence::lexical_join(&gd, std::path::Path::new(line.trim())));
     }
     dirs.iter().any(|d| {
-        ["HEAD", "index", "config", "commondir", "config.worktree"].iter().any(|f| not_regular(&d.join(f)))
+        ["HEAD", "index", "config", "commondir", "config.worktree"]
+            .iter()
+            .any(|f| not_regular(&d.join(f)))
             || ["config", "config.worktree"]
                 .iter()
                 .any(|c| config_include_closure(&d.join(c)).iter().any(|p| not_regular(p)))
@@ -1955,7 +2110,9 @@ fn git_dir_unsafe_to_spawn(dot_git: &std::path::Path) -> bool {
 /// A split index (`core.splitIndex`) names a `sharedindex.<sha>` file that git opens
 /// beside the index; one that is not a regular file blocks it the same way.
 fn shared_index_unsafe(git_dir: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(git_dir) else { return false };
+    let Ok(entries) = std::fs::read_dir(git_dir) else {
+        return false;
+    };
     entries
         .flatten()
         .take(4096)
@@ -1967,7 +2124,10 @@ fn shared_index_unsafe(git_dir: &std::path::Path) -> bool {
 /// a `.git` entry (directory or `gitdir:` file).
 fn repo_root_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
     let start = path.parent().unwrap_or(path);
-    start.ancestors().find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok()).map(|d| d.to_path_buf())
+    start
+        .ancestors()
+        .find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok())
+        .map(|d| d.to_path_buf())
 }
 
 /// One repository's tracked paths (root-relative bytes, sorted), or None = unknown.
@@ -1996,7 +2156,10 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
     // time, the sum is what the old spend-after accounting gave.
     let allowed = {
         let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let cache = guard.get_or_insert_with(|| GitTrackCache { repos: Default::default(), spent: Default::default() });
+        let cache = guard.get_or_insert_with(|| GitTrackCache {
+            repos: Default::default(),
+            spent: Default::default(),
+        });
         let allowed = GIT_TRACKED_TIMEOUT.min(GIT_TRACKED_BUDGET.saturating_sub(cache.spent));
         cache.spent += allowed;
         allowed
@@ -2016,7 +2179,13 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
         }
     }
     let out = out.filter(|o| o.status.success())?;
-    Some(out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(<[u8]>::to_vec).collect())
+    Some(
+        out.stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect(),
+    )
 }
 
 /// Whether `path` is tracked by git: `Some(true|false)`, or None when that cannot be
@@ -2034,10 +2203,15 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
 /// reads the listing makes are charged to the first scanner in the fixed order that
 /// asked ([`telemetry::SharedCost`]).
 pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
-    let Some(root) = repo_root_of(path) else { return Some(false) };
+    let Some(root) = repo_root_of(path) else {
+        return Some(false);
+    };
     let cell = {
         let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let cache = guard.get_or_insert_with(|| GitTrackCache { repos: Default::default(), spent: Default::default() });
+        let cache = guard.get_or_insert_with(|| GitTrackCache {
+            repos: Default::default(),
+            spent: Default::default(),
+        });
         cache.repos.entry(root.clone()).or_default().clone()
     };
     let (set, cost) = cell.get_or_init(|| telemetry::shared_fill(|| list_tracked(&root)));
@@ -2056,7 +2230,11 @@ pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
     }
     let mut prefix = rel_bytes;
     prefix.push(b'/');
-    Some(set.range(prefix.clone()..).next().is_some_and(|p| p.starts_with(&prefix)))
+    Some(
+        set.range(prefix.clone()..)
+            .next()
+            .is_some_and(|p| p.starts_with(&prefix)),
+    )
 }
 
 /// [`git_tracked_state`], with "unknown" answered as not tracked.
@@ -2066,7 +2244,7 @@ pub fn is_git_tracked(path: &std::path::Path) -> bool {
 
 /// Compute SHA-256 hash of content, returning hex string.
 pub fn sha256_hex(content: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::fmt::Write;
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -2125,10 +2303,7 @@ pub fn read_bounded(path: &std::path::Path) -> Option<String> {
 /// descriptor's real path (Linux `/proc/self/fd`, macOS `F_GETPATH`) must equal it: a
 /// directory in the chain swapped for a symlink between the caller's canonicalize() and
 /// this open is refused instead of read. Returns the file and its length.
-pub fn open_regular_nofollow(
-    path: &std::path::Path,
-    expect: Option<&std::path::Path>,
-) -> Option<(std::fs::File, u64)> {
+pub fn open_regular_nofollow(path: &std::path::Path, expect: Option<&std::path::Path>) -> Option<(std::fs::File, u64)> {
     #[cfg(unix)]
     let file = {
         use std::os::unix::fs::OpenOptionsExt;
@@ -2307,7 +2482,11 @@ pub fn is_official_registry(value: &str, official: &[&str]) -> bool {
     let host = host_port
         .rsplit_once(':')
         .map_or(host_port, |(h, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) { h } else { host_port }
+            if port.chars().all(|c| c.is_ascii_digit()) {
+                h
+            } else {
+                host_port
+            }
         })
         .trim_end_matches('.')
         .to_ascii_lowercase();
@@ -2341,7 +2520,10 @@ pub fn probe_read_dir<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<std
     if let Err(e) = &r {
         telemetry::note_probe(path.as_ref(), false);
         if telemetry::trace_enabled() {
-            eprintln!("trace: read_dir {} -> {e}", sanitize_display(&path.as_ref().display().to_string(), 512));
+            eprintln!(
+                "trace: read_dir {} -> {e}",
+                sanitize_display(&path.as_ref().display().to_string(), 512)
+            );
         }
     }
     r
@@ -2408,12 +2590,14 @@ pub mod telemetry {
         pub(crate) fn reset_budget(&self) {
             let fresh = ScannerScope::default();
             self.hooks_left.store(fresh.hooks_left.into_inner(), Ordering::Relaxed);
-            self.probes_left.store(fresh.probes_left.into_inner(), Ordering::Relaxed);
+            self.probes_left
+                .store(fresh.probes_left.into_inner(), Ordering::Relaxed);
         }
 
         /// Take one from `which` (hooks or probes); false once it is spent.
         fn take(slot: &AtomicUsize) -> bool {
-            slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok()
+            slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
         }
         pub(crate) fn take_hook(&self) -> bool {
             Self::take(&self.hooks_left)
@@ -2543,7 +2727,10 @@ pub mod telemetry {
         }
         if trace_enabled() {
             let shown = super::sanitize_display(&super::redact_secrets_in_text(&path.display().to_string()), 512);
-            eprintln!("trace: probe {shown} -> {}", if present { "present" } else { "missing" });
+            eprintln!(
+                "trace: probe {shown} -> {}",
+                if present { "present" } else { "missing" }
+            );
         }
     }
 
@@ -2592,7 +2779,17 @@ pub mod telemetry {
         let span = span.detach();
         drop(entered);
         let items = out.len();
-        (out, Pending { scanner, root, elapsed, items, scope: scope.0, span })
+        (
+            out,
+            Pending {
+                scanner,
+                root,
+                elapsed,
+                items,
+                scope: scope.0,
+                span,
+            },
+        )
     }
 
     /// A scanner that has run ([`run`]) whose row is not final yet: the shared-cache
@@ -2614,8 +2811,18 @@ pub mod telemetry {
         /// and ends it, records the scanner metrics, and prints the `--trace` done line.
         pub fn finalize(self) -> ScannerStat {
             use crate::otel::{Attr, Key};
-            let Pending { scanner, root, elapsed, items, scope, mut span } = self;
-            let (mut read, mut missing) = (scope.read.load(Ordering::Relaxed), scope.missing.load(Ordering::Relaxed));
+            let Pending {
+                scanner,
+                root,
+                elapsed,
+                items,
+                scope,
+                mut span,
+            } = self;
+            let (mut read, mut missing) = (
+                scope.read.load(Ordering::Relaxed),
+                scope.missing.load(Ordering::Relaxed),
+            );
             for c in scope.touched.lock().unwrap_or_else(|e| e.into_inner()).iter() {
                 if !c.claimed.swap(true, Ordering::Relaxed) {
                     read += c.read;
@@ -2694,7 +2901,11 @@ pub mod telemetry {
             loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(slot) = slots.get(i) else { break };
-                let item = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each item is taken once");
+                let item = slot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .expect("each item is taken once");
                 let r = f(item);
                 *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
             }
@@ -2703,19 +2914,30 @@ pub mod telemetry {
             for _ in 1..jobs.min(n) {
                 let (scope, cx, work) = (&scope, &cx, &work);
                 // The main thread's stack size, as the scan pool's workers have.
-                let _ = std::thread::Builder::new().name("rmguard-helper".into()).stack_size(8 << 20).spawn_scoped(s, move || {
-                    let _scope = scope.enter();
-                    let _cx = cx.attach();
-                    work();
-                });
+                let _ = std::thread::Builder::new()
+                    .name("rmguard-helper".into())
+                    .stack_size(8 << 20)
+                    .spawn_scoped(s, move || {
+                        let _scope = scope.enter();
+                        let _cx = cx.attach();
+                        work();
+                    });
             }
             work();
         });
-        out.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
+        out.into_iter()
+            .map(|m| {
+                m.into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .expect("every item ran")
+            })
+            .collect()
     }
 
     pub fn skipped(scanner: &'static str) -> ScannerStat {
-        crate::otel::record(crate::otel::Metric::Skipped, 1.0, || vec![crate::otel::Attr::scanner(scanner)]);
+        crate::otel::record(crate::otel::Metric::Skipped, 1.0, || {
+            vec![crate::otel::Attr::scanner(scanner)]
+        });
         ScannerStat {
             scanner: scanner.to_string(),
             root: None,
@@ -2782,7 +3004,12 @@ pub fn contains_phrase(hay: &str, p: &str) -> bool {
     if !p.ends_with(|c: char| c.is_ascii_alphabetic()) {
         return hay.contains(p);
     }
-    hay.match_indices(p).any(|(i, m)| !hay[i + m.len()..].chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+    hay.match_indices(p).any(|(i, m)| {
+        !hay[i + m.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    })
 }
 
 /// The [`POISONING_PATTERNS`] that still mean injection in a prompt- or agent-type
@@ -2837,19 +3064,36 @@ pub fn scan_context_prompt_text(text: &str) -> Vec<&'static str> {
 /// The [`POISONING_PATTERNS`] rows that ordinary instructions also use ("First read
 /// CONTRIBUTING.md", "This is very important"): in a prompt the agent reads they are
 /// graded one step below the concealment and override rows.
-pub const WEAK_CONTEXT_PHRASES: &[&str] =
-    &["first read", "this is very important", "system prompt", "before using this tool", "before you use this tool", "<important>", "</important>"];
+pub const WEAK_CONTEXT_PHRASES: &[&str] = &[
+    "first read",
+    "this is very important",
+    "system prompt",
+    "before using this tool",
+    "before you use this tool",
+    "<important>",
+    "</important>",
+];
 
 /// The three readings a prompt is matched on: lowercased, folded by
 /// [`normalize_for_matching`] with whitespace runs read as one space, and the ASCII that
 /// Unicode tag characters spell.
 fn prompt_readings(text: &str) -> [String; 3] {
     let lower = text.to_lowercase();
-    let spaced = |s: &str| s.split(char::is_whitespace).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let spaced = |s: &str| {
+        s.split(char::is_whitespace)
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let folded = spaced(&normalize_for_matching(text));
     let tags: String = text
         .chars()
-        .filter_map(|c| (0xE0020..=0xE007E).contains(&(c as u32)).then(|| char::from_u32(c as u32 - 0xE0000)).flatten())
+        .filter_map(|c| {
+            (0xE0020..=0xE007E)
+                .contains(&(c as u32))
+                .then(|| char::from_u32(c as u32 - 0xE0000))
+                .flatten()
+        })
         .collect();
     let tags = spaced(&tags.to_lowercase());
     [lower, folded, tags]
@@ -2857,7 +3101,10 @@ fn prompt_readings(text: &str) -> [String; 3] {
 
 fn scan_prompt_phrases(text: &str, list: &[&'static str]) -> Vec<&'static str> {
     let readings = prompt_readings(text);
-    list.iter().filter(|p| readings.iter().any(|r| contains_phrase(r, p))).copied().collect()
+    list.iter()
+        .filter(|p| readings.iter().any(|r| contains_phrase(r, p)))
+        .copied()
+        .collect()
 }
 
 /// Concealment phrases that ordinary guard wording also uses ("Never reveal any secret
@@ -2876,7 +3123,8 @@ pub const AIMED_AT_USER_SUFFIX: &str = " (aimed at the user)";
 /// [`prompt_readings`] is checked.
 pub fn concealment_aimed_at_user(text: &str, p: &str) -> bool {
     prompt_readings(text).iter().any(|r| {
-        r.split(['.', '!', '?', '\n']).any(|sentence| contains_phrase(sentence, p) && contains_phrase(sentence, "the user"))
+        r.split(['.', '!', '?', '\n'])
+            .any(|sentence| contains_phrase(sentence, p) && contains_phrase(sentence, "the user"))
     })
 }
 
@@ -2960,7 +3208,10 @@ pub fn prompt_credential_paths(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in text.split_whitespace() {
         let w = w.trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?' | '*' | '{' | '}')
+            matches!(
+                c,
+                '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?' | '*' | '{' | '}'
+            )
         });
         let w = w.trim_end_matches('.');
         if w.len() < 2 || w.contains("://") {
@@ -2972,7 +3223,10 @@ pub fn prompt_credential_paths(text: &str) -> Vec<String> {
         if TEMPLATE_SUFFIXES.iter().any(|t| lw.ends_with(t)) {
             continue;
         }
-        let rel = w.strip_prefix("~/").or_else(|| w.strip_prefix("$HOME/")).or_else(|| w.strip_prefix("${HOME}/"));
+        let rel = w
+            .strip_prefix("~/")
+            .or_else(|| w.strip_prefix("$HOME/"))
+            .or_else(|| w.strip_prefix("${HOME}/"));
         let hit = match rel {
             Some(r) => {
                 persistence::sensitive_read_kind(&std::path::Path::new("/h").join(r), std::path::Path::new("/h"))
@@ -3050,8 +3304,10 @@ pub(crate) fn bmp_selector_runs(chars: &[char]) -> Vec<bool> {
 /// (U+FEFF). ZWNJ and ZWJ (U+200C/D) are kept: Persian text and emoji sequences need
 /// them. Shared by [`sanitize_display`] and the terminal renderer's backstops.
 pub fn is_display_hazard(c: char) -> bool {
-    matches!(c, '\u{2028}' | '\u{2029}' | '\u{061c}' | '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{feff}')
-        || ('\u{202a}'..='\u{202e}').contains(&c)
+    matches!(
+        c,
+        '\u{2028}' | '\u{2029}' | '\u{061c}' | '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{feff}'
+    ) || ('\u{202a}'..='\u{202e}').contains(&c)
         || ('\u{2060}'..='\u{2064}').contains(&c)
         || ('\u{2066}'..='\u{2069}').contains(&c)
         || is_invisible_carrier(c)
@@ -3066,7 +3322,6 @@ pub fn is_display_hazard(c: char) -> bool {
 fn is_invisible_carrier(c: char) -> bool {
     matches!(c as u32, 0xE0000..=0xE007F | 0xE0100..=0xE01EF | 0x00AD | 0x180E | 0x115F | 0x1160 | 0x3164 | 0xFFA0)
 }
-
 
 /// Run a command with a wall-clock cap, stdin closed. `Command::output()` has no timeout,
 /// and git will happily open an `[include] path = /dev/tty` (or a FIFO) from an
@@ -3119,7 +3374,12 @@ fn output_with_cap(
     use std::io::Read;
     use std::process::Stdio;
     let mut x = crate::otel::exec_span(site, cmd.get_program());
-    let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+    let mut child = match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         Ok(c) => c,
         Err(_) => {
             x.outcome("spawn_failed");
@@ -3155,7 +3415,11 @@ fn output_with_cap(
                 x.outcome("output_cap");
                 return None;
             }
-            Some(std::process::Output { status, stdout, stderr: Vec::new() })
+            Some(std::process::Output {
+                status,
+                stdout,
+                stderr: Vec::new(),
+            })
         }
         // On timeout or over-cap the reader is NOT joined: the kill reaches the child
         // only, and a grandchild (`sh -c 'a; sleep 30'` under dash, which does not exec
@@ -3209,8 +3473,14 @@ mod capped_output_tests {
             let _ = get_binary_version(truth);
         }
         let probe = start.elapsed();
-        assert!(runner < std::time::Duration::from_millis(150), "runner polled: 10 runs took {runner:?}");
-        assert!(probe < std::time::Duration::from_millis(350), "version probe polled: 10 runs took {probe:?}");
+        assert!(
+            runner < std::time::Duration::from_millis(150),
+            "runner polled: 10 runs took {runner:?}"
+        );
+        assert!(
+            probe < std::time::Duration::from_millis(350),
+            "version probe polled: 10 runs took {probe:?}"
+        );
     }
 
     /// Timeouts and the output cap still kill and reap the child under the new waiter.
@@ -3220,13 +3490,19 @@ mod capped_output_tests {
         c.args(["-c", "sleep 30"]);
         let start = std::time::Instant::now();
         assert!(output_with_timeout(&mut c, std::time::Duration::from_millis(200)).is_none());
-        assert!(start.elapsed() < std::time::Duration::from_secs(2), "timeout did not fire promptly");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "timeout did not fire promptly"
+        );
         // Over-cap in strict mode is also event-driven: the reader wakes the waiter.
         let mut c = child_command("/bin/sh");
         c.args(["-c", "head -c 200000 /dev/zero; sleep 30"]);
         let start = std::time::Instant::now();
         assert!(output_with_timeout_capped(&mut c, std::time::Duration::from_secs(10), "test", 1000).is_none());
-        assert!(start.elapsed() < std::time::Duration::from_secs(2), "over-cap kill was not prompt");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "over-cap kill was not prompt"
+        );
     }
 
     /// Review round 6: a cap above MAX_CHILD_OUTPUT (the 32 MiB `git ls-files` cap) is
@@ -3238,7 +3514,10 @@ mod capped_output_tests {
         let t = std::time::Duration::from_secs(20);
         let mut over = child_command("/bin/sh");
         over.args(["-c", &format!("head -c {} /dev/zero", cap + 1000)]);
-        assert!(output_with_timeout_capped(&mut over, t, "test", cap).is_none(), "a cut-off listing was returned as complete");
+        assert!(
+            output_with_timeout_capped(&mut over, t, "test", cap).is_none(),
+            "a cut-off listing was returned as complete"
+        );
         let mut under = child_command("/bin/sh");
         under.args(["-c", &format!("head -c {} /dev/zero", cap - 1000)]);
         let out = output_with_timeout_capped(&mut under, t, "test", cap).expect("complete output under the cap");
@@ -3257,9 +3536,24 @@ mod process_snapshot_tests {
     fn asked() -> Vec<(&'static str, &'static str)> {
         let mut v = Vec::new();
         v.extend(ai_tools::spawn_and_process_names().1.into_iter().map(|n| ("ai", n)));
-        v.extend(ai_frameworks::spawn_and_process_names().1.into_iter().map(|n| ("frameworks", n)));
-        v.extend(container_tools::spawn_and_process_names().1.into_iter().map(|n| ("containers", n)));
-        v.extend(notebook_servers::spawn_and_process_names().1.into_iter().map(|n| ("notebooks", n)));
+        v.extend(
+            ai_frameworks::spawn_and_process_names()
+                .1
+                .into_iter()
+                .map(|n| ("frameworks", n)),
+        );
+        v.extend(
+            container_tools::spawn_and_process_names()
+                .1
+                .into_iter()
+                .map(|n| ("containers", n)),
+        );
+        v.extend(
+            notebook_servers::spawn_and_process_names()
+                .1
+                .into_iter()
+                .map(|n| ("notebooks", n)),
+        );
         // `ai` also asks about each desktop app by its file stem (both platforms' lists).
         for stem in ["Claude", "GitHub Copilot", "claude-desktop", "github-copilot"] {
             v.push(("ai", stem));
@@ -3271,9 +3565,9 @@ mod process_snapshot_tests {
     /// both ends, against the process name. Implemented for the subset the detectors
     /// use (literal text, `.` as any byte), which `names_are_regex_literals` pins.
     fn old_pgrep_x(names: &[String], pattern: &str) -> bool {
-        names.iter().any(|n| {
-            n.len() == pattern.len() && n.bytes().zip(pattern.bytes()).all(|(a, p)| p == b'.' || a == p)
-        })
+        names
+            .iter()
+            .any(|n| n.len() == pattern.len() && n.bytes().zip(pattern.bytes()).all(|(a, p)| p == b'.' || a == p))
     }
 
     /// pgrep read its argument as a regex. String equality equals that match only
@@ -3299,7 +3593,10 @@ mod process_snapshot_tests {
         let listing = b"systemd\n  kthreadd\nollama\ntext-generation\ndockerd\ncontainerd-shim\n\
 podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvllm \nps\n\n";
         let names = parse_process_list(listing);
-        assert!(names.contains(&"podman".to_string()), "zombie suffix not removed: {names:?}");
+        assert!(
+            names.contains(&"podman".to_string()),
+            "zombie suffix not removed: {names:?}"
+        );
         assert!(names.contains(&"kthreadd".to_string()), "leading padding not trimmed");
         let mut hits = Vec::new();
         for (scanner, n) in asked() {
@@ -3317,9 +3614,21 @@ podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvll
         // comm `text-generation` is what the frameworks entry asks for.
         assert_eq!(
             hits,
-            ["Claude", "GitHub Copilot", "dockerd", "jupyter-noteboo", "ollama", "podman", "text-generation", "vllm"]
+            [
+                "Claude",
+                "GitHub Copilot",
+                "dockerd",
+                "jupyter-noteboo",
+                "ollama",
+                "podman",
+                "text-generation",
+                "vllm"
+            ]
         );
-        assert!(!process_list_has(&names, ""), "an empty name (no file stem) matches nothing");
+        assert!(
+            !process_list_has(&names, ""),
+            "an empty name (no file stem) matches nothing"
+        );
         assert!(!process_list_has(&names, "containerd"));
         assert!(!process_list_has(&names, "colima"));
     }
@@ -3349,7 +3658,11 @@ podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvll
         programs.extend(node_packages::spawned_binaries());
         programs.extend(crate::platform::Ide::ALL.iter().map(|&i| ide::ide_bin_name(i)));
         for p in programs {
-            assert_eq!(crate::otel::exec_program(std::ffi::OsStr::new(p)), p, "{p} missing from EXEC_PROGRAMS");
+            assert_eq!(
+                crate::otel::exec_program(std::ffi::OsStr::new(p)),
+                p,
+                "{p} missing from EXEC_PROGRAMS"
+            );
         }
     }
 }
@@ -3382,7 +3695,11 @@ mod scanner_scope_tests {
             let left = telemetry::timed(&mut diag, "second", None, || {
                 vec![(hook_sources::hooks_left(), hook_sources::take_probe())]
             });
-            assert_eq!(left, vec![(hook_sources::MAX_HOOKS_PER_SCAN, true)], "the second scanner inherited a spent budget");
+            assert_eq!(
+                left,
+                vec![(hook_sources::MAX_HOOKS_PER_SCAN, true)],
+                "the second scanner inherited a spent budget"
+            );
         })
         .join()
         .unwrap();
@@ -3402,13 +3719,22 @@ mod scanner_scope_tests {
         let file = repo.join("a.txt");
         std::fs::write(&file, "x").unwrap();
         let (_, b) = std::thread::scope(|s| {
-            s.spawn(|| telemetry::run("b", None, || vec![is_git_tracked(&file)])).join().unwrap()
+            s.spawn(|| telemetry::run("b", None, || vec![is_git_tracked(&file)]))
+                .join()
+                .unwrap()
         });
         let (_, a) = telemetry::run("a", None, || vec![is_git_tracked(&file)]);
         let (a, b) = (a.finalize(), b.finalize());
         let _ = std::fs::remove_dir_all(&repo);
-        assert!(a.files_read + a.files_missing > 0, "the fill's reads were not charged to a: {a:?}");
-        assert_eq!((b.files_read, b.files_missing), (0, 0), "b was charged for a fill a claimed: {b:?}");
+        assert!(
+            a.files_read + a.files_missing > 0,
+            "the fill's reads were not charged to a: {a:?}"
+        );
+        assert_eq!(
+            (b.files_read, b.files_missing),
+            (0, 0),
+            "b was charged for a fill a claimed: {b:?}"
+        );
     }
 
     /// `mark_truncated` marks the running scanner's row only.
@@ -3461,14 +3787,29 @@ mod par_map_tests {
                     (i * 10, std::thread::current().id() == me)
                 });
                 let all_here = r.iter().all(|(_, here)| *here);
-                assert_eq!(all_here, jobs == 1, "jobs {jobs}: items ran on this thread only = {all_here}");
-                assert_eq!(peak.load(Ordering::SeqCst) >= 2, jobs > 1, "jobs {jobs}: peak in flight");
+                assert_eq!(
+                    all_here,
+                    jobs == 1,
+                    "jobs {jobs}: items ran on this thread only = {all_here}"
+                );
+                assert_eq!(
+                    peak.load(Ordering::SeqCst) >= 2,
+                    jobs > 1,
+                    "jobs {jobs}: peak in flight"
+                );
                 r.into_iter().map(|(v, _)| v).collect::<Vec<_>>()
             });
             let stat = pending.finalize();
-            assert_eq!(out, (0..16u64).map(|i| i * 10).collect::<Vec<_>>(), "jobs {jobs}: order");
+            assert_eq!(
+                out,
+                (0..16u64).map(|i| i * 10).collect::<Vec<_>>(),
+                "jobs {jobs}: order"
+            );
             assert_eq!(stat.files_read, 16, "jobs {jobs}: helper reads count for the scanner");
-            assert!(stat.truncated, "jobs {jobs}: a helper's mark_truncated reaches the scanner row");
+            assert!(
+                stat.truncated,
+                "jobs {jobs}: a helper's mark_truncated reaches the scanner row"
+            );
         }
     }
 }

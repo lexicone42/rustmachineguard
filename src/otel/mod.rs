@@ -528,23 +528,73 @@ pub fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration
 /// exported as `other`.
 pub const EXEC_PROGRAMS: &[&str] = &[
     // rmguard's own helpers
-    "git", "ps", "ssh-keygen", "sw_vers", "defaults",
+    "git",
+    "ps",
+    "ssh-keygen",
+    "sw_vers",
+    "defaults",
     // node toolchain (scanner.node)
-    "node", "npm", "yarn", "pnpm", "bun",
+    "node",
+    "npm",
+    "yarn",
+    "pnpm",
+    "bun",
     // AI CLIs and agents (scanner.ai)
-    "claude", "claude-desktop", "copilot", "gh-copilot", "github-copilot-cli", "ghcs", "codex",
-    "gemini", "amazon-q", "cursor-agent", "kiro-cli", "kiro", "aish", "opencode", "aider",
-    "continue", "cody", "openclaw", "clawdbot", "moltbot", "moldbot", "gpt-engineer", "gpte",
-    "interpreter", "goose", "tabby",
+    "claude",
+    "claude-desktop",
+    "copilot",
+    "gh-copilot",
+    "github-copilot-cli",
+    "ghcs",
+    "codex",
+    "gemini",
+    "amazon-q",
+    "cursor-agent",
+    "kiro-cli",
+    "kiro",
+    "aish",
+    "opencode",
+    "aider",
+    "continue",
+    "cody",
+    "openclaw",
+    "clawdbot",
+    "moltbot",
+    "moldbot",
+    "gpt-engineer",
+    "gpte",
+    "interpreter",
+    "goose",
+    "tabby",
     // local model servers (scanner.frameworks)
-    "ollama", "local-ai", "localai", "lms", "llama-server", "llama-cli", "vllm",
-    "text-generation-launcher", "textgen",
+    "ollama",
+    "local-ai",
+    "localai",
+    "lms",
+    "llama-server",
+    "llama-cli",
+    "vllm",
+    "text-generation-launcher",
+    "textgen",
     // container runtimes (scanner.containers)
-    "docker", "podman", "nerdctl", "limactl", "colima", "rdctl", "finch",
+    "docker",
+    "podman",
+    "nerdctl",
+    "limactl",
+    "colima",
+    "rdctl",
+    "finch",
     // notebook servers (scanner.notebooks)
-    "jupyter-notebook", "jupyter-lab", "jupyter", "marimo",
+    "jupyter-notebook",
+    "jupyter-lab",
+    "jupyter",
+    "marimo",
     // IDE launchers (scanner.ide)
-    "code", "cursor", "windsurf", "zed", "antigravity",
+    "code",
+    "cursor",
+    "windsurf",
+    "zed",
+    "antigravity",
 ];
 
 /// `program`'s basename if it is one of [`EXEC_PROGRAMS`], else `other`. The input is
@@ -553,7 +603,11 @@ pub const EXEC_PROGRAMS: &[&str] = &[
 /// path, and any name outside the table, cannot come back out.
 pub fn exec_program(program: &std::ffi::OsStr) -> &'static str {
     let base = std::path::Path::new(program).file_name().unwrap_or(program);
-    EXEC_PROGRAMS.iter().copied().find(|p| std::ffi::OsStr::new(p) == base).unwrap_or("other")
+    EXEC_PROGRAMS
+        .iter()
+        .copied()
+        .find(|p| std::ffi::OsStr::new(p) == base)
+        .unwrap_or("other")
 }
 
 /// A subprocess span: `exec.<site>`, with `rmguard.exec.program` set to
@@ -569,7 +623,13 @@ pub fn exec_span(site: &'static str, program: &std::ffi::OsStr) -> ExecSpan {
     let guard = span_with("exec.", site, || {
         vec![Attr::str(Key::ExecSite, site), Attr::str(Key::ExecProgram, program)]
     });
-    ExecSpan(Some(ExecInner { guard, start: Instant::now(), site, program, outcome: None }))
+    ExecSpan(Some(ExecInner {
+        guard,
+        start: Instant::now(),
+        site,
+        program,
+        outcome: None,
+    }))
 }
 
 #[must_use = "an exec span ends when dropped"]
@@ -603,7 +663,13 @@ impl ExecSpan {
 impl Drop for ExecSpan {
     fn drop(&mut self) {
         let Some(inner) = self.0.take() else { return };
-        let ExecInner { mut guard, start, site, program, outcome } = inner;
+        let ExecInner {
+            mut guard,
+            start,
+            site,
+            program,
+            outcome,
+        } = inner;
         let elapsed = start.elapsed();
         let outcome = outcome.unwrap_or("unknown");
         guard.set(|| vec![Attr::str(Key::ExecOutcome, outcome)]);
@@ -728,13 +794,20 @@ mod tests {
         assert_eq!(exec_program(OsStr::new("/home/u/.local/bin/claude")), "claude");
         assert_eq!(exec_program(OsStr::new("/home/u/E2EOTEL/evil-server")), "other");
         assert_eq!(exec_program(OsStr::new("node --inspect")), "other");
-        assert_eq!(exec_program(OsStr::new("Claude")), "other", "case-sensitive, like the spawn");
+        assert_eq!(
+            exec_program(OsStr::new("Claude")),
+            "other",
+            "case-sensitive, like the spawn"
+        );
         assert_eq!(exec_program(OsStr::new("")), "other");
         assert_eq!(exec_program(OsStr::new("/nonexistent/rmguard-no-git")), "other");
         let mut seen = std::collections::HashSet::new();
         for p in EXEC_PROGRAMS {
             assert!(seen.insert(p), "duplicate {p}");
-            assert!(!p.contains('/') && !p.contains(' ') && !p.is_empty(), "{p:?} is not a basename");
+            assert!(
+                !p.contains('/') && !p.contains(' ') && !p.is_empty(),
+                "{p:?} is not a basename"
+            );
             assert_eq!(exec_program(OsStr::new(p)), *p);
         }
         assert!(!EXEC_PROGRAMS.contains(&"other"));

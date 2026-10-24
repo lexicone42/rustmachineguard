@@ -47,7 +47,9 @@ const USER_AGENT: &str = concat!("rmguard/", env!("CARGO_PKG_VERSION"));
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 /// Histogram buckets in seconds: a scanner is milliseconds, a `--version` probe tens of
 /// milliseconds, an MCP probe or registry lookup up to its 10-30 s timeout.
-const BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0];
+const BUCKETS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+];
 
 struct State {
     /// One wall-clock reading, paired with its monotonic twin, taken once in init().
@@ -189,7 +191,11 @@ impl HttpClient for UreqClient {
         if let Ok(ua) = USER_AGENT.parse() {
             parts.headers.insert("user-agent", ua);
         }
-        let agent = if parts.uri.host().is_some_and(is_loopback_host) { &self.direct } else { &self.proxied };
+        let agent = if parts.uri.host().is_some_and(is_loopback_host) {
+            &self.direct
+        } else {
+            &self.proxied
+        };
         let req = Request::from_parts(parts, body.to_vec());
         let mut resp = match agent.run(req) {
             Ok(r) => r,
@@ -227,7 +233,10 @@ struct Anchor {
 
 impl Anchor {
     fn now() -> Anchor {
-        Anchor { sys: SystemTime::now(), inst: Instant::now() }
+        Anchor {
+            sys: SystemTime::now(),
+            inst: Instant::now(),
+        }
     }
 
     /// The wall time of `at` on this timeline. Never reads the system clock.
@@ -321,7 +330,10 @@ pub(super) fn init() -> Result<(), InitError> {
             .build()
             .into()
     };
-    let client = UreqClient { direct: agent(None), proxied: agent(ureq::Proxy::try_from_env()) };
+    let client = UreqClient {
+        direct: agent(None),
+        proxied: agent(ureq::Proxy::try_from_env()),
+    };
 
     // No with_endpoint(): the standard OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT /
     // OTEL_EXPORTER_OTLP_ENDPOINT / default resolution applies. Protocol and timeout are
@@ -375,8 +387,15 @@ pub(super) fn init() -> Result<(), InitError> {
         };
         // One cumulative snapshot, at shutdown: a scan is short, and periodic export
         // would only add requests.
-        let reader = PeriodicReader::builder(mexp).with_interval(Duration::from_secs(3600)).build();
-        Some(SdkMeterProvider::builder().with_reader(reader).with_resource(res).build())
+        let reader = PeriodicReader::builder(mexp)
+            .with_interval(Duration::from_secs(3600))
+            .build();
+        Some(
+            SdkMeterProvider::builder()
+                .with_reader(reader)
+                .with_resource(res)
+                .build(),
+        )
     } else {
         None
     };
@@ -424,7 +443,16 @@ pub(super) fn init() -> Result<(), InitError> {
         }
     });
 
-    if STATE.set(State { clock: Anchor::now(), tracer, tp, mp, inst }).is_err() {
+    if STATE
+        .set(State {
+            clock: Anchor::now(),
+            tracer,
+            tp,
+            mp,
+            inst,
+        })
+        .is_err()
+    {
         return Ok(());
     }
     ENABLED.store(true, Ordering::SeqCst);
@@ -440,7 +468,10 @@ fn value(v: V) -> Value {
 }
 
 fn conv(attrs: Vec<Attr>) -> Vec<KeyValue> {
-    attrs.into_iter().map(|Attr(k, v)| KeyValue::new(k.as_str(), value(v))).collect()
+    attrs
+        .into_iter()
+        .map(|Attr(k, v)| KeyValue::new(k.as_str(), value(v)))
+        .collect()
 }
 
 /// A started span, attached as the current context on this thread.
@@ -475,7 +506,12 @@ impl Live {
     pub(super) fn detach(mut self) -> Detached {
         self.attach = None;
         self.finished = true;
-        Detached { cx: self.cx.clone(), start: self.start, t0: self.t0, finished: false }
+        Detached {
+            cx: self.cx.clone(),
+            start: self.start,
+            t0: self.t0,
+            finished: false,
+        }
     }
 }
 
@@ -516,12 +552,7 @@ impl Drop for Live {
 
 /// `at` is a start instant the caller already read to time the same work; `None` starts
 /// the span now.
-pub(super) fn start(
-    name: Cow<'static, str>,
-    client: bool,
-    attrs: Vec<Attr>,
-    at: Option<Instant>,
-) -> Option<Live> {
+pub(super) fn start(name: Cow<'static, str>, client: bool, attrs: Vec<Attr>, at: Option<Instant>) -> Option<Live> {
     let state = STATE.get()?;
     let tracer = state.tracer.as_ref()?;
     let t0 = at.unwrap_or_else(Instant::now);
@@ -534,7 +565,13 @@ pub(super) fn start(
         .start(tracer);
     let cx = Context::current_with_span(span);
     let attach = cx.clone().attach();
-    Some(Live { cx, attach: Some(attach), start, t0, finished: false })
+    Some(Live {
+        cx,
+        attach: Some(attach),
+        start,
+        t0,
+        finished: false,
+    })
 }
 
 /// The current context, for [`super::ParentContext`].
@@ -555,7 +592,9 @@ pub(super) fn annotate_current(attrs: Vec<Attr>) {
 }
 
 pub(super) fn record(metric: Metric, v: f64, attrs: Vec<Attr>) {
-    let Some(inst) = STATE.get().and_then(|s| s.inst.as_ref()) else { return };
+    let Some(inst) = STATE.get().and_then(|s| s.inst.as_ref()) else {
+        return;
+    };
     let kv = conv(attrs);
     let n = v.max(0.0) as u64;
     match metric {
@@ -572,7 +611,9 @@ pub(super) fn record(metric: Metric, v: f64, attrs: Vec<Attr>) {
 }
 
 pub(super) fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration) {
-    let Some(inst) = STATE.get().and_then(|s| s.inst.as_ref()) else { return };
+    let Some(inst) = STATE.get().and_then(|s| s.inst.as_ref()) else {
+        return;
+    };
     let kv = conv(vec![Attr::scanner(label)]);
     inst.scanner_duration.record(elapsed.as_secs_f64(), &kv);
     inst.files_read.add(stat.files_read, &kv);
@@ -692,25 +733,41 @@ mod tests {
 
         let line = shutdown_warning(false, slot.get().copied()).expect("a warning");
         assert!(line.starts_with("warning: OpenTelemetry export failed ("), "{line}");
-        assert!(!line.contains("http://") && !line.contains("https://") && !line.contains('@'), "{line}");
+        assert!(
+            !line.contains("http://") && !line.contains("https://") && !line.contains('@'),
+            "{line}"
+        );
 
         assert_eq!(
             shutdown_warning(false, Some(ExportErr::Status(401))).unwrap(),
             "warning: OpenTelemetry export failed (HTTP 401); telemetry only, the report and exit code are not affected by this"
         );
-        assert!(shutdown_warning(true, Some(ExportErr::Timeout)).unwrap().contains("did not finish within 2s"));
+        assert!(
+            shutdown_warning(true, Some(ExportErr::Timeout))
+                .unwrap()
+                .contains("did not finish within 2s")
+        );
         assert_eq!(shutdown_warning(false, None), None);
     }
 
     #[test]
     fn ureq_errors_map_to_categories() {
         use std::io::{Error, ErrorKind};
-        assert_eq!(categorize(&ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused))), ExportErr::Refused);
+        assert_eq!(
+            categorize(&ureq::Error::Io(Error::from(ErrorKind::ConnectionRefused))),
+            ExportErr::Refused
+        );
         assert_eq!(categorize(&ureq::Error::HostNotFound), ExportErr::Dns);
-        assert_eq!(categorize(&ureq::Error::Io(Error::from(ErrorKind::InvalidData))), ExportErr::Tls);
+        assert_eq!(
+            categorize(&ureq::Error::Io(Error::from(ErrorKind::InvalidData))),
+            ExportErr::Tls
+        );
         assert_eq!(categorize(&ureq::Error::StatusCode(500)), ExportErr::Status(500));
         assert_eq!(categorize(&ureq::Error::Tls("x")), ExportErr::Tls);
-        assert_eq!(categorize(&ureq::Error::BadUri("http://u:pw@h".into())), ExportErr::Other);
+        assert_eq!(
+            categorize(&ureq::Error::BadUri("http://u:pw@h".into())),
+            ExportErr::Other
+        );
     }
 
     /// Errors from real requests, not hand-built variants: a refused loopback port, and
@@ -724,8 +781,15 @@ mod tests {
             .build()
             .into();
 
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let e = agent.get(format!("http://127.0.0.1:{closed}/v1/traces")).call().unwrap_err();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let e = agent
+            .get(format!("http://127.0.0.1:{closed}/v1/traces"))
+            .call()
+            .unwrap_err();
         assert_eq!(categorize(&e), ExportErr::Refused, "{e:?}");
 
         let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -736,17 +800,36 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(200));
             }
         });
-        let e = agent.get(format!("https://127.0.0.1:{port}/v1/traces")).call().unwrap_err();
+        let e = agent
+            .get(format!("https://127.0.0.1:{port}/v1/traces"))
+            .call()
+            .unwrap_err();
         let _ = server.join();
         assert_eq!(categorize(&e), ExportErr::Tls, "{e:?}");
     }
 
     #[test]
     fn loopback_hosts_bypass_the_proxy() {
-        for h in ["localhost", "LOCALHOST", "localhost.", "collector.localhost", "127.0.0.1", "127.8.9.10", "[::1]", "::1"] {
+        for h in [
+            "localhost",
+            "LOCALHOST",
+            "localhost.",
+            "collector.localhost",
+            "127.0.0.1",
+            "127.8.9.10",
+            "[::1]",
+            "::1",
+        ] {
             assert!(is_loopback_host(h), "{h}");
         }
-        for h in ["otel.example.com", "localhost.example.com", "10.0.0.1", "[2001:db8::1]", "0.0.0.0", ""] {
+        for h in [
+            "otel.example.com",
+            "localhost.example.com",
+            "10.0.0.1",
+            "[2001:db8::1]",
+            "0.0.0.0",
+            "",
+        ] {
             assert!(!is_loopback_host(h), "{h}");
         }
     }

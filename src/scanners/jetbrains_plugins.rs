@@ -128,14 +128,19 @@ fn plugin_folder_descriptor(folder: &Path) -> Option<String> {
     }
     jars.sort();
     jars.sort_by_key(|j| {
-        let stem = j.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let stem = j
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
         !(stem == folder_name || folder_name.starts_with(&stem) || stem.starts_with(&folder_name))
     });
     jars.iter().find_map(|j| read_descriptor(j))
 }
 
 fn has_ext(p: &Path, ext: &str) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(ext))
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
 /// The `META-INF/plugin.xml` text from a jar, bounded. Only regular files are opened.
@@ -259,7 +264,10 @@ fn xml_text<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     };
     let end = xml[start..].find(&close)? + start;
     let inner = xml[start..end].trim();
-    let inner = inner.strip_prefix("<![CDATA[").and_then(|s| s.strip_suffix("]]>")).unwrap_or(inner);
+    let inner = inner
+        .strip_prefix("<![CDATA[")
+        .and_then(|s| s.strip_suffix("]]>"))
+        .unwrap_or(inner);
     Some(inner.trim())
 }
 
@@ -281,7 +289,9 @@ pub fn parse_plugin_xml(xml: &str, ide: &str, location: &Path) -> Option<JetBrai
     let xml = neutralise_markup(xml);
     let xml = xml.as_str();
     let name_raw = xml_text(xml, "name").map(decode_entities).unwrap_or_default();
-    let id_owned = xml_text(xml, "id").map(decode_entities).unwrap_or_else(|| name_raw.clone());
+    let id_owned = xml_text(xml, "id")
+        .map(decode_entities)
+        .unwrap_or_else(|| name_raw.clone());
     let id_raw = id_owned.trim();
     let name_raw = name_raw.as_str();
     if !is_valid_plugin_id(id_raw) {

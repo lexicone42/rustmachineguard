@@ -25,18 +25,19 @@ impl Scanner for CloudCredentialsScanner {
         // AWS config (may have SSO profiles)
         let aws_config = aws_creds.parent().map(|p| p.join("config"));
         if let Some(ref cfg) = aws_config
-            && crate::scanners::probe_file(cfg) {
-                let profiles = extract_ini_sections(cfg)
-                    .into_iter()
-                    .map(|p| p.strip_prefix("profile ").unwrap_or(&p).to_string())
-                    .collect();
-                results.push(CloudCredential {
-                    provider: "AWS".to_string(),
-                    credential_type: "config file (SSO/profiles)".to_string(),
-                    config_path: cfg.display().to_string(),
-                    profiles,
-                });
-            }
+            && crate::scanners::probe_file(cfg)
+        {
+            let profiles = extract_ini_sections(cfg)
+                .into_iter()
+                .map(|p| p.strip_prefix("profile ").unwrap_or(&p).to_string())
+                .collect();
+            results.push(CloudCredential {
+                provider: "AWS".to_string(),
+                credential_type: "config file (SSO/profiles)".to_string(),
+                config_path: cfg.display().to_string(),
+                profiles,
+            });
+        }
 
         // GCP
         let gcloud_dir = platform.gcloud_config_dir();
@@ -54,31 +55,26 @@ impl Scanner for CloudCredentialsScanner {
                 .into_iter()
                 .flatten()
                 .flatten()
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|ext| ext == "json")
-                })
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                 .filter(|e| {
                     // Check if it looks like a service account key (bounded read)
-                    crate::scanners::read_bounded(&e.path())
-                        .is_some_and(|c| c.contains("\"type\": \"service_account\"") || c.contains("\"type\":\"service_account\""))
+                    crate::scanners::read_bounded(&e.path()).is_some_and(|c| {
+                        c.contains("\"type\": \"service_account\"") || c.contains("\"type\":\"service_account\"")
+                    })
                 })
                 .collect();
             if !sa_keys.is_empty() {
-                gcp_cred_types
-                    .push(format!("{} service account key(s)", sa_keys.len()));
+                gcp_cred_types.push(format!("{} service account key(s)", sa_keys.len()));
             }
 
             // Active config
             let properties = gcloud_dir.join("properties");
             let active_account = if crate::scanners::probe_file(&properties) {
-                crate::scanners::read_bounded(&properties)
-                    .and_then(|c| {
-                        c.lines()
-                            .find(|l| l.starts_with("account"))
-                            .map(|l| l.split('=').nth(1).unwrap_or("").trim().to_string())
-                    })
+                crate::scanners::read_bounded(&properties).and_then(|c| {
+                    c.lines()
+                        .find(|l| l.starts_with("account"))
+                        .map(|l| l.split('=').nth(1).unwrap_or("").trim().to_string())
+                })
             } else {
                 None
             };
@@ -102,15 +98,11 @@ impl Scanner for CloudCredentialsScanner {
                 crate::scanners::read_bounded(&az_profile)
                     .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                     .and_then(|v| {
-                        v["subscriptions"]
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|sub| {
-                                        sub["name"].as_str().map(|s| s.to_string())
-                                    })
-                                    .collect()
-                            })
+                        v["subscriptions"].as_array().map(|arr| {
+                            arr.iter()
+                                .filter_map(|sub| sub["name"].as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
                     })
                     .unwrap_or_default()
             } else {

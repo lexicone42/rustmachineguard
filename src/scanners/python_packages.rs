@@ -1,5 +1,5 @@
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, Scanner};
+use crate::scanners::{Scanner, read_bounded};
 use std::path::{Path, PathBuf};
 
 /// Resolves installed Python distributions (name + version) so the catalog's pypi rows

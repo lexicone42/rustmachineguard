@@ -37,8 +37,8 @@ impl PlatformInfo for LinuxPlatform {
             .unwrap_or_else(|| "Linux".to_string());
         let os_version = Self::read_os_release_field("VERSION_ID").unwrap_or_default();
         let kernel_version = super::uname().map(|(_, release)| release).unwrap_or_default();
-        let user_identity = std::env::var("USER")
-            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "unknown".to_string()));
+        let user_identity =
+            std::env::var("USER").unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "unknown".to_string()));
 
         DeviceInfo {
             hostname,
@@ -75,11 +75,7 @@ impl PlatformInfo for LinuxPlatform {
             Ide::Zed => self.home.join(".config/zed/extensions/installed"),
             Ide::Antigravity => self.home.join(".antigravity/extensions"),
         };
-        if dir.is_dir() {
-            Some(dir)
-        } else {
-            None
-        }
+        if dir.is_dir() { Some(dir) } else { None }
     }
 
     fn mcp_config_paths(&self) -> Vec<(String, PathBuf, String)> {

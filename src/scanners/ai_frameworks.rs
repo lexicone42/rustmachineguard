@@ -1,6 +1,6 @@
 use crate::models::AiFramework;
 use crate::platform::PlatformInfo;
-use crate::scanners::{get_binary_version, is_process_running, Scanner};
+use crate::scanners::{Scanner, get_binary_version, is_process_running};
 
 pub struct AiFrameworksScanner;
 

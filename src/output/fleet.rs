@@ -2,7 +2,7 @@
 //! dashboard. Reads a directory of `--format json` outputs and ranks machines by the
 //! severity of their findings so a team can see, at a glance, where to look first.
 
-use crate::analysis::{collect_findings, Finding, Severity};
+use crate::analysis::{Finding, Severity, collect_findings};
 use crate::models::ScanReport;
 use crate::output::html::html_escape;
 use std::io::Read;
@@ -39,8 +39,7 @@ impl MachineReport {
 /// Read every `*.json` scan in `dir`, returning parsed reports and a list of files
 /// that failed to parse (so the caller can warn rather than silently drop them).
 pub fn load_reports_from_dir(dir: &Path) -> Result<(Vec<ScanReport>, Vec<String>), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read directory {}: {}", dir.display(), e))?;
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read directory {}: {}", dir.display(), e))?;
 
     let mut reports = Vec::new();
     let mut skipped = Vec::new();
@@ -168,11 +167,7 @@ th {{ color:var(--dim); font-weight:600; font-size:0.8rem; text-transform:upperc
 }
 
 fn most_recent_timestamp(machines: &[MachineReport]) -> &str {
-    machines
-        .iter()
-        .map(|m| m.timestamp.as_str())
-        .max()
-        .unwrap_or("-")
+    machines.iter().map(|m| m.timestamp.as_str()).max().unwrap_or("-")
 }
 
 fn num_cell(n: usize, class: &str) -> String {

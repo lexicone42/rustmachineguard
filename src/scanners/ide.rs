@@ -1,6 +1,6 @@
 use crate::models::IdeInstallation;
 use crate::platform::{Ide, PlatformInfo};
-use crate::scanners::{get_binary_version, Scanner};
+use crate::scanners::{Scanner, get_binary_version};
 
 pub struct IdeScanner;
 
@@ -34,8 +34,11 @@ fn get_ide_version(ide: Ide, install_path: &std::path::Path) -> Option<String> {
         let plist = install_path.join("Contents/Info.plist");
         if crate::scanners::probe_exists(&plist) {
             if let Some(output) = crate::scanners::output_with_timeout(
-                crate::scanners::system_command("defaults")
-                    .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"]),
+                crate::scanners::system_command("defaults").args([
+                    "read",
+                    plist.to_str().unwrap_or(""),
+                    "CFBundleShortVersionString",
+                ]),
                 std::time::Duration::from_secs(5),
             ) {
                 let v = String::from_utf8_lossy(&output.stdout).trim().to_string();

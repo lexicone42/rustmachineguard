@@ -1,6 +1,6 @@
 use crate::models::RulesFile;
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, Scanner};
+use crate::scanners::{Scanner, read_bounded};
 use std::path::PathBuf;
 
 pub struct RulesFilesScanner;
@@ -72,9 +72,10 @@ impl Scanner for RulesFilesScanner {
 
         // Scan current working directory if different from home
         if let Ok(cwd) = std::env::current_dir()
-            && cwd != home {
-                scan_directory_for_rules(&cwd, &mut results);
-            }
+            && cwd != home
+        {
+            scan_directory_for_rules(&cwd, &mut results);
+        }
 
         // Dedupe by path
         let mut seen = std::collections::HashSet::new();
@@ -88,20 +89,21 @@ fn scan_directory_for_rules(dir: &std::path::Path, results: &mut Vec<RulesFile>)
     for name in RULES_FILE_NAMES {
         let path = dir.join(name);
         if crate::scanners::probe_file(&path)
-            && let Some(content) = read_bounded(&path) {
-                let hash = sha256_hex(&content);
-                let git_tracked = is_git_tracked(&path);
-                let findings = check_dangerous_patterns(&content);
+            && let Some(content) = read_bounded(&path)
+        {
+            let hash = sha256_hex(&content);
+            let git_tracked = is_git_tracked(&path);
+            let findings = check_dangerous_patterns(&content);
 
-                results.push(RulesFile {
-                    path: path.to_string_lossy().to_string(),
-                    file_name: name.to_string(),
-                    sha256: hash,
-                    git_tracked,
-                    size_bytes: content.len(),
-                    findings,
-                });
-            }
+            results.push(RulesFile {
+                path: path.to_string_lossy().to_string(),
+                file_name: name.to_string(),
+                sha256: hash,
+                git_tracked,
+                size_bytes: content.len(),
+                findings,
+            });
+        }
     }
 }
 
@@ -114,11 +116,7 @@ fn extract_project_dirs(claude_json: &std::path::Path) -> Option<Vec<PathBuf>> {
         .map(PathBuf::from)
         .filter(|p| crate::scanners::probe_dir(p))
         .collect();
-    if dirs.is_empty() {
-        None
-    } else {
-        Some(dirs)
-    }
+    if dirs.is_empty() { None } else { Some(dirs) }
 }
 
 fn sha256_hex(content: &str) -> String {
@@ -172,12 +170,18 @@ pub(crate) fn contains_pattern(hay: &str, needle: &str) -> bool {
         let after = hay[end..].chars().next();
         let ok = match rule {
             Rule::Flag => !before.is_some_and(word) && !after.is_some_and(word),
-            Rule::ProgramFlag => !before.is_some_and(|c| word(c) || c == '.' || c == '/') ,
+            Rule::ProgramFlag => !before.is_some_and(|c| word(c) || c == '.' || c == '/'),
             Rule::Code => {
                 let in_path = before == Some('/') || before == Some('\\');
                 let file_name = after == Some('.') && {
-                    let ext: String = hay[end + 1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-                    matches!(ext.as_str(), "py" | "sh" | "js" | "ts" | "mjs" | "cjs" | "rb" | "pl" | "md" | "json" | "txt")
+                    let ext: String = hay[end + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect();
+                    matches!(
+                        ext.as_str(),
+                        "py" | "sh" | "js" | "ts" | "mjs" | "cjs" | "rb" | "pl" | "md" | "json" | "txt"
+                    )
                 };
                 !before.is_some_and(ident) && !after.is_some_and(ident) && !in_path && !file_name
             }
@@ -249,8 +253,7 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
         findings.push(crate::models::RulesFileFinding {
             severity: "critical".to_string(),
             pattern: if obfuscated {
-                "curl|wget piped to shell (obfuscated — only visible after de-obfuscation)"
-                    .to_string()
+                "curl|wget piped to shell (obfuscated — only visible after de-obfuscation)".to_string()
             } else {
                 "curl|wget piped to shell".to_string()
             },
@@ -275,15 +278,12 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
 
     // Cross-channel detection: encoding + network access (SkillFortify information flow check)
     let has_encoding = lower.contains("base64") || lower.contains("encode");
-    let has_network = lower.contains("curl")
-        || lower.contains("wget")
-        || lower.contains("fetch")
-        || lower.contains("http");
+    let has_network =
+        lower.contains("curl") || lower.contains("wget") || lower.contains("fetch") || lower.contains("http");
     if has_encoding && has_network && seen.insert("cross-channel: encoding + network") {
         findings.push(crate::models::RulesFileFinding {
             severity: "high".to_string(),
-            pattern: "cross-channel: encoding + network access (potential exfiltration)"
-                .to_string(),
+            pattern: "cross-channel: encoding + network access (potential exfiltration)".to_string(),
         });
     }
 
@@ -300,9 +300,7 @@ pub fn check_dangerous_patterns(content: &str) -> Vec<crate::models::RulesFileFi
         if seen.insert(cat) {
             findings.push(crate::models::RulesFileFinding {
                 severity: invisible_unicode_severity(cat).to_string(),
-                pattern: format!(
-                    "invisible Unicode ({cat}) — text that renders clean but carries hidden characters"
-                ),
+                pattern: format!("invisible Unicode ({cat}) — text that renders clean but carries hidden characters"),
             });
         }
     }

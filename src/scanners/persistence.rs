@@ -1,6 +1,6 @@
 use crate::models::PersistenceArtifact;
 use crate::platform::PlatformInfo;
-use crate::scanners::{is_git_tracked, read_head_bytes, sanitize_display, Scanner};
+use crate::scanners::{Scanner, is_git_tracked, read_head_bytes, sanitize_display};
 use std::path::{Path, PathBuf};
 
 /// Finds the on-disk artifacts the 2026 agent-targeting worms and agent CVEs leave or
@@ -57,43 +57,102 @@ const IOC_STARTUP_NAMES: &[&str] = &["cook.pth", "cook.py"];
 /// names in a project root shadows the real tool wherever the working directory is on
 /// the search path.
 const SHADOWABLE_TOOLS: &[&str] = &[
-    "git", "npx", "npm", "node", "python", "python3", "pwsh", "powershell", "bash", "sh",
-    "rg", "gh", "hatch", "uv", "which", "code", "cargo", "pip", "pip3",
+    "git",
+    "npx",
+    "npm",
+    "node",
+    "python",
+    "python3",
+    "pwsh",
+    "powershell",
+    "bash",
+    "sh",
+    "rg",
+    "gh",
+    "hatch",
+    "uv",
+    "which",
+    "code",
+    "cargo",
+    "pip",
+    "pip3",
 ];
 const WINDOWS_EXEC_EXTS: &[&str] = &["exe", "cmd", "bat", "ps1", "com"];
 
 /// Where an escaping symlink becomes a credential or persistence write, not just a
 /// path confusion.
 const SENSITIVE_TARGET_DIRS: &[&str] = &[
-    ".ssh", ".gnupg", ".aws", ".config", ".claude", ".codex", ".gemini", ".cursor",
-    ".kube", ".docker", ".npmrc", ".pypirc", ".git-credentials",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".config",
+    ".claude",
+    ".codex",
+    ".gemini",
+    ".cursor",
+    ".kube",
+    ".docker",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
 ];
 const SENSITIVE_TARGET_FILES: &[&str] = &[
-    ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile", ".claude.json",
+    ".bashrc",
+    ".bash_profile",
+    ".zshrc",
+    ".zprofile",
+    ".profile",
+    ".claude.json",
     "authorized_keys",
 ];
 
 /// Known persistence artifacts of agent-targeting campaigns, relative to HOME.
 /// `(path, campaign)`.
 const HOME_IOC_PATHS: &[(&str, &str)] = &[
-    (".config/gh-token-monitor", "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)"),
-    (".local/bin/gh-token-monitor.sh", "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)"),
-    (".config/systemd/user/gh-token-monitor.service", "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)"),
-    ("Library/LaunchAgents/com.user.gh-token-monitor.plist", "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)"),
+    (
+        ".config/gh-token-monitor",
+        "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)",
+    ),
+    (
+        ".local/bin/gh-token-monitor.sh",
+        "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)",
+    ),
+    (
+        ".config/systemd/user/gh-token-monitor.service",
+        "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)",
+    ),
+    (
+        "Library/LaunchAgents/com.user.gh-token-monitor.plist",
+        "tensorlake hostage-token monitor (Shai-Hulud/ChainDrop, 2026-10)",
+    ),
     (".solidity", "EtherDuck Open VSX Solidity extensions (2026-09)"),
-    ("Library/LaunchAgents/com.solidity.langsupport.runner.plist", "EtherDuck Open VSX Solidity extensions (2026-09)"),
-    (".config/systemd/user/solidity-langsupport-runner.service", "EtherDuck Open VSX Solidity extensions (2026-09)"),
-    (".config/.cache/.sys/.deadbug-mcp.py", "Deadbugz MCP metadata-poisoning campaign (2026-08)"),
-    (".apex/agent/mcp.json", "Apex Accelerator backdoored coding agent, REF8801 (2026-10)"),
+    (
+        "Library/LaunchAgents/com.solidity.langsupport.runner.plist",
+        "EtherDuck Open VSX Solidity extensions (2026-09)",
+    ),
+    (
+        ".config/systemd/user/solidity-langsupport-runner.service",
+        "EtherDuck Open VSX Solidity extensions (2026-09)",
+    ),
+    (
+        ".config/.cache/.sys/.deadbug-mcp.py",
+        "Deadbugz MCP metadata-poisoning campaign (2026-08)",
+    ),
+    (
+        ".apex/agent/mcp.json",
+        "Apex Accelerator backdoored coding agent, REF8801 (2026-10)",
+    ),
 ];
 /// Absolute paths (not under HOME) the same campaigns leave behind.
-const ABS_IOC_PATHS: &[(&str, &str)] = &[
-    ("/tmp/remote_code_loader.lock", "litellm 1.107.0 remote-code loader (2026-10)"),
-];
+const ABS_IOC_PATHS: &[(&str, &str)] = &[(
+    "/tmp/remote_code_loader.lock",
+    "litellm 1.107.0 remote-code loader (2026-10)",
+)];
 /// Known persistence artifacts relative to a project root.
-const PROJECT_IOC_PATHS: &[(&str, &str)] = &[
-    (".github/workflows/runtime-update.yml", "MemTensor sckit worm GitHub Actions dropper (2026-09)"),
-];
+const PROJECT_IOC_PATHS: &[(&str, &str)] = &[(
+    ".github/workflows/runtime-update.yml",
+    "MemTensor sckit worm GitHub Actions dropper (2026-09)",
+)];
 
 impl Scanner for PersistenceScanner {
     type Output = Vec<PersistenceArtifact>;
@@ -111,8 +170,8 @@ impl Scanner for PersistenceScanner {
         }
 
         // Project-rooted shapes.
-        let mut projects = crate::scanners::python_packages::project_dirs(&home.join(".claude.json"))
-            .unwrap_or_default();
+        let mut projects =
+            crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default();
         if let Ok(cwd) = std::env::current_dir() {
             projects.push(cwd);
         }
@@ -194,7 +253,11 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
         let lower = name.to_ascii_lowercase();
         if lower == "sitecustomize.py" || lower == "usercustomize.py" {
             if crate::scanners::probe_file(&path) {
-                candidates.push((path, "python-startup-hook".into(), format!("{name}: runs on every interpreter start")));
+                candidates.push((
+                    path,
+                    "python-startup-hook".into(),
+                    format!("{name}: runs on every interpreter start"),
+                ));
             }
             continue;
         }
@@ -227,7 +290,10 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
             path: sanitize_display(&path.to_string_lossy(), 512),
             scope: sanitize_display(&root.to_string_lossy(), 512),
             detail: if is_ioc {
-                format!("{} — file name published as an indicator of the litellm 1.107.0 implant", sanitize_display(&detail, 300))
+                format!(
+                    "{} — file name published as an indicator of the litellm 1.107.0 implant",
+                    sanitize_display(&detail, 300)
+                )
             } else {
                 sanitize_display(&detail, 300)
             },
@@ -318,7 +384,12 @@ pub fn shadowed_tool(file_name: &str, executable: bool) -> Option<&'static str> 
 
 fn scan_planted_binaries(proj: &Path, path_searches_cwd: bool, out: &mut Vec<PersistenceArtifact>) {
     // The root and the directories an IDE or agent treats as its own.
-    let dirs = [proj.to_path_buf(), proj.join(".vscode"), proj.join(".claude"), proj.join(".cursor")];
+    let dirs = [
+        proj.to_path_buf(),
+        proj.join(".vscode"),
+        proj.join(".claude"),
+        proj.join(".cursor"),
+    ];
     for dir in dirs {
         let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
             continue;
@@ -403,7 +474,10 @@ fn scan_loader_staging(proj: &Path, out: &mut Vec<PersistenceArtifact>) {
             if !(lower.ends_with(".mjs") || lower.ends_with(".cjs") || lower.ends_with(".js")) {
                 continue;
             }
-            let known_loader = matches!(lower.as_str(), "setup.mjs" | "setup.js" | "setup.cjs" | "math_symbol.js");
+            let known_loader = matches!(
+                lower.as_str(),
+                "setup.mjs" | "setup.js" | "setup.cjs" | "math_symbol.js"
+            );
             out.push(PersistenceArtifact {
                 kind: "loader-script".into(),
                 path: sanitize_display(&path.to_string_lossy(), 512),
@@ -487,7 +561,11 @@ pub fn symlink_escapes(repo: &Path, link: &Path, target: &Path, home: &Path) -> 
 /// Join and normalise `.`/`..` lexically (no filesystem access, so a dangling or
 /// looping link is still classified).
 pub(crate) fn lexical_join(base: &Path, target: &Path) -> PathBuf {
-    let start: PathBuf = if target.is_absolute() { PathBuf::new() } else { base.to_path_buf() };
+    let start: PathBuf = if target.is_absolute() {
+        PathBuf::new()
+    } else {
+        base.to_path_buf()
+    };
     let mut parts: Vec<std::ffi::OsString> = Vec::new();
     let mut absolute = false;
     for comp in start.components().chain(target.components()) {
@@ -534,33 +612,116 @@ fn is_sensitive_target(resolved: &Path, home: &Path) -> bool {
 /// than SENSITIVE_TARGET_DIRS where that matters for reading: `~/.config` as a whole is
 /// the XDG location of ordinary dotfiles, so only its known credential subpaths are here.
 const SENSITIVE_READ_PATHS: &[&str] = &[
-    ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", ".pki", ".oci",
-    ".terraform.d", ".gem/credentials", ".cargo/credentials", ".cargo/credentials.toml",
-    ".vault-token", ".netrc", ".pgpass", ".my.cnf", ".git-credentials", ".npmrc", ".pypirc",
-    ".yarnrc.yml", ".local/share/keyrings", ".local/share/fish", ".mozilla", ".thunderbird",
-    ".config/gcloud", ".config/gh", ".config/hub", ".config/op", ".config/sops", ".config/rclone",
-    ".config/containers", ".config/git/credentials", ".config/google-chrome", ".config/chromium",
-    ".config/BraveSoftware", ".config/doctl", ".config/Bitwarden CLI", ".config/fish/config.fish",
-    ".config/github-copilot", ".config/claude", "Library/Keychains", "Library/Cookies",
-    "Library/Application Support/Google/Chrome", ".claude", ".claude.json", ".codex", ".gemini",
-    ".cursor", ".kiro", ".cache/huggingface", ".huggingface", ".config/glab-cli", ".s3cfg",
-    ".authinfo", ".authinfo.gpg", ".boto", ".databrickscfg", ".config/configstore",
-    ".copilot", ".codeium", ".config/devin", ".config/opencode",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".password-store",
+    ".pki",
+    ".oci",
+    ".terraform.d",
+    ".gem/credentials",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".vault-token",
+    ".netrc",
+    ".pgpass",
+    ".my.cnf",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".yarnrc.yml",
+    ".local/share/keyrings",
+    ".local/share/fish",
+    ".mozilla",
+    ".thunderbird",
+    ".config/gcloud",
+    ".config/gh",
+    ".config/hub",
+    ".config/op",
+    ".config/sops",
+    ".config/rclone",
+    ".config/containers",
+    ".config/git/credentials",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/doctl",
+    ".config/Bitwarden CLI",
+    ".config/fish/config.fish",
+    ".config/github-copilot",
+    ".config/claude",
+    "Library/Keychains",
+    "Library/Cookies",
+    "Library/Application Support/Google/Chrome",
+    ".claude",
+    ".claude.json",
+    ".codex",
+    ".gemini",
+    ".cursor",
+    ".kiro",
+    ".cache/huggingface",
+    ".huggingface",
+    ".config/glab-cli",
+    ".s3cfg",
+    ".authinfo",
+    ".authinfo.gpg",
+    ".boto",
+    ".databrickscfg",
+    ".config/configstore",
+    ".copilot",
+    ".codeium",
+    ".config/devin",
+    ".config/opencode",
 ];
 /// File names that are sensitive wherever they sit, inside HOME or not, inside a
 /// repository or a plugin or not: shell rc and history files, credential dotfiles,
 /// authorized_keys. `.env`/`.env.*`, SSH private keys and key/certificate extensions are
 /// matched in [`is_sensitive_read_name`].
 const SENSITIVE_READ_NAMES: &[&str] = &[
-    ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv", ".zprofile",
-    ".zlogin", ".profile", ".bash_history", ".zsh_history", ".python_history", ".psql_history",
-    ".mysql_history", ".node_repl_history", ".sqlite_history", ".lesshst", ".viminfo",
-    "authorized_keys", ".netrc", "_netrc", ".pgpass", ".git-credentials", ".vault-token", ".s3cfg",
-    ".authinfo", ".authinfo.gpg", ".boto", ".databrickscfg", ".npmrc", ".pypirc", ".htpasswd",
-    ".my.cnf", "credentials", "credentials.json", "credentials.toml",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".profile",
+    ".bash_history",
+    ".zsh_history",
+    ".python_history",
+    ".psql_history",
+    ".mysql_history",
+    ".node_repl_history",
+    ".sqlite_history",
+    ".lesshst",
+    ".viminfo",
+    "authorized_keys",
+    ".netrc",
+    "_netrc",
+    ".pgpass",
+    ".git-credentials",
+    ".vault-token",
+    ".s3cfg",
+    ".authinfo",
+    ".authinfo.gpg",
+    ".boto",
+    ".databrickscfg",
+    ".npmrc",
+    ".pypirc",
+    ".htpasswd",
+    ".my.cnf",
+    "credentials",
+    "credentials.json",
+    "credentials.toml",
 ];
 /// Extensions of key, certificate and keystore files.
-const SENSITIVE_READ_EXTS: &[&str] = &["pem", "key", "p12", "pfx", "keystore", "jks", "ppk", "kdbx", "gpg", "asc"];
+const SENSITIVE_READ_EXTS: &[&str] = &[
+    "pem", "key", "p12", "pfx", "keystore", "jks", "ppk", "kdbx", "gpg", "asc",
+];
 /// True when the FILE NAME alone marks a path as unreadable through a link, wherever it
 /// sits: a `.env`/`.env.*`, a shell rc or history file, a credential dotfile, an SSH
 /// private key (`id_rsa`, `id_ed25519`, ... but not `*.pub`), or a key/certificate/
@@ -568,7 +729,9 @@ const SENSITIVE_READ_EXTS: &[&str] = &["pem", "key", "p12", "pfx", "keystore", "
 /// repository, a plugin and the skill areas too: a project outside HOME linking SKILL.md
 /// to its own `.env.production` is refused like one under HOME.
 pub(crate) fn is_sensitive_read_name(resolved: &Path) -> bool {
-    let Some(n) = resolved.file_name().and_then(|n| n.to_str()) else { return false };
+    let Some(n) = resolved.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
     if SENSITIVE_READ_NAMES.contains(&n) || n == ".env" || n.starts_with(".env.") {
         return true;
     }
@@ -601,22 +764,42 @@ const AGENT_CREDENTIAL_FILES: &[(&str, &str)] = &[
 pub(crate) fn is_agent_credential_path(p: &Path, agent_home: Option<&Path>) -> bool {
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let parent = p.parent();
-    let parent_name = parent.and_then(|d| d.file_name()).and_then(|n| n.to_str()).unwrap_or("");
-    if AGENT_CREDENTIAL_FILES.iter().any(|(d, f)| *d == parent_name && *f == name) {
+    let parent_name = parent
+        .and_then(|d| d.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if AGENT_CREDENTIAL_FILES
+        .iter()
+        .any(|(d, f)| *d == parent_name && *f == name)
+    {
         return true;
     }
     let comps: Vec<&std::ffi::OsStr> = p.components().map(|c| c.as_os_str()).collect();
-    if comps.windows(2).any(|w| w[0] == ".copilot" && w[1] == "mcp-oauth-config") {
+    if comps
+        .windows(2)
+        .any(|w| w[0] == ".copilot" && w[1] == "mcp-oauth-config")
+    {
         return true;
     }
     // `config.json` is left to the `.copilot` pair: Devin CLI's own hook file is a
     // `config.json` directly in its home.
-    agent_home.is_some_and(|h| parent == Some(h) && name != "config.json" && AGENT_CREDENTIAL_FILES.iter().any(|(_, f)| *f == name))
+    agent_home.is_some_and(|h| {
+        parent == Some(h) && name != "config.json" && AGENT_CREDENTIAL_FILES.iter().any(|(_, f)| *f == name)
+    })
 }
 
 /// Trees outside HOME that hold system configuration, process state or other users' data.
 const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
-    "/etc", "/proc", "/sys", "/dev", "/root", "/var", "/private", "/run", "/boot", "/Library/Keychains",
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/var",
+    "/private",
+    "/run",
+    "/boot",
+    "/Library/Keychains",
 ];
 
 /// True when a resolved path must not be READ through a link: a credential, key,
@@ -641,8 +824,17 @@ pub(crate) fn is_sensitive_read_target(resolved: &Path, home: &Path) -> bool {
 /// HOME-relative agent homes in SENSITIVE_READ_PATHS: agent configuration rather than a
 /// credential store (their credential files are judged by name).
 const AGENT_CONFIG_READ_PATHS: &[&str] = &[
-    ".claude", ".claude.json", ".codex", ".gemini", ".cursor", ".kiro", ".config/claude", ".copilot", ".codeium",
-    ".config/devin", ".config/opencode",
+    ".claude",
+    ".claude.json",
+    ".codex",
+    ".gemini",
+    ".cursor",
+    ".kiro",
+    ".config/claude",
+    ".copilot",
+    ".codeium",
+    ".config/devin",
+    ".config/opencode",
 ];
 
 /// Why [`is_sensitive_read_target`] refuses `resolved`, for wording and grading:
@@ -658,12 +850,18 @@ pub(crate) fn sensitive_read_kind(resolved: &Path, home: &Path) -> Option<&'stat
         if AGENT_CONFIG_READ_PATHS.iter().any(|p| rel.starts_with(p)) {
             return Some("agent-config");
         }
-        return SENSITIVE_READ_PATHS.iter().any(|p| rel.starts_with(p)).then_some("credential");
+        return SENSITIVE_READ_PATHS
+            .iter()
+            .any(|p| rel.starts_with(p))
+            .then_some("credential");
     }
     if SENSITIVE_SYSTEM_ROOTS.iter().any(|r| resolved.starts_with(r)) {
         return Some("system");
     }
-    ["/home", "/Users"].iter().any(|b| resolved.starts_with(b)).then_some("other-home")
+    ["/home", "/Users"]
+        .iter()
+        .any(|b| resolved.starts_with(b))
+        .then_some("other-home")
 }
 
 /// The most specific of several [`sensitive_read_kind`] verdicts: credential, then
@@ -686,48 +884,104 @@ mod tests {
     fn sensitive_read_targets() {
         let home = Path::new("/home/u");
         for p in [
-            "/home/u/.ssh/id_ed25519", "/home/u/.netrc", "/home/u/.pgpass", "/home/u/.vault-token",
-            "/home/u/.password-store/x.gpg", "/home/u/.local/share/keyrings/login.keyring",
-            "/home/u/.config/gcloud/credentials.db", "/home/u/.config/gh/hosts.yml",
-            "/home/u/.zsh_history", "/home/u/proj/.env", "/home/u/.claude/settings.json",
-            "/proc/self/environ", "/sys/kernel/x", "/root/.bashrc", "/home/other/notes.md",
-            "/etc/shadow", "/var/lib/x",
+            "/home/u/.ssh/id_ed25519",
+            "/home/u/.netrc",
+            "/home/u/.pgpass",
+            "/home/u/.vault-token",
+            "/home/u/.password-store/x.gpg",
+            "/home/u/.local/share/keyrings/login.keyring",
+            "/home/u/.config/gcloud/credentials.db",
+            "/home/u/.config/gh/hosts.yml",
+            "/home/u/.zsh_history",
+            "/home/u/proj/.env",
+            "/home/u/.claude/settings.json",
+            "/proc/self/environ",
+            "/sys/kernel/x",
+            "/root/.bashrc",
+            "/home/other/notes.md",
+            "/etc/shadow",
+            "/var/lib/x",
             // File-name rules apply outside HOME too (a project under /datar or /srv).
-            "/srv/proj/.env.production", "/datar/w/app/.env", "/opt/x/id_ed25519", "/srv/p/certs/tls.key",
-            "/home/u/.cache/huggingface/token", "/home/u/.config/glab-cli/config.yml", "/home/u/.s3cfg",
-            "/home/u/.authinfo", "/home/u/.boto", "/home/u/.databrickscfg", "/home/u/.config/configstore/x.json",
+            "/srv/proj/.env.production",
+            "/datar/w/app/.env",
+            "/opt/x/id_ed25519",
+            "/srv/p/certs/tls.key",
+            "/home/u/.cache/huggingface/token",
+            "/home/u/.config/glab-cli/config.yml",
+            "/home/u/.s3cfg",
+            "/home/u/.authinfo",
+            "/home/u/.boto",
+            "/home/u/.databrickscfg",
+            "/home/u/.config/configstore/x.json",
         ] {
             assert!(is_sensitive_read_target(Path::new(p), home), "{p}");
         }
         for p in [
-            "/home/u/.config/dotfiles/skills/x/SKILL.md", "/home/u/dotfiles/SKILL.md",
-            "/home/u/Documents/notes.md", "/nix/store/abc-skill/SKILL.md", "/tmp/x",
-            "/srv/proj/docs/env.md", "/home/u/.ssh-notes.md", "/opt/x/id_ed25519.pub",
+            "/home/u/.config/dotfiles/skills/x/SKILL.md",
+            "/home/u/dotfiles/SKILL.md",
+            "/home/u/Documents/notes.md",
+            "/nix/store/abc-skill/SKILL.md",
+            "/tmp/x",
+            "/srv/proj/docs/env.md",
+            "/home/u/.ssh-notes.md",
+            "/opt/x/id_ed25519.pub",
         ] {
             assert!(!is_sensitive_read_target(Path::new(p), home), "{p}");
         }
         // The kind agrees with the verdict and names it honestly.
-        for p in ["/home/u/.ssh/id_ed25519", "/home/u/.config/gh/hosts.yml", "/srv/proj/.env.production", "/home/u/.zshrc"] {
+        for p in [
+            "/home/u/.ssh/id_ed25519",
+            "/home/u/.config/gh/hosts.yml",
+            "/srv/proj/.env.production",
+            "/home/u/.zshrc",
+        ] {
             assert_eq!(sensitive_read_kind(Path::new(p), home), Some("credential"), "{p}");
         }
-        assert_eq!(sensitive_read_kind(Path::new("/home/u/.claude/skills-archive/x/SKILL.md"), home), Some("agent-config"));
+        assert_eq!(
+            sensitive_read_kind(Path::new("/home/u/.claude/skills-archive/x/SKILL.md"), home),
+            Some("agent-config")
+        );
         // Agent credential and state files (review of 4e3f8c3), by their agent directory
         // or, for a relocated home, directly inside it.
         for p in [
-            "/home/u/.codex/auth.json", "/home/u/.gemini/oauth_creds.json", "/home/u/.gemini/google_accounts.json",
-            "/home/u/.claude/.credentials.json", "/home/u/.copilot/config.json", "/home/u/.copilot/mcp-oauth-config/x.json",
+            "/home/u/.codex/auth.json",
+            "/home/u/.gemini/oauth_creds.json",
+            "/home/u/.gemini/google_accounts.json",
+            "/home/u/.claude/.credentials.json",
+            "/home/u/.copilot/config.json",
+            "/home/u/.copilot/mcp-oauth-config/x.json",
         ] {
             assert!(is_agent_credential_path(Path::new(p), None), "{p}");
         }
-        assert!(is_agent_credential_path(Path::new("/srv/codex-home/auth.json"), Some(Path::new("/srv/codex-home"))));
-        for p in ["/home/u/.codex/hooks.json", "/home/u/.gemini/settings.json", "/home/u/.copilot/settings.json", "/home/u/proj/auth.json"] {
+        assert!(is_agent_credential_path(
+            Path::new("/srv/codex-home/auth.json"),
+            Some(Path::new("/srv/codex-home"))
+        ));
+        for p in [
+            "/home/u/.codex/hooks.json",
+            "/home/u/.gemini/settings.json",
+            "/home/u/.copilot/settings.json",
+            "/home/u/proj/auth.json",
+        ] {
             assert!(!is_agent_credential_path(Path::new(p), None), "{p}");
         }
-        assert!(!is_agent_credential_path(Path::new("/home/u/.config/devin/config.json"), Some(Path::new("/home/u/.config/devin"))));
-        assert_eq!(sensitive_read_kind(Path::new("/var/tmp/x/SKILL.md"), home), Some("system"));
-        assert_eq!(sensitive_read_kind(Path::new("/home/other/notes.md"), home), Some("other-home"));
+        assert!(!is_agent_credential_path(
+            Path::new("/home/u/.config/devin/config.json"),
+            Some(Path::new("/home/u/.config/devin"))
+        ));
+        assert_eq!(
+            sensitive_read_kind(Path::new("/var/tmp/x/SKILL.md"), home),
+            Some("system")
+        );
+        assert_eq!(
+            sensitive_read_kind(Path::new("/home/other/notes.md"), home),
+            Some("other-home")
+        );
         assert_eq!(sensitive_read_kind(Path::new("/home/u/dotfiles/SKILL.md"), home), None);
-        assert_eq!(worst_read_kind([Some("system"), None, Some("credential")]), Some("credential"));
+        assert_eq!(
+            worst_read_kind([Some("system"), None, Some("credential")]),
+            Some("credential")
+        );
         // A home under /var is judged by the HOME rules only.
         let mac = Path::new("/private/var/folders/x/T/h");
         assert!(!is_sensitive_read_target(&mac.join("dotfiles/a.md"), mac));
@@ -741,15 +995,30 @@ mod tests {
             pth_import_line_from("\u{feff}import cook\n").as_deref(),
             Some("import cook")
         );
-        assert_eq!(pth_import_line_from("# comment\nimport\tsys; sys.x = 1\n").as_deref(), Some("import\tsys; sys.x = 1"));
-        assert_eq!(pth_import_line_from("importantpath/\n"), None, "a path that starts with 'import' is not an import");
+        assert_eq!(
+            pth_import_line_from("# comment\nimport\tsys; sys.x = 1\n").as_deref(),
+            Some("import\tsys; sys.x = 1")
+        );
+        assert_eq!(
+            pth_import_line_from("importantpath/\n"),
+            None,
+            "a path that starts with 'import' is not an import"
+        );
     }
 
     #[test]
     fn shadowed_tool_names() {
         assert_eq!(shadowed_tool("git", true), Some("git"));
-        assert_eq!(shadowed_tool("git", false), None, "a non-executable 'git' file is not a trap");
-        assert_eq!(shadowed_tool("git.exe", false), Some("git"), "a Windows binary counts on any host");
+        assert_eq!(
+            shadowed_tool("git", false),
+            None,
+            "a non-executable 'git' file is not a trap"
+        );
+        assert_eq!(
+            shadowed_tool("git.exe", false),
+            Some("git"),
+            "a Windows binary counts on any host"
+        );
         assert_eq!(shadowed_tool("NPX.CMD", false), Some("npx"));
         assert_eq!(shadowed_tool("gitignore", true), None);
         assert_eq!(shadowed_tool("git.py", true), None);
@@ -773,21 +1042,44 @@ mod tests {
         let link = repo.join("config/settings.json");
         assert_eq!(symlink_escapes(repo, &link, Path::new("../other.json"), home), None);
         assert_eq!(symlink_escapes(repo, &link, Path::new("./sub/../x"), home), None);
-        assert_eq!(symlink_escapes(repo, &link, Path::new("../../.ssh/authorized_keys"), home), Some(true));
-        assert_eq!(symlink_escapes(repo, &link, Path::new("/home/u/.zshrc"), home), Some(true));
-        assert_eq!(symlink_escapes(repo, &link, Path::new("/home/u/.claude/settings.json"), home), Some(true));
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("../../.ssh/authorized_keys"), home),
+            Some(true)
+        );
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("/home/u/.zshrc"), home),
+            Some(true)
+        );
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("/home/u/.claude/settings.json"), home),
+            Some(true)
+        );
         assert_eq!(symlink_escapes(repo, &link, Path::new("/etc/hosts"), home), Some(true));
-        assert_eq!(symlink_escapes(repo, &link, Path::new("/home/u/Documents/notes.md"), home), Some(false));
-        assert_eq!(symlink_escapes(repo, &link, Path::new("../../proj-sibling/x"), home), Some(false));
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("/home/u/Documents/notes.md"), home),
+            Some(false)
+        );
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("../../proj-sibling/x"), home),
+            Some(false)
+        );
         // Climbing out and back in is still inside.
         assert_eq!(symlink_escapes(repo, &link, Path::new("../../proj/README"), home), None);
         // A prefix-sharing sibling is outside.
-        assert_eq!(symlink_escapes(repo, &link, Path::new("../../proj2/README"), home), Some(false));
+        assert_eq!(
+            symlink_escapes(repo, &link, Path::new("../../proj2/README"), home),
+            Some(false)
+        );
         // The committed-symlink grading keeps its own (narrower) sensitive list: a shared
         // data path under /var, /run or another user's home escapes the repository (High)
         // but is not a credential or agent-config path (Critical). The skills read-refusal
         // list (is_sensitive_read_target) is broader and is not used here.
-        for p in ["/var/tmp/shared/x", "/run/user/1000/x", "/home/other/shared/x", "/Users/Shared/x"] {
+        for p in [
+            "/var/tmp/shared/x",
+            "/run/user/1000/x",
+            "/home/other/shared/x",
+            "/Users/Shared/x",
+        ] {
             assert_eq!(symlink_escapes(repo, &link, Path::new(p), home), Some(false), "{p}");
         }
     }

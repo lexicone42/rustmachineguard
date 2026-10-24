@@ -1,6 +1,6 @@
 use crate::models::{AiTool, AiToolType};
 use crate::platform::PlatformInfo;
-use crate::scanners::{get_binary_version, is_process_running, Scanner};
+use crate::scanners::{Scanner, get_binary_version, is_process_running};
 
 pub struct AiToolsScanner;
 
@@ -229,8 +229,8 @@ fn verify_binary_works(path: &std::path::Path) -> bool {
             if !o.status.success() {
                 return false;
             }
-            let text = String::from_utf8_lossy(&o.stdout).to_lowercase()
-                + &String::from_utf8_lossy(&o.stderr).to_lowercase();
+            let text =
+                String::from_utf8_lossy(&o.stdout).to_lowercase() + &String::from_utf8_lossy(&o.stderr).to_lowercase();
             !text.contains("not installed") && !text.contains("command not found")
         }
         Err(_) => false,
@@ -247,15 +247,9 @@ impl Scanner for AiToolsScanner {
         let fallback_paths: &[(&str, &[std::path::PathBuf])] = &[
             (
                 "Claude Code",
-                &[
-                    home.join(".claude/local/claude"),
-                    home.join(".local/bin/claude"),
-                ],
+                &[home.join(".claude/local/claude"), home.join(".local/bin/claude")],
             ),
-            (
-                "OpenCode",
-                &[home.join(".opencode/bin/opencode")],
-            ),
+            ("OpenCode", &[home.join(".opencode/bin/opencode")]),
         ];
 
         for def in TOOLS {
@@ -284,9 +278,10 @@ impl Scanner for AiToolsScanner {
             // Reject shims that aren't actually installed
             if def.verify_binary
                 && let Some(ref path) = found_binary
-                    && !verify_binary_works(path) {
-                        found_binary = None;
-                    }
+                && !verify_binary_works(path)
+            {
+                found_binary = None;
+            }
 
             let has_config = def
                 .config_dir_check
@@ -298,10 +293,7 @@ impl Scanner for AiToolsScanner {
                     .as_ref()
                     .and_then(|p| get_binary_version(p.to_str().unwrap_or("")));
 
-                let is_running = def
-                    .process_name
-                    .map(is_process_running)
-                    .unwrap_or(false);
+                let is_running = def.process_name.map(is_process_running).unwrap_or(false);
 
                 let config_dir = def
                     .config_dir_check
@@ -328,26 +320,23 @@ impl Scanner for AiToolsScanner {
 
         if let Some(app_path) = platform.claude_desktop_app()
             && let Some(version) = read_claude_desktop_version(&app_path)
-                && version_gte(&version, (0, 7)) {
-                    results.push(AiTool {
-                        name: "Claude Cowork".to_string(),
-                        vendor: "Anthropic".to_string(),
-                        tool_type: AiToolType::Agent,
-                        version: Some(crate::scanners::sanitize_display(&version, 64)),
-                        binary_path: None,
-                        config_dir: None,
-                        install_path: Some(app_path.display().to_string()),
-                        is_running: false,
-                    });
-                }
+            && version_gte(&version, (0, 7))
+        {
+            results.push(AiTool {
+                name: "Claude Cowork".to_string(),
+                vendor: "Anthropic".to_string(),
+                tool_type: AiToolType::Agent,
+                version: Some(crate::scanners::sanitize_display(&version, 64)),
+                binary_path: None,
+                config_dir: None,
+                install_path: Some(app_path.display().to_string()),
+                is_running: false,
+            });
+        }
 
         for (name, vendor, path) in platform.ai_desktop_app_paths() {
             if crate::scanners::probe_exists(&path) {
-                let is_running = is_process_running(
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(""),
-                );
+                let is_running = is_process_running(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
                 results.push(AiTool {
                     name,
                     vendor,
@@ -371,8 +360,11 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
         let plist = app_path.join("Contents/Info.plist");
         if crate::scanners::probe_file(&plist) {
             if let Some(output) = crate::scanners::output_with_timeout(
-                crate::scanners::system_command("defaults")
-                    .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"]),
+                crate::scanners::system_command("defaults").args([
+                    "read",
+                    plist.to_str().unwrap_or(""),
+                    "CFBundleShortVersionString",
+                ]),
                 std::time::Duration::from_secs(5),
             ) {
                 let v = String::from_utf8_lossy(&output.stdout).trim().to_string();

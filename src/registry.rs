@@ -132,9 +132,7 @@ pub fn fetch_candidates(package_name: &str) -> Result<Vec<RegistryEntry>, String
         e.to_string()
     })?;
     parse_entries(&body).inspect_err(|_| {
-        crate::otel::annotate_current(|| {
-            vec![crate::otel::Attr::str(crate::otel::Key::ErrorType, "parse")]
-        })
+        crate::otel::annotate_current(|| vec![crate::otel::Attr::str(crate::otel::Key::ErrorType, "parse")])
     })
 }
 
@@ -179,8 +177,7 @@ impl RegistryVerdict {
 
 /// Parse the registry `/v0.1/servers` response into entries.
 pub fn parse_entries(body: &str) -> Result<Vec<RegistryEntry>, String> {
-    let doc: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("registry parse: {}", e))?;
+    let doc: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("registry parse: {}", e))?;
     let servers = doc
         .get("servers")
         .and_then(|v| v.as_array())
@@ -191,11 +188,7 @@ pub fn parse_entries(body: &str) -> Result<Vec<RegistryEntry>, String> {
         let Some(s) = item.get("server") else {
             continue;
         };
-        let name = s
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let name = s.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let packages = s
             .get("packages")
             .and_then(|v| v.as_array())
@@ -216,21 +209,14 @@ pub fn parse_entries(body: &str) -> Result<Vec<RegistryEntry>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        out.push(RegistryEntry {
-            name,
-            packages,
-            status,
-        });
+        out.push(RegistryEntry { name, packages, status });
     }
     Ok(out)
 }
 
 /// Classify a discovered server against registry candidates. Pure and testable.
 pub fn classify(server: &McpServerDetail, candidates: &[RegistryEntry]) -> RegistryVerdict {
-    let (Some(eco), Some(pkg)) = (
-        server.package_ecosystem.as_deref(),
-        server.package_name.as_deref(),
-    ) else {
+    let (Some(eco), Some(pkg)) = (server.package_ecosystem.as_deref(), server.package_name.as_deref()) else {
         return RegistryVerdict::NoPackageIdentity;
     };
 
@@ -316,9 +302,7 @@ fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -353,11 +337,18 @@ mod tests {
 
     #[test]
     fn classify_exact_match_is_registered_with_publisher() {
-        let cands = vec![entry("io.github.bytedance/mcp-server-filesystem", "@agent-infra/fs", "active")];
+        let cands = vec![entry(
+            "io.github.bytedance/mcp-server-filesystem",
+            "@agent-infra/fs",
+            "active",
+        )];
         let v = classify(&server("npm", "@agent-infra/fs"), &cands);
         assert_eq!(
             v,
-            RegistryVerdict::Registered { publisher: "github.com/bytedance".into(), deprecated: false }
+            RegistryVerdict::Registered {
+                publisher: "github.com/bytedance".into(),
+                deprecated: false
+            }
         );
     }
 
@@ -365,7 +356,13 @@ mod tests {
     fn classify_deprecated_entry() {
         let cands = vec![entry("com.example/thing", "example-mcp", "deprecated")];
         let v = classify(&server("npm", "example-mcp"), &cands);
-        assert_eq!(v, RegistryVerdict::Registered { publisher: "example.com".into(), deprecated: true });
+        assert_eq!(
+            v,
+            RegistryVerdict::Registered {
+                publisher: "example.com".into(),
+                deprecated: true
+            }
+        );
     }
 
     #[test]
@@ -379,7 +376,11 @@ mod tests {
     #[test]
     fn classify_unrelated_names_are_unregistered_not_typosquat() {
         // Different legit servers differ by many chars — must NOT be flagged typosquat.
-        let cands = vec![entry("io.github.a/x", "@modelcontextprotocol/server-filesystem", "active")];
+        let cands = vec![entry(
+            "io.github.a/x",
+            "@modelcontextprotocol/server-filesystem",
+            "active",
+        )];
         let v = classify(&server("npm", "@agent-infra/mcp-server-filesystem"), &cands);
         assert_eq!(v, RegistryVerdict::Unregistered);
     }
@@ -432,14 +433,20 @@ mod tests {
 
     #[test]
     fn publisher_from_name_maps_namespaces() {
-        assert_eq!(publisher_from_name("io.github.bytedance/mcp-server-filesystem"), "github.com/bytedance");
+        assert_eq!(
+            publisher_from_name("io.github.bytedance/mcp-server-filesystem"),
+            "github.com/bytedance"
+        );
         assert_eq!(publisher_from_name("com.notion/mcp"), "notion.com");
     }
 
     #[test]
     fn ureq_error_category_is_fixed() {
         use std::io::{Error, ErrorKind};
-        assert_eq!(ureq_error_category(&ureq::Error::StatusCode(503)), ("status", Some(503)));
+        assert_eq!(
+            ureq_error_category(&ureq::Error::StatusCode(503)),
+            ("status", Some(503))
+        );
         assert_eq!(ureq_error_category(&ureq::Error::ConnectionFailed), ("connect", None));
         assert_eq!(ureq_error_category(&ureq::Error::HostNotFound), ("connect", None));
         assert_eq!(
@@ -449,7 +456,10 @@ mod tests {
         assert_eq!(ureq_error_category(&ureq::Error::BodyExceedsLimit(10)), ("body", None));
         assert_eq!(ureq_error_category(&ureq::Error::Tls("x")), ("tls", None));
         // Anything carrying text (here a URL with userinfo) still maps to a static value.
-        assert_eq!(ureq_error_category(&ureq::Error::BadUri("https://u:pw@h/".into())), ("other", None));
+        assert_eq!(
+            ureq_error_category(&ureq::Error::BadUri("https://u:pw@h/".into())),
+            ("other", None)
+        );
         // A real timeout, produced by ureq against a listener that never answers.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", l.local_addr().unwrap());
@@ -467,8 +477,13 @@ mod tests {
     #[test]
     fn verdict_kind_str_covers_all_variants() {
         let all = [
-            RegistryVerdict::Registered { publisher: "p".into(), deprecated: false },
-            RegistryVerdict::PossibleTyposquat { registered_as: "x".into() },
+            RegistryVerdict::Registered {
+                publisher: "p".into(),
+                deprecated: false,
+            },
+            RegistryVerdict::PossibleTyposquat {
+                registered_as: "x".into(),
+            },
             RegistryVerdict::Unregistered,
             RegistryVerdict::NoPackageIdentity,
             RegistryVerdict::LookupFailed,

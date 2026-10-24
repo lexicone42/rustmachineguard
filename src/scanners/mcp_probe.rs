@@ -67,7 +67,10 @@ pub fn classify_discover_response(response: &serde_json::Value) -> ServerEra {
     if response.get("result").is_some() {
         return ServerEra::Modern;
     }
-    if let Some(code) = response.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64())
+    if let Some(code) = response
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_i64())
         && is_modern_error_code(code)
     {
         return ServerEra::Modern;
@@ -220,20 +223,12 @@ pub fn probe_mcp_servers(configs: &[McpConfig]) -> Vec<McpProbeResult> {
                 continue;
             };
 
-            eprintln!(
-                "info: probing MCP server '{}' ({})",
-                server.name, cmd
-            );
+            eprintln!("info: probing MCP server '{}' ({})", server.name, cmd);
 
             let mut span = crate::otel::client_span("mcp.probe", || vec![Attr::int(Key::McpServerIndex, idx)]);
             // No clock read unless exporting.
             let t = crate::otel::enabled().then(Instant::now);
-            let (result, outcome) = probe_stdio_server(
-                &server.name,
-                &config.config_source,
-                cmd,
-                &server.args,
-            );
+            let (result, outcome) = probe_stdio_server(&server.name, &config.config_source, cmd, &server.args);
             let oc = outcome.as_str();
             span.set(|| {
                 vec![
@@ -301,7 +296,11 @@ impl ProbeOutcome {
 
     /// Category of a failed write to the server's stdin: a broken pipe means it exited.
     fn of_send(e: &std::io::Error) -> ProbeOutcome {
-        if e.kind() == std::io::ErrorKind::BrokenPipe { ProbeOutcome::Closed } else { ProbeOutcome::Error }
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            ProbeOutcome::Closed
+        } else {
+            ProbeOutcome::Error
+        }
     }
 }
 
@@ -318,7 +317,12 @@ struct ProbeFailure {
 
 impl From<String> for ProbeFailure {
     fn from(error: String) -> Self {
-        ProbeFailure { error, kind: ProbeOutcome::Error, server_info: None, instructions: None }
+        ProbeFailure {
+            error,
+            kind: ProbeOutcome::Error,
+            server_info: None,
+            instructions: None,
+        }
     }
 }
 
@@ -335,22 +339,30 @@ impl ProbeFailure {
         server_info: &Option<McpServerInfo>,
         instructions: &Option<String>,
     ) -> Self {
-        ProbeFailure { error, kind, server_info: server_info.clone(), instructions: instructions.clone() }
+        ProbeFailure {
+            error,
+            kind,
+            server_info: server_info.clone(),
+            instructions: instructions.clone(),
+        }
     }
 
     /// A failed write to the server's stdin, before anything was learned.
     fn send(what: &str, e: std::io::Error) -> Self {
-        ProbeFailure { kind: ProbeOutcome::of_send(&e), ..ProbeFailure::from(format!("{what}: {e}")) }
+        ProbeFailure {
+            kind: ProbeOutcome::of_send(&e),
+            ..ProbeFailure::from(format!("{what}: {e}"))
+        }
     }
 
     /// A failed `await_response`, classified before the phase prefix is added.
-    fn read(
-        phase: &str,
-        e: String,
-        server_info: &Option<McpServerInfo>,
-        instructions: &Option<String>,
-    ) -> Self {
-        Self::with(ProbeOutcome::of_read(&e), format!("{phase}: {e}"), server_info, instructions)
+    fn read(phase: &str, e: String, server_info: &Option<McpServerInfo>, instructions: &Option<String>) -> Self {
+        Self::with(
+            ProbeOutcome::of_read(&e),
+            format!("{phase}: {e}"),
+            server_info,
+            instructions,
+        )
     }
 }
 
@@ -368,12 +380,7 @@ struct ProbeData {
 /// Probe one stdio server directly. Exposed so tests can point the real probe at a
 /// fake server and assert end-to-end behaviour (era detection, instructions capture)
 /// rather than only unit-testing the pure classifier.
-pub fn probe_server_for_test(
-    name: &str,
-    config_source: &str,
-    command: &str,
-    args: &[String],
-) -> McpProbeResult {
+pub fn probe_server_for_test(name: &str, config_source: &str, command: &str, args: &[String]) -> McpProbeResult {
     probe_stdio_server(name, config_source, command, args).0
 }
 
@@ -394,7 +401,10 @@ fn probe_stdio_server(
     args: &[String],
 ) -> (McpProbeResult, ProbeOutcome) {
     if command.is_empty() {
-        return (error_result(name, config_source, "empty command"), ProbeOutcome::EmptyCommand);
+        return (
+            error_result(name, config_source, "empty command"),
+            ProbeOutcome::EmptyCommand,
+        );
     }
 
     eprintln!(
@@ -421,7 +431,10 @@ fn probe_stdio_server(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return (error_result(name, config_source, &format!("spawn failed: {}", e)), ProbeOutcome::SpawnFailed);
+            return (
+                error_result(name, config_source, &format!("spawn failed: {}", e)),
+                ProbeOutcome::SpawnFailed,
+            );
         }
     };
 
@@ -444,8 +457,7 @@ fn probe_stdio_server(
 
     match outcome {
         Ok(data) => {
-            let observed_capabilities =
-                infer_capabilities_from_tools(&data.tools, &data.resources);
+            let observed_capabilities = infer_capabilities_from_tools(&data.tools, &data.resources);
             let r = McpProbeResult {
                 server_name: name.to_string(),
                 config_source: config_source.to_string(),
@@ -506,8 +518,7 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
         "method": "server/discover",
         "params": { "_meta": modern_meta() }
     });
-    send_message(&mut stdin, &discover_req)
-        .map_err(|e| ProbeFailure::send("send server/discover failed", e))?;
+    send_message(&mut stdin, &discover_req).map_err(|e| ProbeFailure::send("send server/discover failed", e))?;
     let discover_deadline = Instant::now() + DISCOVER_TIMEOUT.min(PROBE_TIMEOUT);
     let discover = await_response(&mut reader, ID_DISCOVER, discover_deadline);
     // No response at all (or a read error) means legacy, per the spec's timeout rule.
@@ -552,15 +563,17 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
                 "method": "server/discover",
                 "params": { "_meta": modern_meta() }
             });
-            send_message(&mut stdin, &retry)
-                .map_err(|e| ProbeFailure::send("send server/discover retry failed", e))?;
+            send_message(&mut stdin, &retry).map_err(|e| ProbeFailure::send("send server/discover retry failed", e))?;
             match await_response(&mut reader, ID_DISCOVER_RETRY, deadline) {
                 // Only a RESULT counts as a modern answer. A spec-reserved error code also
                 // classifies as modern, but a server that rejected every request has
                 // not been enumerated and must not end as a tool-less success.
                 // `"result": null` is Some(Value::Null) -- the same trap as `error: null`,
                 // on the other side. A real result is a non-null value.
-                Ok(resp) if resp.get("result").is_some_and(|r| !r.is_null()) && classify_discover_response(&resp) == ServerEra::Modern => {
+                Ok(resp)
+                    if resp.get("result").is_some_and(|r| !r.is_null())
+                        && classify_discover_response(&resp) == ServerEra::Modern =>
+                {
                     era = ServerEra::Modern;
                     server_info = extract_server_info(&resp);
                     instructions = extract_instructions(&resp);
@@ -609,7 +622,9 @@ fn run_probe_protocol(child: &mut Child) -> Result<ProbeData, ProbeFailure> {
     // without `_meta` is modern. Retry once with `_meta` rather than turning the
     // rejection into an empty tool list.
     if era == ServerEra::Legacy
-        && tools_resp.as_ref().is_ok_and(|r| r.get("error").is_some_and(|e| !e.is_null()))
+        && tools_resp
+            .as_ref()
+            .is_ok_and(|r| r.get("error").is_some_and(|e| !e.is_null()))
     {
         let retry = serde_json::json!({
             "jsonrpc": "2.0", "id": ID_TOOLS_RETRY, "method": "tools/list",
@@ -855,10 +870,7 @@ fn extract_resources(response: &serde_json::Value) -> Vec<McpResourceInfo> {
                 Some(McpResourceInfo {
                     uri: r.get("uri")?.as_str()?.to_string(),
                     name: r.get("name").and_then(|n| n.as_str()).map(String::from),
-                    description: r
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .map(String::from),
+                    description: r.get("description").and_then(|d| d.as_str()).map(String::from),
                 })
             })
             .collect(),
@@ -866,20 +878,11 @@ fn extract_resources(response: &serde_json::Value) -> Vec<McpResourceInfo> {
     }
 }
 
-fn infer_capabilities_from_tools(
-    tools: &[McpToolInfo],
-    resources: &[McpResourceInfo],
-) -> Vec<String> {
+fn infer_capabilities_from_tools(tools: &[McpToolInfo], resources: &[McpResourceInfo]) -> Vec<String> {
     let mut caps = Vec::new();
     let all_text: String = tools
         .iter()
-        .map(|t| {
-            format!(
-                "{} {}",
-                t.name,
-                t.description.as_deref().unwrap_or("")
-            )
-        })
+        .map(|t| format!("{} {}", t.name, t.description.as_deref().unwrap_or("")))
         .chain(resources.iter().map(|r| {
             format!(
                 "{} {} {}",
@@ -943,18 +946,11 @@ fn infer_capabilities_from_tools(
         caps.push("browser".to_string());
     }
 
-    if lower.contains("git")
-        || lower.contains("commit")
-        || lower.contains("branch")
-        || lower.contains("repository")
-    {
+    if lower.contains("git") || lower.contains("commit") || lower.contains("branch") || lower.contains("repository") {
         caps.push("source_control".to_string());
     }
 
-    if lower.contains("email")
-        || lower.contains("send")
-        || lower.contains("message")
-        || lower.contains("notification")
+    if lower.contains("email") || lower.contains("send") || lower.contains("message") || lower.contains("notification")
     {
         caps.push("communication".to_string());
     }
@@ -1080,7 +1076,10 @@ mod tests {
         assert_eq!(ProbeOutcome::of_read("my timeout E2EOTEL"), ProbeOutcome::Error);
         assert_eq!(ProbeOutcome::of_read("message exceeds size limit"), ProbeOutcome::Error);
         let f = ProbeFailure::read("init response", "timeout".into(), &None, &None);
-        assert_eq!((f.kind, f.error.as_str()), (ProbeOutcome::Timeout, "init response: timeout"));
+        assert_eq!(
+            (f.kind, f.error.as_str()),
+            (ProbeOutcome::Timeout, "init response: timeout")
+        );
         let f = ProbeFailure::send("send init failed", std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert_eq!(f.kind, ProbeOutcome::Closed);
         let f = ProbeFailure::send("send init failed", std::io::Error::from(std::io::ErrorKind::Other));
@@ -1108,6 +1107,10 @@ mod tests {
         assert!(!r.success);
         assert_eq!(oc, ProbeOutcome::Timeout, "{:?}", r.error);
         assert_eq!(oc.as_str(), "timeout");
-        assert!(t.elapsed() < PROBE_TIMEOUT + Duration::from_secs(5), "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < PROBE_TIMEOUT + Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }

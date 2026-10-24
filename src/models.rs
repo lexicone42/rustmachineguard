@@ -957,12 +957,24 @@ impl ScanReport {
         let off = |p: Option<&SkillProvenance>| p.is_some_and(|p| !p.active || p.synced);
         self.agent_settings
             .iter()
-            .map(|s| if off(s.provenance.as_ref()) { s.hooks.len() } else { s.hooks.iter().filter(|h| h.disabled).count() })
+            .map(|s| {
+                if off(s.provenance.as_ref()) {
+                    s.hooks.len()
+                } else {
+                    s.hooks.iter().filter(|h| h.disabled).count()
+                }
+            })
             .sum::<usize>()
             + self
                 .agent_skills
                 .iter()
-                .map(|k| if off(k.provenance.as_ref()) { k.hooks.len() } else { k.hooks.iter().filter(|h| h.disabled).count() })
+                .map(|k| {
+                    if off(k.provenance.as_ref()) {
+                        k.hooks.len()
+                    } else {
+                        k.hooks.iter().filter(|h| h.disabled).count()
+                    }
+                })
                 .sum::<usize>()
     }
 
@@ -977,7 +989,11 @@ impl ScanReport {
         }
         for k in &self.agent_skills {
             if !k.hooks.is_empty() {
-                let fw = if k.framework.starts_with("claude-code") { "claude-code".to_string() } else { k.framework.clone() };
+                let fw = if k.framework.starts_with("claude-code") {
+                    "claude-code".to_string()
+                } else {
+                    k.framework.clone()
+                };
                 *m.entry(fw).or_insert(0) += k.hooks.len();
             }
         }

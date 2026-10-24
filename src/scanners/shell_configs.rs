@@ -1,7 +1,7 @@
 use crate::models::{OllamaHostSetting, ShellConfig};
-use std::path::{Path, PathBuf};
 use crate::platform::PlatformInfo;
 use crate::scanners::Scanner;
+use std::path::{Path, PathBuf};
 
 pub struct ShellConfigsScanner;
 
@@ -28,12 +28,7 @@ const AI_KEY_PATTERNS: &[&str] = &[
 ];
 
 /// Alias patterns (these don't contain secrets, safe to report as-is).
-const ALIAS_PATTERNS: &[&str] = &[
-    "alias claude",
-    "alias copilot",
-    "alias aider",
-    "alias ollama",
-];
+const ALIAS_PATTERNS: &[&str] = &["alias claude", "alias copilot", "alias aider", "alias ollama"];
 
 impl Scanner for ShellConfigsScanner {
     type Output = Vec<ShellConfig>;
@@ -94,7 +89,11 @@ impl Scanner for ShellConfigsScanner {
                     ai_related_entries: ai_entries,
                     ollama_host: ollama_value.map(|v| {
                         let (value, bind) = classify_ollama_host(&v);
-                        OllamaHostSetting { value, bind: bind.into(), service: false }
+                        OllamaHostSetting {
+                            value,
+                            bind: bind.into(),
+                            service: false,
+                        }
                     }),
                 });
             }
@@ -106,7 +105,11 @@ impl Scanner for ShellConfigsScanner {
         let home = platform.home_dir();
         results.extend(scan_systemd_units(&[
             (home.join(".config/systemd/user"), "systemd-user", true),
-            (crate::scanners::system_path("/etc/systemd/system"), "systemd-system", false),
+            (
+                crate::scanners::system_path("/etc/systemd/system"),
+                "systemd-system",
+                false,
+            ),
         ]));
         results.extend(scan_launchd(&[
             (home.join("Library/LaunchAgents"), true),
@@ -147,7 +150,14 @@ pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
         None => {
             let trimmed = hostport.trim_matches(|c| c == '[' || c == ']');
             // Go keeps the 127.0.0.1 default when nothing is left (`http://`).
-            (if trimmed.is_empty() { "127.0.0.1".to_string() } else { trimmed.to_string() }, None)
+            (
+                if trimmed.is_empty() {
+                    "127.0.0.1".to_string()
+                } else {
+                    trimmed.to_string()
+                },
+                None,
+            )
         }
     };
     let bind = if host.is_empty() {
@@ -188,7 +198,10 @@ pub fn classify_ollama_host(v: &str) -> (String, &'static str) {
         Some(p) => format!("{host}:{p}"),
         None => host,
     };
-    (crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(&shown), 128), bind)
+    (
+        crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(&shown), 128),
+        bind,
+    )
 }
 
 /// Go's net.SplitHostPort: `[h]:p`, or exactly one `:`; anything else is an error.
@@ -312,7 +325,9 @@ fn systemd_apply(text: &str, st: &mut UnitState) -> bool {
     for line in systemd_logical_lines(text) {
         // systemd.syntax(7): the key ends at the first `=`, and whitespace around it is
         // ignored (`Environment = "OLLAMA_HOST=0.0.0.0"` is valid).
-        let Some((key, rest)) = line.split_once('=') else { continue };
+        let Some((key, rest)) = line.split_once('=') else {
+            continue;
+        };
         match key.trim() {
             "Environment" => {
                 let words = systemd_words(rest.trim());
@@ -406,7 +421,11 @@ fn ollama_entry(shell: &str, path: &Path, value: &str, service: bool) -> ShellCo
         shell: shell.to_string(),
         config_path: crate::scanners::sanitize_display(&path.display().to_string(), 512),
         ai_related_entries: vec!["OLLAMA_HOST=<redacted>".into()],
-        ollama_host: Some(OllamaHostSetting { value, bind: bind.into(), service }),
+        ollama_host: Some(OllamaHostSetting {
+            value,
+            bind: bind.into(),
+            service,
+        }),
     }
 }
 
@@ -427,7 +446,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
         // ollama.service nondeterministically. Elsewhere the cap applies after the suffix
         // filter, and the kept names are sorted.
         let mut names: Vec<String> = if *all {
-            let Ok(entries) = crate::scanners::probe_read_dir(dir) else { continue };
+            let Ok(entries) = crate::scanners::probe_read_dir(dir) else {
+                continue;
+            };
             entries
                 .flatten()
                 .filter_map(|e| e.file_name().to_str().map(String::from))
@@ -487,7 +508,9 @@ pub fn scan_systemd_units(dirs: &[(PathBuf, &'static str, bool)]) -> Vec<ShellCo
             for path in paths {
                 // O_NOFOLLOW|O_NONBLOCK + fstat: a unit swapped for a link or FIFO after
                 // the regular-file check is refused, not followed or blocked on.
-                let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else { continue };
+                let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else {
+                    continue;
+                };
                 if systemd_apply(&text, &mut st) {
                     source = Some(path);
                 }
@@ -547,14 +570,18 @@ pub fn launchd_ollama_host(text: &str) -> (Option<String>, bool) {
     let mut value = None;
     let mut service = false;
     for (i, (tag, v)) in toks.iter().enumerate() {
-        if *tag == "key" && v == "OLLAMA_HOST"
+        if *tag == "key"
+            && v == "OLLAMA_HOST"
             && let Some(("string", val)) = toks.get(i + 1).map(|(t, v)| (*t, v))
         {
             value = Some(val.clone());
         }
-        if *tag == "string" && v == "setenv"
-            && let (Some(("string", k)), Some(("string", val))) =
-                (toks.get(i + 1).map(|(t, v)| (*t, v.as_str())), toks.get(i + 2).map(|(t, v)| (*t, v)))
+        if *tag == "string"
+            && v == "setenv"
+            && let (Some(("string", k)), Some(("string", val))) = (
+                toks.get(i + 1).map(|(t, v)| (*t, v.as_str())),
+                toks.get(i + 2).map(|(t, v)| (*t, v)),
+            )
             && k == "OLLAMA_HOST"
         {
             value = Some(val.clone());
@@ -583,7 +610,9 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
             crate::scanners::telemetry::note_probe(dir, false);
             continue;
         }
-        let Ok(entries) = crate::scanners::probe_read_dir(dir) else { continue };
+        let Ok(entries) = crate::scanners::probe_read_dir(dir) else {
+            continue;
+        };
         let mut names: Vec<String> = entries
             .flatten()
             .filter_map(|e| e.file_name().to_str().map(String::from))
@@ -597,7 +626,9 @@ pub fn scan_launchd(dirs: &[(PathBuf, bool)]) -> Vec<ShellConfig> {
             if !regular_file(&p) {
                 continue;
             }
-            let Some(text) = crate::scanners::read_bounded_nofollow(&p, None) else { continue };
+            let Some(text) = crate::scanners::read_bounded_nofollow(&p, None) else {
+                continue;
+            };
             let (value, svc) = launchd_ollama_host(&text);
             if let Some(v) = value {
                 // In the system directories only ollama-named jobs are read at all, and

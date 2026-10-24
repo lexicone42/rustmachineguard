@@ -23,7 +23,9 @@ pub struct ChangedItem {
 
 impl ScanDiff {
     pub fn is_empty(&self) -> bool {
-        self.sections.iter().all(|s| s.added.is_empty() && s.removed.is_empty() && s.changed.is_empty())
+        self.sections
+            .iter()
+            .all(|s| s.added.is_empty() && s.removed.is_empty() && s.changed.is_empty())
     }
 }
 
@@ -47,7 +49,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
                 "git_tracked",
             ],
         ),
-
         diff_array_section(
             "AI Tools",
             get_array(baseline, "ai_agents_and_tools"),
@@ -55,7 +56,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "name",
             &["version", "is_running"],
         ),
-
         diff_array_section(
             "IDE Extensions",
             get_array(baseline, "ide_extensions"),
@@ -63,7 +63,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "id",
             &["version"],
         ),
-
         diff_array_section(
             "Browser Extensions",
             get_array(baseline, "browser_extensions"),
@@ -71,17 +70,8 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "id",
             &["version"],
         ),
-
-        diff_rules_files(
-            get_array(baseline, "rules_files"),
-            get_array(current, "rules_files"),
-        ),
-
-        diff_skills(
-            get_array(baseline, "agent_skills"),
-            get_array(current, "agent_skills"),
-        ),
-
+        diff_rules_files(get_array(baseline, "rules_files"), get_array(current, "rules_files")),
+        diff_skills(get_array(baseline, "agent_skills"), get_array(current, "agent_skills")),
         diff_array_section(
             "SSH Keys",
             get_array(baseline, "ssh_keys"),
@@ -89,7 +79,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "path",
             &["key_type", "has_passphrase"],
         ),
-
         diff_array_section(
             "Cloud Credentials",
             get_array(baseline, "cloud_credentials"),
@@ -97,7 +86,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "config_path",
             &["provider", "credential_type"],
         ),
-
         diff_array_section(
             "Exposure Findings",
             get_array(baseline, "exposure_findings"),
@@ -105,12 +93,7 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "name",
             &["ecosystem", "version", "advisory"],
         ),
-
-        diff_mcp_probes(
-            get_array(baseline, "mcp_probes"),
-            get_array(current, "mcp_probes"),
-        ),
-
+        diff_mcp_probes(get_array(baseline, "mcp_probes"), get_array(current, "mcp_probes")),
         // Agent settings are the persistence-tampering surface: a hook, a permission-mode
         // flip, a gateway override, or an inline secret appearing between scans is exactly
         // the kind of quiet change --diff exists to surface.
@@ -136,7 +119,6 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
                 "force_enabled_plugins",
             ],
         ),
-
         // Plugin marketplaces: a source flipping to auto-update, or a new third-party
         // source appearing, is remote-code-hot-load drift (EAA-009).
         diff_array_section(
@@ -144,9 +126,15 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             get_array(baseline, "marketplaces"),
             get_array(current, "marketplaces"),
             "name",
-            &["source_ref", "source_type", "auto_update", "official", "installed_plugin_count", "pin_issues"],
+            &[
+                "source_ref",
+                "source_type",
+                "auto_update",
+                "official",
+                "installed_plugin_count",
+                "pin_issues",
+            ],
         ),
-
         // A .env gaining an agent-home relocation or a gateway, and a profile or service
         // unit starting to bind Ollama beyond loopback, are drift like a new hook.
         diff_array_section(
@@ -250,7 +238,16 @@ fn collect_mcp_servers(report: &Value) -> Vec<Value> {
 /// Fields that tell apart rows sharing a diff key: one extension id installed for two
 /// IDEs or browser profiles, one vulnerable package found in two projects, one MCP
 /// server name in two projects of the same client. Used only when keys collide.
-const DISAMBIGUATORS: &[&str] = &["ide_type", "browser", "profile", "found_in", "config_path", "install_path", "binary_path", "path"];
+const DISAMBIGUATORS: &[&str] = &[
+    "ide_type",
+    "browser",
+    "profile",
+    "found_in",
+    "config_path",
+    "install_path",
+    "binary_path",
+    "path",
+];
 
 /// Index rows by `key`, independent of the rows' order. Collecting straight into a map
 /// kept the LAST row of a shared key and dropped the others, so the same rows in another
@@ -294,11 +291,7 @@ fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> 
 }
 
 fn get_array(report: &Value, key: &str) -> Vec<Value> {
-    report
-        .get(key)
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
+    report.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default()
 }
 
 fn diff_array_section(
@@ -358,12 +351,7 @@ fn diff_array_section(
                 (b.get(*field), c.get(*field))
             };
             if bv != cv {
-                changes.push(format!(
-                    "{}: {} -> {}",
-                    field,
-                    display_value(bv),
-                    display_value(cv)
-                ));
+                changes.push(format!("{}: {} -> {}", field, display_value(bv), display_value(cv)));
             }
         }
 
@@ -471,17 +459,11 @@ fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         let b_findings = count_findings(b);
         let c_findings = count_findings(c);
         if b_findings != c_findings {
-            changes.push(format!(
-                "dangerous patterns: {} -> {}",
-                b_findings, c_findings
-            ));
+            changes.push(format!("dangerous patterns: {} -> {}", b_findings, c_findings));
         }
 
         if !changes.is_empty() {
-            let name = c
-                .get("file_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let name = c.get("file_name").and_then(|v| v.as_str()).unwrap_or("?");
             changed.push(ChangedItem {
                 name: format!("{} ({})", key, name),
                 changes,
@@ -597,14 +579,8 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
     let current_keys: BTreeSet<&String> = current_map.keys().collect();
 
-    let added: Vec<String> = current_keys
-        .difference(&baseline_keys)
-        .map(|k| k.to_string())
-        .collect();
-    let removed: Vec<String> = baseline_keys
-        .difference(&current_keys)
-        .map(|k| k.to_string())
-        .collect();
+    let added: Vec<String> = current_keys.difference(&baseline_keys).map(|k| k.to_string()).collect();
+    let removed: Vec<String> = baseline_keys.difference(&current_keys).map(|k| k.to_string()).collect();
 
     let mut changed = Vec::new();
     for key in baseline_keys.intersection(&current_keys) {
@@ -638,10 +614,8 @@ fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
         }
 
         // Observed capability drift.
-        let b_caps: BTreeSet<String> =
-            get_string_array(b, "observed_capabilities").into_iter().collect();
-        let c_caps: BTreeSet<String> =
-            get_string_array(c, "observed_capabilities").into_iter().collect();
+        let b_caps: BTreeSet<String> = get_string_array(b, "observed_capabilities").into_iter().collect();
+        let c_caps: BTreeSet<String> = get_string_array(c, "observed_capabilities").into_iter().collect();
         let gained: Vec<&String> = c_caps.difference(&b_caps).collect();
         if !gained.is_empty() {
             changes.push(format!(
@@ -674,17 +648,10 @@ fn tool_fingerprints(probe: &Value) -> BTreeMap<String, (String, String)> {
             let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
                 continue;
             };
-            let desc = t
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("")
-                .to_string();
+            let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
             // serde_json::to_string of a Value is stable for our purposes (object key
             // order is preserved from parsing); good enough to detect mutation.
-            let schema = t
-                .get("input_schema")
-                .map(|s| s.to_string())
-                .unwrap_or_default();
+            let schema = t.get("input_schema").map(|s| s.to_string()).unwrap_or_default();
             map.insert(name.to_string(), (desc, schema));
         }
     }
@@ -710,8 +677,14 @@ fn diff_summary(baseline: &Value, current: &Value) -> Vec<String> {
 
     let mut changes = Vec::new();
     for (field, label) in &fields {
-        let bv = b_summary.and_then(|s| s.get(*field)).and_then(|v| v.as_i64()).unwrap_or(0);
-        let cv = c_summary.and_then(|s| s.get(*field)).and_then(|v| v.as_i64()).unwrap_or(0);
+        let bv = b_summary
+            .and_then(|s| s.get(*field))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cv = c_summary
+            .and_then(|s| s.get(*field))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         if bv != cv {
             let delta = cv - bv;
             let sign = if delta > 0 { "+" } else { "" };
@@ -761,11 +734,7 @@ fn count_findings(v: &Value) -> usize {
 fn get_string_array(v: &Value, field: &str) -> Vec<String> {
     v.get(field)
         .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default()
 }
 
@@ -775,13 +744,19 @@ mod hook_diff_tests {
 
     #[test]
     fn skill_frontmatter_hooks_and_settings_provenance_changes_are_drift() {
-        let skill = |hooks: Value| serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a", "hooks": hooks});
+        let skill =
+            |hooks: Value| serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a", "hooks": hooks});
         let d = diff_skills(
             vec![skill(Value::Array(Vec::new()))],
-            vec![skill(serde_json::json!([{"event": "Stop", "command": "x", "dangerous": false}]))],
+            vec![skill(
+                serde_json::json!([{"event": "Stop", "command": "x", "dangerous": false}]),
+            )],
         );
         assert!(d.changed.iter().any(|c| c.changes.iter().any(|x| x == "HOOKS CHANGED")));
-        let same = diff_skills(vec![skill(serde_json::json!([]))], vec![serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a"})]);
+        let same = diff_skills(
+            vec![skill(serde_json::json!([]))],
+            vec![serde_json::json!({"path": "/p/SKILL.md", "name": "s", "sha256": "a"})],
+        );
         assert!(same.changed.is_empty(), "an absent hooks array equals an empty one");
         let base = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": true}}]});
         let cur = serde_json::json!({"agent_settings": [{"path": "/h/hooks.json", "provenance": {"plugin": "p", "active": false}}]});
@@ -806,11 +781,16 @@ mod hook_diff_tests {
             ("disable_all_hooks", serde_json::json!(true)),
             ("force_enabled_plugins", serde_json::json!(["p@m"])),
         ] {
-            let text = render_diff(&diff_reports(&row(serde_json::json!({})), &row(serde_json::json!({field: on}))));
+            let text = render_diff(&diff_reports(
+                &row(serde_json::json!({})),
+                &row(serde_json::json!({field: on})),
+            ));
             assert!(text.contains(field), "{field}: {text}");
         }
         let old = row(serde_json::json!({"hooks": [{"event": "statusLine", "command": "~/s.sh"}]}));
-        let new = row(serde_json::json!({"hooks": [{"event": "statusLine", "command": "~/s.sh", "kind": "settings-command"}]}));
+        let new = row(
+            serde_json::json!({"hooks": [{"event": "statusLine", "command": "~/s.sh", "kind": "settings-command"}]}),
+        );
         assert!(render_diff(&diff_reports(&old, &new)).contains("No changes"));
     }
 
@@ -818,9 +798,7 @@ mod hook_diff_tests {
     /// same text (they came from a HashSet difference before).
     #[test]
     fn added_and_removed_rows_are_sorted() {
-        let rows = |paths: &[&str]| {
-            serde_json::json!({"agent_settings": paths.iter().map(|p| serde_json::json!({"path": p, "hooks": []})).collect::<Vec<_>>()})
-        };
+        let rows = |paths: &[&str]| serde_json::json!({"agent_settings": paths.iter().map(|p| serde_json::json!({"path": p, "hooks": []})).collect::<Vec<_>>()});
         let names: Vec<String> = (0..40).map(|i| format!("/p/{:02}/hooks.json", (i * 7) % 40)).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let d = diff_reports(&rows(&[]), &rows(&refs));
@@ -847,14 +825,26 @@ mod hook_diff_tests {
         let pkg = |at: &str, v: &str| json!({"name": "left-pad", "ecosystem": "npm", "version": v, "advisory": "A-1", "found_in": at});
         let key = |p: &str, t: &str| json!({"path": p, "key_type": t, "has_passphrase": false});
         let base_rows = (
-            vec![ext("vscode", "1.0"), ext("cursor", "1.0"), json!({"id": "ext.b", "ide_type": "vscode", "version": "2.0"})],
+            vec![
+                ext("vscode", "1.0"),
+                ext("cursor", "1.0"),
+                json!({"id": "ext.b", "ide_type": "vscode", "version": "2.0"}),
+            ],
             vec![pkg("/p/a", "1.0.0"), pkg("/p/b", "1.0.0")],
-            (0..12).map(|i| key(&format!("/k/{i:02}"), "ed25519")).collect::<Vec<_>>(),
+            (0..12)
+                .map(|i| key(&format!("/k/{i:02}"), "ed25519"))
+                .collect::<Vec<_>>(),
         );
         let cur_rows = (
-            vec![ext("vscode", "1.0"), ext("cursor", "1.1"), json!({"id": "ext.c", "ide_type": "vscode", "version": "3.0"})],
+            vec![
+                ext("vscode", "1.0"),
+                ext("cursor", "1.1"),
+                json!({"id": "ext.c", "ide_type": "vscode", "version": "3.0"}),
+            ],
             vec![pkg("/p/a", "1.0.0"), pkg("/p/b", "1.0.1")],
-            (4..16).map(|i| key(&format!("/k/{i:02}"), if i % 3 == 0 { "rsa" } else { "ed25519" })).collect::<Vec<_>>(),
+            (4..16)
+                .map(|i| key(&format!("/k/{i:02}"), if i % 3 == 0 { "rsa" } else { "ed25519" }))
+                .collect::<Vec<_>>(),
         );
         // A fixed permutation per run (an LCG), so each run inserts the rows in another order.
         let shuffle = |mut v: Vec<Value>, seed: u64| {
@@ -873,19 +863,40 @@ mod hook_diff_tests {
             })
         };
         let expected = [
-            "=== Scan Diff Report ===", "",
-            "--- IDE Extensions ---", "  + ext.c (version=3.0)", "  - ext.b (version=2.0)", "  ~ ext.a|cursor", "      version: 1.0 -> 1.1", "",
+            "=== Scan Diff Report ===",
+            "",
+            "--- IDE Extensions ---",
+            "  + ext.c (version=3.0)",
+            "  - ext.b (version=2.0)",
+            "  ~ ext.a|cursor",
+            "      version: 1.0 -> 1.1",
+            "",
             "--- SSH Keys ---",
-            "  + /k/12 (key_type=rsa, has_passphrase=false)", "  + /k/13 (key_type=ed25519, has_passphrase=false)",
-            "  + /k/14 (key_type=ed25519, has_passphrase=false)", "  + /k/15 (key_type=rsa, has_passphrase=false)",
-            "  - /k/00 (key_type=ed25519, has_passphrase=false)", "  - /k/01 (key_type=ed25519, has_passphrase=false)",
-            "  - /k/02 (key_type=ed25519, has_passphrase=false)", "  - /k/03 (key_type=ed25519, has_passphrase=false)",
-            "  ~ /k/06", "      key_type: ed25519 -> rsa", "  ~ /k/09", "      key_type: ed25519 -> rsa", "",
-            "--- Exposure Findings ---", "  ~ left-pad|/p/b", "      version: 1.0.0 -> 1.0.1", "", "",
+            "  + /k/12 (key_type=rsa, has_passphrase=false)",
+            "  + /k/13 (key_type=ed25519, has_passphrase=false)",
+            "  + /k/14 (key_type=ed25519, has_passphrase=false)",
+            "  + /k/15 (key_type=rsa, has_passphrase=false)",
+            "  - /k/00 (key_type=ed25519, has_passphrase=false)",
+            "  - /k/01 (key_type=ed25519, has_passphrase=false)",
+            "  - /k/02 (key_type=ed25519, has_passphrase=false)",
+            "  - /k/03 (key_type=ed25519, has_passphrase=false)",
+            "  ~ /k/06",
+            "      key_type: ed25519 -> rsa",
+            "  ~ /k/09",
+            "      key_type: ed25519 -> rsa",
+            "",
+            "--- Exposure Findings ---",
+            "  ~ left-pad|/p/b",
+            "      version: 1.0.0 -> 1.0.1",
+            "",
+            "",
         ]
         .join("\n");
         for run in 0..20u64 {
-            let text = render_diff(&diff_reports(&report(&base_rows, run * 7), &report(&cur_rows, run * 13 + 5)));
+            let text = render_diff(&diff_reports(
+                &report(&base_rows, run * 7),
+                &report(&cur_rows, run * 13 + 5),
+            ));
             assert_eq!(text, expected, "run {run} printed a different diff");
         }
     }
@@ -905,14 +916,24 @@ mod hook_diff_tests {
              "patterns": ["environment variable exfiltration"], "pattern_severity": "medium"}
         ]));
         let d = diff_reports(&old, &new);
-        assert!(d.sections.iter().all(|s| s.changed.is_empty() && s.added.is_empty() && s.removed.is_empty()), "{}", render_diff(&d));
+        assert!(
+            d.sections
+                .iter()
+                .all(|s| s.changed.is_empty() && s.added.is_empty() && s.removed.is_empty()),
+            "{}",
+            render_diff(&d)
+        );
         let cond = settings(serde_json::json!([
             {"command": "echo user-hook", "dangerous": false, "event": "Stop", "kind": "command", "if": "Bash(git *)"},
             {"command": "printenv NODE_ENV", "event": "Stop"}
         ]));
         assert!(render_diff(&diff_reports(&new, &cond)).contains("Bash(git *)"));
-        let http = settings(serde_json::json!([{"command": "POST https://a.example", "event": "Stop", "kind": "http"}]));
+        let http =
+            settings(serde_json::json!([{"command": "POST https://a.example", "event": "Stop", "kind": "http"}]));
         let cmd = settings(serde_json::json!([{"command": "POST https://a.example", "event": "Stop"}]));
-        assert!(render_diff(&diff_reports(&cmd, &http)).contains("http"), "a kind change is drift");
+        assert!(
+            render_diff(&diff_reports(&cmd, &http)).contains("http"),
+            "a kind change is drift"
+        );
     }
 }

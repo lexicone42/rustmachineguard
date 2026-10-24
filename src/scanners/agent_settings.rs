@@ -1,6 +1,6 @@
 use crate::models::{AgentHook, AgentSettings};
 use crate::platform::PlatformInfo;
-use crate::scanners::{is_git_tracked, read_bounded, Scanner};
+use crate::scanners::{Scanner, is_git_tracked, read_bounded};
 use std::path::{Path, PathBuf};
 
 /// Scans Claude Code / Codex settings files for hooks (which run shell commands on
@@ -38,12 +38,16 @@ impl Scanner for AgentSettingsScanner {
         );
 
         // Managed (organization) settings: highest precedence, machine-wide.
-        parse_managed_settings(&crate::scanners::system_path(platform.managed_settings_dir()), &home, &mut results);
+        parse_managed_settings(
+            &crate::scanners::system_path(platform.managed_settings_dir()),
+            &home,
+            &mut results,
+        );
 
         // Project-scoped settings from known projects + the current directory.
         // ~/.claude.json is read once: its `projects` keys, and its `hooks` for Devin CLI.
-        let claude_json = read_bounded(&home.join(".claude.json"))
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+        let claude_json =
+            read_bounded(&home.join(".claude.json")).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
         let mut project_dirs = claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default();
         if let Ok(cwd) = std::env::current_dir() {
             project_dirs.push(cwd);
@@ -61,13 +65,29 @@ impl Scanner for AgentSettingsScanner {
             // settings.local.json is theirs, read above as "user-local".
             let at_home = dir == home || std::fs::canonicalize(&dir).is_ok_and(|d| d == real_home);
             if !at_home {
-                parse_settings(&dir.join(".claude").join("settings.local.json"), "local", "claude-code", &home, &mut results);
+                parse_settings(
+                    &dir.join(".claude").join("settings.local.json"),
+                    "local",
+                    "claude-code",
+                    &home,
+                    &mut results,
+                );
             }
         }
 
         // Cursor's control plane: same risks, different filenames and schema.
-        parse_cursor_settings(&home.join(".cursor").join("hooks.json"), "user-global", &home, &mut results);
-        parse_cursor_settings(&home.join(".cursor").join("cli-config.json"), "user-global", &home, &mut results);
+        parse_cursor_settings(
+            &home.join(".cursor").join("hooks.json"),
+            "user-global",
+            &home,
+            &mut results,
+        );
+        parse_cursor_settings(
+            &home.join(".cursor").join("cli-config.json"),
+            "user-global",
+            &home,
+            &mut results,
+        );
         for dir in &project_dirs {
             parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &home, &mut results);
             parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &home, &mut results);
@@ -84,8 +104,15 @@ impl Scanner for AgentSettingsScanner {
         results.retain(|r| seen.insert(crate::scanners::skills::dedupe_key(Path::new(&r.path))));
         // The user's own notification hook is graded like the http hook to its host (Low);
         // its inventory marker says so too, not DANGEROUS (review of b9cda85).
-        for r in results.iter_mut().filter(|r| !matches!(r.source.as_str(), "project" | "local" | "managed" | "plugin")) {
-            for h in r.hooks.iter_mut().filter(|h| crate::scanners::hook_sources::is_event_push(h)) {
+        for r in results
+            .iter_mut()
+            .filter(|r| !matches!(r.source.as_str(), "project" | "local" | "managed" | "plugin"))
+        {
+            for h in r
+                .hooks
+                .iter_mut()
+                .filter(|h| crate::scanners::hook_sources::is_event_push(h))
+            {
                 h.dangerous = false;
             }
         }
@@ -114,12 +141,20 @@ fn parse_settings(path: &Path, source: &str, framework: &str, scan_home: &Path, 
 /// alphabetical order (hidden and non-.json names skipped), each its own entry with
 /// source "managed". code.claude.com/docs/en/settings (managed settings).
 fn parse_managed_settings(dir: &Path, scan_home: &Path, out: &mut Vec<AgentSettings>) {
-    parse_settings(&dir.join("managed-settings.json"), "managed", "claude-code", scan_home, out);
+    parse_settings(
+        &dir.join("managed-settings.json"),
+        "managed",
+        "claude-code",
+        scan_home,
+        out,
+    );
     let drop_in = dir.join("managed-settings.d");
     if !crate::scanners::probe_dir(&drop_in) {
         return;
     }
-    let Ok(entries) = crate::scanners::probe_read_dir(&drop_in) else { return };
+    let Ok(entries) = crate::scanners::probe_read_dir(&drop_in) else {
+        return;
+    };
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|e| e.file_name().to_str().map(String::from))
@@ -170,14 +205,17 @@ pub fn helper_dangerous(cmd: &str) -> bool {
     if pipes_into_socket(cmd) || script_sends_local_data(cmd) || (!hits.is_empty() && feeds_network_sender(cmd)) {
         return true;
     }
-    hits.iter().any(|f| f.pattern.contains("(obfuscated") || !HELPER_EXPECTED.iter().any(|e| f.pattern.starts_with(e)))
+    hits.iter()
+        .any(|f| f.pattern.contains("(obfuscated") || !HELPER_EXPECTED.iter().any(|e| f.pattern.starts_with(e)))
 }
 
 /// Credential/telemetry helpers in a settings object, recorded like hooks (redacted).
 pub fn extract_helper_commands(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
     let mut out = Vec::new();
     for key in HELPER_KEYS {
-        let Some(cmd) = json.get(*key).and_then(|v| v.as_str()) else { continue };
+        let Some(cmd) = json.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
         if cmd.trim().is_empty() {
             continue;
         }
@@ -232,7 +270,13 @@ pub fn extract_login_gateway(json: &serde_json::Value, source: &str) -> Option<c
     Some(crate::models::LoginGateway {
         // Only the documented values (settings-reference: `claudeai`, `console`) are shown;
         // any other text is `<other>`, never echoed.
-        method: method.map(|m| if matches!(m, "claudeai" | "console") { m.to_string() } else { "<other>".to_string() }),
+        method: method.map(|m| {
+            if matches!(m, "claudeai" | "console") {
+                m.to_string()
+            } else {
+                "<other>".to_string()
+            }
+        }),
         host,
         scheme,
         effective: matches!(source, "user-global" | "managed"),
@@ -315,7 +359,8 @@ impl Homes {
 
     /// The lexical or canonical home `p` is under, whichever form `p` uses.
     fn base_for(&self, p: &Path) -> Option<&Path> {
-        self.containing(p).map(|(h, rh)| if p.starts_with(h) { h.as_path() } else { rh.as_path() })
+        self.containing(p)
+            .map(|(h, rh)| if p.starts_with(h) { h.as_path() } else { rh.as_path() })
     }
 
     /// [`crate::scanners::persistence::sensitive_read_kind`] with the same home rule.
@@ -323,14 +368,18 @@ impl Homes {
         match self.base_for(p) {
             Some(base) => crate::scanners::persistence::sensitive_read_kind(p, base),
             None => crate::scanners::persistence::worst_read_kind(
-                self.0.iter().map(|(_, rh)| crate::scanners::persistence::sensitive_read_kind(p, rh)),
+                self.0
+                    .iter()
+                    .map(|(_, rh)| crate::scanners::persistence::sensitive_read_kind(p, rh)),
             ),
         }
     }
 
     /// The (lexical, canonical) home `p` is under, if any.
     fn containing(&self, p: &Path) -> Option<&(PathBuf, PathBuf)> {
-        self.0.iter().find(|(h, rh)| !h.as_os_str().is_empty() && (p.starts_with(h) || p.starts_with(rh)))
+        self.0
+            .iter()
+            .find(|(h, rh)| !h.as_os_str().is_empty() && (p.starts_with(h) || p.starts_with(rh)))
     }
 }
 
@@ -349,7 +398,12 @@ fn shown_link(t: &Path) -> String {
 /// `.codex -> /tmp/elsewhere`) is named by its own link text, and the verdict is made on
 /// both the lexical and the real target. With `project_dir` None the project is the
 /// directory above the file's agent directory, as before.
-pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&Path>, scan_home: Option<&Path>) -> SettingsRead {
+pub(crate) fn read_settings_in(
+    path: &Path,
+    source: &str,
+    project_dir: Option<&Path>,
+    scan_home: Option<&Path>,
+) -> SettingsRead {
     use crate::scanners::persistence::lexical_join;
     if !is_repository_scope(source) {
         return read_bounded(path).map_or(SettingsRead::Unreadable, SettingsRead::Content);
@@ -357,7 +411,8 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
     let homes = Homes::new(scan_home);
     let home = homes.primary().to_path_buf();
     if let Some(project_dir) = project_dir {
-        let sensitive = |lexical: &Path, real: Option<&Path>| homes.sensitive(lexical) || real.is_some_and(|r| homes.sensitive(r));
+        let sensitive =
+            |lexical: &Path, real: Option<&Path>| homes.sensitive(lexical) || real.is_some_and(|r| homes.sensitive(r));
         let real = std::fs::canonicalize(path).ok();
         if is_link(path) {
             let target = std::fs::read_link(path).unwrap_or_default();
@@ -367,7 +422,9 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
                 sensitive_target: sensitive(&lexical, real.as_deref()),
             });
         }
-        let Some(real) = real else { return SettingsRead::Unreadable };
+        let Some(real) = real else {
+            return SettingsRead::Unreadable;
+        };
         let real_root = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
         if !real.starts_with(&real_root) {
             let link = path
@@ -403,7 +460,9 @@ pub(crate) fn read_settings_in(path: &Path, source: &str, project_dir: Option<&P
             sensitive_target: homes.sensitive(&lexical),
         });
     }
-    let Ok(real) = std::fs::canonicalize(path) else { return SettingsRead::Unreadable };
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return SettingsRead::Unreadable;
+    };
     let root = crate::scanners::skills::project_containment_root(project_dir, &home);
     let real_root = std::fs::canonicalize(&root).unwrap_or(root);
     if !real.starts_with(&real_root) {
@@ -449,13 +508,15 @@ pub(crate) fn read_hook_file(
     // `~/.copilot/config.json`, ...) is never opened, by name or through a link, even
     // inside its own agent home (review of 4e3f8c3: `~/.codex/hooks.json -> auth.json`
     // put the token file's hooks key in the report).
-    let agent_cred = |p: &Path| {
-        is_agent_credential_path(p, containment) || is_agent_credential_path(p, real_containment.as_deref())
-    };
+    let agent_cred =
+        |p: &Path| is_agent_credential_path(p, containment) || is_agent_credential_path(p, real_containment.as_deref());
     let homes = Homes::new(scan_home);
     let below = |a: &Path| containment.is_some_and(|c| a.starts_with(c) && a != c);
-    let link: Option<&Path> =
-        if is_link(path) { Some(path) } else { path.ancestors().skip(1).take_while(|a| below(a)).find(|a| is_link(a)) };
+    let link: Option<&Path> = if is_link(path) {
+        Some(path)
+    } else {
+        path.ancestors().skip(1).take_while(|a| below(a)).find(|a| is_link(a))
+    };
     let real = std::fs::canonicalize(path).ok();
     // The containment root itself reached through a link (a plugin, extension or
     // installed-plugin directory that is a symlink, or one of its parents): judged on its
@@ -480,7 +541,9 @@ pub(crate) fn read_hook_file(
         }
     }
     let Some(l) = link else {
-        let Some(real) = real else { return SettingsRead::Unreadable };
+        let Some(real) = real else {
+            return SettingsRead::Unreadable;
+        };
         if is_sensitive_read_name(path) || is_sensitive_read_name(&real) || agent_cred(path) || agent_cred(&real) {
             return SettingsRead::Unreadable;
         }
@@ -501,7 +564,12 @@ pub(crate) fn read_hook_file(
         || real.as_ref().is_some_and(|r| is_sensitive_read_name(r))
         || agent_cred(&lexical)
         || real.as_ref().is_some_and(|r| agent_cred(r));
-    let link_entry = |sensitive_target: bool| SettingsRead::Link(crate::models::EnvSymlink { target: shown_link(&text), sensitive_target });
+    let link_entry = |sensitive_target: bool| {
+        SettingsRead::Link(crate::models::EnvSymlink {
+            target: shown_link(&text),
+            sensitive_target,
+        })
+    };
     let Some(real) = real else { return link_entry(sensitive) };
     let store = real.starts_with("/nix/store");
     if named || (source == "plugin" && !inside(&real)) || (sensitive && !inside(&real) && !store) {
@@ -512,7 +580,12 @@ pub(crate) fn read_hook_file(
 
 /// The inventory entry for a project settings file that was not opened because it is a
 /// symlink out of its repository.
-pub(crate) fn linked_settings(path: &Path, source: &str, framework: &str, link: crate::models::EnvSymlink) -> AgentSettings {
+pub(crate) fn linked_settings(
+    path: &Path,
+    source: &str,
+    framework: &str,
+    link: crate::models::EnvSymlink,
+) -> AgentSettings {
     AgentSettings {
         path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         source: source.to_string(),
@@ -529,7 +602,12 @@ pub fn parse_settings_file(path: &Path, source: &str, framework: &str) -> Option
 }
 
 /// [`parse_settings_file`] for a scan of `scan_home` (see [`Homes`]).
-pub(crate) fn parse_settings_file_in(path: &Path, source: &str, framework: &str, scan_home: Option<&Path>) -> Option<AgentSettings> {
+pub(crate) fn parse_settings_file_in(
+    path: &Path,
+    source: &str,
+    framework: &str,
+    scan_home: Option<&Path>,
+) -> Option<AgentSettings> {
     if !crate::scanners::probe_file(path) {
         return None;
     }
@@ -567,16 +645,11 @@ pub(crate) fn parse_settings_file_in(path: &Path, source: &str, framework: &str,
     let enabled_mcp_servers = json
         .get("enabledMcpjsonServers")
         .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
     let gateway_overrides = extract_gateway_overrides(&json);
-    let inline_secret_env_keys =
-        crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
+    let inline_secret_env_keys = crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
 
     Some(AgentSettings {
         // Project directory names are attacker-chosen text.
@@ -604,7 +677,11 @@ pub(crate) fn parse_settings_file_in(path: &Path, source: &str, framework: &str,
         provenance: None,
         allow_managed_hooks_only: flag("allowManagedHooksOnly"),
         disable_all_hooks: flag("disableAllHooks"),
-        force_enabled_plugins: if source == "managed" { force_enabled_plugins(&json) } else { Vec::new() },
+        force_enabled_plugins: if source == "managed" {
+            force_enabled_plugins(&json)
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -613,7 +690,9 @@ pub(crate) fn parse_settings_file_in(path: &Path, source: &str, framework: &str,
 /// in managed settings enabledPlugins are exempt", code.claude.com/docs/en/hooks, fetched
 /// 2026-10-23). Sanitized, sorted, at most 200.
 fn force_enabled_plugins(json: &serde_json::Value) -> Vec<String> {
-    let Some(map) = json.get("enabledPlugins").and_then(|v| v.as_object()) else { return Vec::new() };
+    let Some(map) = json.get("enabledPlugins").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
     let mut v: Vec<String> = map
         .iter()
         .filter(|(k, on)| on.as_bool() == Some(true) && k.contains('@'))
@@ -631,8 +710,11 @@ fn force_enabled_plugins(json: &serde_json::Value) -> Vec<String> {
 ///
 /// `{ "version": 1, "hooks": { "<event>": [ { "command": "./x.sh", "matcher": "..." } ] } }`
 pub fn extract_cursor_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
-    let ctx = crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Cursor);
-    json.get("hooks").map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx)).unwrap_or_default()
+    let ctx =
+        crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Cursor);
+    json.get("hooks")
+        .map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx))
+        .unwrap_or_default()
 }
 
 /// Parse a Cursor config file (`hooks.json`, `cli-config.json`, or a project `cli.json`)
@@ -656,10 +738,7 @@ fn parse_cursor_settings(path: &Path, source: &str, scan_home: &Path, out: &mut 
     let hooks = extract_cursor_hooks(&json, path);
     // Cursor's approvalMode is the direct analogue of Claude Code's permission mode:
     // `unrestricted` means the agent acts without approval prompts.
-    let permission_mode = json
-        .get("approvalMode")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let permission_mode = json.get("approvalMode").and_then(|v| v.as_str()).map(String::from);
     let permissions = json.get("permissions");
     let count = |key: &str| {
         permissions
@@ -673,8 +752,7 @@ fn parse_cursor_settings(path: &Path, source: &str, scan_home: &Path, out: &mut 
     // a Cursor settings file whose only content was a hostile gateway override, an
     // inline API key, or a group-writable mode produced no entry -- and no finding.
     let gateway_overrides = extract_gateway_overrides(&json);
-    let inline_secret_env_keys =
-        crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
+    let inline_secret_env_keys = crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
     let world_writable = crate::scanners::is_world_or_group_writable(path);
     // Nothing to say about this file? Don't manufacture an entry.
     if hooks.is_empty()
@@ -762,7 +840,11 @@ pub fn classify_base_url(var: &str, value: &str) -> Option<crate::models::Gatewa
     // when it reads as a host (redacted and sanitized), after the official comparison
     // on the raw value.
     let host = crate::scanners::env_files::shown_host(value.trim(), &host);
-    Some(crate::models::GatewayOverride { var: var.to_string(), official, host })
+    Some(crate::models::GatewayOverride {
+        var: var.to_string(),
+        official,
+        host,
+    })
 }
 
 /// An AI provider's own API host: the official hosts of [`GATEWAY_VARS`], OpenAI's
@@ -792,11 +874,26 @@ pub fn is_first_party_api_host(host: &str) -> bool {
 /// `<resource>.services.ai.azure.com`), Vertex AI (`<region>-aiplatform.googleapis.com`)
 /// and Amazon Bedrock (`bedrock-runtime.<region>.amazonaws.com/openai/v1`).
 const OPENAI_COMPATIBLE_HOSTS: &[&str] = &[
-    "api.groq.com", "api.mistral.ai", "generativelanguage.googleapis.com", "api.together.xyz",
-    "api.deepseek.com", "api.fireworks.ai", "api.x.ai", "openrouter.ai", "api.perplexity.ai",
-    "integrate.api.nvidia.com", "api.cerebras.ai", "api.sambanova.ai", "router.huggingface.co",
-    "api.cloudflare.com", "aiplatform.googleapis.com", "api.z.ai", "open.bigmodel.cn",
-    "api.moonshot.ai", "api.moonshot.cn", "api.minimax.io",
+    "api.groq.com",
+    "api.mistral.ai",
+    "generativelanguage.googleapis.com",
+    "api.together.xyz",
+    "api.deepseek.com",
+    "api.fireworks.ai",
+    "api.x.ai",
+    "openrouter.ai",
+    "api.perplexity.ai",
+    "integrate.api.nvidia.com",
+    "api.cerebras.ai",
+    "api.sambanova.ai",
+    "router.huggingface.co",
+    "api.cloudflare.com",
+    "aiplatform.googleapis.com",
+    "api.z.ai",
+    "open.bigmodel.cn",
+    "api.moonshot.ai",
+    "api.moonshot.cn",
+    "api.minimax.io",
 ];
 const OPENAI_COMPATIBLE_SUFFIXES: &[&str] = &[
     ".openai.azure.com",
@@ -835,8 +932,19 @@ pub(crate) fn url_host(url: &str) -> String {
 /// Agent-config directories a hook command might reference. A hook that runs a script
 /// stored in one of these travels with a repo or a package install, which is what makes
 /// it a persistence surface rather than just a local convenience.
-pub(crate) const AGENT_CONFIG_DIRS: &[&str] =
-    &[".claude", ".vscode", ".cursor", ".codex", ".gemini", ".kiro", ".copilot", ".codeium", ".devin", ".windsurf", ".opencode"];
+pub(crate) const AGENT_CONFIG_DIRS: &[&str] = &[
+    ".claude",
+    ".vscode",
+    ".cursor",
+    ".codex",
+    ".gemini",
+    ".kiro",
+    ".copilot",
+    ".codeium",
+    ".devin",
+    ".windsurf",
+    ".opencode",
+];
 
 /// The risk prefix of a reference to another agent's config directory under the user's
 /// own HOME (`~/.claude/hooks/fmt.sh` from `~/.codex/hooks.json`). It starts with
@@ -879,7 +987,10 @@ fn in_same_work_tree(token: &str, root: &Path, home: Option<&Path>) -> bool {
 /// [`referenced_paths`] with no redaction in them. A token that held a credential
 /// (`--pass Xy/z`, a key-shaped run with a '/') is `<redacted>` or contains it.
 pub(crate) fn probe_tokens(redacted: &str) -> Vec<&str> {
-    referenced_paths(redacted).into_iter().filter(|t| !t.contains("<redacted>")).collect()
+    referenced_paths(redacted)
+        .into_iter()
+        .filter(|t| !t.contains("<redacted>"))
+        .collect()
 }
 
 /// Tokens in a hook command that look like a filesystem path (rather than a flag,
@@ -893,11 +1004,7 @@ fn referenced_paths(command: &str) -> Vec<&str> {
         // and all -- into the trace log and the miss counters.
         .filter(|t| !t.contains("://"))
         .filter(|t| {
-            t.contains('/')
-                || t.ends_with(".sh")
-                || t.ends_with(".mjs")
-                || t.ends_with(".js")
-                || t.ends_with(".py")
+            t.contains('/') || t.ends_with(".sh") || t.ends_with(".mjs") || t.ends_with(".js") || t.ends_with(".py")
         })
         .collect()
 }
@@ -926,7 +1033,9 @@ pub(crate) fn is_native_binary(path: &std::path::Path) -> bool {
 
 /// File extensions of the state an agent keeps next to its hooks (`~/.codex/auth.json`,
 /// `~/.gemini/oauth_creds.json`, `~/.claude/.credentials.json`): never a hook binary.
-const AGENT_STATE_EXTS: &[&str] = &["json", "jsonl", "toml", "yml", "yaml", "db", "sqlite", "env", "txt", "log"];
+const AGENT_STATE_EXTS: &[&str] = &[
+    "json", "jsonl", "toml", "yml", "yaml", "db", "sqlite", "env", "txt", "log",
+];
 
 /// The path the native-binary probe may open for a hook or helper candidate `c`, or
 /// None when it must not be opened at all.
@@ -962,7 +1071,9 @@ fn probe_target(c: &Path, project_root: Option<&Path>, home: Option<&Path>) -> O
     }
     let fallback_home = Path::new("/nonexistent-home");
     let lex_home = home.unwrap_or(fallback_home);
-    let real_home = home.and_then(|h| std::fs::canonicalize(h).ok()).unwrap_or_else(|| lex_home.to_path_buf());
+    let real_home = home
+        .and_then(|h| std::fs::canonicalize(h).ok())
+        .unwrap_or_else(|| lex_home.to_path_buf());
     let agent_own = |p: &Path, h: &Path| {
         let Ok(rel) = p.strip_prefix(h) else { return false };
         let mut comps = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
@@ -987,7 +1098,9 @@ fn probe_target(c: &Path, project_root: Option<&Path>, home: Option<&Path>) -> O
 pub(crate) fn is_native_head(b: &[u8]) -> bool {
     // A text script whose first line happens to start with "MZ" (`MZ_HOME=/opt/mz`) is
     // not a PE. A real binary has non-text bytes within its first 64.
-    let looks_like_text = b.iter().all(|&c| c == b'\n' || c == b'\r' || c == b'\t' || (0x20..0x7f).contains(&c));
+    let looks_like_text = b
+        .iter()
+        .all(|&c| c == b'\n' || c == b'\r' || c == b'\t' || (0x20..0x7f).contains(&c));
     if looks_like_text {
         return false;
     }
@@ -1043,10 +1156,13 @@ fn program_tokens(command: &str) -> Vec<&str> {
             .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
             .find(|t| {
                 !t.is_empty()
-                    && !matches!(*t, "env" | "exec" | "command" | "nohup" | "sudo" | "time" | "$" | "{" | "}")
-                    && !t.split_once('=').is_some_and(|(k, _)| {
-                        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    })
+                    && !matches!(
+                        *t,
+                        "env" | "exec" | "command" | "nohup" | "sudo" | "time" | "$" | "{" | "}"
+                    )
+                    && !t
+                        .split_once('=')
+                        .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
             });
         if let Some(w) = word {
             out.push(w);
@@ -1061,12 +1177,19 @@ fn program_tokens(command: &str) -> Vec<&str> {
 fn interpreter_scripts(command: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for simple in command.split([';', '|', '&', '(', ')', '`', '\n']) {
-        let words: Vec<&str> = simple.split_whitespace().map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')')).collect();
-        let Some(&prog) = program_tokens(simple).first() else { continue };
+        let words: Vec<&str> = simple
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
+            .collect();
+        let Some(&prog) = program_tokens(simple).first() else {
+            continue;
+        };
         if !INTERPRETER_PROGRAMS.contains(&prog.rsplit('/').next().unwrap_or(prog)) {
             continue;
         }
-        let Some(at) = words.iter().position(|w| *w == prog) else { continue };
+        let Some(at) = words.iter().position(|w| *w == prog) else {
+            continue;
+        };
         if let Some(w) = words[at + 1..].iter().find(|w| !w.starts_with('-')) {
             out.push(*w);
         }
@@ -1076,8 +1199,23 @@ fn interpreter_scripts(command: &str) -> Vec<&str> {
 
 /// Shells and script interpreters: a command that starts one runs a script.
 const INTERPRETER_PROGRAMS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "node", "deno", "bun", "ruby", "perl",
-    "php", "pwsh", "osascript",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "python",
+    "python2",
+    "python3",
+    "node",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "pwsh",
+    "osascript",
 ];
 
 #[cfg(unix)]
@@ -1166,9 +1304,7 @@ pub(crate) fn classify_command_with(
         let probe = !program_only || programs.contains(&token);
         let on_disk = on_disk_left > 0 && crate::scanners::hook_sources::take_probe();
         on_disk_left = on_disk_left.saturating_sub(1);
-        let referenced_dir = token
-            .split('/')
-            .find(|seg| AGENT_CONFIG_DIRS.contains(seg));
+        let referenced_dir = token.split('/').find(|seg| AGENT_CONFIG_DIRS.contains(seg));
 
         if let Some(dir) = referenced_dir {
             // A helper's argument paths are not shown (they routinely name the credential
@@ -1186,7 +1322,11 @@ pub(crate) fn classify_command_with(
             let home_anchored = ["~/", "$HOME/", "${HOME}/"].iter().any(|p| unquoted.starts_with(p))
                 || home.is_some_and(|h| unquoted.starts_with('/') && Path::new(&unquoted).starts_with(h));
             let is_program = programs.contains(&token) || scripts.contains(&token);
-            let token: &str = if program_only && !is_program { &shown_dir } else { &unquoted };
+            let token: &str = if program_only && !is_program {
+                &shown_dir
+            } else {
+                &unquoted
+            };
             // The settings file is itself inside the user's own `~/<dir>/`, so a
             // home-anchored path to that directory is its own (`~/.claude/hooks/x.sh` from
             // `~/.claude/settings.json`, or from a plugin cached under it).
@@ -1216,7 +1356,9 @@ pub(crate) fn classify_command_with(
                 // Cursor runs a repository's `.claude` hooks itself
                 // (cursor.com/docs/reference/third-party-hooks, fetched 2026-10-23), so it
                 // is the repository's plain hook, not a cross-tool drop (review of b9cda85).
-                risks.push(format!("runs a script this repository keeps in its {dir}/ directory ({token})"));
+                risks.push(format!(
+                    "runs a script this repository keeps in its {dir}/ directory ({token})"
+                ));
             } else if home_anchored {
                 risks.push(format!("{CROSS_HOME_RISK} ({token})"));
             } else {
@@ -1295,9 +1437,9 @@ pub(crate) fn classify_command_with(
         if !program_only
             && on_disk
             && let Some(root) = project_root.filter(|r| home.is_none_or(|h| !h.starts_with(r)))
-            && let Some(link) = candidates.iter().find(|c| {
-                c.starts_with(root) && std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_symlink())
-            })
+            && let Some(link) = candidates
+                .iter()
+                .find(|c| c.starts_with(root) && std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_symlink()))
         {
             // A project's files are contained by its enclosing git work tree, as its skill
             // links are: `apps/web/.claude/hooks/x -> ../../../../shared/x` in a monorepo
@@ -1327,10 +1469,13 @@ pub(crate) fn classify_command_with(
 /// Every handler type is kept (command with exec-form `args`, http, prompt, agent,
 /// mcp_tool); see [`crate::scanners::hook_sources::extract_hook_map`].
 pub fn extract_hooks(json: &serde_json::Value, settings_path: &Path) -> Vec<AgentHook> {
-    let mut ctx = crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Claude);
+    let mut ctx =
+        crate::scanners::hook_sources::HookCtx::new(settings_path, crate::scanners::hook_sources::Dialect::Claude);
     // A Claude Code settings file's own agent directory is .claude even in /etc.
     ctx.own_dir = Some(".claude");
-    json.get("hooks").map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx)).unwrap_or_default()
+    json.get("hooks")
+        .map(|m| crate::scanners::hook_sources::extract_hook_map(m, &ctx))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1345,10 +1490,18 @@ mod tests {
     fn link_targets_under_a_scanned_home_are_judged_by_that_home() {
         let homes = Homes(vec![
             (PathBuf::from("/home/me"), PathBuf::from("/home/me")),
-            (PathBuf::from("/var/folders/t/alt"), PathBuf::from("/private/var/folders/t/alt")),
+            (
+                PathBuf::from("/var/folders/t/alt"),
+                PathBuf::from("/private/var/folders/t/alt"),
+            ),
             (PathBuf::from("/Users/alt2"), PathBuf::from("/Users/alt2")),
         ]);
-        for ok in ["/private/var/folders/t/alt/dotfiles/gemini.json", "/var/folders/t/alt/dotfiles/x.json", "/Users/alt2/dotfiles/x.json", "/home/me/dotfiles/x.json"] {
+        for ok in [
+            "/private/var/folders/t/alt/dotfiles/gemini.json",
+            "/var/folders/t/alt/dotfiles/x.json",
+            "/Users/alt2/dotfiles/x.json",
+            "/home/me/dotfiles/x.json",
+        ] {
             assert!(!homes.sensitive(Path::new(ok)), "{ok}");
             assert_eq!(homes.read_kind(Path::new(ok)), None, "{ok}");
         }

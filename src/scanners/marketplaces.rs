@@ -1,6 +1,6 @@
 use crate::models::{AgentMarketplace, PluginPinIssue};
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, redact_secrets_in_text, sanitize_display, Scanner};
+use crate::scanners::{Scanner, read_bounded, redact_secrets_in_text, sanitize_display};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -37,8 +37,8 @@ impl Scanner for MarketplacesScanner {
             return Vec::new();
         };
         let installed_path = dir.join("installed_plugins.json");
-        let installed_json = read_bounded(&installed_path)
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+        let installed_json =
+            read_bounded(&installed_path).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
         let counts = installed_json.as_ref().map(plugin_counts).unwrap_or_default();
         let mut mps = parse_marketplaces(&json, &counts);
         let installed = installed_json.as_ref().map(installed_entries).unwrap_or_default();
@@ -54,7 +54,9 @@ pub fn installed_entries(json: &serde_json::Value) -> BTreeMap<(String, String),
         return out;
     };
     for (key, entries) in plugins {
-        let Some((plugin, market)) = key.rsplit_once('@') else { continue };
+        let Some((plugin, market)) = key.rsplit_once('@') else {
+            continue;
+        };
         let list = out.entry((plugin.to_string(), market.to_string())).or_default();
         match entries {
             serde_json::Value::Array(a) => list.extend(a.iter().cloned()),
@@ -79,7 +81,9 @@ fn show_value(v: &str) -> String {
     if !t.is_empty() && t.bytes().all(|b| b.is_ascii_hexdigit()) {
         return hex12(t);
     }
-    let ref_name = t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    let ref_name = t.len() <= 64
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
     if ref_name {
         sanitize_display(&redact_secrets_in_text(t), 64)
     } else {
@@ -167,11 +171,15 @@ fn attach_pin_issues(
                 && let Some(list) = mj.get("plugins").and_then(|v| v.as_array())
             {
                 for p in list {
-                    let Some(pname) = p.get("name").and_then(|v| v.as_str()) else { continue };
+                    let Some(pname) = p.get("name").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     if !installed.contains_key(&(pname.to_string(), name.clone())) {
                         continue;
                     }
-                    let Some(src) = p.get("source").filter(|s| s.is_object()) else { continue };
+                    let Some(src) = p.get("source").filter(|s| s.is_object()) else {
+                        continue;
+                    };
                     issues.extend(source_pin_issues(src, &manifest, Some(pname)));
                 }
             }
@@ -218,17 +226,15 @@ fn attach_pin_issues(
 
     for m in mps.iter_mut() {
         // parse_marketplaces sanitizes names; match on the same transformation.
-        let key = by_market
-            .keys()
-            .find(|k| sanitize_display(k, 128) == m.name)
-            .cloned();
+        let key = by_market.keys().find(|k| sanitize_display(k, 128) == m.name).cloned();
         if let Some(k) = key
             && let Some(mut issues) = by_market.remove(&k)
         {
             issues.sort_by(|a, b| {
                 (&a.kind, &a.path, &a.plugin, &a.detail).cmp(&(&b.kind, &b.path, &b.plugin, &b.detail))
             });
-            issues.dedup_by(|a, b| a.kind == b.kind && a.path == b.path && a.plugin == b.plugin && a.detail == b.detail);
+            issues
+                .dedup_by(|a, b| a.kind == b.kind && a.path == b.path && a.plugin == b.plugin && a.detail == b.detail);
             m.pin_issues = issues;
         }
     }
@@ -336,7 +342,9 @@ pub fn parse_fetch_head(text: &str) -> Vec<(String, Option<String>)> {
     let mut out = Vec::new();
     for line in text.lines() {
         let mut parts = line.splitn(3, '\t');
-        let Some(oid) = parts.next().map(str::trim).filter(|o| !o.is_empty()) else { continue };
+        let Some(oid) = parts.next().map(str::trim).filter(|o| !o.is_empty()) else {
+            continue;
+        };
         let _flag = parts.next();
         let desc = parts.next().unwrap_or("").trim_start();
         let quoted = |prefix: &str| -> Option<String> {
@@ -344,12 +352,9 @@ pub fn parse_fetch_head(text: &str) -> Vec<(String, Option<String>)> {
             let end = rest.find('\'')?;
             Some(rest[..end].to_string())
         };
-        let name = quoted("branch '")
-            .or_else(|| quoted("tag '"))
-            .or_else(|| {
-                quoted("remote-tracking branch '")
-                    .map(|n| n.split_once('/').map(|(_, b)| b.to_string()).unwrap_or(n))
-            });
+        let name = quoted("branch '").or_else(|| quoted("tag '")).or_else(|| {
+            quoted("remote-tracking branch '").map(|n| n.split_once('/').map(|(_, b)| b.to_string()).unwrap_or(n))
+        });
         out.push((oid.to_string(), name));
     }
     out
@@ -359,7 +364,10 @@ pub fn parse_fetch_head(text: &str) -> Vec<(String, Option<String>)> {
 /// object it points at (None if symbolic or unreadable) and the file it came from. Loose
 /// refs override packed ones. Plain-file reads; symlinks are never followed.
 pub fn sha_shaped_refs(git_dir: &Path) -> Vec<(String, Option<String>)> {
-    sha_shaped_refs_with_source(git_dir).into_iter().map(|(n, (o, _))| (n, o)).collect()
+    sha_shaped_refs_with_source(git_dir)
+        .into_iter()
+        .map(|(n, (o, _))| (n, o))
+        .collect()
 }
 
 const MAX_REF_ENTRIES: usize = 10_000;
@@ -391,7 +399,9 @@ fn sha_shaped_refs_with_source(git_dir: &Path) -> BTreeMap<String, (Option<Strin
                 break;
             }
             budget -= 1;
-            let Some(n) = e.file_name().to_str().map(String::from) else { continue };
+            let Some(n) = e.file_name().to_str().map(String::from) else {
+                continue;
+            };
             if !is_full_hex(&n) {
                 continue;
             }
@@ -416,7 +426,9 @@ fn sha_shaped_refs_with_source(git_dir: &Path) -> BTreeMap<String, (Option<Strin
             }
             budget -= 1;
             let p = e.path();
-            let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
             if meta.is_dir() {
                 stack.push(p);
                 continue;
@@ -442,9 +454,8 @@ fn sha_shaped_refs_with_source(git_dir: &Path) -> BTreeMap<String, (Option<Strin
 pub fn git_pin_issues(git_dir: &Path) -> Vec<PluginPinIssue> {
     let mut out = Vec::new();
     let refs = sha_shaped_refs_with_source(git_dir);
-    let differs = |oid: &Option<String>, name: &str| -> bool {
-        oid.as_deref().is_none_or(|o| !o.eq_ignore_ascii_case(name))
-    };
+    let differs =
+        |oid: &Option<String>, name: &str| -> bool { oid.as_deref().is_none_or(|o| !o.eq_ignore_ascii_case(name)) };
 
     let head = git_dir.join("HEAD");
     // HEAD, packed-refs and FETCH_HEAD are read like the loose refs: never through a
@@ -490,7 +501,9 @@ pub fn git_pin_issues(git_dir: &Path) -> Vec<PluginPinIssue> {
     if let Some(bytes) = crate::scanners::read_head_bytes_nofollow(&fetch, 1024 * 1024) {
         let text = String::from_utf8_lossy(&bytes);
         for (oid, name) in parse_fetch_head(&text) {
-            let Some(name) = name.filter(|n| is_full_hex(n)) else { continue };
+            let Some(name) = name.filter(|n| is_full_hex(n)) else {
+                continue;
+            };
             out.push(PluginPinIssue {
                 kind: "fetch-head-sha-branch".into(),
                 path: show_path(&fetch),
@@ -519,10 +532,7 @@ pub fn plugin_counts(json: &serde_json::Value) -> HashMap<String, usize> {
 }
 
 /// Parse the `known_marketplaces.json` object into structured marketplace records.
-pub fn parse_marketplaces(
-    json: &serde_json::Value,
-    counts: &HashMap<String, usize>,
-) -> Vec<AgentMarketplace> {
+pub fn parse_marketplaces(json: &serde_json::Value, counts: &HashMap<String, usize>) -> Vec<AgentMarketplace> {
     let Some(obj) = json.as_object() else {
         return Vec::new();
     };
@@ -540,10 +550,7 @@ pub fn parse_marketplaces(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let auto_update = entry
-            .get("autoUpdate")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let auto_update = entry.get("autoUpdate").and_then(|v| v.as_bool()).unwrap_or(false);
         let official = is_official(&source_type, &source_ref);
         let installed_plugin_count = counts.get(name).copied().unwrap_or(0);
         out.push(AgentMarketplace {
@@ -589,7 +596,9 @@ fn anthropic_github_url(url: &str) -> bool {
         return host == "github.com" && path.starts_with("/anthropics/");
     }
     // scp-like `[user@]host:path`.
-    let Some((authority, path)) = url.split_once(':') else { return false };
+    let Some((authority, path)) = url.split_once(':') else {
+        return false;
+    };
     let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     !authority.contains('/') && host == "github.com" && path.starts_with("anthropics/")
 }
@@ -673,12 +682,21 @@ mod tests {
 
     #[test]
     fn dwim_positions_only() {
-        for ok in [H40.to_string(), format!("refs/{H40}"), format!("refs/heads/{H40}"),
-                   format!("refs/tags/{H40}"), format!("refs/remotes/origin/{H40}")] {
+        for ok in [
+            H40.to_string(),
+            format!("refs/{H40}"),
+            format!("refs/heads/{H40}"),
+            format!("refs/tags/{H40}"),
+            format!("refs/remotes/origin/{H40}"),
+        ] {
             assert_eq!(dwim_hex_name(&ok), Some(H40), "{ok}");
         }
-        for no in [format!("refs/heads/feature/{H40}"), "refs/heads/main".to_string(),
-                   format!("refs/heads/{}", &H40[..39]), format!("refs/notes/x/{H40}")] {
+        for no in [
+            format!("refs/heads/feature/{H40}"),
+            "refs/heads/main".to_string(),
+            format!("refs/heads/{}", &H40[..39]),
+            format!("refs/notes/x/{H40}"),
+        ] {
             assert_eq!(dwim_hex_name(&no), None, "{no}");
         }
     }
@@ -705,7 +723,9 @@ mod tests {
 
     #[test]
     fn packed_refs_skip_header_and_peeled() {
-        let text = format!("# pack-refs with: peeled fully-peeled sorted \n{H40} refs/remotes/origin/main\n^{H40}\n{H40} refs/tags/v1\n");
+        let text = format!(
+            "# pack-refs with: peeled fully-peeled sorted \n{H40} refs/remotes/origin/main\n^{H40}\n{H40} refs/tags/v1\n"
+        );
         let got = parse_packed_refs(&text);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].1, "refs/remotes/origin/main");

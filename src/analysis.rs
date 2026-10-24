@@ -295,9 +295,32 @@ fn leaves_repository(arg: &str) -> bool {
 /// -c/-C/--copy, -f/--force, -u/--set-upstream-to, --unset-upstream, --edit-description,
 /// -t/--track) changes refs.
 const GIT_BRANCH_LIST_FLAGS: &[&str] = &[
-    "-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose", "--show-current", "--contains",
-    "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "--color", "--no-color",
-    "--column", "--no-column", "-i", "--ignore-case", "--abbrev", "--no-abbrev", "--omit-empty",
+    "-a",
+    "--all",
+    "-r",
+    "--remotes",
+    "-l",
+    "--list",
+    "-v",
+    "-vv",
+    "--verbose",
+    "--show-current",
+    "--contains",
+    "--no-contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+    "--sort",
+    "--format",
+    "--color",
+    "--no-color",
+    "--column",
+    "--no-column",
+    "-i",
+    "--ignore-case",
+    "--abbrev",
+    "--no-abbrev",
+    "--omit-empty",
 ];
 /// `git branch` flags whose (separate) next word is their value, not a branch to create.
 const GIT_BRANCH_VALUE_FLAGS: &[&str] = &["--contains", "--no-contains", "--merged", "--no-merged", "--points-at"];
@@ -310,13 +333,16 @@ const GIT_READ_DENIED_FLAGS: &[&str] = &["--no-index", "--output", "--ext-diff",
 fn git_read_only(sub: &str, args: &[&str]) -> bool {
     let flag_name = |a: &str| a.split_once('=').map_or(a, |(n, _)| n).to_string();
     // Every argument: a path that leaves the repository, as a word or a flag's value.
-    if args.iter().any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v))) {
+    if args
+        .iter()
+        .any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v)))
+    {
         return false;
     }
     match sub {
-        "status" | "diff" | "log" | "show" | "rev-parse" | "describe" | "ls-files" | "shortlog" => {
-            !args.iter().any(|a| GIT_READ_DENIED_FLAGS.iter().any(|d| flag_name(a).starts_with(d)))
-        }
+        "status" | "diff" | "log" | "show" | "rev-parse" | "describe" | "ls-files" | "shortlog" => !args
+            .iter()
+            .any(|a| GIT_READ_DENIED_FLAGS.iter().any(|d| flag_name(a).starts_with(d))),
         // List-only flags; a positional word is a branch to create unless --list is
         // given or it is the value of --contains and the like.
         "branch" => {
@@ -358,32 +384,41 @@ fn git_read_only(sub: &str, args: &[&str]) -> bool {
 /// - and no path argument that leaves the repository (see [`leaves_repository`]).
 pub fn is_read_only_context_command(cmd: &str) -> bool {
     if cmd.contains([
-        '|', '>', '<', ';', '&', '$', '`', '(', ')', '\n', '\r', '\\', '"', '\'', '*', '?', '[', ']', '{', '}', '!', '#',
+        '|', '>', '<', ';', '&', '$', '`', '(', ')', '\n', '\r', '\\', '"', '\'', '*', '?', '[', ']', '{', '}', '!',
+        '#',
     ]) {
         return false;
     }
     let words: Vec<&str> = cmd.split_whitespace().collect();
-    let Some((prog, args)) = words.split_first() else { return false };
+    let Some((prog, args)) = words.split_first() else {
+        return false;
+    };
     match *prog {
         "git" => {
             // The subcommand must come first: any option before it can redirect git to
             // another repository or work tree, set config (and with it a program to run),
             // or start a pager.
-            let Some((sub, rest)) = args.split_first() else { return false };
+            let Some((sub, rest)) = args.split_first() else {
+                return false;
+            };
             !sub.starts_with('-') && git_read_only(sub, rest)
         }
         "gh" => {
-            let (Some(sub), Some(verb)) = (args.first(), args.get(1)) else { return false };
+            let (Some(sub), Some(verb)) = (args.first(), args.get(1)) else {
+                return false;
+            };
             matches!(*sub, "pr" | "issue" | "repo" | "run")
                 && matches!(*verb, "view" | "list" | "diff" | "status" | "checks")
-                && !args.iter().any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v)))
+                && !args
+                    .iter()
+                    .any(|a| leaves_repository(a) || a.split_once('=').is_some_and(|(_, v)| leaves_repository(v)))
         }
         // `date -s` sets the clock; `+FORMAT` only formats.
         "date" => args.is_empty() || (args.len() == 1 && args[0].starts_with('+')),
         "ls" | "pwd" | "whoami" => args.is_empty(),
-        "uname" => args.iter().all(|a| {
-            a.len() >= 2 && a.starts_with('-') && a[1..].chars().all(|c| "asnrvmpio".contains(c))
-        }),
+        "uname" => args
+            .iter()
+            .all(|a| a.len() >= 2 && a.starts_with('-') && a[1..].chars().all(|c| "asnrvmpio".contains(c))),
         _ => false,
     }
 }
@@ -482,8 +517,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 Some(c) => format!("{} {}", c, s.args.join(" ")),
                 None => s.args.join(" "),
             };
-            if !launch.trim().is_empty()
-                && !crate::scanners::rules_files::check_dangerous_patterns(&launch).is_empty()
+            if !launch.trim().is_empty() && !crate::scanners::rules_files::check_dangerous_patterns(&launch).is_empty()
             {
                 f.push(Finding {
                     severity: Severity::High,
@@ -535,14 +569,22 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             } else {
                 " — from project settings"
             };
-            let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
+            let detail = if h.risks.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", h.risks.join("; "))
+            };
             f.push(Finding {
                 severity,
                 category: "Helper command".into(),
                 title: format!(
                     "{} runs a command{}{}{}",
                     h.event,
-                    if h.dangerous { " matching a dangerous pattern" } else { "" },
+                    if h.dangerous {
+                        " matching a dangerous pattern"
+                    } else {
+                        ""
+                    },
                     origin,
                     detail
                 ),
@@ -604,10 +646,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             f.push(Finding {
                 severity: Severity::High,
                 category: "Permissions".into(),
-                title: format!(
-                    "{} runs without approval prompts ({})",
-                    s.framework, mode
-                ),
+                title: format!("{} runs without approval prompts ({})", s.framework, mode),
                 location: s.path.clone(),
                 evidence: None,
             });
@@ -685,7 +724,11 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             title: format!(
                 "VS Code task '{}' runs automatically when the folder is opened{}",
                 t.label,
-                if why.is_empty() { String::new() } else { format!(" — {}", why.join("; ")) }
+                if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", why.join("; "))
+                }
             ),
             location: t.path.clone(),
             evidence: Some(t.command.clone()),
@@ -711,7 +754,11 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 } else {
                     "claimed by no installed distribution"
                 };
-                (sev, "Persistence", format!("Python startup hook runs on every interpreter start — {claim}"))
+                (
+                    sev,
+                    "Persistence",
+                    format!("Python startup hook runs on every interpreter start — {claim}"),
+                )
             }
             "planted-binary" => {
                 let sev = match (a.git_tracked, a.sensitive_target) {
@@ -719,19 +766,51 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     (true, false) | (false, true) => Severity::High,
                     (false, false) => Severity::Medium,
                 };
-                let carrier = if a.git_tracked { " — git-tracked, so every clone carries it" } else { "" };
-                (sev, "Binary planting", format!("Executable in a project root {}{carrier}", a.detail))
+                let carrier = if a.git_tracked {
+                    " — git-tracked, so every clone carries it"
+                } else {
+                    ""
+                };
+                (
+                    sev,
+                    "Binary planting",
+                    format!("Executable in a project root {}{carrier}", a.detail),
+                )
             }
             "escaping-symlink" => {
-                let sev = if a.sensitive_target { Severity::Critical } else { Severity::High };
-                let target = if a.sensitive_target { "a credential, shell-rc or agent-config path" } else { "outside the repository" };
-                (sev, "Repo symlink", format!("Committed symlink resolves {target}; an approved in-project write lands there"))
+                let sev = if a.sensitive_target {
+                    Severity::Critical
+                } else {
+                    Severity::High
+                };
+                let target = if a.sensitive_target {
+                    "a credential, shell-rc or agent-config path"
+                } else {
+                    "outside the repository"
+                };
+                (
+                    sev,
+                    "Repo symlink",
+                    format!("Committed symlink resolves {target}; an approved in-project write lands there"),
+                )
             }
             "loader-script" => {
-                let sev = if a.sensitive_target || a.git_tracked { Severity::High } else { Severity::Medium };
-                (sev, "Persistence", format!("Loader staged in an agent directory: {}", a.detail))
+                let sev = if a.sensitive_target || a.git_tracked {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
+                (
+                    sev,
+                    "Persistence",
+                    format!("Loader staged in an agent directory: {}", a.detail),
+                )
             }
-            _ => (Severity::Critical, "Persistence", format!("Known worm persistence artifact: {}", a.detail)),
+            _ => (
+                Severity::Critical,
+                "Persistence",
+                format!("Known worm persistence artifact: {}", a.detail),
+            ),
         };
         f.push(Finding {
             severity,
@@ -755,10 +834,17 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             title: format!(
                 "git {} in {} runs a command on ordinary git operations — {}{}",
                 g.key,
-                if g.nested { "a nested git directory" } else { "this repository" },
+                if g.nested {
+                    "a nested git directory"
+                } else {
+                    "this repository"
+                },
                 g.reason,
-                if g.origin.ends_with("/config") { String::new() }
-                else { format!(" (hidden via include: {})", g.origin) }
+                if g.origin.ends_with("/config") {
+                    String::new()
+                } else {
+                    format!(" (hidden via include: {})", g.origin)
+                }
             ),
             location: g.path.clone(),
             evidence: Some(format!("{} = {}", g.key, g.value)),
@@ -926,26 +1012,27 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     // Agent identity posture: static long-lived keys are the ASI03 anti-pattern.
     if let Some(id) = &report.agent_identity
-        && !id.static_api_keys.is_empty() {
-            let static_only = id.static_only();
-            f.push(Finding {
-                // Advisory by default; elevated when static keys are the ONLY auth in use.
-                severity: if static_only { Severity::Medium } else { Severity::Low },
-                category: "Agent identity".into(),
-                title: format!(
-                    "{} static long-lived AI API key(s) in use ({}unbound bearer tokens, OWASP ASI03){}",
-                    id.static_api_keys.len(),
-                    if static_only { "sole credential; " } else { "" },
-                    if static_only {
-                        " — no OAuth/SPIFFE detected; prefer short-lived scoped credentials"
-                    } else {
-                        ""
-                    }
-                ),
-                location: id.static_api_keys.join(", "),
-                evidence: None,
-            });
-        }
+        && !id.static_api_keys.is_empty()
+    {
+        let static_only = id.static_only();
+        f.push(Finding {
+            // Advisory by default; elevated when static keys are the ONLY auth in use.
+            severity: if static_only { Severity::Medium } else { Severity::Low },
+            category: "Agent identity".into(),
+            title: format!(
+                "{} static long-lived AI API key(s) in use ({}unbound bearer tokens, OWASP ASI03){}",
+                id.static_api_keys.len(),
+                if static_only { "sole credential; " } else { "" },
+                if static_only {
+                    " — no OAuth/SPIFFE detected; prefer short-lived scoped credentials"
+                } else {
+                    ""
+                }
+            ),
+            location: id.static_api_keys.join(", "),
+            evidence: None,
+        });
+    }
 
     // Composition-level toxic-flow surface.
     if let Some(tf) = analyze_toxic_flow(report) {
@@ -972,7 +1059,11 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 /// service such as `ollama` or `litellm`), `host.docker.internal`, a `.local` mDNS name,
 /// or a private, link-local or shared-address IP literal. `<unparseable>` is not.
 pub fn is_local_network_host(host: &str) -> bool {
-    let h = host.trim_end_matches('.').trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let h = host
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
     if h.is_empty() || h.starts_with('<') {
         return false;
     }
@@ -987,7 +1078,10 @@ pub fn is_local_network_host(host: &str) -> bool {
         }
         Err(_) => {
             !h.contains('.')
-                || matches!(h.as_str(), "host.docker.internal" | "gateway.docker.internal" | "host.containers.internal")
+                || matches!(
+                    h.as_str(),
+                    "host.docker.internal" | "gateway.docker.internal" | "host.containers.internal"
+                )
                 || h.ends_with(".local")
         }
     }
@@ -1056,7 +1150,9 @@ fn hook_scope_for_settings(s: &crate::models::AgentSettings) -> HookScope {
 fn hook_scope_for_skill(k: &crate::models::AgentSkill) -> HookScope {
     let prov = k.provenance.as_ref();
     if k.scope == "project" {
-        return HookScope::Repository { tracked: prov.and_then(|p| p.git.as_deref()) == Some("tracked") };
+        return HookScope::Repository {
+            tracked: prov.and_then(|p| p.git.as_deref()) == Some("tracked"),
+        };
     }
     if prov.is_some_and(|p| p.marketplace.is_some()) {
         return plugin_scope(prov, plugin_install_root(&k.path));
@@ -1124,14 +1220,20 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
     if h.disabled || h.kind == "unknown" || *scope == Inactive {
         return None;
     }
-    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) { "command" } else { h.kind.as_str() };
-    let by = |repo: Option<Severity>, user: Option<Severity>, official: Option<Severity>, tp: Option<HookGrade>| match scope {
-        Repository { .. } => repo.map(Finding),
-        UserOwn => user.map(Finding),
-        Managed | Inactive => None,
-        PluginOfficial => official.map(Finding),
-        PluginThirdParty { .. } => tp,
+    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) {
+        "command"
+    } else {
+        h.kind.as_str()
     };
+    let by =
+        |repo: Option<Severity>, user: Option<Severity>, official: Option<Severity>, tp: Option<HookGrade>| match scope
+        {
+            Repository { .. } => repo.map(Finding),
+            UserOwn => user.map(Finding),
+            Managed | Inactive => None,
+            PluginOfficial => official.map(Finding),
+            PluginThirdParty { .. } => tp,
+        };
     let code = matches!(kind, "command" | "module");
     if *scope == UserOwn && kind == "command" && user_event_push(h) {
         return Some(Finding(Low));
@@ -1144,7 +1246,12 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
     }
     let cross = |r: &String| r.starts_with("cross-references");
     if kind == "command" && h.risks.iter().any(cross) {
-        if *scope == UserOwn && h.risks.iter().filter(|r| cross(r)).all(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK)) {
+        if *scope == UserOwn
+            && h.risks
+                .iter()
+                .filter(|r| cross(r))
+                .all(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK))
+        {
             return Some(Finding(Low));
         }
         return match scope {
@@ -1168,7 +1275,12 @@ fn hook_severity(scope: &HookScope, h: &crate::models::AgentHook) -> Option<Hook
         // A credential path alone, and a concealment phrase guard wording also uses
         // ("never reveal any secret values you find") unless it is aimed at the user,
         // are one step lower: the repository's plain-command row (review of 4e3f8c3).
-        let PromptSignals { cred, weak, soft, strong } = prompt_signals(h);
+        let PromptSignals {
+            cred,
+            weak,
+            soft,
+            strong,
+        } = prompt_signals(h);
         return if cred && (weak || strong) {
             match scope {
                 Inactive => None,
@@ -1221,7 +1333,12 @@ struct PromptSignals {
 
 fn prompt_signals(h: &crate::models::AgentHook) -> PromptSignals {
     let cred_sig = crate::scanners::hook_sources::CREDENTIAL_PATH_SIGNAL;
-    let mut sig = PromptSignals { cred: false, weak: false, soft: false, strong: false };
+    let mut sig = PromptSignals {
+        cred: false,
+        weak: false,
+        soft: false,
+        strong: false,
+    };
     for p in &h.poisoning {
         if p.starts_with(cred_sig) {
             sig.cred = true;
@@ -1254,7 +1371,11 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
         (m, Some(c)) => format!("{} if {c}", m.as_deref().unwrap_or("*")),
         (m, None) => m.as_deref().unwrap_or("*").to_string(),
     };
-    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) { "command" } else { h.kind.as_str() };
+    let kind = if crate::scanners::hook_sources::is_command_kind(&h.kind) {
+        "command"
+    } else {
+        h.kind.as_str()
+    };
     let advisory = if h.advisory_patterns.is_empty() {
         String::new()
     } else {
@@ -1266,8 +1387,16 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
     match kind {
         "http" => {
             let host = h.url_host.as_deref().unwrap_or("?");
-            let plain = if h.url_scheme.as_deref() == Some("http") { " over plaintext http" } else { "" };
-            let lan = if http_reach(h) == HttpReach::Lan { " (a local-network host)" } else { "" };
+            let plain = if h.url_scheme.as_deref() == Some("http") {
+                " over plaintext http"
+            } else {
+                ""
+            };
+            let lan = if http_reach(h) == HttpReach::Lan {
+                " (a local-network host)"
+            } else {
+                ""
+            };
             format!("{event} hook [{m}] sends each event's JSON to {host}{lan}{plain}")
         }
         "prompt" | "agent" if in_conversation(h) => {
@@ -1275,19 +1404,29 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
                 "submits a prompt into the agent's conversation".to_string()
             } else {
                 let who = if framework.is_empty() { "the agent" } else { framework };
-                format!("sends a prompt that {who} does not document the handling of (graded as text in the agent's conversation)")
+                format!(
+                    "sends a prompt that {who} does not document the handling of (graded as text in the agent's conversation)"
+                )
             };
             let sig = prompt_signals(h);
             if h.poisoning.is_empty() {
                 format!("{event} {kind} hook [{m}] {into} on each event (advisory)")
             } else if sig.strong || sig.weak {
-                format!("{event} {kind} hook [{m}] {into} with prompt-injection signals ({})", h.poisoning.join(", "))
+                format!(
+                    "{event} {kind} hook [{m}] {into} with prompt-injection signals ({})",
+                    h.poisoning.join(", ")
+                )
             } else {
                 // Only a credential path and/or guard-style concealment wording: say what
                 // it is, not "prompt injection".
                 let cred_sig = crate::scanners::hook_sources::CREDENTIAL_PATH_SIGNAL;
                 let paths: Vec<&str> = h.poisoning.iter().filter_map(|p| p.strip_prefix(cred_sig)).collect();
-                let soft: Vec<&str> = h.poisoning.iter().filter(|p| !p.starts_with(cred_sig)).map(String::as_str).collect();
+                let soft: Vec<&str> = h
+                    .poisoning
+                    .iter()
+                    .filter(|p| !p.starts_with(cred_sig))
+                    .map(String::as_str)
+                    .collect();
                 let mut parts = Vec::new();
                 if !soft.is_empty() {
                     parts.push(format!("with concealment wording ({})", soft.join(", ")));
@@ -1300,15 +1439,26 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
         }
         "prompt" | "agent" if !h.poisoning.is_empty() => format!(
             "{event} {kind} hook [{m}] gives its {} a prompt containing prompt-injection phrases ({})",
-            if kind == "agent" { "hook subagent" } else { "hook evaluator model" },
+            if kind == "agent" {
+                "hook subagent"
+            } else {
+                "hook evaluator model"
+            },
             h.poisoning.join(", ")
         ),
         "prompt" | "agent" => format!("{event} {kind} hook [{m}] sends a model prompt on each event (advisory)"),
         "mcp_tool" => format!("{event} hook [{m}] calls MCP tool {}", h.command),
         "module" => {
-            let regs = if h.registers.is_empty() { String::new() } else { format!(": registers {}", h.registers.join(", ")) };
+            let regs = if h.registers.is_empty() {
+                String::new()
+            } else {
+                format!(": registers {}", h.registers.join(", "))
+            };
             let bad = if h.dangerous {
-                format!(" and a shell command it runs matches a dangerous pattern ({})", h.patterns.join("; "))
+                format!(
+                    " and a shell command it runs matches a dangerous pattern ({})",
+                    h.patterns.join("; ")
+                )
             } else if !h.patterns.is_empty() {
                 format!("; a shell command it runs matches {}", h.patterns.join(", "))
             } else if !h.advisory_patterns.is_empty() {
@@ -1320,20 +1470,47 @@ fn hook_title(h: &crate::models::AgentHook, framework: &str, scope: &HookScope) 
                 String::new()
             };
             // Framework-labelled like every other agent's hook (review of 4e3f8c3).
-            let label = if framework.starts_with("claude-code") || framework.is_empty() { "claude-code mod" } else { framework };
-            format!("{label} hooks module {} runs inside the agent on its events{regs}{bad}", h.command)
+            let label = if framework.starts_with("claude-code") || framework.is_empty() {
+                "claude-code mod"
+            } else {
+                framework
+            };
+            format!(
+                "{label} hooks module {} runs inside the agent on its events{regs}{bad}",
+                h.command
+            )
         }
         _ => {
-            let detail = if h.risks.is_empty() { String::new() } else { format!(" — {}", h.risks.join("; ")) };
-            let graded_as_match = h.dangerous || matches!(scope, HookScope::Repository { .. } | HookScope::Managed | HookScope::UserOwn);
+            let detail = if h.risks.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", h.risks.join("; "))
+            };
+            let graded_as_match = h.dangerous
+                || matches!(
+                    scope,
+                    HookScope::Repository { .. } | HookScope::Managed | HookScope::UserOwn
+                );
             if *scope == HookScope::UserOwn && user_event_push(h) {
                 let host = h.push_host.as_deref().unwrap_or("?");
-                format!("{event} hook [{m}] runs a command that sends fields of its event to {host} (a notification hook)")
+                format!(
+                    "{event} hook [{m}] runs a command that sends fields of its event to {host} (a notification hook)"
+                )
             } else if !h.patterns.is_empty() && graded_as_match {
-                format!("{event} hook [{m}] runs a command matching a dangerous pattern ({}){detail}{advisory}", h.patterns.join(", "))
+                format!(
+                    "{event} hook [{m}] runs a command matching a dangerous pattern ({}){detail}{advisory}",
+                    h.patterns.join(", ")
+                )
             } else if !h.patterns.is_empty() {
-                format!("{event} hook [{m}] runs a command{detail}; matches {}{advisory}", h.patterns.join(", "))
-            } else if *scope == HookScope::UserOwn && h.risks.iter().any(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK)) {
+                format!(
+                    "{event} hook [{m}] runs a command{detail}; matches {}{advisory}",
+                    h.patterns.join(", ")
+                )
+            } else if *scope == HookScope::UserOwn
+                && h.risks
+                    .iter()
+                    .any(|r| r.starts_with(crate::scanners::agent_settings::CROSS_HOME_RISK))
+            {
                 format!("{event} hook [{m}] runs a command{detail} (advisory)")
             } else {
                 format!("{event} hook [{m}] runs a command{detail}{advisory}")
@@ -1384,16 +1561,26 @@ struct ManagedPolicy {
 
 impl ManagedPolicy {
     fn of(settings: &[crate::models::AgentSettings]) -> Self {
-        let managed = || settings.iter().filter(|s| s.source == "managed" && s.framework == "claude-code");
+        let managed = || {
+            settings
+                .iter()
+                .filter(|s| s.source == "managed" && s.framework == "claude-code")
+        };
         ManagedPolicy {
             managed_only: managed().any(|s| s.allow_managed_hooks_only || s.disable_all_hooks),
             managed_off: managed().any(|s| s.disable_all_hooks),
-            forced: managed().flat_map(|s| s.force_enabled_plugins.iter().cloned()).collect(),
+            forced: managed()
+                .flat_map(|s| s.force_enabled_plugins.iter().cloned())
+                .collect(),
         }
     }
 
     fn policy(&self) -> &'static str {
-        if self.managed_off { "disableAllHooks" } else { "allowManagedHooksOnly" }
+        if self.managed_off {
+            "disableAllHooks"
+        } else {
+            "allowManagedHooksOnly"
+        }
     }
 
     /// Whether Claude Code skips a hook of `framework` in `scope` under this policy
@@ -1458,7 +1645,13 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     type Agg = (String, String, BTreeSet<String>, usize, Option<(String, String)>);
     let mut agg: BTreeMap<(String, String), Agg> = BTreeMap::new();
     // `note`: set when the hook is kept despite a managed policy, because other agents run it.
-    let mut grade = |h: &crate::models::AgentHook, framework: &str, scope: HookScope, location: &str, prefix: &str, note: Option<&str>, f: &mut Vec<Finding>| {
+    let mut grade = |h: &crate::models::AgentHook,
+                     framework: &str,
+                     scope: HookScope,
+                     location: &str,
+                     prefix: &str,
+                     note: Option<&str>,
+                     f: &mut Vec<Finding>| {
         match hook_severity(&scope, h) {
             None => {}
             Some(HookGrade::Finding(severity)) => {
@@ -1471,11 +1664,19 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         " (Claude Code skips it under the managed {policy}; {others} still run this file's hooks)"
                     ));
                 }
-                f.push(Finding { severity, category: "Hook".into(), title, location: location.to_string(), evidence: Some(h.command.clone()) })
+                f.push(Finding {
+                    severity,
+                    category: "Hook".into(),
+                    title,
+                    location: location.to_string(),
+                    evidence: Some(h.command.clone()),
+                })
             }
             Some(HookGrade::Aggregate) => {
                 if let HookScope::PluginThirdParty { key, root } = scope {
-                    let e = agg.entry(key).or_insert_with(|| (framework.to_string(), root, BTreeSet::new(), 0, None));
+                    let e = agg
+                        .entry(key)
+                        .or_insert_with(|| (framework.to_string(), root, BTreeSet::new(), 0, None));
                     if h.kind == "module" {
                         if h.registers.is_empty() {
                             e.2.insert("a hooks module".to_string());
@@ -1494,7 +1695,9 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             }
         }
     };
-    let silenced = |framework: &str, scope: &HookScope, prov: Option<&crate::models::SkillProvenance>| mp.silences(framework, scope, prov);
+    let silenced = |framework: &str, scope: &HookScope, prov: Option<&crate::models::SkillProvenance>| {
+        mp.silences(framework, scope, prov)
+    };
     for s in &report.agent_settings {
         let scope = hook_scope_for_settings(s);
         let others = claude_settings_importers(s);
@@ -1518,7 +1721,11 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             continue;
         }
         let loc = crate::scanners::sanitize_display(&k.path, 512);
-        let what = if k.framework == "claude-code-agent" || k.file_type == "agent" { "subagent" } else { "skill" };
+        let what = if k.framework == "claude-code-agent" || k.file_type == "agent" {
+            "subagent"
+        } else {
+            "skill"
+        };
         let prefix = format!("{what} '{}': ", k.name);
         for h in &k.hooks {
             grade(h, "claude-code", scope.clone(), &loc, &prefix, None, f);
@@ -1560,7 +1767,9 @@ fn cross_agent_link(s: &crate::models::AgentSettings) -> Option<Finding> {
     }
     let path = Path::new(&s.path);
     let comps: Vec<Component> = path.components().collect();
-    let own_at = comps.iter().position(|c| c.as_os_str().to_str().is_some_and(|c| AGENT_CONFIG_DIRS.contains(&c)))?;
+    let own_at = comps
+        .iter()
+        .position(|c| c.as_os_str().to_str().is_some_and(|c| AGENT_CONFIG_DIRS.contains(&c)))?;
     let home: PathBuf = comps[..own_at].iter().collect();
     let own = comps[own_at].as_os_str();
     let target = lexical_join(path.parent()?, Path::new(&l.target));
@@ -1588,7 +1797,11 @@ fn cross_agent_link(s: &crate::models::AgentSettings) -> Option<Finding> {
 /// model, so its other plugins are third-party; other agents' plugins are graded the same
 /// way, but nothing verified says who published them.
 fn plugin_label(framework: &str) -> &'static str {
-    if framework.starts_with("claude-code") { "third-party plugin" } else { "plugin (provenance not verified)" }
+    if framework.starts_with("claude-code") {
+        "third-party plugin"
+    } else {
+        "plugin (provenance not verified)"
+    }
 }
 
 /// `~/.claude/plugins/cache/<m>/<p>/<v>` for a path inside a plugin cache version.
@@ -1597,7 +1810,11 @@ fn plugin_install_root(path: &str) -> String {
     let comps: Vec<_> = p.components().collect();
     for (i, c) in comps.iter().enumerate() {
         if c.as_os_str() == "cache" && i > 0 && comps[i - 1].as_os_str() == "plugins" && comps.len() > i + 3 {
-            return comps[..=i + 3].iter().collect::<std::path::PathBuf>().to_string_lossy().to_string();
+            return comps[..=i + 3]
+                .iter()
+                .collect::<std::path::PathBuf>()
+                .to_string_lossy()
+                .to_string();
         }
     }
     path.to_string()
@@ -1638,27 +1855,51 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 // commit it is named after is a pin that floats with a branch (Medium);
                 // one that points elsewhere, or cannot be resolved, is the exploit shape.
                 "head-on-sha-branch" => (
-                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    if i.mismatch {
+                        Severity::Critical
+                    } else {
+                        Severity::Medium
+                    },
                     format!(
                         "marketplace '{}' is checked out on a branch named like a commit{} — Plugin4Shell shape (CVE-2026-86063)",
                         m.name,
-                        if i.mismatch { " that points at a different commit" } else { "" }
+                        if i.mismatch {
+                            " that points at a different commit"
+                        } else {
+                            ""
+                        }
                     ),
                 ),
                 "sha-shaped-ref" => (
-                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    if i.mismatch {
+                        Severity::Critical
+                    } else {
+                        Severity::Medium
+                    },
                     format!(
                         "marketplace '{}' has a ref named like a commit{}",
                         m.name,
-                        if i.mismatch { " that points at a different commit" } else { "" }
+                        if i.mismatch {
+                            " that points at a different commit"
+                        } else {
+                            ""
+                        }
                     ),
                 ),
                 "fetch-head-sha-branch" => (
-                    if i.mismatch { Severity::Critical } else { Severity::Medium },
+                    if i.mismatch {
+                        Severity::Critical
+                    } else {
+                        Severity::Medium
+                    },
                     format!(
                         "marketplace '{}' last fetched a branch named like a commit{}",
                         m.name,
-                        if i.mismatch { ", which resolved to a different commit" } else { "" }
+                        if i.mismatch {
+                            ", which resolved to a different commit"
+                        } else {
+                            ""
+                        }
                     ),
                 ),
                 // Three different things a non-commit sha can be; each gets its own words.
@@ -1671,7 +1912,9 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     match k {
                         "manifest-sha-abbreviated" => (
                             Severity::Medium,
-                            format!("{who} is pinned to an abbreviated commit ID — it is resolved by name, so a branch of that name would win; use the full 40-hex ID"),
+                            format!(
+                                "{who} is pinned to an abbreviated commit ID — it is resolved by name, so a branch of that name would win; use the full 40-hex ID"
+                            ),
                         ),
                         "manifest-sha-empty" => (
                             Severity::Low,
@@ -1679,13 +1922,18 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                         ),
                         _ => (
                             Severity::Medium,
-                            format!("{who} is pinned to a branch or tag name, not a commit — the pin moves with the branch"),
+                            format!(
+                                "{who} is pinned to a branch or tag name, not a commit — the pin moves with the branch"
+                            ),
                         ),
                     }
                 }
                 "manifest-ref-is-sha" if i.plugin.is_some() => (
                     Severity::Medium,
-                    format!("plugin '{p}' from '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win", m.name),
+                    format!(
+                        "plugin '{p}' from '{}' gives a commit ID as its ref with no sha pin — a branch of that name would win",
+                        m.name
+                    ),
                 ),
                 // A marketplace source has no `sha` field (github: repo/ref/path/sparsePaths;
                 // git: url/ref/path/sparsePaths), so a commit ID in `ref` is the only way to
@@ -1700,15 +1948,24 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 ),
                 "installed-sha-not-commit" => (
                     Severity::Medium,
-                    format!("installed plugin '{p}@{}' records a gitCommitSha that is a name, not a commit ID", m.name),
+                    format!(
+                        "installed plugin '{p}@{}' records a gitCommitSha that is a name, not a commit ID",
+                        m.name
+                    ),
                 ),
                 "installed-sha-abbreviated" => (
                     Severity::Medium,
-                    format!("installed plugin '{p}@{}' records an abbreviated gitCommitSha — a branch of that name would win; a full 40-hex ID cannot be shadowed", m.name),
+                    format!(
+                        "installed plugin '{p}@{}' records an abbreviated gitCommitSha — a branch of that name would win; a full 40-hex ID cannot be shadowed",
+                        m.name
+                    ),
                 ),
                 "installed-sha-empty" => (
                     Severity::Low,
-                    format!("installed plugin '{p}@{}' records an empty gitCommitSha — no commit pin is recorded", m.name),
+                    format!(
+                        "installed plugin '{p}@{}' records an empty gitCommitSha — no commit pin is recorded",
+                        m.name
+                    ),
                 ),
                 _ => continue,
             };
@@ -1745,11 +2002,9 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     type PluginKey = (String, String);
     type CmdAgg = (String, BTreeSet<String>, Option<(String, String)>);
     type GrantAgg = (String, BTreeSet<String>, BTreeSet<String>);
-    let mut plugin_cmds: BTreeMap<PluginKey, CmdAgg> =
-        BTreeMap::new();
+    let mut plugin_cmds: BTreeMap<PluginKey, CmdAgg> = BTreeMap::new();
     // (marketplace, plugin) -> (install root, skill names, file paths)
-    let mut plugin_grants: BTreeMap<PluginKey, GrantAgg> =
-        BTreeMap::new();
+    let mut plugin_grants: BTreeMap<PluginKey, GrantAgg> = BTreeMap::new();
     for skill in &report.agent_skills {
         // AgentSkill.path is the raw path (a directory name is attacker-chosen text).
         let loc = crate::scanners::sanitize_display(&skill.path, 512);
@@ -1768,7 +2023,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 || skill.scope == "project"
                 || skill.provenance.as_ref().is_some_and(|p| p.marketplace.is_some()))
         {
-            let via = if l.through_directory { "is reached through a symlinked directory" } else { "is a symlink" };
+            let via = if l.through_directory {
+                "is reached through a symlinked directory"
+            } else {
+                "is a symlink"
+            };
             let within = if skill.scope == "project" {
                 "its project"
             } else if skill.provenance.as_ref().is_some_and(|p| p.marketplace.is_some()) {
@@ -1792,7 +2051,8 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             // file) under /var, /run or ~/.claude is how people keep skills elsewhere
             // (/var/home on Silverblue, a skills-archive). Nothing is read, so Low; High
             // stays for credential-named targets and for repository and plugin links.
-            let own_global = skill.scope != "project" && skill.provenance.as_ref().is_none_or(|p| p.marketplace.is_none());
+            let own_global =
+                skill.scope != "project" && skill.provenance.as_ref().is_none_or(|p| p.marketplace.is_none());
             let md_target = l
                 .target
                 .rsplit('/')
@@ -1801,19 +2061,58 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             // A link reached through a symlinked directory names that directory.
             let skill_shaped = directory || l.through_directory || md_target;
             let (severity, title) = if directory && l.sensitive_target && own_global && skill_shaped && !credential {
-                (Severity::Low, format!("skill directory '{}' points outside the skills directory (into {into}) — not listed or read", skill.name))
+                (
+                    Severity::Low,
+                    format!(
+                        "skill directory '{}' points outside the skills directory (into {into}) — not listed or read",
+                        skill.name
+                    ),
+                )
             } else if directory && l.sensitive_target {
-                (Severity::High, format!("skill directory '{}' is a symlink into {into} — not listed or read", skill.name))
+                (
+                    Severity::High,
+                    format!(
+                        "skill directory '{}' is a symlink into {into} — not listed or read",
+                        skill.name
+                    ),
+                )
             } else if directory {
-                (Severity::Low, format!("skill directory '{}' is a symlink that resolves outside {within} — not listed or read", skill.name))
+                (
+                    Severity::Low,
+                    format!(
+                        "skill directory '{}' is a symlink that resolves outside {within} — not listed or read",
+                        skill.name
+                    ),
+                )
             } else if l.sensitive_target && own_global && skill_shaped && !credential {
-                (Severity::Low, format!("skill file '{}' points outside the skills directory (into {into}) — not read", skill.name))
+                (
+                    Severity::Low,
+                    format!(
+                        "skill file '{}' points outside the skills directory (into {into}) — not read",
+                        skill.name
+                    ),
+                )
             } else if l.sensitive_target {
-                (Severity::High, format!("skill file '{}' {via} into {into} — not read", skill.name))
+                (
+                    Severity::High,
+                    format!("skill file '{}' {via} into {into} — not read", skill.name),
+                )
             } else if l.dangling {
-                (Severity::Low, format!("skill file '{}' is a dangling symlink that points outside {within} — nothing to read", skill.name))
+                (
+                    Severity::Low,
+                    format!(
+                        "skill file '{}' is a dangling symlink that points outside {within} — nothing to read",
+                        skill.name
+                    ),
+                )
             } else {
-                (Severity::Low, format!("skill file '{}' {via} that resolves outside {within} — not read", skill.name))
+                (
+                    Severity::Low,
+                    format!(
+                        "skill file '{}' {via} that resolves outside {within} — not read",
+                        skill.name
+                    ),
+                )
             };
             f.push(Finding {
                 severity,
@@ -1839,10 +2138,17 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             )
         };
 
-        let project_shell_disabled = project && shell_disabled_projects.iter().any(|p| skill.path.starts_with(p.as_str()));
+        let project_shell_disabled = project
+            && shell_disabled_projects
+                .iter()
+                .any(|p| skill.path.starts_with(p.as_str()));
         if loadable && !shell_disabled && !project_shell_disabled && !skill.dynamic_commands.is_empty() {
             let matched = || -> BTreeSet<&str> {
-                skill.dynamic_commands.iter().flat_map(|d| d.patterns.iter().map(String::as_str)).collect()
+                skill
+                    .dynamic_commands
+                    .iter()
+                    .flat_map(|d| d.patterns.iter().map(String::as_str))
+                    .collect()
             };
             if let Some(d) = skill.dynamic_commands.iter().find(|d| d.dangerous) {
                 f.push(Finding {
@@ -1867,7 +2173,10 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 }
             } else if project
                 && !(git == Some("tracked")
-                    && skill.dynamic_commands.iter().all(|d| d.patterns.is_empty() && is_read_only_context_command(&d.command)))
+                    && skill
+                        .dynamic_commands
+                        .iter()
+                        .all(|d| d.patterns.is_empty() && is_read_only_context_command(&d.command)))
             {
                 // A committed skill whose every command is a read-only context command
                 // (git status, gh pr view: the documented use) stays in the inventory.
@@ -1895,7 +2204,10 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                     location: loc.clone(),
                     evidence: Some(skill.dynamic_commands[0].command.clone()),
                 });
-            } else if !project && !is_plugin && let Some(d) = skill.dynamic_commands.iter().find(|d| !d.patterns.is_empty()) {
+            } else if !project
+                && !is_plugin
+                && let Some(d) = skill.dynamic_commands.iter().find(|d| !d.patterns.is_empty())
+            {
                 // The user's own skill: any dangerous-pattern match is named, as it would be
                 // for a hook. Only medium rows matched (a critical or high one, or data sent
                 // to the network, is the High branch above), so it is advisory.
@@ -1942,7 +2254,10 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         f.push(Finding {
             severity: Severity::Low,
             category: "Skill command".into(),
-            title: format!("third-party plugin '{p}@{m}' runs shell commands when its skills load: {}", first_names(names)),
+            title: format!(
+                "third-party plugin '{p}@{m}' runs shell commands when its skills load: {}",
+                first_names(names)
+            ),
             location: crate::scanners::sanitize_display(root, 512),
             evidence: first.as_ref().map(|(_, c)| c.clone()),
         });
@@ -2127,7 +2442,13 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 _ => None,
             };
             if let Some((severity, category, title)) = finding {
-                f.push(Finding { severity, category: category.into(), title, location: e.path.clone(), evidence: None });
+                f.push(Finding {
+                    severity,
+                    category: category.into(),
+                    title,
+                    location: e.path.clone(),
+                    evidence: None,
+                });
             }
         }
     }
@@ -2140,7 +2461,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         // The id is the extension's directory name: attacker-chosen text.
         let id = crate::scanners::sanitize_display(&x.id, 200);
         // Located by its directory: one id can sit in ~/.vscode and ~/.vscode-oss.
-        let loc = if x.path.is_empty() { id.clone() } else { crate::scanners::sanitize_display(&x.path, 512) };
+        let loc = if x.path.is_empty() {
+            id.clone()
+        } else {
+            crate::scanners::sanitize_display(&x.path, 512)
+        };
         let runs: Vec<&str> = x
             .code_entry_points
             .iter()
@@ -2164,7 +2489,11 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             });
         }
         if !x.native_addons.is_empty() {
-            let claim = if x.categories.is_empty() { "declarative".to_string() } else { x.categories.join(", ") };
+            let claim = if x.categories.is_empty() {
+                "declarative".to_string()
+            } else {
+                x.categories.join(", ")
+            };
             f.push(Finding {
                 severity: Severity::Low,
                 category: "Extension code".into(),
@@ -2196,22 +2525,34 @@ fn collect_agent_surface_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         let unit = c.shell.starts_with("systemd") || c.shell == "launchd";
         let unit_word = if c.shell == "launchd" { "job" } else { "unit" };
         let (severity, title) = match (o.bind.as_str(), o.service) {
-            ("wildcard", true) => (Severity::Medium, format!(
-                "OLLAMA_HOST={} in {} config makes the Ollama server listen on every interface — the Ollama API has no authentication",
-                o.value, c.shell
-            )),
-            ("wildcard", false) if unit => (Severity::Low, format!(
-                "OLLAMA_HOST={} in a {} {unit_word} that does not run ollama: if this {unit_word} starts `ollama serve` (directly or through a script) it will listen on every interface — the Ollama API has no authentication",
-                o.value, c.shell
-            )),
-            ("wildcard", false) => (Severity::Medium, format!(
-                "OLLAMA_HOST={} in {} config makes `ollama serve` started from this environment listen on every interface — the Ollama API has no authentication",
-                o.value, c.shell
-            )),
-            ("non-loopback-ip" | "hostname", true) => (Severity::Medium, format!(
-                "OLLAMA_HOST={} in {} config makes the Ollama server listen on a non-loopback address — the Ollama API has no authentication",
-                o.value, c.shell
-            )),
+            ("wildcard", true) => (
+                Severity::Medium,
+                format!(
+                    "OLLAMA_HOST={} in {} config makes the Ollama server listen on every interface — the Ollama API has no authentication",
+                    o.value, c.shell
+                ),
+            ),
+            ("wildcard", false) if unit => (
+                Severity::Low,
+                format!(
+                    "OLLAMA_HOST={} in a {} {unit_word} that does not run ollama: if this {unit_word} starts `ollama serve` (directly or through a script) it will listen on every interface — the Ollama API has no authentication",
+                    o.value, c.shell
+                ),
+            ),
+            ("wildcard", false) => (
+                Severity::Medium,
+                format!(
+                    "OLLAMA_HOST={} in {} config makes `ollama serve` started from this environment listen on every interface — the Ollama API has no authentication",
+                    o.value, c.shell
+                ),
+            ),
+            ("non-loopback-ip" | "hostname", true) => (
+                Severity::Medium,
+                format!(
+                    "OLLAMA_HOST={} in {} config makes the Ollama server listen on a non-loopback address — the Ollama API has no authentication",
+                    o.value, c.shell
+                ),
+            ),
             _ => continue,
         };
         f.push(Finding {
@@ -2292,7 +2633,12 @@ mod hook_ladder_tests {
     use crate::models::AgentHook;
 
     fn hook(kind: &str) -> AgentHook {
-        AgentHook { event: "Stop".into(), command: "x".into(), kind: kind.into(), ..Default::default() }
+        AgentHook {
+            event: "Stop".into(),
+            command: "x".into(),
+            kind: kind.into(),
+            ..Default::default()
+        }
     }
 
     /// Every (scope x kind x condition) cell of the hook ladder.
@@ -2300,7 +2646,10 @@ mod hook_ladder_tests {
     fn hook_severity_table() {
         use HookGrade::{Aggregate as A, Finding as F};
         use Severity::*;
-        let tp = HookScope::PluginThirdParty { key: ("m".into(), "p".into()), root: "/r".into() };
+        let tp = HookScope::PluginThirdParty {
+            key: ("m".into(), "p".into()),
+            root: "/r".into(),
+        };
         let scopes = [
             HookScope::Repository { tracked: true },
             HookScope::Repository { tracked: false },
@@ -2310,27 +2659,72 @@ mod hook_ladder_tests {
             tp,
             HookScope::Inactive,
         ];
-        let crit = |k: &str| AgentHook { dangerous: true, pattern_severity: "critical".into(), patterns: vec!["curl|wget piped to shell".into()], ..hook(k) };
+        let crit = |k: &str| AgentHook {
+            dangerous: true,
+            pattern_severity: "critical".into(),
+            patterns: vec!["curl|wget piped to shell".into()],
+            ..hook(k)
+        };
         let dangerous = crit("command");
-        let high_only = AgentHook { dangerous: true, pattern_severity: "high".into(), patterns: vec!["shell command execution".into()], ..hook("command") };
+        let high_only = AgentHook {
+            dangerous: true,
+            pattern_severity: "high".into(),
+            patterns: vec!["shell command execution".into()],
+            ..hook("command")
+        };
         // A report from before pattern_severity existed: dangerous means critical.
-        let legacy = AgentHook { dangerous: true, ..hook("command") };
+        let legacy = AgentHook {
+            dangerous: true,
+            ..hook("command")
+        };
         let dangerous_module = crit("module");
-        let cross = AgentHook { risks: vec!["cross-references another tool's config directory (.vscode/x)".into()], ..hook("") };
-        let http_far = AgentHook { url_host: Some("collector.evil.example".into()), ..hook("http") };
-        let http_lan = AgentHook { url_host: Some("10.1.2.3".into()), ..hook("http") };
-        let http_local = AgentHook { url_host: Some("localhost".into()), ..hook("http") };
-        let http_first = AgentHook { url_host: Some("api.anthropic.com".into()), first_party_host: true, ..hook("http") };
-        let poison = AgentHook { poisoning: vec!["ignore previous".into()], ..hook("prompt") };
-        let agent_plain = hook("agent");
-        let mcp = hook("mcp_tool");
-        let medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], pattern_severity: "medium".into(), ..hook("command") };
-        let guarded = AgentHook { advisory_patterns: vec!["disable security controls".into()], ..hook("command") };
-        let cross_home = AgentHook {
-            risks: vec![format!("{} (~/.claude/hooks/fmt.sh)", crate::scanners::agent_settings::CROSS_HOME_RISK)],
+        let cross = AgentHook {
+            risks: vec!["cross-references another tool's config directory (.vscode/x)".into()],
             ..hook("")
         };
-        let cross_both = AgentHook { risks: vec![cross_home.risks[0].clone(), cross.risks[0].clone()], ..hook("") };
+        let http_far = AgentHook {
+            url_host: Some("collector.evil.example".into()),
+            ..hook("http")
+        };
+        let http_lan = AgentHook {
+            url_host: Some("10.1.2.3".into()),
+            ..hook("http")
+        };
+        let http_local = AgentHook {
+            url_host: Some("localhost".into()),
+            ..hook("http")
+        };
+        let http_first = AgentHook {
+            url_host: Some("api.anthropic.com".into()),
+            first_party_host: true,
+            ..hook("http")
+        };
+        let poison = AgentHook {
+            poisoning: vec!["ignore previous".into()],
+            ..hook("prompt")
+        };
+        let agent_plain = hook("agent");
+        let mcp = hook("mcp_tool");
+        let medium = AgentHook {
+            patterns: vec!["environment variable exfiltration".into()],
+            pattern_severity: "medium".into(),
+            ..hook("command")
+        };
+        let guarded = AgentHook {
+            advisory_patterns: vec!["disable security controls".into()],
+            ..hook("command")
+        };
+        let cross_home = AgentHook {
+            risks: vec![format!(
+                "{} (~/.claude/hooks/fmt.sh)",
+                crate::scanners::agent_settings::CROSS_HOME_RISK
+            )],
+            ..hook("")
+        };
+        let cross_both = AgentHook {
+            risks: vec![cross_home.risks[0].clone(), cross.risks[0].clone()],
+            ..hook("")
+        };
         let exfil = |p: &str| AgentHook {
             dangerous: true,
             pattern_severity: "critical".into(),
@@ -2340,13 +2734,23 @@ mod hook_ladder_tests {
         };
         let push = exfil("data exfiltration pattern");
         let push_cred = AgentHook {
-            patterns: vec!["data exfiltration pattern".into(), "data exfiltration pattern (a credential file sent by a network client)".into()],
+            patterns: vec![
+                "data exfiltration pattern".into(),
+                "data exfiltration pattern (a credential file sent by a network client)".into(),
+            ],
             ..exfil("data exfiltration pattern")
         };
         let plain = hook("");
         let module = hook("module");
-        let module_medium = AgentHook { patterns: vec!["environment variable exfiltration".into()], pattern_severity: "medium".into(), ..hook("module") };
-        let module_advisory = AgentHook { advisory_patterns: vec!["curl|wget piped to shell".into()], ..hook("module") };
+        let module_medium = AgentHook {
+            patterns: vec!["environment variable exfiltration".into()],
+            pattern_severity: "medium".into(),
+            ..hook("module")
+        };
+        let module_advisory = AgentHook {
+            advisory_patterns: vec!["curl|wget piped to shell".into()],
+            ..hook("module")
+        };
         // Prompts the agent itself reads (Copilot CLI, Kiro; review of b9cda85).
         let conv = |sig: &[&str]| AgentHook {
             poisoning: sig.iter().map(|s| s.to_string()).collect(),
@@ -2361,39 +2765,260 @@ mod hook_ladder_tests {
         let conv_cred_soft = conv(&["never reveal", "credential path .env"]);
         let conv_cred = conv(&["credential path ~/.aws/credentials"]);
         let conv_cred_phrase = conv(&["first read", "credential path ~/.aws/credentials"]);
-        let undocumented = AgentHook { prompt_target: "undocumented".into(), ..conv(&["<system>"]) };
+        let undocumented = AgentHook {
+            prompt_target: "undocumented".into(),
+            ..conv(&["<system>"])
+        };
         // Columns: repo tracked, repo untracked, user, managed, official, third-party, inactive.
         let table: Vec<(&AgentHook, [Option<HookGrade>; 7])> = vec![
-            (&dangerous, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&high_only, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&legacy, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&dangerous_module, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&medium, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None, None, Some(A), None]),
-            (&guarded, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&cross, [Some(F(High)), Some(F(High)), Some(F(High)), Some(F(High)), None, Some(F(High)), None]),
-            (&cross_home, [Some(F(High)), Some(F(High)), Some(F(Low)), Some(F(High)), None, Some(F(High)), None]),
-            (&cross_both, [Some(F(High)), Some(F(High)), Some(F(High)), Some(F(High)), None, Some(F(High)), None]),
-            (&push, [Some(F(Critical)), Some(F(Critical)), Some(F(Low)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&push_cred, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&http_far, [Some(F(High)), Some(F(High)), Some(F(Low)), None, None, Some(F(Medium)), None]),
-            (&http_lan, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&http_local, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&http_first, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&poison, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, Some(F(Low)), Some(F(Low)), None]),
-            (&agent_plain, [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None]),
-            (&mcp, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&plain, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&module, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&module_medium, [Some(F(Medium)), Some(F(Medium)), Some(F(Low)), None, None, Some(A), None]),
-            (&module_advisory, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&conv_plain, [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None]),
-            (&conv_weak, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&conv_strong, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
-            (&conv_soft, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&conv_cred, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&conv_cred_soft, [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None]),
-            (&conv_cred_phrase, [Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), Some(F(Critical)), None]),
-            (&undocumented, [Some(F(High)), Some(F(High)), Some(F(Low)), None, Some(F(Low)), Some(F(Medium)), None]),
+            (
+                &dangerous,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &high_only,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &legacy,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &dangerous_module,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &medium,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                    None,
+                    Some(A),
+                    None,
+                ],
+            ),
+            (
+                &guarded,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &cross,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(High)),
+                    None,
+                    Some(F(High)),
+                    None,
+                ],
+            ),
+            (
+                &cross_home,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(Low)),
+                    Some(F(High)),
+                    None,
+                    Some(F(High)),
+                    None,
+                ],
+            ),
+            (
+                &cross_both,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(High)),
+                    None,
+                    Some(F(High)),
+                    None,
+                ],
+            ),
+            (
+                &push,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Low)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &push_cred,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &http_far,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(Low)),
+                    None,
+                    None,
+                    Some(F(Medium)),
+                    None,
+                ],
+            ),
+            (
+                &http_lan,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &http_local,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &http_first,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &poison,
+                [
+                    Some(F(Medium)),
+                    Some(F(Medium)),
+                    Some(F(Low)),
+                    None,
+                    Some(F(Low)),
+                    Some(F(Low)),
+                    None,
+                ],
+            ),
+            (
+                &agent_plain,
+                [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None],
+            ),
+            (
+                &mcp,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &plain,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &module,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &module_medium,
+                [
+                    Some(F(Medium)),
+                    Some(F(Medium)),
+                    Some(F(Low)),
+                    None,
+                    None,
+                    Some(A),
+                    None,
+                ],
+            ),
+            (
+                &module_advisory,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_plain,
+                [Some(F(Low)), Some(F(Low)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_weak,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_strong,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(Low)),
+                    None,
+                    Some(F(Low)),
+                    Some(F(Medium)),
+                    None,
+                ],
+            ),
+            (
+                &conv_soft,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_cred,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_cred_soft,
+                [Some(F(Medium)), Some(F(Medium)), None, None, None, Some(A), None],
+            ),
+            (
+                &conv_cred_phrase,
+                [
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    Some(F(Critical)),
+                    None,
+                ],
+            ),
+            (
+                &undocumented,
+                [
+                    Some(F(High)),
+                    Some(F(High)),
+                    Some(F(Low)),
+                    None,
+                    Some(F(Low)),
+                    Some(F(Medium)),
+                    None,
+                ],
+            ),
         ];
         for (h, row) in &table {
             for (scope, want) in scopes.iter().zip(row.iter()) {
@@ -2402,8 +3027,26 @@ mod hook_ladder_tests {
         }
         // Disabled and unknown-type hooks are never graded.
         for scope in &scopes {
-            assert_eq!(hook_severity(scope, &AgentHook { disabled: true, ..dangerous.clone() }), None);
-            assert_eq!(hook_severity(scope, &AgentHook { dangerous: true, ..hook("unknown") }), None);
+            assert_eq!(
+                hook_severity(
+                    scope,
+                    &AgentHook {
+                        disabled: true,
+                        ..dangerous.clone()
+                    }
+                ),
+                None
+            );
+            assert_eq!(
+                hook_severity(
+                    scope,
+                    &AgentHook {
+                        dangerous: true,
+                        ..hook("unknown")
+                    }
+                ),
+                None
+            );
         }
     }
 

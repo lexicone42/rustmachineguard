@@ -1,6 +1,6 @@
 use crate::models::{EnvAgentOverride, EnvFile, EnvSymlink};
 use crate::platform::PlatformInfo;
-use crate::scanners::{file_perms, is_git_tracked, read_bounded, redact_secrets_in_text, sanitize_display, Scanner};
+use crate::scanners::{Scanner, file_perms, is_git_tracked, read_bounded, redact_secrets_in_text, sanitize_display};
 use std::path::{Path, PathBuf};
 
 /// Detects `.env` files in agent project roots. Agents routinely read the working
@@ -11,17 +11,18 @@ use std::path::{Path, PathBuf};
 /// never reads, stores, or emits the values.
 pub struct EnvFilesScanner;
 
-const ENV_FILENAMES: &[&str] = &[
-    ".env",
-    ".env.local",
-    ".env.development",
-    ".env.production",
-    ".env.test",
-];
+const ENV_FILENAMES: &[&str] = &[".env", ".env.local", ".env.development", ".env.production", ".env.test"];
 
 /// Substrings in a key NAME that suggest it holds a secret.
 const SECRET_KEY_HINTS: &[&str] = &[
-    "TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "PRIVATE",
+    "TOKEN",
+    "SECRET",
+    "KEY",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+    "PRIVATE",
 ];
 
 /// True if a variable/key NAME looks like it holds a secret (name-only heuristic;
@@ -39,8 +40,22 @@ pub fn is_secret_key_name(name: &str) -> bool {
 pub fn is_connection_string_key_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     const STORES: &[&str] = &[
-        "DATABASE", "DB", "POSTGRES", "PG", "MYSQL", "MARIADB", "MONGO", "MONGODB", "REDIS", "AMQP", "RABBITMQ",
-        "BROKER", "CELERY_BROKER", "ELASTICSEARCH", "CLICKHOUSE", "SUPABASE_DB",
+        "DATABASE",
+        "DB",
+        "POSTGRES",
+        "PG",
+        "MYSQL",
+        "MARIADB",
+        "MONGO",
+        "MONGODB",
+        "REDIS",
+        "AMQP",
+        "RABBITMQ",
+        "BROKER",
+        "CELERY_BROKER",
+        "ELASTICSEARCH",
+        "CLICKHOUSE",
+        "SUPABASE_DB",
     ];
     upper == "DSN"
         || upper.ends_with("_DSN")
@@ -94,7 +109,11 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
                 sensitive_target: crate::scanners::persistence::is_sensitive_read_target(&lexical, home),
             }
         });
-    let content = if symlink.is_some() { None } else { crate::scanners::read_bounded_nofollow(path, None) };
+    let content = if symlink.is_some() {
+        None
+    } else {
+        crate::scanners::read_bounded_nofollow(path, None)
+    };
     let (key_count, secret_keys) = match content.as_deref() {
         Some(content) => parse_env_keys(content),
         None => (0, Vec::new()),
@@ -265,8 +284,27 @@ fn is_unresolved(v: &str) -> bool {
 /// Key prefixes of common API tokens (`sk-1234`, LiteLLM's master-key form), compared
 /// in lower case.
 const KEY_PREFIXES: &[&str] = &[
-    "sk-", "sk_", "gsk_", "xai-", "pplx-", "hf_", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "glpat-",
-    "xoxb-", "xoxp-", "akia", "asia", "eyj", "tok_", "key-", "api-key", "apikey",
+    "sk-",
+    "sk_",
+    "gsk_",
+    "xai-",
+    "pplx-",
+    "hf_",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "akia",
+    "asia",
+    "eyj",
+    "tok_",
+    "key-",
+    "api-key",
+    "apikey",
 ];
 /// Words a password or token carries (`hunter2-pass`, `my-secret-pw`).
 const CREDENTIAL_WORDS: &[&str] = &["pass", "pwd", "token", "secret", "key", "cred"];
@@ -293,14 +331,28 @@ pub(crate) fn shown_host(v: &str, host: &str) -> String {
         return UNRESOLVED_VALUE.to_string();
     }
     let schemeless = !v.contains("://");
-    let ip = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok();
+    let ip = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok();
     if schemeless && !ip && credential_shaped(v, &host.to_ascii_lowercase()) {
         return UNPARSEABLE_VALUE.to_string();
     }
     let bare = schemeless && !host.contains('.') && !ip;
     if bare {
-        const SERVICE_NAMES: &[&str] =
-            &["localhost", "ollama", "litellm", "gateway", "proxy", "vllm", "llm", "openai", "router", "api"];
+        const SERVICE_NAMES: &[&str] = &[
+            "localhost",
+            "ollama",
+            "litellm",
+            "gateway",
+            "proxy",
+            "vllm",
+            "llm",
+            "openai",
+            "router",
+            "api",
+        ];
         // `ollama-1`, `gpu_2`: a lowercase name and a number.
         let numbered = host.split_once(['-', '_']).is_some_and(|(name, n)| {
             !name.is_empty()
@@ -325,12 +377,15 @@ pub(crate) fn shown_host(v: &str, host: &str) -> String {
 /// credential pasted into the wrong variable.
 fn shown_home(v: &str) -> String {
     let home_prefixed = expand_home(v, Path::new("/")).is_some();
-    let rest = ["~/", "$HOME/", "${HOME}/"].iter().find_map(|p| v.strip_prefix(p)).unwrap_or(v);
+    let rest = ["~/", "$HOME/", "${HOME}/"]
+        .iter()
+        .find_map(|p| v.strip_prefix(p))
+        .unwrap_or(v);
     if (!home_prefixed && is_unresolved(v)) || (home_prefixed && is_unresolved(rest)) {
         return UNRESOLVED_VALUE.to_string();
     }
-    let plausible_dir = !v.contains("://")
-        && (v.contains('/') || v.starts_with('.') || matches!(v, "~" | "$HOME" | "${HOME}"));
+    let plausible_dir =
+        !v.contains("://") && (v.contains('/') || v.starts_with('.') || matches!(v, "~" | "$HOME" | "${HOME}"));
     if !plausible_dir {
         return UNPARSEABLE_VALUE.to_string();
     }
@@ -362,13 +417,21 @@ fn shared_temp_path(p: &Path, home: &Path) -> bool {
 fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) -> Vec<EnvAgentOverride> {
     let mut out = Vec::new();
     for (key, v) in pairs {
-        let kind = AGENT_OVERRIDE_KEYS.iter().find(|(k, _)| k == key).map(|(_, kind)| *kind).unwrap_or("");
+        let kind = AGENT_OVERRIDE_KEYS
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, kind)| *kind)
+            .unwrap_or("");
         // `KEY=` / `KEY=""` (a template .env) sets nothing: the agent keeps its default
         // home and host. Only ANTHROPIC_CUSTOM_HEADERS is recorded by presence alone.
         if kind != "headers" && v.trim().is_empty() {
             continue;
         }
-        let mut o = EnvAgentOverride { key: key.clone(), kind: kind.to_string(), ..Default::default() };
+        let mut o = EnvAgentOverride {
+            key: key.clone(),
+            kind: kind.to_string(),
+            ..Default::default()
+        };
         match kind {
             "agent-home" => {
                 use crate::scanners::persistence::lexical_join;
@@ -396,7 +459,8 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
                 o.unresolved = abs.is_none() || o.value.as_deref() == Some(UNRESOLVED_VALUE);
                 let project = lexical_join(Path::new("/"), project_dir);
                 o.inside_project = !o.unresolved && abs.as_ref().is_some_and(|p| p.starts_with(&project));
-                o.shared_temp = !o.unresolved && !o.inside_project && abs.as_deref().is_some_and(|p| shared_temp_path(p, home));
+                o.shared_temp =
+                    !o.unresolved && !o.inside_project && abs.as_deref().is_some_and(|p| shared_temp_path(p, home));
             }
             "gateway" => {
                 let (host, _) = crate::scanners::host_of(v);
@@ -426,7 +490,6 @@ fn build_overrides(pairs: &[(String, String)], project_dir: &Path, home: &Path) 
     }
     out
 }
-
 
 /// Parse `KEY=value` lines, returning (total key count, secret-looking key NAMES).
 /// Values are never retained.

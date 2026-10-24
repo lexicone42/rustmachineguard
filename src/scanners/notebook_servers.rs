@@ -1,6 +1,6 @@
 use crate::models::NotebookServer;
 use crate::platform::PlatformInfo;
-use crate::scanners::{get_binary_version, is_process_running, Scanner};
+use crate::scanners::{Scanner, get_binary_version, is_process_running};
 
 pub struct NotebookServersScanner;
 
@@ -61,5 +61,8 @@ impl Scanner for NotebookServersScanner {
 /// process-snapshot tests in `crate::scanners`.
 #[cfg(test)]
 pub(crate) fn spawn_and_process_names() -> (Vec<&'static str>, Vec<&'static str>) {
-    (NOTEBOOKS.iter().map(|d| d.binary).collect(), NOTEBOOKS.iter().map(|d| d.process_name).collect())
+    (
+        NOTEBOOKS.iter().map(|d| d.binary).collect(),
+        NOTEBOOKS.iter().map(|d| d.process_name).collect(),
+    )
 }

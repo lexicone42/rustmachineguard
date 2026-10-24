@@ -29,10 +29,7 @@ impl Scanner for ExtensionsScanner {
 }
 
 /// Scan VS Code-style extensions (publisher.name-version directory format).
-fn scan_vscode_style_extensions(
-    ext_dir: &std::path::Path,
-    ide: Ide,
-) -> Vec<IdeExtension> {
+fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeExtension> {
     let mut results = Vec::new();
 
     let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
@@ -63,7 +60,11 @@ fn scan_vscode_style_extensions(
             };
 
             let manifest = read_manifest_claims(&path);
-            let native_addons = if manifest.declarative_claim { find_native_addons(&path) } else { Vec::new() };
+            let native_addons = if manifest.declarative_claim {
+                find_native_addons(&path)
+            } else {
+                Vec::new()
+            };
             // The directory name is attacker-chosen text that reaches the terminal.
             let clean = |s: &str| crate::scanners::sanitize_display(s, 200);
             results.push(IdeExtension {
@@ -93,7 +94,14 @@ fn scan_vscode_style_extensions(
 const DECLARATIVE_CATEGORIES: &[&str] = &["themes", "snippets", "keymaps", "language packs"];
 /// `contributes` keys that are pure data (JSON grammars, colour tables, snippets).
 const DECLARATIVE_CONTRIBUTES: &[&str] = &[
-    "themes", "iconThemes", "productIconThemes", "snippets", "keybindings", "grammars", "languages", "localizations",
+    "themes",
+    "iconThemes",
+    "productIconThemes",
+    "snippets",
+    "keybindings",
+    "grammars",
+    "languages",
+    "localizations",
 ];
 const MAX_ADDON_WALK: usize = 20_000;
 
@@ -145,28 +153,47 @@ pub fn manifest_claims(pkg: &serde_json::Value) -> ManifestClaims {
         .unwrap_or_default();
     let mut code_entry_points = Vec::new();
     for key in ["main", "browser"] {
-        if pkg.get(key).and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
+        if pkg
+            .get(key)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+        {
             code_entry_points.push(key.to_string());
         }
     }
-    if pkg.get("activationEvents").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+    if pkg
+        .get("activationEvents")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+    {
         code_entry_points.push("activationEvents".to_string());
     }
     let contributes = pkg.get("contributes").and_then(|v| v.as_object());
     let contributes_theme = contributes.is_some_and(|c| {
-        ["themes", "iconThemes", "productIconThemes"].iter().any(|k| c.contains_key(*k))
+        ["themes", "iconThemes", "productIconThemes"]
+            .iter()
+            .any(|k| c.contains_key(*k))
     });
-    let contributes_commands = contributes.is_some_and(|c| c.contains_key("commands") || c.contains_key("configuration"));
+    let contributes_commands =
+        contributes.is_some_and(|c| c.contains_key("commands") || c.contains_key("configuration"));
     // Deliberately stricter than "contributes a theme": the extension must present ITSELF
     // as declarative (every category declarative, or with no categories only data
     // contributions). A theme filed under "Themes" and "Other" makes no such claim, and
     // flagging every extension that happens to bundle a theme would cry wolf.
     let declarative_claim = if !categories.is_empty() {
-        categories.iter().all(|c| DECLARATIVE_CATEGORIES.contains(&c.to_ascii_lowercase().as_str()))
+        categories
+            .iter()
+            .all(|c| DECLARATIVE_CATEGORIES.contains(&c.to_ascii_lowercase().as_str()))
     } else {
         contributes.is_some_and(|c| !c.is_empty() && c.keys().all(|k| DECLARATIVE_CONTRIBUTES.contains(&k.as_str())))
     };
-    ManifestClaims { categories, code_entry_points, contributes_theme, contributes_commands, declarative_claim }
+    ManifestClaims {
+        categories,
+        code_entry_points,
+        contributes_theme,
+        contributes_commands,
+        declarative_claim,
+    }
 }
 
 /// Native `.node` addons (by magic bytes, not just extension) inside an extension
@@ -184,7 +211,9 @@ pub fn find_native_addons(dir: &std::path::Path) -> Vec<String> {
             }
             budget -= 1;
             let p = e.path();
-            let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
             if meta.is_dir() {
                 stack.push(p);
             } else if meta.is_file()
@@ -221,10 +250,7 @@ pub fn parse_extension_dir_name(name: &str) -> Option<(String, String)> {
 }
 
 /// Scan Zed extensions (different structure).
-fn scan_zed_extensions(
-    ext_dir: &std::path::Path,
-    ide: Ide,
-) -> Vec<IdeExtension> {
+fn scan_zed_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeExtension> {
     let mut results = Vec::new();
 
     let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
@@ -244,9 +270,7 @@ fn scan_zed_extensions(
 
         // Try to read extension.json for version info
         let version = crate::scanners::read_bounded(&path.join("extension.json"))
-            .and_then(|content| {
-                serde_json::from_str::<serde_json::Value>(&content).ok()
-            })
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
             .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "unknown".to_string());
 

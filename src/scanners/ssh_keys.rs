@@ -64,12 +64,11 @@ impl Scanner for SshKeysScanner {
             } else {
                 pub_path
             };
-            let comment = crate::scanners::read_bounded(&pub_path)
-                .and_then(|c| {
-                    // Public key format: type base64 comment
-                    let parts: Vec<&str> = c.trim().splitn(3, ' ').collect();
-                    parts.get(2).map(|s| s.to_string())
-                });
+            let comment = crate::scanners::read_bounded(&pub_path).and_then(|c| {
+                // Public key format: type base64 comment
+                let parts: Vec<&str> = c.trim().splitn(3, ' ').collect();
+                parts.get(2).map(|s| s.to_string())
+            });
 
             results.push(SshKey {
                 path: path.display().to_string(),

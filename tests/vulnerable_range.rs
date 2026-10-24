@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use rustmachineguard::analysis::{collect_findings, Severity};
+use rustmachineguard::analysis::{Severity, collect_findings};
 use rustmachineguard::models::ScanReport;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -68,7 +68,11 @@ fn build_vulnerable_machine() -> PathBuf {
     )
     .unwrap();
     let env_path = dir.join("webapp/.env");
-    fs::write(&env_path, "API_TOKEN=supersecret\nAWS_SECRET_ACCESS_KEY=zzz\nPORT=3000\n").unwrap();
+    fs::write(
+        &env_path,
+        "API_TOKEN=supersecret\nAWS_SECRET_ACCESS_KEY=zzz\nPORT=3000\n",
+    )
+    .unwrap();
     fs::set_permissions(&env_path, fs::Permissions::from_mode(0o644)).unwrap();
 
     // 6b. Auto-updating third-party plugin marketplace (EAA-009): hot-loads remote code.
@@ -170,8 +174,7 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
 
     // The JSON round-trips back into a ScanReport; run the same findings logic the
     // reports use, so this exercises the whole pipeline: scan -> JSON -> findings.
-    let report: ScanReport =
-        serde_json::from_slice(&output.stdout).expect("binary emitted a valid scan report");
+    let report: ScanReport = serde_json::from_slice(&output.stdout).expect("binary emitted a valid scan report");
     let findings = collect_findings(&report);
     let root = dir.to_string_lossy().to_string();
 
@@ -189,10 +192,14 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
         "should flag the curl|bash PreToolUse hook"
     );
     // 3. MCP auto-approval + bypassPermissions.
-    assert!(has(&|f| f.category == "MCP auto-approval" && f.location.starts_with(&root)),
-        "should flag enableAllProjectMcpServers");
-    assert!(has(&|f| f.category == "Permissions" && f.location.starts_with(&root)),
-        "should flag bypassPermissions mode");
+    assert!(
+        has(&|f| f.category == "MCP auto-approval" && f.location.starts_with(&root)),
+        "should flag enableAllProjectMcpServers"
+    );
+    assert!(
+        has(&|f| f.category == "Permissions" && f.location.starts_with(&root)),
+        "should flag bypassPermissions mode"
+    );
     // 4. Poisoned rules file (critical).
     assert!(
         has(&|f| f.category == "Rules file" && f.severity == Severity::Critical && f.location.starts_with(&root)),
@@ -222,7 +229,9 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     );
     // 8b. The secret VALUE must never appear in any finding (no-leak guarantee).
     assert!(
-        !findings.iter().any(|f| f.title.contains("ghp_hardcoded") || f.location.contains("ghp_hardcoded")),
+        !findings
+            .iter()
+            .any(|f| f.title.contains("ghp_hardcoded") || f.location.contains("ghp_hardcoded")),
         "the hardcoded secret value must never surface in findings"
     );
     // 9. Download-and-execute MCP launcher (high).
@@ -232,9 +241,7 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     );
     // 9b. Inline secret in a Codex TOML config (name only; TOML parity with JSON).
     assert!(
-        has(&|f| f.category == "MCP secret"
-            && f.title.contains("toml-leaky")
-            && f.title.contains("OPENAI_API_KEY")),
+        has(&|f| f.category == "MCP secret" && f.title.contains("toml-leaky") && f.title.contains("OPENAI_API_KEY")),
         "should flag the inline secret in the Codex TOML config"
     );
     assert!(
@@ -301,10 +308,22 @@ fn fail_on_gates_the_exit_code() {
     };
 
     // The poisoned rules file is Critical, so any threshold trips exit 2.
-    assert_eq!(run(&bad, "critical"), Some(2), "critical finding gates at --fail-on critical");
-    assert_eq!(run(&bad, "low"), Some(2), "a critical finding also breaches --fail-on low");
+    assert_eq!(
+        run(&bad, "critical"),
+        Some(2),
+        "critical finding gates at --fail-on critical"
+    );
+    assert_eq!(
+        run(&bad, "low"),
+        Some(2),
+        "a critical finding also breaches --fail-on low"
+    );
     // A clean directory breaches nothing -> exit 0 even at the lowest threshold.
-    assert_eq!(run(&clean, "low"), Some(0), "a clean scan should exit 0 even at --fail-on low");
+    assert_eq!(
+        run(&clean, "low"),
+        Some(0),
+        "a clean scan should exit 0 even at --fail-on low"
+    );
 
     let _ = fs::remove_dir_all(&base);
 }

@@ -33,7 +33,10 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("exec", &["-a"]),
     ("command", &[]),
     ("builtin", &[]),
-    ("sudo", &["-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U", "-T", "-R"]),
+    (
+        "sudo",
+        &["-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U", "-T", "-R"],
+    ),
     ("doas", &["-u", "-C"]),
     ("env", &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"]),
     ("nohup", &[]),
@@ -51,16 +54,16 @@ const WRAPPERS: &[(&str, &[&str])] = &[
 ];
 
 const RESERVED: &[&str] = &[
-    "{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "case",
-    "esac", "in", "for", "function", "[[", "]]",
+    "{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "case", "esac", "in", "for",
+    "function", "[[", "]]",
 ];
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "busybox"];
 
 /// Shell operators, longest first.
 const OPERATORS: &[&str] = &[
-    "<<<", "<<-", "&>>", "<<", "<>", "<&", ">>", ">&", ">|", "&>", "&&", "||", "|&", ";;", "<", ">",
-    "&", "|", ";", "(", ")",
+    "<<<", "<<-", "&>>", "<<", "<>", "<&", ">>", ">&", ">|", "&>", "&&", "||", "|&", ";;", "<", ">", "&", "|", ";",
+    "(", ")",
 ];
 
 #[derive(Debug)]
@@ -299,7 +302,10 @@ fn basename(v: &str) -> &str {
 
 /// `$NAME` / `${NAME}` (or `$@`, `$*`, `$#`, `$?`, `$1`) and nothing else.
 fn is_var_ref(v: &str) -> bool {
-    let name = v.strip_prefix("${").and_then(|r| r.strip_suffix('}')).or_else(|| v.strip_prefix('$'));
+    let name = v
+        .strip_prefix("${")
+        .and_then(|r| r.strip_suffix('}'))
+        .or_else(|| v.strip_prefix('$'));
     name.is_some_and(|n| {
         !n.is_empty()
             && (n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || matches!(n, "@" | "*" | "#" | "?"))
@@ -323,7 +329,11 @@ fn is_assignment(raw: &str) -> Option<(&str, &str)> {
 
 fn assignment(raw: &str) -> Option<String> {
     let (k, v) = is_assignment(raw)?;
-    Some(if v.is_empty() || raw_var_ref(v) { raw.to_string() } else { format!("{k}=<redacted>") })
+    Some(if v.is_empty() || raw_var_ref(v) {
+        raw.to_string()
+    } else {
+        format!("{k}=<redacted>")
+    })
 }
 
 /// A run of 10+ letters and digits with upper case, lower case and a digit
@@ -342,26 +352,143 @@ fn mixed_case_run(s: &str) -> bool {
 /// (`Hunter2pass --flag`, `(cd /tmp && Hunter2pass)`) never reaches the report.
 const KNOWN_PROGRAMS: &[&str] = &[
     // shells, builtins and coreutils
-    "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "busybox", "eval", "echo", "printf", "print",
-    "printenv", "cat", "head", "tail", "tr", "cut", "sed", "awk", "gawk", "grep", "jq", "yq", "base64", "xxd",
-    "cd", "test", "[", "true", "false", "read", "set", "unset", "source", ".", "trap", "exit", "return",
-    "yes", "tee", "sort", "uniq", "wc", "date", "sleep", "mktemp", "rm", "ls", "mkdir", "chmod", "id", "whoami",
-    "hostname", "uname", "which", "type", "dirname", "basename", "realpath", "readlink", "stat", "touch",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "mksh",
+    "ash",
+    "fish",
+    "busybox",
+    "eval",
+    "echo",
+    "printf",
+    "print",
+    "printenv",
+    "cat",
+    "head",
+    "tail",
+    "tr",
+    "cut",
+    "sed",
+    "awk",
+    "gawk",
+    "grep",
+    "jq",
+    "yq",
+    "base64",
+    "xxd",
+    "cd",
+    "test",
+    "[",
+    "true",
+    "false",
+    "read",
+    "set",
+    "unset",
+    "source",
+    ".",
+    "trap",
+    "exit",
+    "return",
+    "yes",
+    "tee",
+    "sort",
+    "uniq",
+    "wc",
+    "date",
+    "sleep",
+    "mktemp",
+    "rm",
+    "ls",
+    "mkdir",
+    "chmod",
+    "id",
+    "whoami",
+    "hostname",
+    "uname",
+    "which",
+    "type",
+    "dirname",
+    "basename",
+    "realpath",
+    "readlink",
+    "stat",
+    "touch",
     // interpreters and runtimes
-    "node", "nodejs", "deno", "bun", "npx", "npm", "pnpm", "yarn", "ruby", "perl", "php", "pwsh", "powershell",
-    "osascript", "uv", "uvx", "pipx", "pip", "go", "java", "dotnet", "lua",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "npx",
+    "npm",
+    "pnpm",
+    "yarn",
+    "ruby",
+    "perl",
+    "php",
+    "pwsh",
+    "powershell",
+    "osascript",
+    "uv",
+    "uvx",
+    "pipx",
+    "pip",
+    "go",
+    "java",
+    "dotnet",
+    "lua",
     // network and crypto
-    "curl", "wget", "http", "https", "xh", "openssl", "gpg", "gpg2", "age", "sops", "ssh", "nc", "socat",
+    "curl",
+    "wget",
+    "http",
+    "https",
+    "xh",
+    "openssl",
+    "gpg",
+    "gpg2",
+    "age",
+    "sops",
+    "ssh",
+    "nc",
+    "socat",
     // secret stores and cloud CLIs
-    "aws", "aws-vault", "gcloud", "az", "gh", "glab", "vault", "op", "pass", "gopass", "security",
-    "secret-tool", "keyring", "bw", "lpass", "doppler", "infisical", "chamber", "akeyless", "kubectl",
-    "terraform", "saml2aws", "granted", "assume", "gimme-aws-creds", "keepassxc-cli", "ykman", "conjur",
+    "aws",
+    "aws-vault",
+    "gcloud",
+    "az",
+    "gh",
+    "glab",
+    "vault",
+    "op",
+    "pass",
+    "gopass",
+    "security",
+    "secret-tool",
+    "keyring",
+    "bw",
+    "lpass",
+    "doppler",
+    "infisical",
+    "chamber",
+    "akeyless",
+    "kubectl",
+    "terraform",
+    "saml2aws",
+    "granted",
+    "assume",
+    "gimme-aws-creds",
+    "keepassxc-cli",
+    "ykman",
+    "conjur",
     "claude",
 ];
 
 fn known_program(v: &str) -> bool {
     KNOWN_PROGRAMS.contains(&v)
-        || v.strip_prefix("python").is_some_and(|r| r.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        || v.strip_prefix("python")
+            .is_some_and(|r| r.chars().all(|c| c.is_ascii_digit() || c == '.'))
         || WRAPPERS.iter().any(|(name, _)| *name == v)
 }
 
@@ -384,7 +511,13 @@ fn path_display(v: &str) -> Option<String> {
     }
     let comps: Vec<&str> = v
         .split('/')
-        .map(|c| if looks_high_entropy(c) || mixed_case_run(c) { "<redacted>" } else { c })
+        .map(|c| {
+            if looks_high_entropy(c) || mixed_case_run(c) {
+                "<redacted>"
+            } else {
+                c
+            }
+        })
         .collect();
     Some(comps.join("/"))
 }
@@ -393,13 +526,18 @@ fn path_display(v: &str) -> Option<String> {
 /// reference excepted, decided on the raw text).
 fn flag_shape(raw: &str, v: &str) -> String {
     let raw_val = raw.split_once('=').map(|(_, r)| r).unwrap_or("");
-    let shown = if raw_var_ref(raw_val) { raw_val.to_string() } else { "<redacted>".to_string() };
+    let shown = if raw_var_ref(raw_val) {
+        raw_val.to_string()
+    } else {
+        "<redacted>".to_string()
+    };
     if let Some(long) = v.strip_prefix("--") {
         let lower_name = |n: &str| {
             !n.is_empty()
                 && n.len() <= 40
                 && n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && n.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         };
         return match long.split_once('=') {
             Some((name, _)) if lower_name(name) => format!("--{name}={shown}"),
@@ -418,9 +556,14 @@ fn flag_shape(raw: &str, v: &str) -> String {
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             && !looks_high_entropy(name)
             && !mixed_case_run(name);
-        return if name_ok { format!("-{name}={shown}") } else { "<redacted>".into() };
+        return if name_ok {
+            format!("-{name}={shown}")
+        } else {
+            "<redacted>".into()
+        };
     }
-    if (short.chars().all(|c| c.is_ascii_alphabetic()) || short.chars().all(|c| c.is_ascii_digit())) && short.len() <= 2 {
+    if (short.chars().all(|c| c.is_ascii_alphabetic()) || short.chars().all(|c| c.is_ascii_digit())) && short.len() <= 2
+    {
         return format!("-{short}");
     }
     // `-pHunter2pass`: the flag letter, then its value as a separate redacted word.
@@ -473,7 +616,11 @@ fn program(w: &Word, st: &mut State) -> String {
     if let Some(p) = path_display(v) {
         return p;
     }
-    if known_program(v) { v.to_string() } else { "<program>".into() }
+    if known_program(v) {
+        v.to_string()
+    } else {
+        "<program>".into()
+    }
 }
 
 fn argument(w: &Word, kind: Kind, st: &mut State, keep_paths: bool) -> String {
@@ -554,7 +701,11 @@ fn shape(cmd: &str, depth: usize, keep_paths: bool) -> String {
                 let rendered = match st {
                     State::Delim => {
                         st = saved;
-                        if DELIMITERS.contains(&w.value.as_str()) { w.value.clone() } else { "<redacted>".into() }
+                        if DELIMITERS.contains(&w.value.as_str()) {
+                            w.value.clone()
+                        } else {
+                            "<redacted>".into()
+                        }
                     }
                     State::Redir => {
                         st = saved;
@@ -578,7 +729,9 @@ fn shape(cmd: &str, depth: usize, keep_paths: bool) -> String {
                     State::Wrapper(flags, expect_value) => {
                         let v = w.value.as_str();
                         let duration = !v.is_empty()
-                            && v.trim_end_matches(['s', 'm', 'h', 'd']).chars().all(|c| c.is_ascii_digit() || c == '.');
+                            && v.trim_end_matches(['s', 'm', 'h', 'd'])
+                                .chars()
+                                .all(|c| c.is_ascii_digit() || c == '.');
                         if expect_value {
                             st = State::Wrapper(flags, false);
                             "<redacted>".into()
@@ -628,7 +781,11 @@ fn shape(cmd: &str, depth: usize, keep_paths: bool) -> String {
                             let quote = if words.len() == 1 { words[0].whole_quote } else { None };
                             nested(&joined, quote, depth, keep_paths)
                         };
-                        let sep = if !prefix.is_empty() && !body.is_empty() { " " } else { "" };
+                        let sep = if !prefix.is_empty() && !body.is_empty() {
+                            " "
+                        } else {
+                            ""
+                        };
                         let tail = if trailing_space { " " } else { "" };
                         format!("{prefix}{sep}{body}{tail}")
                     }
@@ -674,8 +831,14 @@ mod tests {
 
     #[test]
     fn single_dash_name_value_flags_keep_their_name() {
-        assert_eq!(r("vault kv get -field=api_key secret/anthropic"), "vault <redacted> <redacted> -field=<redacted> <redacted>");
-        assert_eq!(r("vault kv get -field=$FIELD secret/x"), "vault <redacted> <redacted> -field=$FIELD <redacted>");
+        assert_eq!(
+            r("vault kv get -field=api_key secret/anthropic"),
+            "vault <redacted> <redacted> -field=<redacted> <redacted>"
+        );
+        assert_eq!(
+            r("vault kv get -field=$FIELD secret/x"),
+            "vault <redacted> <redacted> -field=$FIELD <redacted>"
+        );
         assert_eq!(r("tool -token=Hunter2pass"), "<program> -token=<redacted>");
         // A short flag with an attached value keeps only its letter.
         assert_eq!(r("mysqlx -pHunter2pass"), "<program> -p <redacted>");
@@ -721,7 +884,10 @@ mod tests {
             let out = r(cmd);
             assert!(!out.contains("Zq9Hunter2Pw"), "{cmd} -> {out}");
         }
-        assert_eq!(r("echo \"${KEY}\" $KEY ${KEY} \"$KEY\""), "echo \"${KEY}\" $KEY ${KEY} \"$KEY\"");
+        assert_eq!(
+            r("echo \"${KEY}\" $KEY ${KEY} \"$KEY\""),
+            "echo \"${KEY}\" $KEY ${KEY} \"$KEY\""
+        );
     }
 
     /// Review round 6: long flags, URL hosts, program words and path arguments no longer
@@ -748,7 +914,10 @@ mod tests {
         }
         assert_eq!(r("Zq9Hunter2Pw --flag"), "<program> --flag");
         assert_eq!(r("mytool --Zq9Hunter2Pw"), "<program> <redacted>");
-        assert_eq!(r("/usr/bin/op read op://v/i/f 2>/dev/null"), "/usr/bin/op <redacted> <redacted> 2>/dev/null");
+        assert_eq!(
+            r("/usr/bin/op read op://v/i/f 2>/dev/null"),
+            "/usr/bin/op <redacted> <redacted> 2>/dev/null"
+        );
         assert_eq!(r("python3.12 -c x"), "python3.12 -c <redacted>");
     }
 }

@@ -91,10 +91,7 @@ impl CycloneDxBom {
     fn from_report(report: &ScanReport) -> Self {
         let mut components = Vec::new();
         let mut dependencies = Vec::new();
-        let host_ref = format!(
-            "host:{}",
-            report.device.hostname.replace(' ', "-").to_lowercase()
-        );
+        let host_ref = format!("host:{}", report.device.hostname.replace(' ', "-").to_lowercase());
 
         let mut host_deps = Vec::new();
 
@@ -137,20 +134,11 @@ impl CycloneDxBom {
                 components.push(BomComponent {
                     component_type: "application".to_string(),
                     bom_ref: bom_ref.clone(),
-                    name: server
-                        .package_name
-                        .clone()
-                        .unwrap_or_else(|| server.name.clone()),
+                    name: server.package_name.clone().unwrap_or_else(|| server.name.clone()),
                     version: server.package_version.clone(),
-                    group: server
-                        .package_ecosystem
-                        .as_ref()
-                        .map(|e| format!("mcp-server/{}", e)),
+                    group: server.package_ecosystem.as_ref().map(|e| format!("mcp-server/{}", e)),
                     publisher: Some(mcp.vendor.clone()),
-                    description: Some(format!(
-                        "MCP server '{}' from {}",
-                        server.name, mcp.config_source
-                    )),
+                    description: Some(format!("MCP server '{}' from {}", server.name, mcp.config_source)),
                     purl,
                     properties,
                     external_references: external_refs,
@@ -189,10 +177,7 @@ impl CycloneDxBom {
         // IDE extensions as components
         for ext in &report.ide_extensions {
             let bom_ref = format!("ide-ext:{}:{}", ext.ide_type, ext.id);
-            let purl = Some(format!(
-                "pkg:vscode/{}/{}@{}",
-                ext.publisher, ext.name, ext.version
-            ));
+            let purl = Some(format!("pkg:vscode/{}/{}@{}", ext.publisher, ext.name, ext.version));
 
             components.push(BomComponent {
                 component_type: "library".to_string(),
@@ -267,10 +252,7 @@ impl CycloneDxBom {
                 version: None,
                 group: Some("agent-rules".to_string()),
                 publisher: None,
-                description: Some(format!(
-                    "Agent rules file ({} bytes)",
-                    rf.size_bytes
-                )),
+                description: Some(format!("Agent rules file ({} bytes)", rf.size_bytes)),
                 purl: None,
                 properties,
                 external_references: Vec::new(),
@@ -313,10 +295,7 @@ impl CycloneDxBom {
                 version: None,
                 group: Some(format!("agent-skill/{}", skill.framework)),
                 publisher: None,
-                description: Some(format!(
-                    "{} skill ({})",
-                    skill.framework, skill.scope
-                )),
+                description: Some(format!("{} skill ({})", skill.framework, skill.scope)),
                 purl: None,
                 properties,
                 external_references: Vec::new(),
@@ -326,10 +305,7 @@ impl CycloneDxBom {
 
         // AI tools as components
         for tool in &report.ai_agents_and_tools {
-            let bom_ref = format!(
-                "ai-tool:{}",
-                tool.name.replace(' ', "-").to_lowercase()
-            );
+            let bom_ref = format!("ai-tool:{}", tool.name.replace(' ', "-").to_lowercase());
 
             let mut properties = vec![BomProperty {
                 name: "rmg:tool-type".to_string(),
@@ -378,10 +354,7 @@ impl CycloneDxBom {
                 component: BomMetadataComponent {
                     component_type: "device",
                     name: report.device.hostname.clone(),
-                    version: Some(format!(
-                        "{} {}",
-                        report.device.os_name, report.device.os_version
-                    )),
+                    version: Some(format!("{} {}", report.device.os_name, report.device.os_version)),
                 },
             },
             components,
@@ -390,11 +363,7 @@ impl CycloneDxBom {
     }
 }
 
-fn build_purl(
-    ecosystem: Option<&str>,
-    name: Option<&str>,
-    version: Option<&str>,
-) -> Option<String> {
+fn build_purl(ecosystem: Option<&str>, name: Option<&str>, version: Option<&str>) -> Option<String> {
     let eco = ecosystem?;
     let name = name?;
 
@@ -416,10 +385,7 @@ fn build_purl(
         }
     } else if eco == "docker" && name.contains('/') {
         let parts: Vec<&str> = name.rsplitn(2, '/').collect();
-        (
-            Some(parts[1].to_string()),
-            parts[0].to_string(),
-        )
+        (Some(parts[1].to_string()), parts[0].to_string())
     } else {
         (None, name.to_string())
     };

@@ -1,0 +1,4 @@
+# One-time `cargo fmt --all` (2026-10) at 120: about 2% of existing lines exceeded it,
+# and it re-wrapped far less than the default 100 (13k vs 19k inserted lines).
+max_width = 120
+edition = "2024"

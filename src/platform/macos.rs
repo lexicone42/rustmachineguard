@@ -35,9 +35,7 @@ impl PlatformInfo for MacOsPlatform {
         .unwrap_or_default();
 
         let user_identity =
-            std::env::var("USER").unwrap_or_else(|_| {
-                whoami::username().unwrap_or_else(|_| "unknown".to_string())
-            });
+            std::env::var("USER").unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "unknown".to_string()));
 
         DeviceInfo {
             hostname,
@@ -63,11 +61,7 @@ impl PlatformInfo for MacOsPlatform {
             Ide::Antigravity => "/Applications/Antigravity.app",
         };
         let p = PathBuf::from(app_path);
-        if p.exists() {
-            Some(p)
-        } else {
-            None
-        }
+        if p.exists() { Some(p) } else { None }
     }
 
     fn ide_extension_dir(&self, ide: Ide) -> Option<PathBuf> {
@@ -78,18 +72,15 @@ impl PlatformInfo for MacOsPlatform {
             Ide::Zed => self.home.join(".config/zed/extensions/installed"),
             Ide::Antigravity => self.home.join(".antigravity/extensions"),
         };
-        if dir.is_dir() {
-            Some(dir)
-        } else {
-            None
-        }
+        if dir.is_dir() { Some(dir) } else { None }
     }
 
     fn mcp_config_paths(&self) -> Vec<(String, PathBuf, String)> {
         vec![
             (
                 "Claude Desktop".to_string(),
-                self.home.join("Library/Application Support/Claude/claude_desktop_config.json"),
+                self.home
+                    .join("Library/Application Support/Claude/claude_desktop_config.json"),
                 "Anthropic".to_string(),
             ),
             (

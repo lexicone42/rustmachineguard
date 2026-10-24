@@ -1,9 +1,9 @@
 use clap::{Parser, ValueEnum};
-use rustmachineguard::scanners::telemetry::{self, timed};
 use rustmachineguard::models::{self, ScanReport};
+use rustmachineguard::otel::{self, Attr, Key, Metric};
 use rustmachineguard::output::{self, OutputFormat};
 use rustmachineguard::platform::{self, PlatformInfo};
-use rustmachineguard::otel::{self, Attr, Key, Metric};
+use rustmachineguard::scanners::telemetry::{self, timed};
 use rustmachineguard::scanners::{self, Scanner};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -137,10 +137,32 @@ enum Format {
 }
 
 const VALID_SKIP: &[&str] = &[
-    "ai", "frameworks", "ide", "extensions", "mcp", "node", "shell", "ssh",
-    "cloud", "containers", "notebooks", "browser", "packages", "rules", "skills",
-    "settings", "aicreds", "envfiles", "transcripts", "marketplaces", "vscodetasks", "gitconfig", "pypkgs",
-    "npmpkgs", "jbplugins", "persistence",
+    "ai",
+    "frameworks",
+    "ide",
+    "extensions",
+    "mcp",
+    "node",
+    "shell",
+    "ssh",
+    "cloud",
+    "containers",
+    "notebooks",
+    "browser",
+    "packages",
+    "rules",
+    "skills",
+    "settings",
+    "aicreds",
+    "envfiles",
+    "transcripts",
+    "marketplaces",
+    "vscodetasks",
+    "gitconfig",
+    "pypkgs",
+    "npmpkgs",
+    "jbplugins",
+    "persistence",
 ];
 
 /// One scanner of a phase, ready to run on any thread: it returns its diagnostics row
@@ -179,7 +201,10 @@ fn job<'a, T: Send + 'a>(
         label,
         run: Box::new(move || {
             let (out, pending) = telemetry::run(label, root, scan);
-            Done { pending, store: Box::new(move |r: &mut ScanReport| store(r, out)) }
+            Done {
+                pending,
+                store: Box::new(move |r: &mut ScanReport| store(r, out)),
+            }
         }),
     }
 }
@@ -221,7 +246,11 @@ fn run_pool<'a>(phases: Vec<Phase<'a>>, jobs: usize) -> Vec<Vec<(Done<'a>, Insta
     let done: Vec<Mutex<Option<(Done<'a>, Instant)>>> = slots.iter().map(|_| Mutex::new(None)).collect();
     let run_one = |i: usize| {
         let (pi, _, slot) = &slots[i];
-        let j = slot.lock().unwrap_or_else(|e| e.into_inner()).take().expect("each job is taken once");
+        let j = slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("each job is taken once");
         let d = {
             let _cx = cxs[*pi].attach();
             (j.run)()
@@ -233,7 +262,12 @@ fn run_pool<'a>(phases: Vec<Phase<'a>>, jobs: usize) -> Vec<Vec<(Done<'a>, Insta
     } else {
         let mut order: Vec<usize> = (0..total).collect();
         // A stable sort: past the DISPATCH_FIRST labels, phase order then scanner order.
-        order.sort_by_key(|&i| DISPATCH_FIRST.iter().position(|f| *f == slots[i].1).unwrap_or(DISPATCH_FIRST.len()));
+        order.sort_by_key(|&i| {
+            DISPATCH_FIRST
+                .iter()
+                .position(|f| *f == slots[i].1)
+                .unwrap_or(DISPATCH_FIRST.len())
+        });
         let next = AtomicUsize::new(0);
         let work = || {
             while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -244,14 +278,21 @@ fn run_pool<'a>(phases: Vec<Phase<'a>>, jobs: usize) -> Vec<Vec<(Done<'a>, Insta
             for _ in 1..jobs.min(total) {
                 // The main thread's stack size: a scanner's parse or walk must not get less
                 // room on a worker than it had when the phase ran sequentially.
-                let _ = std::thread::Builder::new().name("rmguard-scan".into()).stack_size(8 << 20).spawn_scoped(s, work);
+                let _ = std::thread::Builder::new()
+                    .name("rmguard-scan".into())
+                    .stack_size(8 << 20)
+                    .spawn_scoped(s, work);
             }
             work();
         });
     }
     let mut out: Vec<Vec<(Done<'a>, Instant)>> = cxs.iter().map(|_| Vec::new()).collect();
     for ((pi, _, _), d) in slots.iter().zip(done) {
-        out[*pi].push(d.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every job ran"));
+        out[*pi].push(
+            d.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every job ran"),
+        );
     }
     out
 }
@@ -259,7 +300,13 @@ fn run_pool<'a>(phases: Vec<Phase<'a>>, jobs: usize) -> Vec<Vec<(Done<'a>, Insta
 /// Run one phase's jobs ([`run_pool`]) under the span that is current here, then store
 /// every result and push every diagnostics row in the jobs' order.
 fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
-    for phase in run_pool(vec![Phase { cx: otel::current_context(), list }], jobs) {
+    for phase in run_pool(
+        vec![Phase {
+            cx: otel::current_context(),
+            list,
+        }],
+        jobs,
+    ) {
         for (d, _) in phase {
             d.apply(report);
         }
@@ -286,7 +333,13 @@ fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
 /// phases one after the other, each span ending before the next starts, as before.
 fn run_primary_phases(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, report: &mut ScanReport) {
     let global_attrs = || vec![Attr::str(Key::Phase, "global_scanners")];
-    let home_attrs = || vec![Attr::str(Key::Phase, "home_pass"), Attr::int(Key::RootIndex, 0), Attr::str(Key::RootKind, "home")];
+    let home_attrs = || {
+        vec![
+            Attr::str(Key::Phase, "home_pass"),
+            Attr::int(Key::RootIndex, 0),
+            Attr::str(Key::RootKind, "home"),
+        ]
+    };
     if jobs <= 1 {
         {
             let _p = otel::span("phase.global_scanners", global_attrs);
@@ -307,8 +360,14 @@ fn run_primary_phases(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, repor
     let (global_span, global_cx) = open("global_scanners", &global_attrs);
     let (home_span, home_cx) = open("home_pass", &home_attrs);
     let phases = vec![
-        Phase { cx: global_cx, list: global_jobs(plat, skip) },
-        Phase { cx: home_cx, list: home_jobs(plat, skip) },
+        Phase {
+            cx: global_cx,
+            list: global_jobs(plat, skip),
+        },
+        Phase {
+            cx: home_cx,
+            list: home_jobs(plat, skip),
+        },
     ];
     for (span, done) in [global_span, home_span].into_iter().zip(run_pool(phases, jobs)) {
         let end = done.iter().map(|(_, t)| *t).max().unwrap_or(start);
@@ -323,55 +382,140 @@ fn run_primary_phases(plat: &dyn PlatformInfo, skip: &[&str], jobs: usize, repor
 fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
     let mut list = Vec::new();
     if !skip.contains(&"extensions") {
-        list.push(job("extensions", Some(plat.home_dir()), move || scanners::extensions::ExtensionsScanner.scan(plat), |r, v| r.ide_extensions.extend(v)));
+        list.push(job(
+            "extensions",
+            Some(plat.home_dir()),
+            move || scanners::extensions::ExtensionsScanner.scan(plat),
+            |r, v| r.ide_extensions.extend(v),
+        ));
     }
     if !skip.contains(&"mcp") {
-        list.push(job("mcp", Some(plat.home_dir()), move || scanners::mcp::McpScanner.scan(plat), |r, v| r.mcp_configs.extend(v)));
+        list.push(job(
+            "mcp",
+            Some(plat.home_dir()),
+            move || scanners::mcp::McpScanner.scan(plat),
+            |r, v| r.mcp_configs.extend(v),
+        ));
     }
     if !skip.contains(&"shell") {
-        list.push(job("shell", Some(plat.home_dir()), move || scanners::shell_configs::ShellConfigsScanner.scan(plat), |r, v| r.shell_configs.extend(v)));
+        list.push(job(
+            "shell",
+            Some(plat.home_dir()),
+            move || scanners::shell_configs::ShellConfigsScanner.scan(plat),
+            |r, v| r.shell_configs.extend(v),
+        ));
     }
     if !skip.contains(&"ssh") {
-        list.push(job("ssh", Some(plat.home_dir()), move || scanners::ssh_keys::SshKeysScanner.scan(plat), |r, v| r.ssh_keys.extend(v)));
+        list.push(job(
+            "ssh",
+            Some(plat.home_dir()),
+            move || scanners::ssh_keys::SshKeysScanner.scan(plat),
+            |r, v| r.ssh_keys.extend(v),
+        ));
     }
     if !skip.contains(&"cloud") {
-        list.push(job("cloud", Some(plat.home_dir()), move || scanners::cloud_credentials::CloudCredentialsScanner.scan(plat), |r, v| r.cloud_credentials.extend(v)));
+        list.push(job(
+            "cloud",
+            Some(plat.home_dir()),
+            move || scanners::cloud_credentials::CloudCredentialsScanner.scan(plat),
+            |r, v| r.cloud_credentials.extend(v),
+        ));
     }
     if !skip.contains(&"browser") {
-        list.push(job("browser", Some(plat.home_dir()), move || scanners::browser_extensions::BrowserExtensionsScanner.scan(plat), |r, v| r.browser_extensions.extend(v)));
+        list.push(job(
+            "browser",
+            Some(plat.home_dir()),
+            move || scanners::browser_extensions::BrowserExtensionsScanner.scan(plat),
+            |r, v| r.browser_extensions.extend(v),
+        ));
     }
     if !skip.contains(&"packages") {
-        list.push(job("packages", Some(plat.home_dir()), move || scanners::package_configs::PackageConfigsScanner.scan(plat), |r, v| r.package_config_audits.extend(v)));
+        list.push(job(
+            "packages",
+            Some(plat.home_dir()),
+            move || scanners::package_configs::PackageConfigsScanner.scan(plat),
+            |r, v| r.package_config_audits.extend(v),
+        ));
     }
     if !skip.contains(&"rules") {
-        list.push(job("rules", Some(plat.home_dir()), move || scanners::rules_files::RulesFilesScanner.scan(plat), |r, v| r.rules_files.extend(v)));
+        list.push(job(
+            "rules",
+            Some(plat.home_dir()),
+            move || scanners::rules_files::RulesFilesScanner.scan(plat),
+            |r, v| r.rules_files.extend(v),
+        ));
     }
     if !skip.contains(&"skills") {
-        list.push(job("skills", Some(plat.home_dir()), move || scanners::skills::SkillsScanner.scan(plat), |r, v| r.agent_skills.extend(v)));
+        list.push(job(
+            "skills",
+            Some(plat.home_dir()),
+            move || scanners::skills::SkillsScanner.scan(plat),
+            |r, v| r.agent_skills.extend(v),
+        ));
     }
     if !skip.contains(&"settings") {
-        list.push(job("settings", Some(plat.home_dir()), move || scanners::agent_settings::AgentSettingsScanner.scan(plat), |r, v| r.agent_settings.extend(v)));
+        list.push(job(
+            "settings",
+            Some(plat.home_dir()),
+            move || scanners::agent_settings::AgentSettingsScanner.scan(plat),
+            |r, v| r.agent_settings.extend(v),
+        ));
     }
     if !skip.contains(&"aicreds") {
-        list.push(job("aicreds", Some(plat.home_dir()), move || scanners::ai_credentials::AiCredentialsScanner.scan(plat), |r, v| r.ai_credentials.extend(v)));
+        list.push(job(
+            "aicreds",
+            Some(plat.home_dir()),
+            move || scanners::ai_credentials::AiCredentialsScanner.scan(plat),
+            |r, v| r.ai_credentials.extend(v),
+        ));
     }
     if !skip.contains(&"envfiles") {
-        list.push(job("envfiles", Some(plat.home_dir()), move || scanners::env_files::EnvFilesScanner.scan(plat), |r, v| r.env_files.extend(v)));
+        list.push(job(
+            "envfiles",
+            Some(plat.home_dir()),
+            move || scanners::env_files::EnvFilesScanner.scan(plat),
+            |r, v| r.env_files.extend(v),
+        ));
     }
     if !skip.contains(&"persistence") {
-        list.push(job("persistence", Some(plat.home_dir()), move || scanners::persistence::PersistenceScanner.scan(plat), |r, v| r.persistence_artifacts.extend(v)));
+        list.push(job(
+            "persistence",
+            Some(plat.home_dir()),
+            move || scanners::persistence::PersistenceScanner.scan(plat),
+            |r, v| r.persistence_artifacts.extend(v),
+        ));
     }
     if !skip.contains(&"transcripts") {
-        list.push(job("transcripts", Some(plat.home_dir()), move || scanners::transcripts::TranscriptsScanner.scan(plat), |r, v| r.transcripts.extend(v)));
+        list.push(job(
+            "transcripts",
+            Some(plat.home_dir()),
+            move || scanners::transcripts::TranscriptsScanner.scan(plat),
+            |r, v| r.transcripts.extend(v),
+        ));
     }
     if !skip.contains(&"marketplaces") {
-        list.push(job("marketplaces", Some(plat.home_dir()), move || scanners::marketplaces::MarketplacesScanner.scan(plat), |r, v| r.marketplaces.extend(v)));
+        list.push(job(
+            "marketplaces",
+            Some(plat.home_dir()),
+            move || scanners::marketplaces::MarketplacesScanner.scan(plat),
+            |r, v| r.marketplaces.extend(v),
+        ));
     }
     if !skip.contains(&"vscodetasks") {
-        list.push(job("vscodetasks", Some(plat.home_dir()), move || scanners::vscode_tasks::VsCodeTasksScanner.scan(plat), |r, v| r.vscode_tasks.extend(v)));
+        list.push(job(
+            "vscodetasks",
+            Some(plat.home_dir()),
+            move || scanners::vscode_tasks::VsCodeTasksScanner.scan(plat),
+            |r, v| r.vscode_tasks.extend(v),
+        ));
     }
     if !skip.contains(&"gitconfig") {
-        list.push(job("gitconfig", Some(plat.home_dir()), move || scanners::git_config::GitConfigScanner.scan(plat), |r, v| r.git_autorun_configs.extend(v)));
+        list.push(job(
+            "gitconfig",
+            Some(plat.home_dir()),
+            move || scanners::git_config::GitConfigScanner.scan(plat),
+            |r, v| r.git_autorun_configs.extend(v),
+        ));
     }
     list
 }
@@ -380,22 +524,52 @@ fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
 fn global_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
     let mut list = Vec::new();
     if !skip.contains(&"ai") {
-        list.push(job("ai", None, move || scanners::ai_tools::AiToolsScanner.scan(plat), |r, v| r.ai_agents_and_tools = v));
+        list.push(job(
+            "ai",
+            None,
+            move || scanners::ai_tools::AiToolsScanner.scan(plat),
+            |r, v| r.ai_agents_and_tools = v,
+        ));
     }
     if !skip.contains(&"frameworks") {
-        list.push(job("frameworks", None, move || scanners::ai_frameworks::AiFrameworksScanner.scan(plat), |r, v| r.ai_frameworks = v));
+        list.push(job(
+            "frameworks",
+            None,
+            move || scanners::ai_frameworks::AiFrameworksScanner.scan(plat),
+            |r, v| r.ai_frameworks = v,
+        ));
     }
     if !skip.contains(&"ide") {
-        list.push(job("ide", None, move || scanners::ide::IdeScanner.scan(plat), |r, v| r.ide_installations = v));
+        list.push(job(
+            "ide",
+            None,
+            move || scanners::ide::IdeScanner.scan(plat),
+            |r, v| r.ide_installations = v,
+        ));
     }
     if !skip.contains(&"node") {
-        list.push(job("node", None, move || scanners::node_packages::NodePackagesScanner.scan(plat), |r, v| r.node_package_managers = v));
+        list.push(job(
+            "node",
+            None,
+            move || scanners::node_packages::NodePackagesScanner.scan(plat),
+            |r, v| r.node_package_managers = v,
+        ));
     }
     if !skip.contains(&"containers") {
-        list.push(job("containers", None, move || scanners::container_tools::ContainerToolsScanner.scan(plat), |r, v| r.container_tools = v));
+        list.push(job(
+            "containers",
+            None,
+            move || scanners::container_tools::ContainerToolsScanner.scan(plat),
+            |r, v| r.container_tools = v,
+        ));
     }
     if !skip.contains(&"notebooks") {
-        list.push(job("notebooks", None, move || scanners::notebook_servers::NotebookServersScanner.scan(plat), |r, v| r.notebook_servers = v));
+        list.push(job(
+            "notebooks",
+            None,
+            move || scanners::notebook_servers::NotebookServersScanner.scan(plat),
+            |r, v| r.notebook_servers = v,
+        ));
     }
     list
 }
@@ -480,7 +654,10 @@ fn main() {
         .into_iter()
         .filter(|d| {
             if !d.is_dir() {
-                eprintln!("warning: --search-dirs entry '{}' is not a directory, skipping", d.display());
+                eprintln!(
+                    "warning: --search-dirs entry '{}' is not a directory, skipping",
+                    d.display()
+                );
                 false
             } else {
                 true
@@ -627,14 +804,9 @@ fn main() {
     let mut catalog = if cli.no_builtin_catalog {
         None
     } else {
-        match scanners::exposure::ExposureCatalog::load_from_str(
-            rustmachineguard::catalogs::BUILTIN_CATALOG,
-        ) {
+        match scanners::exposure::ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG) {
             Ok(c) => {
-                eprintln!(
-                    "info: loaded built-in threat catalog ({} entries)",
-                    c.len()
-                );
+                eprintln!("info: loaded built-in threat catalog ({} entries)", c.len());
                 Some(c)
             }
             Err(e) => {
@@ -671,7 +843,9 @@ fn main() {
     if catalog.is_none() {
         for label in ["pypkgs", "npmpkgs", "jbplugins"] {
             if !skip.contains(&label) {
-                report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
+                report
+                    .diagnostics
+                    .push(rustmachineguard::scanners::telemetry::skipped(label));
             }
         }
     }
@@ -686,9 +860,9 @@ fn main() {
         }
         for ext in &report.ide_extensions {
             let id = format!("{}.{}", ext.publisher, ext.name);
-            report.exposure_findings.extend(
-                catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type),
-            );
+            report
+                .exposure_findings
+                .extend(catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type));
         }
         for ext in &report.browser_extensions {
             report.exposure_findings.extend(
@@ -707,7 +881,9 @@ fn main() {
         // catalog row was an MCP server whose launch command pinned a version, so a
         // compromised package merely installed on the machine was invisible.
         if !skip.contains(&"pypkgs") {
-            let pkgs = timed(&mut report.diagnostics, "pypkgs", None, || scanners::python_packages::PythonPackagesScanner.scan(primary_plat.as_ref()));
+            let pkgs = timed(&mut report.diagnostics, "pypkgs", None, || {
+                scanners::python_packages::PythonPackagesScanner.scan(primary_plat.as_ref())
+            });
             report.summary.python_packages_count = pkgs.len();
             for pkg in &pkgs {
                 report.exposure_findings.extend(catalog.check_extension(
@@ -723,24 +899,26 @@ fn main() {
         // CLIs, which are installed by mistyping `npm i -g` and never appear as MCP
         // servers -- so without this enumeration they were unreachable.
         if !skip.contains(&"npmpkgs") {
-            let pkgs = timed(&mut report.diagnostics, "npmpkgs", None, || scanners::npm_packages::NpmPackagesScanner.scan(primary_plat.as_ref()));
+            let pkgs = timed(&mut report.diagnostics, "npmpkgs", None, || {
+                scanners::npm_packages::NpmPackagesScanner.scan(primary_plat.as_ref())
+            });
             report.summary.npm_packages_count = pkgs.len();
             for pkg in &pkgs {
-                report.exposure_findings.extend(catalog.check_extension(
-                    "npm",
-                    &pkg.name,
-                    &pkg.version,
-                    &pkg.location,
-                ));
+                report
+                    .exposure_findings
+                    .extend(catalog.check_extension("npm", &pkg.name, &pkg.version, &pkg.location));
             }
         }
 
         // JetBrains IDE plugins. Fifteen Marketplace plugins posing as AI dev tools
         // exfiltrated users' AI API keys in 2025-26; the catalog keys them by plugin ID.
         if !skip.contains(&"jbplugins") {
-            let plugins = timed(&mut report.diagnostics, "jbplugins", Some(primary_plat.home_dir()), || {
-                scanners::jetbrains_plugins::JetBrainsPluginsScanner.scan(primary_plat.as_ref())
-            });
+            let plugins = timed(
+                &mut report.diagnostics,
+                "jbplugins",
+                Some(primary_plat.home_dir()),
+                || scanners::jetbrains_plugins::JetBrainsPluginsScanner.scan(primary_plat.as_ref()),
+            );
             report.summary.jetbrains_plugins_count = plugins.len();
             for p in &plugins {
                 report
@@ -772,29 +950,21 @@ fn main() {
                 continue;
             };
             let found_in = tool.binary_path.as_deref().unwrap_or(tool.name.as_str());
-            report.exposure_findings.extend(catalog.check_extension(
-                "agent-runtime",
-                key,
-                version,
-                found_in,
-            ));
+            report
+                .exposure_findings
+                .extend(catalog.check_extension("agent-runtime", key, version, found_in));
         }
         // Local inference servers grew agent modes of their own (Ollama's Bash tool,
         // CVE-2026-102697), so the frameworks inventory feeds the same ecosystem.
         for fw in &report.ai_frameworks {
-            let (Some(key), Some(version)) = (
-                scanners::exposure::agent_runtime_key(&fw.name),
-                fw.version.as_deref(),
-            ) else {
+            let (Some(key), Some(version)) = (scanners::exposure::agent_runtime_key(&fw.name), fw.version.as_deref())
+            else {
                 continue;
             };
             let found_in = fw.binary_path.as_deref().unwrap_or(fw.name.as_str());
-            report.exposure_findings.extend(catalog.check_extension(
-                "agent-runtime",
-                key,
-                version,
-                found_in,
-            ));
+            report
+                .exposure_findings
+                .extend(catalog.check_extension("agent-runtime", key, version, found_in));
         }
     }
 
@@ -866,7 +1036,9 @@ fn main() {
         skipped.insert("registry");
     }
     for label in skipped {
-        report.diagnostics.push(rustmachineguard::scanners::telemetry::skipped(label));
+        report
+            .diagnostics
+            .push(rustmachineguard::scanners::telemetry::skipped(label));
     }
 
     let rendered = {
@@ -942,7 +1114,10 @@ fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &
     root.set(|| {
         vec![
             Attr::int(Key::ExposureFindings, report.exposure_findings.len() as i64),
-            Attr::int(Key::ScannersRun, report.diagnostics.iter().filter(|d| !d.skipped).count() as i64),
+            Attr::int(
+                Key::ScannersRun,
+                report.diagnostics.iter().filter(|d| !d.skipped).count() as i64,
+            ),
         ]
     });
     if let Some(t) = scan_start {
@@ -954,11 +1129,10 @@ fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &
 
 /// Aggregate a directory of `--format json` scans into one fleet HTML dashboard.
 fn run_fleet_report(dir: &std::path::Path, output_path: Option<&str>) {
-    let (reports, skipped) =
-        output::fleet::load_reports_from_dir(dir).unwrap_or_else(|e| {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        });
+    let (reports, skipped) = output::fleet::load_reports_from_dir(dir).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
 
     for s in &skipped {
         eprintln!("warning: skipping {} (not a valid rmguard JSON scan)", s);
@@ -995,22 +1169,16 @@ fn dedupe_report(report: &mut ScanReport) {
         .retain(|x| seen.insert((x.id.clone(), x.version.clone(), x.ide_type.clone())));
 
     let mut seen = HashSet::new();
-    report
-        .mcp_configs
-        .retain(|x| seen.insert(x.config_path.clone()));
+    report.mcp_configs.retain(|x| seen.insert(x.config_path.clone()));
 
     let mut seen = HashSet::new();
-    report
-        .shell_configs
-        .retain(|x| seen.insert(x.config_path.clone()));
+    report.shell_configs.retain(|x| seen.insert(x.config_path.clone()));
 
     let mut seen = HashSet::new();
     report.ssh_keys.retain(|x| seen.insert(x.path.clone()));
 
     let mut seen = HashSet::new();
-    report
-        .cloud_credentials
-        .retain(|x| seen.insert(x.config_path.clone()));
+    report.cloud_credentials.retain(|x| seen.insert(x.config_path.clone()));
 
     let mut seen = HashSet::new();
     report
@@ -1023,19 +1191,13 @@ fn dedupe_report(report: &mut ScanReport) {
         .retain(|x| seen.insert(x.config_path.clone()));
 
     let mut seen = HashSet::new();
-    report
-        .rules_files
-        .retain(|x| seen.insert(x.path.clone()));
+    report.rules_files.retain(|x| seen.insert(x.path.clone()));
 
     let mut seen = HashSet::new();
-    report
-        .agent_skills
-        .retain(|x| seen.insert(x.path.clone()));
+    report.agent_skills.retain(|x| seen.insert(x.path.clone()));
 
     // Managed settings and the systemd/launchd service paths are system-wide, so every
     // --search-dirs home pass finds them again.
     let mut seen = HashSet::new();
-    report
-        .agent_settings
-        .retain(|x| seen.insert(x.path.clone()));
+    report.agent_settings.retain(|x| seen.insert(x.path.clone()));
 }

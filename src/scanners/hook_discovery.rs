@@ -11,9 +11,9 @@
 
 use crate::models::{AgentHook, AgentSettings, SkillProvenance};
 use crate::platform::PlatformInfo;
-use crate::scanners::agent_settings::{is_repository_scope, linked_settings, read_hook_file, SettingsRead};
+use crate::scanners::agent_settings::{SettingsRead, is_repository_scope, linked_settings, read_hook_file};
 use crate::scanners::hook_sources::{
-    self as hs, claude_plugin_vars, extract_hook_map, extract_kiro_hooks, Dialect, HookCtx, RegistersRule,
+    self as hs, Dialect, HookCtx, RegistersRule, claude_plugin_vars, extract_hook_map, extract_kiro_hooks,
 };
 use crate::scanners::persistence::lexical_join;
 use crate::scanners::{probe_dir, probe_file, probe_read_dir, sanitize_display, system_path};
@@ -120,8 +120,11 @@ fn files_in(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
         .filter(|p| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             !name.starts_with('.')
-                && p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
-                && exists_nofollow(p) && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+                && exists_nofollow(p)
+                && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
         })
         .collect();
     v.sort();
@@ -205,7 +208,10 @@ pub(crate) fn scan(
         if home.starts_with(d) || real_home.starts_with(&real) {
             continue;
         }
-        if projects.iter().any(|p| std::fs::canonicalize(&p.dir).unwrap_or_else(|_| p.dir.clone()) == real) {
+        if projects
+            .iter()
+            .any(|p| std::fs::canonicalize(&p.dir).unwrap_or_else(|_| p.dir.clone()) == real)
+        {
             continue;
         }
         let root = crate::scanners::skills::project_containment_root(d, home);
@@ -341,7 +347,10 @@ fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
     if total(&groups) < hs::MAX_HOOKS_PER_FILE
         && let Some(j) = load(&settings, src, out)
     {
-        groups.push((settings.clone(), hs::settings_commands_with(&j, &ctx, &["subagentStatusLine"])));
+        groups.push((
+            settings.clone(),
+            hs::settings_commands_with(&j, &ctx, &["subagentStatusLine"]),
+        ));
     }
     for (path, hooks) in groups {
         push(&path, src, hooks, out);
@@ -352,7 +361,9 @@ fn claude_plugin_dir(root: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
 /// the plugin root. The source is read (never run) for its `on("event")` calls and for
 /// critical dangerous patterns.
 fn claude_modules(j: &serde_json::Value, hooks_json: &Path, root: &Path, src: &Src) -> Vec<AgentHook> {
-    let Some(list) = j.get("modules").and_then(|m| m.as_array()) else { return Vec::new() };
+    let Some(list) = j.get("modules").and_then(|m| m.as_array()) else {
+        return Vec::new();
+    };
     let hooks_dir = hooks_json.parent().unwrap_or(root);
     let mut out = Vec::new();
     for m in list.iter().take(50).filter_map(|m| m.as_str()) {
@@ -361,7 +372,11 @@ fn claude_modules(j: &serde_json::Value, hooks_json: &Path, root: &Path, src: &S
         if !p.starts_with(root) || p == root {
             continue;
         }
-        if !p.extension().and_then(|e| e.to_str()).is_some_and(|e| hs::MODULE_EXTS.contains(&e)) {
+        if !p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| hs::MODULE_EXTS.contains(&e))
+        {
             continue;
         }
         let read = if exists_nofollow(&p) { Some(src.read(&p)) } else { None };
@@ -370,7 +385,10 @@ fn claude_modules(j: &serde_json::Value, hooks_json: &Path, root: &Path, src: &S
             _ => hs::module_hook(m, None, RegistersRule::ClaudeMod),
         };
         if let Some(SettingsRead::Link(l)) = &read {
-            h.risks.push(format!("the module is a symlink leaving its plugin ({}) — not read", l.target));
+            h.risks.push(format!(
+                "the module is a symlink leaving its plugin ({}) — not read",
+                l.target
+            ));
         }
         out.push(h);
     }
@@ -388,7 +406,14 @@ fn cursor(home: &Path, out: &mut Vec<AgentSettings>) {
         "/etc/cursor/hooks.json"
     });
     let ent_dir = ent.parent().map(Path::to_path_buf).unwrap_or_default();
-    let src = Src { source: "managed", framework: "cursor", project_dir: None, containment: Some(&ent_dir), provenance: None, home: Some(home) };
+    let src = Src {
+        source: "managed",
+        framework: "cursor",
+        project_dir: None,
+        containment: Some(&ent_dir),
+        provenance: None,
+        home: Some(home),
+    };
     if let Some(j) = load(&ent, &src, out) {
         let ctx = HookCtx::new(&ent, Dialect::Cursor);
         let hooks = j.get("hooks").map(|m| extract_hook_map(m, &ctx)).unwrap_or_default();
@@ -426,7 +451,11 @@ fn cursor(home: &Path, out: &mut Vec<AgentSettings>) {
         let declared = load(&manifest, &src, out).and_then(|m| m.get("hooks").cloned());
         match declared {
             Some(serde_json::Value::String(s)) => {
-                let rel = if s.starts_with("./") { s.clone() } else { format!("./{s}") };
+                let rel = if s.starts_with("./") {
+                    s.clone()
+                } else {
+                    format!("./{s}")
+                };
                 if let Some(p) = manifest_path(&d, &rel)
                     && let Some(j) = load(&p, &src, out)
                 {
@@ -452,12 +481,20 @@ fn cursor(home: &Path, out: &mut Vec<AgentSettings>) {
 
 /// Reads one Codex hooks.json / config.toml / requirements.toml; returns its
 /// `[features].hooks` switch (or the deprecated `codex_hooks` alias) when it sets one.
-fn codex_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, vars: &[(&'static str, PathBuf)], out: &mut Vec<AgentSettings>) -> Option<bool> {
+fn codex_file(
+    path: &Path,
+    src: &Src,
+    root: Option<(&Path, &'static str)>,
+    vars: &[(&'static str, PathBuf)],
+    out: &mut Vec<AgentSettings>,
+) -> Option<bool> {
     let j = load(path, src, out)?;
     // "The deprecated alias codex_hooks still works" (learn.chatgpt.com/docs/hooks.md,
     // fetched 2026-10-23): `hooks` first, then the alias.
     let switch = j.get("features").and_then(|f| {
-        f.get("hooks").and_then(|v| v.as_bool()).or_else(|| f.get("codex_hooks").and_then(|v| v.as_bool()))
+        f.get("hooks")
+            .and_then(|v| v.as_bool())
+            .or_else(|| f.get("codex_hooks").and_then(|v| v.as_bool()))
     });
     let mut ctx = HookCtx::new(path, Dialect::Codex);
     ctx.own_dir = Some(".codex");
@@ -474,7 +511,10 @@ fn codex_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, vars:
 /// Mark the non-managed hooks of `framework` in `out[start..]` disabled (a global
 /// switch turned them off): inventoried and counted inactive, not graded.
 fn disable_non_managed(out: &mut [AgentSettings], start: usize, framework: &str) {
-    for e in out[start..].iter_mut().filter(|e| e.framework == framework && e.source != "managed") {
+    for e in out[start..]
+        .iter_mut()
+        .filter(|e| e.framework == framework && e.source != "managed")
+    {
         e.hooks.iter_mut().for_each(|h| h.disabled = true);
     }
 }
@@ -482,19 +522,40 @@ fn disable_non_managed(out: &mut [AgentSettings], start: usize, framework: &str)
 fn codex(platform: &dyn PlatformInfo, home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let start = out.len();
     let ch = platform.codex_config_dir();
-    let user = Src { source: "user-global", framework: "codex", project_dir: None, containment: Some(&ch), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "codex",
+        project_dir: None,
+        containment: Some(&ch),
+        provenance: None,
+        home: Some(home),
+    };
     codex_file(&ch.join("hooks.json"), &user, None, &[], out);
     let user_switch = codex_file(&ch.join("config.toml"), &user, None, &[], out);
     let mut project_on = false;
     for p in projects {
-        let src = Src { source: "project", framework: "codex", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "codex",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         codex_file(&p.dir.join(".codex").join("hooks.json"), &src, None, &[], out);
         project_on |= codex_file(&p.dir.join(".codex").join("config.toml"), &src, None, &[], out) == Some(true);
     }
     // The system config layer and managed requirements (`managed_dir` and other
     // non-array values under [hooks] are skipped by the parser).
     let etc = system_path("/etc/codex");
-    let managed = Src { source: "managed", framework: "codex", project_dir: None, containment: Some(&etc), provenance: None, home: Some(home) };
+    let managed = Src {
+        source: "managed",
+        framework: "codex",
+        project_dir: None,
+        containment: Some(&etc),
+        provenance: None,
+        home: Some(home),
+    };
     let sys_switch = codex_file(&etc.join("config.toml"), &managed, None, &[], out);
     let required = codex_file(&etc.join("requirements.toml"), &managed, None, &[], out);
     // "Hooks are enabled by default. To turn them off in config.toml, set: [features]
@@ -518,7 +579,14 @@ fn codex(platform: &dyn PlatformInfo, home: &Path, projects: &[Project], out: &m
         if let Some(p) = provenance.as_mut() {
             p.active = active;
         }
-        let src = Src { source: "plugin", framework: "codex", project_dir: None, containment: Some(&root), provenance, home: Some(home) };
+        let src = Src {
+            source: "plugin",
+            framework: "codex",
+            project_dir: None,
+            containment: Some(&root),
+            provenance,
+            home: Some(home),
+        };
         let vars = vec![
             ("${PLUGIN_ROOT}", root.clone()),
             ("$PLUGIN_ROOT", root.clone()),
@@ -556,7 +624,9 @@ fn codex(platform: &dyn PlatformInfo, home: &Path, projects: &[Project], out: &m
                                 hooks.extend(hs::extract_hook_map_limit(hook_map(&j), &ctx, room));
                             }
                         }
-                        v @ serde_json::Value::Object(_) => hooks.extend(hs::extract_hook_map_limit(hook_map(&v), &ctx, room)),
+                        v @ serde_json::Value::Object(_) => {
+                            hooks.extend(hs::extract_hook_map_limit(hook_map(&v), &ctx, room))
+                        }
                         _ => {}
                     }
                 }
@@ -591,7 +661,11 @@ fn codex_plugin_identities(plugins_dir: &Path, roots: &[PathBuf]) -> Vec<(String
         .map(|r| {
             let comps: Vec<String> = r
                 .strip_prefix(&cache)
-                .map(|rel| rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+                .map(|rel| {
+                    rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect()
+                })
                 .unwrap_or_default();
             match comps.as_slice() {
                 [m, p, v] => (sanitize_display(m, 128), sanitize_display(p, 128), Some(v.clone())),
@@ -600,7 +674,10 @@ fn codex_plugin_identities(plugins_dir: &Path, roots: &[PathBuf]) -> Vec<(String
         })
         .collect();
     let rank = |v: &str| -> (bool, Vec<(u64, String)>) {
-        let parts = v.split(['.', '-', '+']).map(|x| (x.parse::<u64>().unwrap_or(0), x.to_string())).collect();
+        let parts = v
+            .split(['.', '-', '+'])
+            .map(|x| (x.parse::<u64>().unwrap_or(0), x.to_string()))
+            .collect();
         (v == "local", parts)
     };
     ids.iter()
@@ -663,7 +740,10 @@ fn codex_plugin_roots(dir: &Path) -> Vec<PathBuf> {
 /// the file set `disableAllHooks: true`.
 fn copilot_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, out: &mut Vec<AgentSettings>) -> bool {
     let Some(j) = load(path, src, out) else { return false };
-    let settings = matches!(path.file_name().and_then(|n| n.to_str()), Some("settings.json" | "settings.local.json"));
+    let settings = matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some("settings.json" | "settings.local.json")
+    );
     let off = j.get("disableAllHooks").and_then(|v| v.as_bool()) == Some(true);
     if !settings && j.get("version").and_then(|v| v.as_u64()) != Some(1) {
         return false;
@@ -685,13 +765,27 @@ fn copilot_file(path: &Path, src: &Src, root: Option<(&Path, &'static str)>, out
 
 fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let ch = home.join(".copilot");
-    let user = Src { source: "user-global", framework: "copilot-cli", project_dir: None, containment: Some(&ch), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "copilot-cli",
+        project_dir: None,
+        containment: Some(&ch),
+        provenance: None,
+        home: Some(home),
+    };
     for f in files_in(&ch.join("hooks"), &["json"]) {
         copilot_file(&f, &user, None, out);
     }
     copilot_file(&ch.join("settings.json"), &user, None, out);
     for p in projects {
-        let src = Src { source: "project", framework: "copilot-cli", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "copilot-cli",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         let root = Some((p.dir.as_path(), "project"));
         let start = out.len();
         for f in project_files_in(&p.dir.join(".github").join("hooks"), &src, &["json"], out) {
@@ -713,7 +807,14 @@ fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     }
     // Machine policy (Linux and macOS): applied in name order, cannot be disabled.
     let pol = system_path("/etc/github-copilot/policy.d");
-    let managed = Src { source: "managed", framework: "copilot-cli", project_dir: None, containment: Some(&pol), provenance: None, home: Some(home) };
+    let managed = Src {
+        source: "managed",
+        framework: "copilot-cli",
+        project_dir: None,
+        containment: Some(&pol),
+        provenance: None,
+        home: Some(home),
+    };
     for f in files_in(&pol, &["json"]) {
         copilot_file(&f, &managed, None, out);
     }
@@ -738,7 +839,11 @@ fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
                 home: Some(home),
             };
             let top = pdir.join("hooks.json");
-            let file = if exists_nofollow(&top) { top } else { pdir.join("hooks").join("hooks.json") };
+            let file = if exists_nofollow(&top) {
+                top
+            } else {
+                pdir.join("hooks").join("hooks.json")
+            };
             copilot_file(&file, &src, Some((pdir.as_path(), "plugin")), out);
         }
     }
@@ -747,9 +852,17 @@ fn copilot(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
 // ── Gemini CLI ──────────────────────────────────────────────────────────────────
 
 /// Reads one Gemini CLI settings file; returns its `hooksConfig.enabled` when set.
-fn gemini_file(path: &Path, src: &Src, vars: Vec<(&'static str, PathBuf)>, out: &mut Vec<AgentSettings>) -> Option<bool> {
+fn gemini_file(
+    path: &Path,
+    src: &Src,
+    vars: Vec<(&'static str, PathBuf)>,
+    out: &mut Vec<AgentSettings>,
+) -> Option<bool> {
     let j = load(path, src, out)?;
-    let switch = j.get("hooksConfig").and_then(|c| c.get("enabled")).and_then(|v| v.as_bool());
+    let switch = j
+        .get("hooksConfig")
+        .and_then(|c| c.get("enabled"))
+        .and_then(|v| v.as_bool());
     let mut ctx = HookCtx::new(path, Dialect::Gemini);
     ctx.own_dir = Some(".gemini");
     ctx.vars = vars;
@@ -762,16 +875,44 @@ fn gemini_file(path: &Path, src: &Src, vars: Vec<(&'static str, PathBuf)>, out: 
 fn gemini(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let start = out.len();
     let gh = home.join(".gemini");
-    let user = Src { source: "user-global", framework: "gemini-cli", project_dir: None, containment: Some(&gh), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "gemini-cli",
+        project_dir: None,
+        containment: Some(&gh),
+        provenance: None,
+        home: Some(home),
+    };
     let user_switch = gemini_file(&gh.join("settings.json"), &user, Vec::new(), out);
     let mut project_on = false;
     for p in projects {
-        let src = Src { source: "project", framework: "gemini-cli", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
-        let vars = vec![("${GEMINI_PROJECT_DIR}", p.dir.clone()), ("$GEMINI_PROJECT_DIR", p.dir.clone())];
+        let src = Src {
+            source: "project",
+            framework: "gemini-cli",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
+        let vars = vec![
+            ("${GEMINI_PROJECT_DIR}", p.dir.clone()),
+            ("$GEMINI_PROJECT_DIR", p.dir.clone()),
+        ];
         project_on |= gemini_file(&p.dir.join(".gemini").join("settings.json"), &src, vars, out) == Some(true);
     }
-    let sys = system_path(if cfg!(target_os = "macos") { "/Library/Application Support/GeminiCli" } else { "/etc/gemini-cli" });
-    let managed = Src { source: "managed", framework: "gemini-cli", project_dir: None, containment: Some(&sys), provenance: None, home: Some(home) };
+    let sys = system_path(if cfg!(target_os = "macos") {
+        "/Library/Application Support/GeminiCli"
+    } else {
+        "/etc/gemini-cli"
+    });
+    let managed = Src {
+        source: "managed",
+        framework: "gemini-cli",
+        project_dir: None,
+        containment: Some(&sys),
+        provenance: None,
+        home: Some(home),
+    };
     let sys_switch = gemini_file(&sys.join("settings.json"), &managed, Vec::new(), out);
     let defaults_switch = gemini_file(&sys.join("system-defaults.json"), &managed, Vec::new(), out);
     // "hooksConfig.enabled ... When disabled, no hooks will be executed"
@@ -835,22 +976,55 @@ fn devin_cli_file(path: &Path, src: &Src, whole: bool, own: Option<&'static str>
 
 fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Value>, out: &mut Vec<AgentSettings>) {
     let codeium = home.join(".codeium");
-    let user = Src { source: "user-global", framework: "devin-desktop", project_dir: None, containment: Some(&codeium), provenance: None, home: Some(home) };
-    devin_desktop_file(&codeium.join("windsurf").join("hooks.json"), &user, Some(".codeium"), out);
+    let user = Src {
+        source: "user-global",
+        framework: "devin-desktop",
+        project_dir: None,
+        containment: Some(&codeium),
+        provenance: None,
+        home: Some(home),
+    };
+    devin_desktop_file(
+        &codeium.join("windsurf").join("hooks.json"),
+        &user,
+        Some(".codeium"),
+        out,
+    );
     devin_desktop_file(&codeium.join("hooks.json"), &user, Some(".codeium"), out);
     let (cur, legacy) = if cfg!(target_os = "macos") {
-        ("/Library/Application Support/Devin/hooks.json", "/Library/Application Support/Windsurf/hooks.json")
+        (
+            "/Library/Application Support/Devin/hooks.json",
+            "/Library/Application Support/Windsurf/hooks.json",
+        )
     } else {
         ("/etc/devin/hooks.json", "/etc/windsurf/hooks.json")
     };
     let cur = system_path(cur);
     // The legacy Windsurf system file is read only when the Devin one does not exist.
-    let sys = if exists_nofollow(&cur) { cur } else { system_path(legacy) };
+    let sys = if exists_nofollow(&cur) {
+        cur
+    } else {
+        system_path(legacy)
+    };
     let sys_dir = sys.parent().map(Path::to_path_buf).unwrap_or_default();
-    let managed = Src { source: "managed", framework: "devin-desktop", project_dir: None, containment: Some(&sys_dir), provenance: None, home: Some(home) };
+    let managed = Src {
+        source: "managed",
+        framework: "devin-desktop",
+        project_dir: None,
+        containment: Some(&sys_dir),
+        provenance: None,
+        home: Some(home),
+    };
     devin_desktop_file(&sys, &managed, None, out);
     for p in projects {
-        let src = Src { source: "project", framework: "devin-desktop", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "devin-desktop",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         // Legacy .windsurf/hooks.json only when .devin/hooks.json is absent or empty.
         if devin_desktop_file(&p.dir.join(".devin").join("hooks.json"), &src, None, out) == 0 {
             devin_desktop_file(&p.dir.join(".windsurf").join("hooks.json"), &src, None, out);
@@ -859,7 +1033,14 @@ fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Val
 
     // Devin CLI.
     for p in projects {
-        let src = Src { source: "project", framework: "devin-cli", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "devin-cli",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         let d = p.dir.join(".devin");
         devin_cli_file(&d.join("hooks.v1.json"), &src, true, None, out);
         devin_cli_file(&d.join("config.json"), &src, false, None, out);
@@ -867,7 +1048,14 @@ fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Val
         devin_cli_file(&d.join("config.local.json"), &local, false, None, out);
     }
     let cfg = home.join(".config").join("devin");
-    let user = Src { source: "user-global", framework: "devin-cli", project_dir: None, containment: Some(&cfg), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "devin-cli",
+        project_dir: None,
+        containment: Some(&cfg),
+        provenance: None,
+        home: Some(home),
+    };
     devin_cli_file(&cfg.join("config.json"), &user, false, Some(".devin"), out);
     // Devin CLI reads `hooks` from ~/.claude.json in Claude Code format (Claude Code does
     // not). The file is already read for its projects; no other key is used.
@@ -876,7 +1064,14 @@ fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Val
         let mut ctx = HookCtx::new(&path, Dialect::DevinCli);
         ctx.own_dir = Some(".claude");
         let hooks = extract_hook_map(map, &ctx);
-        let src = Src { source: "user-global", framework: "devin-cli", project_dir: None, containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "user-global",
+            framework: "devin-cli",
+            project_dir: None,
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         push(&path, &src, hooks, out);
     }
 }
@@ -885,10 +1080,18 @@ fn devin(home: &Path, projects: &[Project], claude_json: Option<&serde_json::Val
 
 fn opencode_modules(dir: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
     for f in project_files_in(dir, src, hs::MODULE_EXTS, out) {
-        let shown = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let shown = f
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         match src.read(&f) {
             SettingsRead::Content(c) => {
-                push(&f, src, vec![hs::module_hook(&shown, Some(&c), RegistersRule::OpenCode)], out);
+                push(
+                    &f,
+                    src,
+                    vec![hs::module_hook(&shown, Some(&c), RegistersRule::OpenCode)],
+                    out,
+                );
             }
             SettingsRead::Link(l) => {
                 let mut e = linked_settings(&f, src.source, src.framework, l);
@@ -902,7 +1105,9 @@ fn opencode_modules(dir: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
 
 fn opencode_config(path: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
     let Some(j) = load(path, src, out) else { return };
-    let Some(list) = j.get("plugin").and_then(|p| p.as_array()) else { return };
+    let Some(list) = j.get("plugin").and_then(|p| p.as_array()) else {
+        return;
+    };
     let hooks: Vec<AgentHook> = list
         .iter()
         .take(MAX_HOOK_FILES)
@@ -917,13 +1122,30 @@ fn opencode_config(path: &Path, src: &Src, out: &mut Vec<AgentSettings>) {
 
 fn opencode(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let cfg = home.join(".config").join("opencode");
-    let user = Src { source: "user-global", framework: "opencode", project_dir: None, containment: Some(&cfg), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "opencode",
+        project_dir: None,
+        containment: Some(&cfg),
+        provenance: None,
+        home: Some(home),
+    };
     opencode_config(&cfg.join("opencode.json"), &user, out);
     let plugins = cfg.join("plugins");
-    let user_mod = Src { containment: Some(&plugins), ..user };
+    let user_mod = Src {
+        containment: Some(&plugins),
+        ..user
+    };
     opencode_modules(&plugins, &user_mod, out);
     for p in projects {
-        let src = Src { source: "project", framework: "opencode", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "opencode",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         opencode_config(&p.dir.join("opencode.json"), &src, out);
         opencode_modules(&p.dir.join(".opencode").join("plugins"), &src, out);
     }
@@ -933,12 +1155,26 @@ fn opencode(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
 
 fn kiro(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     let kh = home.join(".kiro");
-    let user = Src { source: "user-global", framework: "kiro", project_dir: None, containment: Some(&kh), provenance: None, home: Some(home) };
+    let user = Src {
+        source: "user-global",
+        framework: "kiro",
+        project_dir: None,
+        containment: Some(&kh),
+        provenance: None,
+        home: Some(home),
+    };
     for f in files_in(&kh.join("hooks"), &["json"]) {
         kiro_file(&f, &user, out);
     }
     for p in projects {
-        let src = Src { source: "project", framework: "kiro", project_dir: Some(&p.root), containment: None, provenance: None, home: Some(home) };
+        let src = Src {
+            source: "project",
+            framework: "kiro",
+            project_dir: Some(&p.root),
+            containment: None,
+            provenance: None,
+            home: Some(home),
+        };
         for f in project_files_in(&p.dir.join(".kiro").join("hooks"), &src, &["json"], out) {
             kiro_file(&f, &src, out);
         }

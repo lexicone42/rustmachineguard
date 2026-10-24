@@ -1,7 +1,7 @@
 use crate::models::AgentTranscriptStore;
-use crate::platform::PlatformInfo;
-use crate::scanners::{file_perms, Scanner};
 use crate::otel::{Attr, Key};
+use crate::platform::PlatformInfo;
+use crate::scanners::{Scanner, file_perms};
 use std::path::Path;
 
 /// Inventories agent transcript / conversation-state stores — the EAA-005 collection
@@ -36,7 +36,10 @@ impl Scanner for TranscriptsScanner {
             // Closed values only: the framework and kind are the literals above; the
             // path is never exported.
             let mut span = crate::otel::span("transcripts.store", || {
-                vec![Attr::str(Key::TranscriptsFramework, framework), Attr::str(Key::TranscriptsKind, kind)]
+                vec![
+                    Attr::str(Key::TranscriptsFramework, framework),
+                    Attr::str(Key::TranscriptsKind, kind),
+                ]
             });
             let mut walk = Walk::default();
             if let Some(store) = inspect_store(framework, &path, kind, &mut walk) {
@@ -166,8 +169,13 @@ mod tests {
     fn inspect_store_reports_a_populated_dir() {
         let d = TmpDir::new("inspect-dir");
         fs::write(d.path().join("t.jsonl"), b"abcd").unwrap();
-        let store = inspect_store("claude-code", d.path(), "conversation transcripts", &mut Walk::default())
-            .expect("populated dir should yield a store");
+        let store = inspect_store(
+            "claude-code",
+            d.path(),
+            "conversation transcripts",
+            &mut Walk::default(),
+        )
+        .expect("populated dir should yield a store");
         assert_eq!(store.framework, "claude-code");
         assert_eq!(store.kind, "conversation transcripts");
         assert_eq!(store.file_count, 1);
@@ -203,14 +211,26 @@ mod tests {
         fs::write(d.path().join("t.jsonl"), b"secret transcript").unwrap();
         // Make the store dir world-readable.
         fs::set_permissions(d.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        let store = inspect_store("claude-code", d.path(), "conversation transcripts", &mut Walk::default()).unwrap();
+        let store = inspect_store(
+            "claude-code",
+            d.path(),
+            "conversation transcripts",
+            &mut Walk::default(),
+        )
+        .unwrap();
         assert!(store.world_readable);
 
         // And private (0700) is not flagged.
         let d2 = TmpDir::new("inspect-private");
         fs::write(d2.path().join("t.jsonl"), b"secret transcript").unwrap();
         fs::set_permissions(d2.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let store2 = inspect_store("claude-code", d2.path(), "conversation transcripts", &mut Walk::default()).unwrap();
+        let store2 = inspect_store(
+            "claude-code",
+            d2.path(),
+            "conversation transcripts",
+            &mut Walk::default(),
+        )
+        .unwrap();
         assert!(!store2.world_readable);
     }
 }

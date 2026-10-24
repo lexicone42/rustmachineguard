@@ -493,7 +493,6 @@ use crate::scanners::scan_injection_text;
 // descriptions, rules files, skills) uses the same detector.
 use crate::scanners::scan_suspicious_unicode;
 
-
 /// Map an internal behavior label to a value from the CycloneDX 2.0 behavior
 /// taxonomy (a closed enum). The schema requires `behaviorInstance.behavior` to be
 /// a taxonomy value, so the human-readable specifics live on the related asset
@@ -554,13 +553,7 @@ impl BehaviorBuilder {
 
     /// `label` is an internal, human-readable behavior label; it is mapped to a
     /// CycloneDX behavior-taxonomy value for the emitted `behavior` field.
-    fn push(
-        &mut self,
-        label: String,
-        acknowledgment: Vec<String>,
-        actors: Vec<String>,
-        targets: Vec<String>,
-    ) {
+    fn push(&mut self, label: String, acknowledgment: Vec<String>, actors: Vec<String>, targets: Vec<String>) {
         let bom_ref = format!("behavior:{}", self.next);
         self.next += 1;
         self.instances.push(BehaviorInstance {
@@ -604,11 +597,7 @@ fn find_cve_spans(text: &str) -> Vec<(usize, usize, String)> {
                     k += 1;
                 }
                 if k > num_start {
-                    out.push((
-                        i,
-                        k,
-                        format!("CVE-{}-{}", &text[year_start..j], &text[num_start..k]),
-                    ));
+                    out.push((i, k, format!("CVE-{}-{}", &text[year_start..j], &text[num_start..k])));
                     i = k;
                     continue;
                 }
@@ -634,8 +623,7 @@ fn cvss_score_in(window: &str) -> Option<f64> {
         let mut j = i + 4;
         while j < b.len() {
             if b[j].is_ascii_digit() {
-                let is_version_token =
-                    j > 0 && (b[j - 1] == b'v' || b[j - 1] == b'V' || b[j - 1] == b':');
+                let is_version_token = j > 0 && (b[j - 1] == b'v' || b[j - 1] == b'V' || b[j - 1] == b':');
                 let start = j;
                 while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
                     j += 1;
@@ -725,12 +713,13 @@ fn capec_for_category(category: &str) -> Option<(u32, &'static str, &'static str
             "Code Injection",
             "Injecting commands that execute in the victim's context.",
         ),
-        "MCP secret" | "Settings secret" | "Secret leak" | "Secret exposure" | "Credential"
-        | "Transcript exposure" => (
-            37,
-            "Retrieve Embedded Sensitive Data",
-            "Reading credentials or sensitive data left accessible at rest.",
-        ),
+        "MCP secret" | "Settings secret" | "Secret leak" | "Secret exposure" | "Credential" | "Transcript exposure" => {
+            (
+                37,
+                "Retrieve Embedded Sensitive Data",
+                "Reading credentials or sensitive data left accessible at rest.",
+            )
+        }
         _ => return None,
     })
 }
@@ -744,10 +733,7 @@ impl BlueprintDocument {
         let mut host_deps = Vec::new();
         let mut refs = RefAllocator::default();
 
-        let host_ref = format!(
-            "host:{}",
-            report.device.hostname.replace(' ', "-").to_lowercase()
-        );
+        let host_ref = format!("host:{}", report.device.hostname.replace(' ', "-").to_lowercase());
 
         // Zone definitions
         let zones = vec![
@@ -793,8 +779,7 @@ impl BlueprintDocument {
 
         // AI tools → agent assets
         for tool in &report.ai_agents_and_tools {
-            let comp_ref =
-                refs.unique(format!("ai-tool:{}", tool.name.replace(' ', "-").to_lowercase()));
+            let comp_ref = refs.unique(format!("ai-tool:{}", tool.name.replace(' ', "-").to_lowercase()));
 
             components.push(Component {
                 component_type: "application".into(),
@@ -868,15 +853,9 @@ impl BlueprintDocument {
                 components.push(Component {
                     component_type: "application".into(),
                     bom_ref: comp_ref.clone(),
-                    name: server
-                        .package_name
-                        .clone()
-                        .unwrap_or_else(|| server.name.clone()),
+                    name: server.package_name.clone().unwrap_or_else(|| server.name.clone()),
                     version: server.package_version.clone(),
-                    group: server
-                        .package_ecosystem
-                        .as_ref()
-                        .map(|e| format!("mcp-server/{}", e)),
+                    group: server.package_ecosystem.as_ref().map(|e| format!("mcp-server/{}", e)),
                     properties: props,
                 });
 
@@ -895,10 +874,7 @@ impl BlueprintDocument {
                     bom_ref: format!("asset:{}", comp_ref),
                     asset_type: "tool".into(),
                     name: None, // component-backed
-                    description: Some(format!(
-                        "MCP server '{}' ({} transport)",
-                        server.name, server.transport
-                    )),
+                    description: Some(format!("MCP server '{}' ({} transport)", server.name, server.transport)),
                     zone: Some(zone.into()),
                     component_ref: Some(comp_ref.clone()),
                     responsibilities: Vec::new(),
@@ -913,10 +889,7 @@ impl BlueprintDocument {
 
                 // Flow from each agent to this tool (control edge: agent invokes tool)
                 for tool in &report.ai_agents_and_tools {
-                    let agent_ref = format!(
-                        "asset:ai-tool:{}",
-                        tool.name.replace(' ', "-").to_lowercase()
-                    );
+                    let agent_ref = format!("asset:ai-tool:{}", tool.name.replace(' ', "-").to_lowercase());
                     flows.push(Flow {
                         bom_ref: refs.unique(format!(
                             "flow:{}->{}",
@@ -929,13 +902,11 @@ impl BlueprintDocument {
                         destination: format!("asset:{}", comp_ref),
                         // A remote http:// server is a plaintext hop; https:// is encrypted;
                         // a local stdio pipe has no transport encryption to speak of.
-                        encrypted: server.url.as_deref().map(|u| {
-                            !u.to_ascii_lowercase().starts_with("http://")
-                        }),
-                        description: Some(format!(
-                            "MCP tool invocation via {} transport",
-                            server.transport
-                        )),
+                        encrypted: server
+                            .url
+                            .as_deref()
+                            .map(|u| !u.to_ascii_lowercase().starts_with("http://")),
+                        description: Some(format!("MCP tool invocation via {} transport", server.transport)),
                     });
                 }
 
@@ -984,7 +955,10 @@ impl BlueprintDocument {
                     .hooks
                     .iter()
                     .enumerate()
-                    .map(|(hi, h)| Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) })
+                    .map(|(hi, h)| Property {
+                        name: format!("rmg:hook-{}", hi),
+                        value: hook_property(h),
+                    })
                     .collect(),
             });
             let plugin_off = skill.provenance.as_ref().is_some_and(|p| !p.active);
@@ -1009,10 +983,7 @@ impl BlueprintDocument {
 
             // Flow from agent to skill (control edge: agent executes skill)
             for tool in &report.ai_agents_and_tools {
-                let agent_ref = format!(
-                    "asset:ai-tool:{}",
-                    tool.name.replace(' ', "-").to_lowercase()
-                );
+                let agent_ref = format!("asset:ai-tool:{}", tool.name.replace(' ', "-").to_lowercase());
                 flows.push(Flow {
                     bom_ref: refs.unique(format!(
                         "flow:{}->{}",
@@ -1033,11 +1004,7 @@ impl BlueprintDocument {
                 for mcp in &report.mcp_configs {
                     for server in &mcp.servers {
                         flows.push(Flow {
-                            bom_ref: refs.unique(format!(
-                                "flow:{}->mcp:{}",
-                                sanitize_ref(&skill.name),
-                                server.name
-                            )),
+                            bom_ref: refs.unique(format!("flow:{}->mcp:{}", sanitize_ref(&skill.name), server.name)),
                             name: format!("{} → {}", skill.name, server.name),
                             flow_type: "control".into(),
                             source: format!("asset:{}", comp_ref),
@@ -1093,11 +1060,7 @@ impl BlueprintDocument {
                 description: Some(format!(
                     "Agent rules file ({} bytes, {})",
                     rf.size_bytes,
-                    if rf.git_tracked {
-                        "git-tracked"
-                    } else {
-                        "untracked"
-                    }
+                    if rf.git_tracked { "git-tracked" } else { "untracked" }
                 )),
                 zone: Some("zone:local".into()),
                 component_ref: Some(comp_ref.clone()),
@@ -1117,10 +1080,7 @@ impl BlueprintDocument {
 
             // Flow from rules file to each agent (control edge: configures agent)
             for tool in &report.ai_agents_and_tools {
-                let agent_ref = format!(
-                    "asset:ai-tool:{}",
-                    tool.name.replace(' ', "-").to_lowercase()
-                );
+                let agent_ref = format!("asset:ai-tool:{}", tool.name.replace(' ', "-").to_lowercase());
                 flows.push(Flow {
                     bom_ref: refs.unique(format!(
                         "flow:{}->{}",
@@ -1185,8 +1145,7 @@ impl BlueprintDocument {
                         asset_type: "data".into(),
                         name: Some(format!("{} server instructions", probe.server_name)),
                         description: Some(
-                            "Server-supplied instructions, spliced into the model's system prompt"
-                                .into(),
+                            "Server-supplied instructions, spliced into the model's system prompt".into(),
                         ),
                         zone: Some("zone:local".into()),
                         component_ref: None,
@@ -1202,9 +1161,7 @@ impl BlueprintDocument {
                             source: server_ref.clone(),
                             destination: instr_ref,
                             encrypted: None,
-                            description: Some(
-                                "Server text injected into the system prompt".into(),
-                            ),
+                            description: Some("Server text injected into the system prompt".into()),
                         });
                     }
                 }
@@ -1245,11 +1202,7 @@ impl BlueprintDocument {
                 let desc = tool.description.as_deref().unwrap_or("");
                 // A probed server is untrusted input: one listing the same tool name twice
                 // must not be able to make the document fail its own schema gate.
-                let tool_ref = refs.unique(format!(
-                    "mcp-tool:{}:{}",
-                    probe.server_name,
-                    sanitize_ref(&tool.name)
-                ));
+                let tool_ref = refs.unique(format!("mcp-tool:{}:{}", probe.server_name, sanitize_ref(&tool.name)));
 
                 let mut tool_props = Vec::new();
                 if !desc.is_empty() {
@@ -1358,11 +1311,7 @@ impl BlueprintDocument {
                 // Only emit the flow if the source MCP server asset exists.
                 if server_asset_exists {
                     flows.push(Flow {
-                        bom_ref: format!(
-                            "flow:{}->res:{}",
-                            probe.server_name,
-                            sanitize_ref(&resource.uri)
-                        ),
+                        bom_ref: format!("flow:{}->res:{}", probe.server_name, sanitize_ref(&resource.uri)),
                         name: format!(
                             "{} → {}",
                             probe.server_name,
@@ -1430,8 +1379,7 @@ impl BlueprintDocument {
                             value: uniq.join(", "),
                         }],
                     });
-                    let actors: Vec<String> =
-                        uniq.iter().map(|s| format!("asset:mcp:{}", s)).collect();
+                    let actors: Vec<String> = uniq.iter().map(|s| format!("asset:mcp:{}", s)).collect();
                     behaviors.push(
                         format!("tool-shadowing:{}", tool_name),
                         vec!["observed".into()],
@@ -1535,10 +1483,7 @@ impl BlueprintDocument {
                 .mcp_configs
                 .iter()
                 .flat_map(|c| &c.servers)
-                .find(|s| {
-                    s.package_name.as_deref() == Some(finding.name.as_str())
-                        || s.name == finding.name
-                })
+                .find(|s| s.package_name.as_deref() == Some(finding.name.as_str()) || s.name == finding.name)
                 .map(|s| format!("asset:mcp:{}", s.name));
 
             let actor = matched_server.unwrap_or_else(|| format!("asset:{}", exposure_ref));
@@ -1654,10 +1599,7 @@ impl BlueprintDocument {
             });
 
             behaviors.push(
-                format!(
-                    "blast-radius:cloud-credential:{}",
-                    cred.provider.to_lowercase()
-                ),
+                format!("blast-radius:cloud-credential:{}", cred.provider.to_lowercase()),
                 vec!["observed".into()],
                 vec![format!("asset:{}", cred_ref)],
                 Vec::new(),
@@ -1693,16 +1635,28 @@ impl BlueprintDocument {
             if let Some(p) = &settings.provenance
                 && let (Some(m), Some(pl)) = (&p.marketplace, &p.plugin)
             {
-                props.push(Property { name: "rmg:plugin".into(), value: format!("{pl}@{m}") });
+                props.push(Property {
+                    name: "rmg:plugin".into(),
+                    value: format!("{pl}@{m}"),
+                });
                 if !p.active {
-                    props.push(Property { name: "rmg:plugin-active".into(), value: "false".into() });
+                    props.push(Property {
+                        name: "rmg:plugin-active".into(),
+                        value: "false".into(),
+                    });
                 }
             }
             for (hi, h) in settings.hooks.iter().enumerate() {
-                props.push(Property { name: format!("rmg:hook-{}", hi), value: hook_property(h) });
+                props.push(Property {
+                    name: format!("rmg:hook-{}", hi),
+                    value: hook_property(h),
+                });
             }
             if let Some(l) = &settings.symlink {
-                props.push(Property { name: "rmg:symlink".into(), value: format!("symlink to {}, not read", l.target) });
+                props.push(Property {
+                    name: "rmg:symlink".into(),
+                    value: format!("symlink to {}, not read", l.target),
+                });
             }
 
             assets.push(Asset {
@@ -1761,8 +1715,7 @@ impl BlueprintDocument {
         // concerns (the plaintext endpoint, the poisoned rules file, the gateway), not
         // just the machine. MCP-server and rules assets already exist; gateway and
         // transcript assets are emitted here so those findings have concrete targets too.
-        let mut link_index: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+        let mut link_index: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for mcp in &report.mcp_configs {
             for s in &mcp.servers {
                 link_index.insert(format!("mcp:{}", s.name), format!("asset:mcp:{}", s.name));
@@ -1843,8 +1796,7 @@ impl BlueprintDocument {
         // expressed as native CycloneDX 2.0 constructs instead of rmg: properties.
         // Resolve a finding to the specific asset it concerns, falling back to the
         // machine when there's no more precise target.
-        let env_paths: std::collections::HashSet<&str> =
-            report.env_files.iter().map(|e| e.path.as_str()).collect();
+        let env_paths: std::collections::HashSet<&str> = report.env_files.iter().map(|e| e.path.as_str()).collect();
         let resolve_asset = |f: &crate::analysis::Finding| -> String {
             let key = match f.category.as_str() {
                 "MCP transport" | "MCP scope" | "MCP secret" | "MCP command" => {
@@ -1867,12 +1819,9 @@ impl BlueprintDocument {
 
         // CVEs mentioned in exposure advisories, keyed by the finding title we can
         // reconstruct, plus a description per CVE.
-        let mut cves_by_title: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        let mut cve_desc: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        let mut cve_score: std::collections::HashMap<String, f64> =
-            std::collections::HashMap::new();
+        let mut cves_by_title: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut cve_desc: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut cve_score: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         for e in &report.exposure_findings {
             let rated = extract_cve_ratings(&e.advisory);
             if rated.is_empty() {
@@ -1917,8 +1866,7 @@ impl BlueprintDocument {
                         if f.title.starts_with("ANTHROPIC_") && !env_paths.contains(f.location.as_str()) =>
                     {
                         used_cves.insert(GATEWAY_CVE.into());
-                        related_vulnerabilities
-                            .push(format!("vuln:{}", GATEWAY_CVE.to_lowercase()));
+                        related_vulnerabilities.push(format!("vuln:{}", GATEWAY_CVE.to_lowercase()));
                     }
                     _ => {}
                 }
@@ -2025,10 +1973,7 @@ impl BlueprintDocument {
         let controls: Vec<Control> = crate::compliance::assess(report)
             .assessments
             .iter()
-            .filter(|a| {
-                a.finding_count > 0
-                    && !matches!(a.control.coverage, crate::compliance::Coverage::OutOfScope)
-            })
+            .filter(|a| a.finding_count > 0 && !matches!(a.control.coverage, crate::compliance::Coverage::OutOfScope))
             .map(|a| {
                 let c = a.control;
                 let covered = matches!(c.coverage, crate::compliance::Coverage::Covered);
@@ -2081,10 +2026,7 @@ impl BlueprintDocument {
                     bom_ref: host_ref,
                     component_type: "device",
                     name: report.device.hostname.clone(),
-                    version: Some(format!(
-                        "{} {}",
-                        report.device.os_name, report.device.os_version
-                    )),
+                    version: Some(format!("{} {}", report.device.os_name, report.device.os_version)),
                 },
                 components,
             }],
@@ -2105,7 +2047,11 @@ struct RefAllocator(std::collections::HashSet<String>);
 /// `event[matcher if cond] (kind) (disabled) DANGEROUS: command` for an `rmg:hook-N`
 /// property.
 fn hook_property(h: &crate::models::AgentHook) -> String {
-    let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
+    let kind = if h.kind.is_empty() || h.kind == "command" {
+        String::new()
+    } else {
+        format!(" ({})", h.kind)
+    };
     let cond = h.condition.as_deref().map(|c| format!(" if {c}")).unwrap_or_default();
     format!(
         "{}[{}{}]{}{}{}: {}",
@@ -2155,11 +2101,7 @@ fn sanitize_ref(path: &str) -> String {
     path.replace('/', "_").replace(' ', "-").to_lowercase()
 }
 
-fn build_purl(
-    ecosystem: Option<&str>,
-    name: Option<&str>,
-    version: Option<&str>,
-) -> Option<String> {
+fn build_purl(ecosystem: Option<&str>, name: Option<&str>, version: Option<&str>) -> Option<String> {
     let eco = ecosystem?;
     let name = name?;
     let purl_type = match eco {
@@ -2263,7 +2205,15 @@ mod cvss_tests {
 
     #[test]
     fn cve_scan_is_total_on_arbitrary_text() {
-        for s in ["", "CVE-", "CVE-20", "cve-2025-1", "CVE--", "…CVE-2025-1234…", "CVE-2025-"] {
+        for s in [
+            "",
+            "CVE-",
+            "CVE-20",
+            "cve-2025-1",
+            "CVE--",
+            "…CVE-2025-1234…",
+            "CVE-2025-",
+        ] {
             let _ = extract_cve_ratings(s);
         }
         // Lower-case ids are normalized to upper case.

@@ -1,6 +1,6 @@
 use crate::models::VsCodeTask;
 use crate::platform::PlatformInfo;
-use crate::scanners::{is_git_tracked, read_bounded, Scanner};
+use crate::scanners::{Scanner, is_git_tracked, read_bounded};
 use std::path::{Path, PathBuf};
 
 /// Scans `.vscode/tasks.json` for tasks that execute automatically when a folder is
@@ -86,11 +86,7 @@ fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
             .unwrap_or("(unlabeled)")
             .to_string();
         // The executed text is `command` plus any args.
-        let mut command = task
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let mut command = task.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if let Some(args) = task.get("args").and_then(|a| a.as_array()) {
             for a in args.iter().filter_map(|v| v.as_str()) {
                 command.push(' ');
@@ -103,8 +99,7 @@ fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
         // Reuse the hook classifier: a folderOpen task pointing into an agent-config
         // directory is the mirror image of an agent hook pointing into .vscode/.
         let risks = crate::scanners::agent_settings::classify_hook_command(&command, path);
-        let dangerous =
-            !crate::scanners::rules_files::check_dangerous_patterns(&command).is_empty();
+        let dangerous = !crate::scanners::rules_files::check_dangerous_patterns(&command).is_empty();
         out.push(VsCodeTask {
             path: path.to_string_lossy().to_string(),
             label: crate::scanners::sanitize_display(&label, 128),
@@ -169,9 +164,10 @@ pub fn strip_jsonc(input: &str) -> String {
     for (i, &c) in bytes.iter().enumerate() {
         if c == ','
             && let Some(&next) = bytes[i + 1..].iter().find(|c| !c.is_whitespace())
-                && (next == '}' || next == ']') {
-                    continue;
-                }
+            && (next == '}' || next == ']')
+        {
+            continue;
+        }
         cleaned.push(c);
     }
     cleaned

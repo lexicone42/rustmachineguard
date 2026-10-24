@@ -48,9 +48,18 @@ fn chromium_profile_dirs(home: &Path) -> Vec<(String, PathBuf)> {
 
     #[cfg(target_os = "macos")]
     {
-        dirs.push(("Chrome".to_string(), home.join("Library/Application Support/Google/Chrome")));
-        dirs.push(("Edge".to_string(), home.join("Library/Application Support/Microsoft Edge")));
-        dirs.push(("Brave".to_string(), home.join("Library/Application Support/BraveSoftware/Brave-Browser")));
+        dirs.push((
+            "Chrome".to_string(),
+            home.join("Library/Application Support/Google/Chrome"),
+        ));
+        dirs.push((
+            "Edge".to_string(),
+            home.join("Library/Application Support/Microsoft Edge"),
+        ));
+        dirs.push((
+            "Brave".to_string(),
+            home.join("Library/Application Support/BraveSoftware/Brave-Browser"),
+        ));
         dirs.push(("Vivaldi".to_string(), home.join("Library/Application Support/Vivaldi")));
     }
 
@@ -102,9 +111,10 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             // Chrome names version dirs `<version>_<n>` and may hold two across an
             // update. Compare numerically: as strings, "24.10.4_0" sorts above
             // "24.10.10_0", which mis-reported the live version and broke range rows.
-            let Some(latest) = version_dirs.into_iter().max_by_key(|e| {
-                version_dir_key(&e.file_name().to_string_lossy())
-            }) else {
+            let Some(latest) = version_dirs
+                .into_iter()
+                .max_by_key(|e| version_dir_key(&e.file_name().to_string_lossy()))
+            else {
                 continue;
             };
 
@@ -131,7 +141,11 @@ fn scan_chromium_profiles(base: &PathBuf, browser: &str, results: &mut Vec<Brows
             // locale file are the extension's own). Sanitize and validate them here so
             // no control character or forged "clean" line can reach the terminal.
             let name = resolve_i18n_name(raw_name, &latest.path(), &manifest).unwrap_or_else(|| {
-                if raw_name.starts_with("__MSG_") { ext_id.clone() } else { raw_name.to_string() }
+                if raw_name.starts_with("__MSG_") {
+                    ext_id.clone()
+                } else {
+                    raw_name.to_string()
+                }
             });
             let name = crate::scanners::sanitize_display(&name, 128);
             let version = manifest
@@ -198,11 +212,7 @@ fn scan_firefox_profiles(profiles_dir: &PathBuf, results: &mut Vec<BrowserExtens
                 continue;
             }
 
-            let id = addon
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let id = addon.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let name = addon
                 .get("defaultLocale")
                 .and_then(|v| v.get("name"))
@@ -245,7 +255,10 @@ fn version_dir_key(dir_name: &str) -> (Vec<u64>, u64) {
     // is the reinstall, `_0` the stale copy. Without it max_by_key fell back to
     // read_dir order, which is filesystem-dependent.
     (
-        version.split('.').map(|part| part.parse::<u64>().unwrap_or(0)).collect(),
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect(),
         counter.parse::<u64>().unwrap_or(0),
     )
 }
@@ -292,6 +305,5 @@ fn is_locale_code(s: &str) -> bool {
     let (lang, region) = s.split_once('_').unwrap_or((s, ""));
     (2..=3).contains(&lang.len())
         && lang.chars().all(|c| c.is_ascii_alphabetic())
-        && (region.is_empty()
-            || ((2..=8).contains(&region.len()) && region.chars().all(|c| c.is_ascii_alphanumeric())))
+        && (region.is_empty() || ((2..=8).contains(&region.len()) && region.chars().all(|c| c.is_ascii_alphanumeric())))
 }

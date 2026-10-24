@@ -1,4 +1,4 @@
-use crate::analysis::{collect_findings, Finding, Severity};
+use crate::analysis::{Finding, Severity, collect_findings};
 use crate::models::ScanReport;
 
 pub fn render(report: &ScanReport) -> String {
@@ -143,8 +143,7 @@ fn render_risk_pills(findings: &[Finding]) -> String {
 
 fn render_findings(findings: &[Finding]) -> String {
     if findings.is_empty() {
-        return r#"<div class="clean">✓ No actionable security findings on this machine.</div>"#
-            .to_string();
+        return r#"<div class="clean">✓ No actionable security findings on this machine.</div>"#.to_string();
     }
     let mut html = String::from(
         r#"<div class="findings-toolbar"><button type="button" onclick="rmToggleAll(true)">Expand all</button><button type="button" onclick="rmToggleAll(false)">Collapse all</button></div>"#,
@@ -159,7 +158,11 @@ fn render_findings(findings: &[Finding]) -> String {
             Some(ev) => format!(
                 r#"<div class="evidence"><div class="label">{}</div><code>{}</code></div>"#,
                 // A symlink's evidence is where it points, not something that runs.
-                if f.category == "Skill symlink" { "Link target" } else { "Offending command" },
+                if f.category == "Skill symlink" {
+                    "Link target"
+                } else {
+                    "Offending command"
+                },
                 html_escape(ev)
             ),
             None => String::new(),
@@ -167,10 +170,7 @@ fn render_findings(findings: &[Finding]) -> String {
         let reference = if g.reference.is_empty() {
             String::new()
         } else {
-            format!(
-                r#"<div class="ref">Reference: {}</div>"#,
-                html_escape(g.reference)
-            )
+            format!(r#"<div class="ref">Reference: {}</div>"#, html_escape(g.reference))
         };
 
         html.push_str(&format!(
@@ -220,7 +220,10 @@ fn render_summary(s: &crate::models::Summary) -> String {
 
 /// Open a detail card with a header + table header row.
 fn card_open(html: &mut String, title: &str, cols: &[&str]) {
-    html.push_str(&format!(r#"<div class="card"><h2>{}</h2><table><tr>"#, html_escape(title)));
+    html.push_str(&format!(
+        r#"<div class="card"><h2>{}</h2><table><tr>"#,
+        html_escape(title)
+    ));
     for c in cols {
         html.push_str(&format!("<th>{}</th>", html_escape(c)));
     }
@@ -232,12 +235,19 @@ fn render_sections(report: &ScanReport) -> String {
 
     // Exposure findings — highest priority detail.
     if !report.exposure_findings.is_empty() {
-        card_open(&mut html, "Threat Catalog Matches", &["Package", "Version", "Advisory", "Found In"]);
+        card_open(
+            &mut html,
+            "Threat Catalog Matches",
+            &["Package", "Version", "Advisory", "Found In"],
+        );
         for e in &report.exposure_findings {
             html.push_str(&format!(
                 "<tr><td class=\"warn\">{}/{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&e.ecosystem), html_escape(&e.name), html_escape(&e.version),
-                html_escape(&e.advisory), html_escape(&e.found_in)
+                html_escape(&e.ecosystem),
+                html_escape(&e.name),
+                html_escape(&e.version),
+                html_escape(&e.advisory),
+                html_escape(&e.found_in)
             ));
         }
         html.push_str("</table></div>");
@@ -245,25 +255,53 @@ fn render_sections(report: &ScanReport) -> String {
 
     // Agent settings + hooks.
     if !report.agent_settings.is_empty() {
-        card_open(&mut html, "Agent Settings & Hooks", &["File", "Source", "Mode", "Auto-approve", "Hooks"]);
+        card_open(
+            &mut html,
+            "Agent Settings & Hooks",
+            &["File", "Source", "Mode", "Auto-approve", "Hooks"],
+        );
         for s in &report.agent_settings {
-            let auto = if s.auto_approve_mcp { r#"<span class="warn">yes</span>"# } else { "no" };
+            let auto = if s.auto_approve_mcp {
+                r#"<span class="warn">yes</span>"#
+            } else {
+                "no"
+            };
             let hooks = if let Some(l) = &s.symlink {
                 format!("symlink to {}, not read", html_escape(&l.target))
             } else if s.hooks.is_empty() {
                 "-".to_string()
             } else {
-                s.hooks.iter().map(|h| {
-                    let d = if h.dangerous { " ⚠" } else { "" };
-                    let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", html_escape(&h.kind)) };
-                    let cond = h.condition.as_deref().map(|c| format!(" if {}", html_escape(c))).unwrap_or_default();
-                    let off = match (h.disabled, &h.disabled_reason) {
-                        (true, Some(r)) => format!(" (disabled: {})", html_escape(r)),
-                        (true, None) => " (disabled)".to_string(),
-                        _ => String::new(),
-                    };
-                    format!("{}[{}{}]{}{}{}", html_escape(&h.event), html_escape(h.matcher.as_deref().unwrap_or("*")), cond, kind, off, d)
-                }).collect::<Vec<_>>().join(", ")
+                s.hooks
+                    .iter()
+                    .map(|h| {
+                        let d = if h.dangerous { " ⚠" } else { "" };
+                        let kind = if h.kind.is_empty() || h.kind == "command" {
+                            String::new()
+                        } else {
+                            format!(" ({})", html_escape(&h.kind))
+                        };
+                        let cond = h
+                            .condition
+                            .as_deref()
+                            .map(|c| format!(" if {}", html_escape(c)))
+                            .unwrap_or_default();
+                        let off = match (h.disabled, &h.disabled_reason) {
+                            (true, Some(r)) => format!(" (disabled: {})", html_escape(r)),
+                            (true, None) => " (disabled)".to_string(),
+                            _ => String::new(),
+                        };
+                        format!(
+                            "{}[{}{}]{}{}{}",
+                            html_escape(&h.event),
+                            html_escape(h.matcher.as_deref().unwrap_or("*")),
+                            cond,
+                            kind,
+                            off,
+                            d
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -272,7 +310,9 @@ fn render_sections(report: &ScanReport) -> String {
                     Some(_) => format!("{} (inactive plugin)", s.source),
                     None => s.source.clone(),
                 }),
-                html_escape(s.permission_mode.as_deref().unwrap_or("-")), auto, hooks
+                html_escape(s.permission_mode.as_deref().unwrap_or("-")),
+                auto,
+                hooks
             ));
         }
         html.push_str("</table></div>");
@@ -283,13 +323,19 @@ fn render_sections(report: &ScanReport) -> String {
         card_open(&mut html, "AI Credentials", &["Provider", "Type", "Perms", "Path"]);
         for c in &report.ai_credentials {
             let perm = if c.world_readable {
-                format!(r#"<span class="warn">{} world-readable</span>"#, html_escape(c.permissions.as_deref().unwrap_or("?")))
+                format!(
+                    r#"<span class="warn">{} world-readable</span>"#,
+                    html_escape(c.permissions.as_deref().unwrap_or("?"))
+                )
             } else {
                 html_escape(c.permissions.as_deref().unwrap_or("?"))
             };
             html.push_str(&format!(
                 "<tr><td>{}</td><td class=\"dim\">{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&c.provider), html_escape(&c.credential_type), perm, html_escape(&c.path)
+                html_escape(&c.provider),
+                html_escape(&c.credential_type),
+                perm,
+                html_escape(&c.path)
             ));
         }
         html.push_str("</table></div>");
@@ -300,12 +346,23 @@ fn render_sections(report: &ScanReport) -> String {
         card_open(&mut html, ".env Files", &["Path", "Keys", "Flags", "Secret keys"]);
         for e in &report.env_files {
             let mut flags = Vec::new();
-            if e.git_tracked { flags.push(r#"<span class="warn">git-tracked</span>"#.to_string()); }
-            if e.world_readable { flags.push(r#"<span class="warn">world-readable</span>"#.to_string()); }
-            let flag_str = if flags.is_empty() { "-".to_string() } else { flags.join(", ") };
+            if e.git_tracked {
+                flags.push(r#"<span class="warn">git-tracked</span>"#.to_string());
+            }
+            if e.world_readable {
+                flags.push(r#"<span class="warn">world-readable</span>"#.to_string());
+            }
+            let flag_str = if flags.is_empty() {
+                "-".to_string()
+            } else {
+                flags.join(", ")
+            };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&e.path), e.key_count, flag_str, html_escape(&e.secret_keys.join(", "))
+                html_escape(&e.path),
+                e.key_count,
+                flag_str,
+                html_escape(&e.secret_keys.join(", "))
             ));
         }
         html.push_str("</table></div>");
@@ -319,12 +376,19 @@ fn render_sections(report: &ScanReport) -> String {
             let findings = if rf.findings.is_empty() {
                 "-".to_string()
             } else {
-                rf.findings.iter().map(|f| format!("{}: {}", html_escape(&f.severity), html_escape(&f.pattern))).collect::<Vec<_>>().join("; ")
+                rf.findings
+                    .iter()
+                    .map(|f| format!("{}: {}", html_escape(&f.severity), html_escape(&f.pattern)))
+                    .collect::<Vec<_>>()
+                    .join("; ")
             };
             let cls = if rf.findings.is_empty() { "dim" } else { "warn" };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td class=\"{}\">{}</td></tr>",
-                html_escape(&rf.path), git, cls, findings
+                html_escape(&rf.path),
+                git,
+                cls,
+                findings
             ));
         }
         html.push_str("</table></div>");
@@ -332,13 +396,24 @@ fn render_sections(report: &ScanReport) -> String {
 
     // AI Tools.
     if !report.ai_agents_and_tools.is_empty() {
-        card_open(&mut html, "AI Agents & Tools", &["Name", "Vendor", "Type", "Version", "Status"]);
+        card_open(
+            &mut html,
+            "AI Agents & Tools",
+            &["Name", "Vendor", "Type", "Version", "Status"],
+        );
         for t in &report.ai_agents_and_tools {
-            let status = if t.is_running { r#"<span class="running">● running</span>"# } else { r#"<span class="not-running">○</span>"# };
+            let status = if t.is_running {
+                r#"<span class="running">● running</span>"#
+            } else {
+                r#"<span class="not-running">○</span>"#
+            };
             html.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td><td>{}</td></tr>",
-                html_escape(&t.name), html_escape(&t.vendor), html_escape(&format!("{:?}", t.tool_type)),
-                html_escape(t.version.as_deref().unwrap_or("-")), status
+                html_escape(&t.name),
+                html_escape(&t.vendor),
+                html_escape(&format!("{:?}", t.tool_type)),
+                html_escape(t.version.as_deref().unwrap_or("-")),
+                status
             ));
         }
         html.push_str("</table></div>");
@@ -346,12 +421,18 @@ fn render_sections(report: &ScanReport) -> String {
 
     // MCP configs.
     if !report.mcp_configs.is_empty() {
-        card_open(&mut html, "MCP Configurations", &["Source", "Vendor", "Servers", "Server Names"]);
+        card_open(
+            &mut html,
+            "MCP Configurations",
+            &["Source", "Vendor", "Servers", "Server Names"],
+        );
         for mcp in &report.mcp_configs {
             html.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td class=\"count\">{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&mcp.config_source), html_escape(&mcp.vendor),
-                mcp.server_count, html_escape(&mcp.server_names.join(", "))
+                html_escape(&mcp.config_source),
+                html_escape(&mcp.vendor),
+                mcp.server_count,
+                html_escape(&mcp.server_names.join(", "))
             ));
         }
         html.push_str("</table></div>");
@@ -368,7 +449,9 @@ fn render_sections(report: &ScanReport) -> String {
             };
             html.push_str(&format!(
                 "<tr><td class=\"dim\">{}</td><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&key.path), html_escape(&key.key_type), pp,
+                html_escape(&key.path),
+                html_escape(&key.key_type),
+                pp,
                 html_escape(key.comment.as_deref().unwrap_or("-"))
             ));
         }
@@ -381,7 +464,8 @@ fn render_sections(report: &ScanReport) -> String {
         for cred in &report.cloud_credentials {
             html.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td class=\"dim\">{}</td></tr>",
-                html_escape(&cred.provider), html_escape(&cred.credential_type),
+                html_escape(&cred.provider),
+                html_escape(&cred.credential_type),
                 html_escape(&cred.profiles.join(", "))
             ));
         }

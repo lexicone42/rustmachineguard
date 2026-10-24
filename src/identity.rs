@@ -46,7 +46,9 @@ const SPIFFE_SOCKETS: &[&str] = &[
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SpiffeStatus {
     /// SPIFFE workload identity infrastructure is present (short-lived SVIDs available).
-    Present { source: String },
+    Present {
+        source: String,
+    },
     Absent,
 }
 
@@ -73,11 +75,12 @@ impl AgentIdentity {
 /// socket paths, or a `spire-agent` binary). Reads the live environment/filesystem.
 pub fn detect_spiffe() -> SpiffeStatus {
     if let Ok(sock) = std::env::var("SPIFFE_ENDPOINT_SOCKET")
-        && !sock.is_empty() {
-            return SpiffeStatus::Present {
-                source: "SPIFFE_ENDPOINT_SOCKET env".into(),
-            };
-        }
+        && !sock.is_empty()
+    {
+        return SpiffeStatus::Present {
+            source: "SPIFFE_ENDPOINT_SOCKET env".into(),
+        };
+    }
     for path in SPIFFE_SOCKETS {
         if std::path::Path::new(path).exists() {
             return SpiffeStatus::Present {

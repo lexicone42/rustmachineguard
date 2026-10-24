@@ -142,10 +142,18 @@ fn render_inner(report: &ScanReport) -> String {
         out.push_str(&format!("  {:>35}  {}\n", format!("{framework} ·").dimmed(), n));
     }
     if s.agent_hooks_inactive_count > 0 {
-        out.push_str(&format!("  {:>35}  {}\n", "of which inactive (never run) ·".dimmed(), s.agent_hooks_inactive_count));
+        out.push_str(&format!(
+            "  {:>35}  {}\n",
+            "of which inactive (never run) ·".dimmed(),
+            s.agent_hooks_inactive_count
+        ));
     }
     if s.agent_settings_commands_count > 0 {
-        out.push_str(&format!("  {:>35}  {}\n", "of which settings commands ·".dimmed(), s.agent_settings_commands_count));
+        out.push_str(&format!(
+            "  {:>35}  {}\n",
+            "of which settings commands ·".dimmed(),
+            s.agent_settings_commands_count
+        ));
     }
     summary_line(&mut out, "AI Credentials", s.ai_credentials_count);
     summary_line(&mut out, ".env Files", s.env_files_count);
@@ -181,14 +189,9 @@ fn render_inner(report: &ScanReport) -> String {
             "source".yellow(),
             "sink".yellow()
         ));
-        out.push_str(&format!(
-            "    sources: {}\n",
-            tf.sources.join(", ").yellow()
-        ));
+        out.push_str(&format!("    sources: {}\n", tf.sources.join(", ").yellow()));
         out.push_str(&format!("    sinks:   {}\n", tf.sinks.join(", ").yellow()));
-        out.push_str(
-            "    Any prompt injection reaching the agent could read private data and exfiltrate it.\n",
-        );
+        out.push_str("    Any prompt injection reaching the agent could read private data and exfiltrate it.\n");
         out.push('\n');
     }
 
@@ -201,12 +204,7 @@ fn render_inner(report: &ScanReport) -> String {
             } else {
                 " ○".dimmed().to_string()
             };
-            let version = tool
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
+            let version = tool.version.as_deref().unwrap_or("unknown").dimmed().to_string();
             out.push_str(&format!(
                 "  {} {} ({}) [{}]{}\n",
                 "→".cyan(),
@@ -231,12 +229,7 @@ fn render_inner(report: &ScanReport) -> String {
             } else {
                 " ○".dimmed().to_string()
             };
-            let version = fw
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
+            let version = fw.version.as_deref().unwrap_or("unknown").dimmed().to_string();
             out.push_str(&format!(
                 "  {} {} ({}) [{}]{}\n",
                 "→".cyan(),
@@ -253,12 +246,7 @@ fn render_inner(report: &ScanReport) -> String {
     if !report.ide_installations.is_empty() {
         section_header(&mut out, "IDE Installations");
         for ide in &report.ide_installations {
-            let version = ide
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
+            let version = ide.version.as_deref().unwrap_or("unknown").dimmed().to_string();
             out.push_str(&format!(
                 "  {} {} ({}) [{}]\n",
                 "→".cyan(),
@@ -337,18 +325,8 @@ fn render_inner(report: &ScanReport) -> String {
     if !report.node_package_managers.is_empty() {
         section_header(&mut out, "Node.js / Package Managers");
         for pm in &report.node_package_managers {
-            let version = pm
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
-            out.push_str(&format!(
-                "  {} {} ({})\n",
-                "→".cyan(),
-                pm.name.bold(),
-                version,
-            ));
+            let version = pm.version.as_deref().unwrap_or("unknown").dimmed().to_string();
+            out.push_str(&format!("  {} {} ({})\n", "→".cyan(), pm.name.bold(), version,));
         }
         out.push('\n');
     }
@@ -379,11 +357,7 @@ fn render_inner(report: &ScanReport) -> String {
                 crate::models::PassphraseStatus::NoPassphrase => "NO PASSPHRASE".red().bold().to_string(),
                 crate::models::PassphraseStatus::Unknown => "unknown".yellow().to_string(),
             };
-            let comment = key
-                .comment
-                .as_deref()
-                .map(|c| format!(" ({c})"))
-                .unwrap_or_default();
+            let comment = key.comment.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
             out.push_str(&format!(
                 "  {} {} [{}] {}{}\n",
                 "→".cyan(),
@@ -408,10 +382,7 @@ fn render_inner(report: &ScanReport) -> String {
             ));
             out.push_str(&format!("    {}\n", cred.config_path.dimmed()));
             if !cred.profiles.is_empty() {
-                out.push_str(&format!(
-                    "    profiles: {}\n",
-                    cred.profiles.join(", ")
-                ));
+                out.push_str(&format!("    profiles: {}\n", cred.profiles.join(", ")));
             }
         }
         out.push('\n');
@@ -426,12 +397,7 @@ fn render_inner(report: &ScanReport) -> String {
             } else {
                 " ○".dimmed().to_string()
             };
-            let version = ct
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
+            let version = ct.version.as_deref().unwrap_or("unknown").dimmed().to_string();
             out.push_str(&format!(
                 "  {} {} ({}){}\n",
                 "→".cyan(),
@@ -452,12 +418,7 @@ fn render_inner(report: &ScanReport) -> String {
             } else {
                 " ○".dimmed().to_string()
             };
-            let version = ns
-                .version
-                .as_deref()
-                .unwrap_or("unknown")
-                .dimmed()
-                .to_string();
+            let version = ns.version.as_deref().unwrap_or("unknown").dimmed().to_string();
             out.push_str(&format!(
                 "  {} {} ({}){}\n",
                 "→".cyan(),
@@ -471,7 +432,10 @@ fn render_inner(report: &ScanReport) -> String {
 
     // Browser Extensions
     if !report.browser_extensions.is_empty() {
-        section_header(&mut out, &format!("Browser Extensions ({})", report.browser_extensions.len()));
+        section_header(
+            &mut out,
+            &format!("Browser Extensions ({})", report.browser_extensions.len()),
+        );
         let mut by_browser: std::collections::BTreeMap<&str, Vec<&crate::models::BrowserExtension>> =
             std::collections::BTreeMap::new();
         for ext in &report.browser_extensions {
@@ -597,10 +561,7 @@ fn render_inner(report: &ScanReport) -> String {
 
     // Agent Settings (hooks + auto-approval)
     if !report.agent_settings.is_empty() {
-        section_header(
-            &mut out,
-            &format!("Agent Settings ({})", report.agent_settings.len()),
-        );
+        section_header(&mut out, &format!("Agent Settings ({})", report.agent_settings.len()));
         for s in &report.agent_settings {
             let tracked = if s.git_tracked {
                 " [git-tracked]".red().to_string()
@@ -660,7 +621,11 @@ fn render_inner(report: &ScanReport) -> String {
                     None => h.matcher.as_deref().unwrap_or("*").to_string(),
                 };
                 let cmd_preview: String = h.command.chars().take(70).collect();
-                let kind = if h.kind.is_empty() || h.kind == "command" { String::new() } else { format!(" ({})", h.kind) };
+                let kind = if h.kind.is_empty() || h.kind == "command" {
+                    String::new()
+                } else {
+                    format!(" ({})", h.kind)
+                };
                 let plugin = match s.provenance.as_ref() {
                     Some(pr) if pr.plugin.is_some() && pr.marketplace.is_some() => {
                         let off = if pr.active { "" } else { ", inactive" };
@@ -706,10 +671,7 @@ fn render_inner(report: &ScanReport) -> String {
 
     // AI Credentials (at-rest tokens)
     if !report.ai_credentials.is_empty() {
-        section_header(
-            &mut out,
-            &format!("AI Credentials ({})", report.ai_credentials.len()),
-        );
+        section_header(&mut out, &format!("AI Credentials ({})", report.ai_credentials.len()));
         for c in &report.ai_credentials {
             let perm = c.permissions.as_deref().unwrap_or("?");
             let warn = if c.world_readable {
@@ -767,10 +729,7 @@ fn render_inner(report: &ScanReport) -> String {
 
     // Agent transcript / conversation-state stores (EAA-005 collection surface)
     if !report.transcripts.is_empty() {
-        section_header(
-            &mut out,
-            &format!("Transcript Stores ({})", report.transcripts.len()),
-        );
+        section_header(&mut out, &format!("Transcript Stores ({})", report.transcripts.len()));
         for t in &report.transcripts {
             let warn = if t.world_readable {
                 " WORLD-READABLE".red().bold().to_string()
@@ -853,9 +812,7 @@ fn render_inner(report: &ScanReport) -> String {
                     "present".green(),
                     source.dimmed()
                 )),
-                SpiffeStatus::Absent => {
-                    out.push_str(&format!("  workload identity (SPIFFE): {}\n", "absent".dimmed()))
-                }
+                SpiffeStatus::Absent => out.push_str(&format!("  workload identity (SPIFFE): {}\n", "absent".dimmed())),
             }
             if id.static_only() {
                 out.push_str(&format!(
@@ -879,11 +836,17 @@ fn render_inner(report: &ScanReport) -> String {
         );
         for c in &report.mcp_registry_checks {
             let (mark, desc) = match &c.verdict {
-                RegistryVerdict::Registered { publisher, deprecated: false } => (
+                RegistryVerdict::Registered {
+                    publisher,
+                    deprecated: false,
+                } => (
                     "✓".green().to_string(),
                     format!("registered · publisher {}", publisher.dimmed()),
                 ),
-                RegistryVerdict::Registered { publisher, deprecated: true } => (
+                RegistryVerdict::Registered {
+                    publisher,
+                    deprecated: true,
+                } => (
                     "!".red().bold().to_string(),
                     format!("{} · publisher {}", "DEPRECATED".red().bold(), publisher.dimmed()),
                 ),
@@ -891,15 +854,14 @@ fn render_inner(report: &ScanReport) -> String {
                     "!".red().bold().to_string(),
                     format!("{} of {}", "possible typosquat".red(), registered_as.dimmed()),
                 ),
-                RegistryVerdict::Unregistered => {
-                    ("?".yellow().to_string(), "not in registry (unverified)".dimmed().to_string())
-                }
+                RegistryVerdict::Unregistered => (
+                    "?".yellow().to_string(),
+                    "not in registry (unverified)".dimmed().to_string(),
+                ),
                 RegistryVerdict::NoPackageIdentity => {
                     ("·".dimmed().to_string(), "no package identity".dimmed().to_string())
                 }
-                RegistryVerdict::LookupFailed => {
-                    ("·".dimmed().to_string(), "lookup failed".dimmed().to_string())
-                }
+                RegistryVerdict::LookupFailed => ("·".dimmed().to_string(), "lookup failed".dimmed().to_string()),
             };
             out.push_str(&format!("  {} {} — {}\n", mark, c.server_name.bold(), desc));
         }
@@ -914,13 +876,7 @@ fn render_inner(report: &ScanReport) -> String {
                 let info = probe
                     .server_info
                     .as_ref()
-                    .map(|i| {
-                        format!(
-                            "{} {}",
-                            i.name,
-                            i.version.as_deref().unwrap_or("?")
-                        )
-                    })
+                    .map(|i| format!("{} {}", i.name, i.version.as_deref().unwrap_or("?")))
                     .unwrap_or_else(|| "unknown".to_string());
                 out.push_str(&format!(
                     "  {} {} ({})\n",
@@ -972,10 +928,10 @@ fn render_inner(report: &ScanReport) -> String {
 
     // Exposure Findings
     if !report.exposure_findings.is_empty() {
-        section_header(&mut out, &format!(
-            "⚠ EXPOSURE FINDINGS ({}) ⚠",
-            report.exposure_findings.len()
-        ));
+        section_header(
+            &mut out,
+            &format!("⚠ EXPOSURE FINDINGS ({}) ⚠", report.exposure_findings.len()),
+        );
         for finding in &report.exposure_findings {
             out.push_str(&format!(
                 "  {} {}:{} @ {} — {}\n",
@@ -1004,10 +960,7 @@ fn render_inner(report: &ScanReport) -> String {
         out.push('\n');
     }
 
-    out.push_str(&format!(
-        "{}\n",
-        "Scan complete.".bold().green()
-    ));
+    out.push_str(&format!("{}\n", "Scan complete.".bold().green()));
 
     out
 }
@@ -1018,7 +971,8 @@ fn render_inner(report: &ScanReport) -> String {
 fn renderer_sgr(params: &str) -> bool {
     params.split(';').all(|p| {
         p.is_empty()
-            || p.parse::<u8>().is_ok_and(|n| matches!(n, 0..=4 | 22..=24 | 31..=37 | 39 | 91..=97))
+            || p.parse::<u8>()
+                .is_ok_and(|n| matches!(n, 0..=4 | 22..=24 | 31..=37 | 39 | 91..=97))
     })
 }
 
@@ -1056,23 +1010,22 @@ pub fn scrub_terminal(s: &str) -> String {
 /// (`--diff`) or when the defanged copy could not be made.
 pub fn scrub_all(s: &str) -> String {
     s.chars()
-        .map(|c| if (c.is_control() && c != '\n' && c != '\t') || (bad_data_char(c) && c != '\n') { '?' } else { c })
+        .map(|c| {
+            if (c.is_control() && c != '\n' && c != '\t') || (bad_data_char(c) && c != '\n') {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
 fn section_header(out: &mut String, title: &str) {
-    out.push_str(&format!(
-        "  {}\n",
-        format!("── {title} ──").bold().cyan()
-    ));
+    out.push_str(&format!("  {}\n", format!("── {title} ──").bold().cyan()));
 }
 
 fn kv(out: &mut String, key: &str, value: &str) {
-    out.push_str(&format!(
-        "  {:>14}  {}\n",
-        key.dimmed(),
-        value
-    ));
+    out.push_str(&format!("  {:>14}  {}\n", key.dimmed(), value));
 }
 
 fn summary_line(out: &mut String, label: &str, count: usize) {
@@ -1128,11 +1081,7 @@ fn render_diagnostics_inner(report: &ScanReport) -> String {
         } else {
             "ok"
         };
-        let root = d
-            .root
-            .as_deref()
-            .map(|r| format!("  ({r})"))
-            .unwrap_or_default();
+        let root = d.root.as_deref().map(|r| format!("  ({r})")).unwrap_or_default();
         let partial = if d.truncated { " partial" } else { "" };
         out.push_str(&format!(
             "  {:<13} {:>7} {:>6} {:>8} {:>6}  {status}{partial}{root}\n",

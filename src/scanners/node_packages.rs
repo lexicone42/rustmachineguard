@@ -1,7 +1,7 @@
 use crate::models::NodePackageManager;
 use crate::otel::{self, Attr, Key};
 use crate::platform::PlatformInfo;
-use crate::scanners::{extract_version, get_binary_version, Scanner};
+use crate::scanners::{Scanner, extract_version, get_binary_version};
 use std::path::Path;
 
 pub struct NodePackagesScanner;
@@ -27,7 +27,11 @@ impl Scanner for NodePackagesScanner {
         for (name, bin_names, js) in PACKAGE_MANAGERS {
             for bin_name in *bin_names {
                 if let Ok(path) = which::which(bin_name) {
-                    let version = if *js { js_tool_version(bin_name, &path) } else { get_binary_version(bin_name) };
+                    let version = if *js {
+                        js_tool_version(bin_name, &path)
+                    } else {
+                        get_binary_version(bin_name)
+                    };
                     results.push(NodePackageManager {
                         name: name.to_string(),
                         version,
@@ -60,10 +64,18 @@ impl Scanner for NodePackagesScanner {
 /// not and the `exec.version_probe` that follows, a sibling under `scanner.node`, does).
 fn js_tool_version(tool: &str, path: &Path) -> Option<String> {
     let mut span = otel::span("version.read", || {
-        vec![Attr::str(Key::ExecProgram, otel::exec_program(std::ffi::OsStr::new(tool)))]
+        vec![Attr::str(
+            Key::ExecProgram,
+            otel::exec_program(std::ffi::OsStr::new(tool)),
+        )]
     });
     let read = package_json_version(path, tool);
-    span.set(|| vec![Attr::str(Key::VersionSource, if read.is_some() { "package_json" } else { "spawn" })]);
+    span.set(|| {
+        vec![Attr::str(
+            Key::VersionSource,
+            if read.is_some() { "package_json" } else { "spawn" },
+        )]
+    });
     drop(span);
     read.or_else(|| get_binary_version(tool))
 }
@@ -115,14 +127,21 @@ fn is_semver_text(v: &str) -> bool {
     };
     let parts: Vec<&str> = core.split('.').collect();
     parts.len() == 3
-        && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
 }
 
 /// Binaries rmguard may run, for the telemetry test in `crate::scanners`.
 #[cfg(test)]
 pub(crate) fn spawned_binaries() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = PACKAGE_MANAGERS.iter().flat_map(|(_, b, _)| b.iter().copied()).collect();
+    let mut v: Vec<&'static str> = PACKAGE_MANAGERS
+        .iter()
+        .flat_map(|(_, b, _)| b.iter().copied())
+        .collect();
     v.push("node");
     v
 }
@@ -145,21 +164,32 @@ mod tests {
             p
         };
         let cli = put("g/node_modules/npm/bin/npm-cli.js", "");
-        put("g/node_modules/npm/package.json", r#"{"name":"npm","version":"11.9.0"}"#);
+        put(
+            "g/node_modules/npm/package.json",
+            r#"{"name":"npm","version":"11.9.0"}"#,
+        );
         let link = root.join("bin-npm");
         std::os::unix::fs::symlink(&cli, &link).unwrap();
         assert_eq!(package_json_version(&link, "npm").as_deref(), Some("11.9.0"));
         assert_eq!(package_json_version(&cli, "npm").as_deref(), Some("11.9.0"));
         // Another tool's package (a corepack shim), the wrong expected name, no node_modules.
         let shim = put("g/node_modules/corepack/shims/pnpm", "");
-        put("g/node_modules/corepack/package.json", r#"{"name":"corepack","version":"0.34.0"}"#);
+        put(
+            "g/node_modules/corepack/package.json",
+            r#"{"name":"corepack","version":"0.34.0"}"#,
+        );
         assert_eq!(package_json_version(&shim, "pnpm"), None);
         assert_eq!(package_json_version(&cli, "pnpm"), None);
         let plain = put("opt/pnpm/pnpm", "");
         put("opt/pnpm/package.json", r#"{"name":"pnpm","version":"10.0.0"}"#);
         assert_eq!(package_json_version(&plain, "pnpm"), None);
         // A version that is not plain semver, or not a string.
-        for bad in [r#"{"name":"yarn","version":"1.22.22\u001b[31m"}"#, r#"{"name":"yarn","version":"latest"}"#, r#"{"name":"yarn","version":1}"#, r#"{"name":"yarn"}"#] {
+        for bad in [
+            r#"{"name":"yarn","version":"1.22.22\u001b[31m"}"#,
+            r#"{"name":"yarn","version":"latest"}"#,
+            r#"{"name":"yarn","version":1}"#,
+            r#"{"name":"yarn"}"#,
+        ] {
             let y = put("g/node_modules/yarn/bin/yarn.js", "");
             put("g/node_modules/yarn/package.json", bad);
             assert_eq!(package_json_version(&y, "yarn"), None, "{bad}");
@@ -169,10 +199,28 @@ mod tests {
 
     #[test]
     fn semver_text_is_plain() {
-        for ok in ["10.28.1", "11.9.0", "1.22.22", "4.0.0-rc.1", "1.0.0+build.5", "1.0.0-beta-2+x"] {
+        for ok in [
+            "10.28.1",
+            "11.9.0",
+            "1.22.22",
+            "4.0.0-rc.1",
+            "1.0.0+build.5",
+            "1.0.0-beta-2+x",
+        ] {
             assert!(is_semver_text(ok), "{ok}");
         }
-        for bad in ["", "1.2", "1.2.3.4", "v1.2.3", "1.2.x", "1.2.3 ", "1.2.3-\u{1b}[31m", "1.2.3\n", "01.2.3-é", &"9".repeat(65)] {
+        for bad in [
+            "",
+            "1.2",
+            "1.2.3.4",
+            "v1.2.3",
+            "1.2.x",
+            "1.2.3 ",
+            "1.2.3-\u{1b}[31m",
+            "1.2.3\n",
+            "01.2.3-é",
+            &"9".repeat(65),
+        ] {
             assert!(!is_semver_text(bad), "{bad:?}");
         }
     }

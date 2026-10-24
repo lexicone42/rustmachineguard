@@ -1,6 +1,6 @@
 use crate::models::ContainerTool;
 use crate::platform::PlatformInfo;
-use crate::scanners::{get_binary_version, is_process_running, Scanner};
+use crate::scanners::{Scanner, get_binary_version, is_process_running};
 
 pub struct ContainerToolsScanner;
 
@@ -76,5 +76,8 @@ impl Scanner for ContainerToolsScanner {
 /// process-snapshot tests in `crate::scanners`.
 #[cfg(test)]
 pub(crate) fn spawn_and_process_names() -> (Vec<&'static str>, Vec<&'static str>) {
-    (CONTAINER_TOOLS.iter().map(|d| d.binary).collect(), CONTAINER_TOOLS.iter().map(|d| d.process_name).collect())
+    (
+        CONTAINER_TOOLS.iter().map(|d| d.binary).collect(),
+        CONTAINER_TOOLS.iter().map(|d| d.process_name).collect(),
+    )
 }

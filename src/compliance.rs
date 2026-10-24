@@ -113,7 +113,13 @@ pub const CONTROLS: &[Control] = &[
         title: "Least-privilege / scoped tokens for agents",
         coverage: Coverage::Partial,
         how: "Flags bypassPermissions and blanket MCP auto-approval; surfaces at-rest credentials. Full agent-identity/scope modeling is not yet implemented.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Credential", "Settings secret", "Secret leak"],
+        finding_categories: &[
+            "Permissions",
+            "MCP auto-approval",
+            "Credential",
+            "Settings secret",
+            "Secret leak",
+        ],
     },
     // ── OWASP Agentic Applications Top 10 (ASI) ──
     Control {
@@ -122,7 +128,15 @@ pub const CONTROLS: &[Control] = &[
         title: "Agent Identity & Privilege Abuse",
         coverage: Coverage::Partial,
         how: "Flags permission bypass, MCP auto-approval, hooks and credential helpers (silent exec), skills that pre-approve unrestricted Bash, at-rest credentials, and static long-lived API keys (anti-pattern) vs OAuth/SPIFFE. Delegation chains not yet modeled.",
-        finding_categories: &["Permissions", "MCP auto-approval", "Hook", "Credential", "Agent identity", "Skill grant", "Helper command"],
+        finding_categories: &[
+            "Permissions",
+            "MCP auto-approval",
+            "Hook",
+            "Credential",
+            "Agent identity",
+            "Skill grant",
+            "Helper command",
+        ],
     },
     Control {
         framework: "OWASP Agentic Applications Top 10 (2026)",
@@ -130,7 +144,16 @@ pub const CONTROLS: &[Control] = &[
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
         how: "Threat catalog (exact + version-range), registry provenance verification, exposure matching across MCP/extensions, plugin pins that are not commits, skill files symlinked out of their bundle, and declarative IDE extensions that carry code.",
-        finding_categories: &["Exposure", "Registry", "Git autorun", "Binary planting", "Repo symlink", "Plugin pin", "Skill symlink", "Extension code"],
+        finding_categories: &[
+            "Exposure",
+            "Registry",
+            "Git autorun",
+            "Binary planting",
+            "Repo symlink",
+            "Plugin pin",
+            "Skill symlink",
+            "Extension code",
+        ],
     },
     Control {
         framework: "OWASP Agentic Applications Top 10 (2026)",
@@ -264,7 +287,19 @@ pub const CONTROLS: &[Control] = &[
         title: "MCP or tool configuration abuse",
         coverage: Coverage::Covered,
         how: "Inventories MCP configs, matches the threat catalog, verifies the registry, probes servers (opt-in), and flags transport/scope/inline-secret/launch-command risks, project .env files that relocate an agent's config home, and a local model server (Ollama) configured to listen beyond loopback with no authentication.",
-        finding_categories: &["Exposure", "Registry", "MCP transport", "MCP scope", "MCP secret", "MCP command", "Config integrity", "Settings secret", "Secret leak", "Agent redirection", "Ollama exposure"],
+        finding_categories: &[
+            "Exposure",
+            "Registry",
+            "MCP transport",
+            "MCP scope",
+            "MCP secret",
+            "MCP command",
+            "Config integrity",
+            "Settings secret",
+            "Secret leak",
+            "Agent redirection",
+            "Ollama exposure",
+        ],
     },
     Control {
         framework: "Endpoint AI Agent Abuse (EAA, CC0)",
@@ -304,7 +339,13 @@ pub const CONTROLS: &[Control] = &[
         title: "Inherited authority abuse",
         coverage: Coverage::Partial,
         how: "Surfaces at-rest credentials and static-key vs OAuth/SPIFFE identity posture; runtime token use is out of scope.",
-        finding_categories: &["Credential", "Agent identity", "Secret exposure", "Secret leak", "SSH key"],
+        finding_categories: &[
+            "Credential",
+            "Agent identity",
+            "Secret exposure",
+            "Secret leak",
+            "SSH key",
+        ],
     },
 ];
 
@@ -337,10 +378,7 @@ pub fn assess(report: &ScanReport) -> ComplianceReport {
             .iter()
             .filter(|f| control.finding_categories.contains(&f.category.as_str()))
             .count();
-        assessments.push(ControlAssessment {
-            control,
-            finding_count,
-        });
+        assessments.push(ControlAssessment { control, finding_count });
     }
     ComplianceReport {
         assessments,
@@ -406,14 +444,42 @@ mod tests {
     /// The finding categories `collect_findings` can emit — control mappings must
     /// reference only these (guards against typos like "Rules File" vs "Rules file").
     const KNOWN_CATEGORIES: &[&str] = &[
-        "Exposure", "Hook", "MCP auto-approval", "Permissions", "Credential",
-        "Secret leak", "Secret exposure", "SSH key", "Rules file", "Toxic Flow",
-        "Registry", "Agent identity", "Gateway routing", "MCP transport",
-        "MCP scope", "MCP secret", "MCP command", "Transcript exposure",
-        "Plugin marketplace", "Settings secret", "Auto-run task", "Config integrity", "Git autorun",
-        "Persistence", "Binary planting", "Repo symlink",
-        "Plugin pin", "Skill symlink", "Skill command", "Skill grant", "Agent redirection",
-        "Helper command", "Login gateway", "Extension code", "Ollama exposure", "Secret hygiene",
+        "Exposure",
+        "Hook",
+        "MCP auto-approval",
+        "Permissions",
+        "Credential",
+        "Secret leak",
+        "Secret exposure",
+        "SSH key",
+        "Rules file",
+        "Toxic Flow",
+        "Registry",
+        "Agent identity",
+        "Gateway routing",
+        "MCP transport",
+        "MCP scope",
+        "MCP secret",
+        "MCP command",
+        "Transcript exposure",
+        "Plugin marketplace",
+        "Settings secret",
+        "Auto-run task",
+        "Config integrity",
+        "Git autorun",
+        "Persistence",
+        "Binary planting",
+        "Repo symlink",
+        "Plugin pin",
+        "Skill symlink",
+        "Skill command",
+        "Skill grant",
+        "Agent redirection",
+        "Helper command",
+        "Login gateway",
+        "Extension code",
+        "Ollama exposure",
+        "Secret hygiene",
     ];
 
     fn empty_report() -> ScanReport {
@@ -475,7 +541,12 @@ mod tests {
     fn control_ids_are_unique_within_a_framework() {
         let mut seen = std::collections::HashSet::new();
         for c in CONTROLS {
-            assert!(seen.insert((c.framework, c.id)), "duplicate control id {} / {}", c.framework, c.id);
+            assert!(
+                seen.insert((c.framework, c.id)),
+                "duplicate control id {} / {}",
+                c.framework,
+                c.id
+            );
         }
     }
 
@@ -508,7 +579,8 @@ mod tests {
                 assert!(
                     KNOWN_CATEGORIES.contains(cat),
                     "control {} references unknown finding category {:?}",
-                    c.id, cat
+                    c.id,
+                    cat
                 );
             }
         }
@@ -518,7 +590,10 @@ mod tests {
     fn coverage_counts_sum_to_catalog_size() {
         let a = assess(&empty_report());
         assert_eq!(a.covered + a.partial + a.out_of_scope, CONTROLS.len());
-        assert!(a.covered > 0 && a.partial > 0 && a.out_of_scope > 0, "honest mix of coverage");
+        assert!(
+            a.covered > 0 && a.partial > 0 && a.out_of_scope > 0,
+            "honest mix of coverage"
+        );
     }
 
     #[test]
@@ -526,13 +601,22 @@ mod tests {
         let mut r = empty_report();
         // An exposure -> ASI04 (supply chain); a rules-file finding -> ASI06 (memory).
         r.exposure_findings = vec![ExposureFinding {
-            ecosystem: "npm".into(), name: "evil".into(), version: "1".into(),
-            advisory: "x".into(), found_in: "/m".into(),
+            ecosystem: "npm".into(),
+            name: "evil".into(),
+            version: "1".into(),
+            advisory: "x".into(),
+            found_in: "/m".into(),
         }];
         r.rules_files = vec![RulesFile {
-            path: "/r".into(), file_name: "R".into(), sha256: "h".into(), git_tracked: true,
+            path: "/r".into(),
+            file_name: "R".into(),
+            sha256: "h".into(),
+            git_tracked: true,
             size_bytes: 1,
-            findings: vec![RulesFileFinding { severity: "critical".into(), pattern: "p".into() }],
+            findings: vec![RulesFileFinding {
+                severity: "critical".into(),
+                pattern: "p".into(),
+            }],
         }];
         let a = assess(&r);
         let count = |id: &str| a.assessments.iter().find(|x| x.control.id == id).unwrap().finding_count;
@@ -547,7 +631,10 @@ mod tests {
         assert!(out.contains("NSA/CISA MCP Security CSI"));
         assert!(out.contains("EU AI Act"));
         assert!(out.contains("OWASP Agentic Applications"));
-        assert!(out.contains("not a compliance\nattestation"), "must not overclaim compliance");
+        assert!(
+            out.contains("not a compliance\nattestation"),
+            "must not overclaim compliance"
+        );
         assert!(out.contains("out-of-scope"), "honestly shows uncovered controls");
     }
 }

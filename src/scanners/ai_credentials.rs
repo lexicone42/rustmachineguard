@@ -1,6 +1,6 @@
 use crate::models::AiCredential;
 use crate::platform::PlatformInfo;
-use crate::scanners::{file_perms, Scanner};
+use crate::scanners::{Scanner, file_perms};
 use std::path::PathBuf;
 
 /// Returns the inline API-key NAMES (never values) found in an agent config file's text.
@@ -38,11 +38,7 @@ impl Scanner for AiCredentialsScanner {
                 "OAuth token",
                 platform.claude_config_dir().join(".credentials.json"),
             ),
-            (
-                "Codex",
-                "auth token",
-                platform.codex_config_dir().join("auth.json"),
-            ),
+            ("Codex", "auth token", platform.codex_config_dir().join("auth.json")),
             (
                 "Gemini CLI",
                 "OAuth credentials",
@@ -63,11 +59,7 @@ impl Scanner for AiCredentialsScanner {
                 "auth token",
                 platform.opencode_config_dir().join("auth.json"),
             ),
-            (
-                "Amazon Q",
-                "SSO cache",
-                platform.aws_q_config_dir().join("cache"),
-            ),
+            ("Amazon Q", "SSO cache", platform.aws_q_config_dir().join("cache")),
             ("Hugging Face", "user access token", hf_token),
         ];
 
@@ -111,7 +103,10 @@ impl Scanner for AiCredentialsScanner {
                 Some((p, w, g)) => (Some(p), w, g),
                 None => (None, false, false),
             };
-            let file = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            let file = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
             results.push(AiCredential {
                 provider: provider.to_string(),
                 credential_type: format!("inline {} in {file}", keys.join(", ")),
@@ -171,7 +166,9 @@ pub fn aider_inline_api_keys(text: &str) -> Vec<String> {
                     .iter()
                     .map(|l| l.trim())
                     .find(|l| !l.is_empty())
-                    .is_some_and(|l| l.starts_with('-') && l.contains('=') && !is_reference(l.rsplit('=').next().unwrap_or("")))
+                    .is_some_and(|l| {
+                        l.starts_with('-') && l.contains('=') && !is_reference(l.rsplit('=').next().unwrap_or(""))
+                    })
         } else {
             k.ends_with("-api-key") && !is_reference(v)
         };

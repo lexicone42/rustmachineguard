@@ -6,16 +6,16 @@ pub struct ExposureCatalog {
 
 impl ExposureCatalog {
     pub fn load_from_file(path: &std::path::Path) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read catalog {}: {}", path.display(), e))?;
-        let entries: Vec<ExposureEntry> = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse catalog {}: {}", path.display(), e))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("failed to read catalog {}: {}", path.display(), e))?;
+        let entries: Vec<ExposureEntry> =
+            serde_json::from_str(&content).map_err(|e| format!("failed to parse catalog {}: {}", path.display(), e))?;
         Ok(Self { entries })
     }
 
     pub fn load_from_str(content: &str) -> Result<Self, String> {
-        let entries: Vec<ExposureEntry> = serde_json::from_str(content)
-            .map_err(|e| format!("failed to parse catalog: {}", e))?;
+        let entries: Vec<ExposureEntry> =
+            serde_json::from_str(content).map_err(|e| format!("failed to parse catalog: {}", e))?;
         Ok(Self { entries })
     }
 
@@ -31,11 +31,7 @@ impl ExposureCatalog {
         self.entries.is_empty()
     }
 
-    pub fn check_mcp_server(
-        &self,
-        server: &McpServerDetail,
-        config_path: &str,
-    ) -> Vec<ExposureFinding> {
+    pub fn check_mcp_server(&self, server: &McpServerDetail, config_path: &str) -> Vec<ExposureFinding> {
         let mut findings = Vec::new();
         let Some(ref pkg_name) = server.package_name else {
             return findings;
@@ -57,10 +53,7 @@ impl ExposureCatalog {
             findings.push(ExposureFinding {
                 ecosystem: ecosystem.clone(),
                 name: pkg_name.clone(),
-                version: server
-                    .package_version
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
+                version: server.package_version.clone().unwrap_or_else(|| "unknown".to_string()),
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: config_path.to_string(),
             });
@@ -69,13 +62,7 @@ impl ExposureCatalog {
         findings
     }
 
-    pub fn check_extension(
-        &self,
-        ecosystem: &str,
-        name: &str,
-        version: &str,
-        found_in: &str,
-    ) -> Vec<ExposureFinding> {
+    pub fn check_extension(&self, ecosystem: &str, name: &str, version: &str, found_in: &str) -> Vec<ExposureFinding> {
         let mut findings = Vec::new();
 
         for entry in &self.entries {
@@ -164,10 +151,7 @@ pub fn version_matches(entry: &crate::models::ExposureEntry, candidate: Option<&
         let Some(cand) = candidate else {
             return false;
         };
-        let (Ok(req), Some(ver)) = (
-            semver::VersionReq::parse(range.trim()),
-            lenient_version(cand),
-        ) else {
+        let (Ok(req), Some(ver)) = (semver::VersionReq::parse(range.trim()), lenient_version(cand)) else {
             return false;
         };
         // Compare the numeric core only. The semver crate applies Cargo's rule that a
@@ -195,9 +179,7 @@ fn lenient_version(v: &str) -> Option<semver::Version> {
         return Some(parsed);
     }
     // Split off any pre-release/build suffix, pad the numeric core to 3 components.
-    let core_end = v
-        .find(|c: char| c != '.' && !c.is_ascii_digit())
-        .unwrap_or(v.len());
+    let core_end = v.find(|c: char| c != '.' && !c.is_ascii_digit()).unwrap_or(v.len());
     let (core, _suffix) = v.split_at(core_end);
     let mut parts: Vec<&str> = core.split('.').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {

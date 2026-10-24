@@ -1,6 +1,6 @@
 use crate::models::{AgentSkill, SkillDynamicCommand, SkillProvenance, SkillSymlink};
 use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, sanitize_display, Scanner};
+use crate::scanners::{Scanner, read_bounded, sanitize_display};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -72,7 +72,9 @@ impl PluginContext {
         {
             for ((plugin, market), entries) in crate::scanners::marketplaces::installed_entries(&json) {
                 for e in entries {
-                    let Some(ip) = e.get("installPath").and_then(|v| v.as_str()) else { continue };
+                    let Some(ip) = e.get("installPath").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     let ip = crate::scanners::persistence::lexical_join(Path::new("/"), Path::new(ip));
                     if ip.starts_with(&cache) && ip != cache {
                         ctx.install_paths.push((ip, plugin.clone(), market.clone()));
@@ -111,7 +113,10 @@ impl PluginContext {
     pub(crate) fn provenance(&self, path: &Path) -> Option<SkillProvenance> {
         let synced_root = self.home.join(".claude").join("skills").join("synced");
         if path.starts_with(&synced_root) {
-            return Some(SkillProvenance { synced: true, ..Default::default() });
+            return Some(SkillProvenance {
+                synced: true,
+                ..Default::default()
+            });
         }
         let rel = path.strip_prefix(&self.plugins_dir).ok()?;
         let comps: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
@@ -129,9 +134,10 @@ impl PluginContext {
         // Active: inside an installed version's directory, and not disabled. Marketplace
         // clones and orphaned cache versions never load.
         let active = plugin.as_ref().is_some_and(|p| {
-            self.install_paths.iter().any(|(ip, ipp, ipm)| {
-                ipp == p && *ipm == market && lexical.starts_with(ip)
-            }) && !self.disabled.contains(&format!("{p}@{market}"))
+            self.install_paths
+                .iter()
+                .any(|(ip, ipp, ipm)| ipp == p && *ipm == market && lexical.starts_with(ip))
+                && !self.disabled.contains(&format!("{p}@{market}"))
         });
         Some(SkillProvenance {
             marketplace: Some(sanitize_display(&market, 128)),
@@ -180,11 +186,16 @@ impl Scanner for SkillsScanner {
         let project_dirs = project_dirs_excluding_home(project_dirs, &home);
         // Each project with the root its skills are contained in: the enclosing git work
         // tree (a monorepo app registered at mono/apps/web shares skills from mono/shared).
-        let project_dirs: Vec<(PathBuf, PathBuf)> =
-            project_dirs.into_iter().map(|d| (project_containment_root(&d, &home), d)).collect();
+        let project_dirs: Vec<(PathBuf, PathBuf)> = project_dirs
+            .into_iter()
+            .map(|d| (project_containment_root(&d, &home), d))
+            .collect();
         // A count only: a project's path or position is never exported.
         crate::otel::annotate_current(|| {
-            vec![crate::otel::Attr::int(crate::otel::Key::SkillsProjects, project_dirs.len() as i64)]
+            vec![crate::otel::Attr::int(
+                crate::otel::Key::SkillsProjects,
+                project_dirs.len() as i64,
+            )]
         });
 
         // Claude Code project commands
@@ -216,7 +227,9 @@ impl Scanner for SkillsScanner {
         // Codex hooks from ~/.codex/
         let codex_dir = home.join(".codex");
         if crate::scanners::probe_dir(&codex_dir) {
-            walk_span("codex", "global", &mut results, |r| scan_skill_dir(&codex_dir, "codex", "global", None, &ctx, r));
+            walk_span("codex", "global", &mut results, |r| {
+                scan_skill_dir(&codex_dir, "codex", "global", None, &ctx, r)
+            });
         }
 
         // Skill BUNDLES (SKILL.md + sibling scripts), which the flat walk above cannot
@@ -224,14 +237,35 @@ impl Scanner for SkillsScanner {
         // are already inventoried as a remote hot-load surface, but the skills they
         // actually install were never walked.
         walk_span("skills", "global", &mut results, |r| {
-            scan_skill_bundles(&home.join(".claude").join("skills"), "claude-code", "global", None, &ctx, r)
+            scan_skill_bundles(
+                &home.join(".claude").join("skills"),
+                "claude-code",
+                "global",
+                None,
+                &ctx,
+                r,
+            )
         });
         walk_span("plugins", "global", &mut results, |r| {
-            scan_skill_bundles(&home.join(".claude").join("plugins"), "claude-code-plugin", "global", None, &ctx, r)
+            scan_skill_bundles(
+                &home.join(".claude").join("plugins"),
+                "claude-code-plugin",
+                "global",
+                None,
+                &ctx,
+                r,
+            )
         });
         for (root, dir) in &project_dirs {
             walk_span("skills", "project", &mut results, |r| {
-                scan_skill_bundles(&dir.join(".claude").join("skills"), "claude-code", "project", Some(root), &ctx, r)
+                scan_skill_bundles(
+                    &dir.join(".claude").join("skills"),
+                    "claude-code",
+                    "project",
+                    Some(root),
+                    &ctx,
+                    r,
+                )
             });
         }
 
@@ -413,9 +447,24 @@ const SKILL_LINK_OK_DIRS: &[&str] = &["skills", "commands", "plugins", "agents",
 /// SKILL.md, so the rest of these homes (settings, auth files) stays sensitive but these
 /// subdirectories do not.
 const OTHER_AGENT_HOMES: &[&str] = &[
-    ".codex", ".cursor", ".gemini", ".kiro", ".windsurf", ".codeium/windsurf", ".agents", ".copilot",
-    ".config/opencode", ".opencode", ".continue", ".roo", ".cline", ".factory", ".config/amp",
-    ".config/goose", ".qwen", ".augment",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".kiro",
+    ".windsurf",
+    ".codeium/windsurf",
+    ".agents",
+    ".copilot",
+    ".config/opencode",
+    ".opencode",
+    ".continue",
+    ".roo",
+    ".cline",
+    ".factory",
+    ".config/amp",
+    ".config/goose",
+    ".qwen",
+    ".augment",
 ];
 const OTHER_AGENT_SKILL_DIRS: &[&str] = &["skills", "commands", "prompts"];
 
@@ -467,10 +516,16 @@ fn judge_walk_root(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &
     let home = ctx.home.as_path();
     let project = scope == "project";
     // Project roots are `<dir>/.claude/<x>`; global roots are under HOME.
-    let Some(base) = (if project { root.parent().and_then(Path::parent) } else { Some(home) }) else {
+    let Some(base) = (if project {
+        root.parent().and_then(Path::parent)
+    } else {
+        Some(home)
+    }) else {
         return RootLink::Plain;
     };
-    let Ok(rel) = root.strip_prefix(base) else { return RootLink::Plain };
+    let Ok(rel) = root.strip_prefix(base) else {
+        return RootLink::Plain;
+    };
     let mut cur = base.to_path_buf();
     let mut lexical = base.to_path_buf();
     let mut linked = false;
@@ -488,11 +543,16 @@ fn judge_walk_root(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &
     if !linked {
         return RootLink::Plain;
     }
-    let Ok(real) = canonicalize(root) else { return RootLink::Plain };
+    let Ok(real) = canonicalize(root) else {
+        return RootLink::Plain;
+    };
     let ScanPaths { real_home, areas } = ctx.paths();
     let in_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     let repo = project_root.filter(|_| project).map(canon_or_lexical);
-    let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
+    let in_repo = |p: &Path| {
+        repo.as_ref()
+            .is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r))
+    };
     let sensitive = (!in_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, real_home))
         || (!in_area(&lexical) && !in_repo(&lexical) && is_sensitive_read_target(&lexical, home));
     let kind = read_kind(&lexical, home, &real, real_home);
@@ -535,17 +595,39 @@ fn refused_root_entry(
     project_root: Option<&Path>,
     ctx: &PluginContext,
 ) -> AgentSkill {
-    let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
-    let read = SkillRead { read_at: None, symlink: Some(info) };
-    build_skill(root, name, "directory".into(), false, read, framework, scope, project_root, ctx)
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let read = SkillRead {
+        read_at: None,
+        symlink: Some(info),
+    };
+    build_skill(
+        root,
+        name,
+        "directory".into(),
+        false,
+        read,
+        framework,
+        scope,
+        project_root,
+        ctx,
+    )
 }
 
 /// A file found under a followed linked walk root records the root's link, with the
 /// file's own real path as the target.
 fn record_root_link(read: &mut SkillRead, path: &Path, info: &SkillSymlink) {
     if read.symlink.is_none() {
-        let real = canonicalize(path).map(|r| r.to_string_lossy().to_string()).unwrap_or_default();
-        read.symlink = Some(SkillSymlink { target: sanitize_display(&real, 300), ..info.clone() });
+        let real = canonicalize(path)
+            .map(|r| r.to_string_lossy().to_string())
+            .unwrap_or_default();
+        read.symlink = Some(SkillSymlink {
+            target: sanitize_display(&real, 300),
+            ..info.clone()
+        });
     }
 }
 
@@ -606,7 +688,8 @@ impl WalkCache {
 
     /// [`canon_or_lexical`], memoised.
     fn canon_or_lexical(&mut self, p: &Path) -> PathBuf {
-        self.canon(p).unwrap_or_else(|| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+        self.canon(p)
+            .unwrap_or_else(|| crate::scanners::persistence::lexical_join(Path::new("/"), p))
     }
 
     /// The real path of a file the walk saw as NOT a symlink (`symlink_metadata`): its
@@ -621,7 +704,9 @@ impl WalkCache {
     /// [`skill_dir_of`], memoised by the file's parent directory (`root` is fixed for a
     /// walk).
     fn skill_dir_of(&mut self, path: &Path, root: &Path) -> Option<PathBuf> {
-        let Some(parent) = path.parent() else { return skill_dir_of(path, root) };
+        let Some(parent) = path.parent() else {
+            return skill_dir_of(path, root);
+        };
         if let Some(r) = self.skill_dir.get(parent) {
             return r.clone();
         }
@@ -671,18 +756,32 @@ fn has_skill_ext(p: &Path) -> bool {
 /// by existence only), count as the user's own skill files. The credential and
 /// agent-config rules have already refused anything sensitive before this is asked.
 fn user_link_target_ok(real: &Path, real_home: &Path) -> bool {
-    if real.parent().is_some_and(|d| std::fs::symlink_metadata(d.join("SKILL.md")).is_ok()) {
+    if real
+        .parent()
+        .is_some_and(|d| std::fs::symlink_metadata(d.join("SKILL.md")).is_ok())
+    {
         return true;
     }
-    let Ok(rel) = real.strip_prefix(real_home) else { return false };
+    let Ok(rel) = real.strip_prefix(real_home) else {
+        return false;
+    };
     let dirs: Vec<_> = rel.parent().map(|p| p.components().collect()).unwrap_or_default();
-    if !dirs.iter().any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.'))) {
+    if !dirs
+        .iter()
+        .any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.')))
+    {
         return true;
     }
     // `~/.local/bin` is the XDG location of the user's own scripts, not tool state.
     const DOTFILE_ROOTS: &[&str] = &[
-        ".dotfiles", ".dots", ".local/share/chezmoi", ".homesick/repos", ".config/dotfiles", ".config/yadm",
-        ".local/share/yadm", ".local/bin",
+        ".dotfiles",
+        ".dots",
+        ".local/share/chezmoi",
+        ".homesick/repos",
+        ".config/dotfiles",
+        ".config/yadm",
+        ".local/share/yadm",
+        ".local/bin",
     ];
     if DOTFILE_ROOTS.iter().any(|r| rel.starts_with(r)) {
         return true;
@@ -760,7 +859,10 @@ fn read_skill_file(
         };
         let real = cache.real_path_of_non_link(path)?;
         if real.starts_with(cache.canon_or_lexical(repo)) {
-            return Some(SkillRead { read_at: Some(real), symlink: None });
+            return Some(SkillRead {
+                read_at: Some(real),
+                symlink: None,
+            });
         }
         let sensitive = sensitive_at(&real, real_home);
         return Some(SkillRead {
@@ -872,7 +974,13 @@ fn build_skill(
     project_root: Option<&Path>,
     ctx: &PluginContext,
 ) -> AgentSkill {
-    let job = FileJob { path: path.to_path_buf(), name, file_type, analyze, read };
+    let job = FileJob {
+        path: path.to_path_buf(),
+        name,
+        file_type,
+        analyze,
+        read,
+    };
     finish_skill(analyze_file(job), framework, scope, project_root, ctx)
 }
 
@@ -909,10 +1017,16 @@ struct Analyzed {
 /// budget and touches no walk state, so the walks run it on helper threads
 /// ([`process_jobs`]); its reads count for the scanner (the helpers enter its scope).
 fn analyze_file(job: FileJob) -> Analyzed {
-    let content = job.read.read_at.as_deref().and_then(|r| crate::scanners::read_bounded_nofollow(r, Some(r)));
+    let content = job
+        .read
+        .read_at
+        .as_deref()
+        .and_then(|r| crate::scanners::read_bounded_nofollow(r, Some(r)));
     let mut dynamic_commands = Vec::new();
     let mut unrestricted_bash = false;
-    if job.analyze && let Some(text) = content.as_deref() {
+    if job.analyze
+        && let Some(text) = content.as_deref()
+    {
         // Claude Code runs these in the user's shell before the skill text reaches the
         // model: code.claude.com/docs/en/skills#dynamic-context-injection
         for (raw, block) in extract_dynamic_commands(text) {
@@ -925,7 +1039,12 @@ fn analyze_file(job: FileJob) -> Analyzed {
             // $OPENAI_API_KEY is set) is listed but stays advisory.
             let dangerous = hits.iter().any(|f| matches!(f.severity.as_str(), "critical" | "high"));
             // A multi-line block or inline command is shown one line per statement.
-            let shown = raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+            let shown = raw
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
             dynamic_commands.push(SkillDynamicCommand {
                 command: sanitize_display(&crate::scanners::redact_command_text(&shown), 300),
                 dangerous,
@@ -968,9 +1087,30 @@ fn analyze_file(job: FileJob) -> Analyzed {
 /// (which spend the scan's hook and probe budget, so which file gets the last unit must
 /// not depend on thread timing), the provenance, the git-tracked check (the scan's git
 /// budget), and the walk's `bytes_hashed` count.
-fn finish_skill(a: Analyzed, framework: &str, scope: &str, project_root: Option<&Path>, ctx: &PluginContext) -> AgentSkill {
-    let Analyzed { job, size_bytes, sha256, hashed, capabilities, dynamic_commands, unrestricted_bash, hooks_map } = a;
-    let FileJob { path, name, file_type, read, .. } = job;
+fn finish_skill(
+    a: Analyzed,
+    framework: &str,
+    scope: &str,
+    project_root: Option<&Path>,
+    ctx: &PluginContext,
+) -> AgentSkill {
+    let Analyzed {
+        job,
+        size_bytes,
+        sha256,
+        hashed,
+        capabilities,
+        dynamic_commands,
+        unrestricted_bash,
+        hooks_map,
+    } = a;
+    let FileJob {
+        path,
+        name,
+        file_type,
+        read,
+        ..
+    } = job;
     let path = path.as_path();
     let mut hooks = Vec::new();
     if let Some(map) = &hooks_map {
@@ -992,9 +1132,10 @@ fn finish_skill(a: Analyzed, framework: &str, scope: &str, project_root: Option<
         }
     }
     // An all-default provenance (a skill outside the plugin tree) says nothing.
-    if provenance.as_ref().is_some_and(|p| {
-        p.marketplace.is_none() && p.plugin.is_none() && p.git.is_none() && !p.synced
-    }) {
+    if provenance
+        .as_ref()
+        .is_some_and(|p| p.marketplace.is_none() && p.plugin.is_none() && p.git.is_none() && !p.synced)
+    {
         provenance = None;
     }
     if let Some(n) = hashed {
@@ -1030,13 +1171,22 @@ fn process_jobs(
     results: &mut Vec<AgentSkill>,
 ) {
     let analyzed = crate::scanners::telemetry::par_map(jobs, ctx.jobs, analyze_file);
-    results.extend(analyzed.into_iter().map(|a| finish_skill(a, framework, scope, project_root, ctx)));
+    results.extend(
+        analyzed
+            .into_iter()
+            .map(|a| finish_skill(a, framework, scope, project_root, ctx)),
+    );
 }
 
 /// The `hooks:` map of a skill, command or subagent file's YAML frontmatter, parsed with
 /// the settings hook model. `skill_dir` is what `${CLAUDE_SKILL_DIR}` expands to; a
 /// plugin skill also expands the plugin-root placeholders.
-pub fn frontmatter_hooks(fm: &str, path: &Path, skill_dir: &Path, plugin_root: Option<&Path>) -> Vec<crate::models::AgentHook> {
+pub fn frontmatter_hooks(
+    fm: &str,
+    path: &Path,
+    skill_dir: &Path,
+    plugin_root: Option<&Path>,
+) -> Vec<crate::models::AgentHook> {
     match frontmatter_hook_map(fm) {
         Some(map) => hooks_from_map(&map, path, skill_dir, plugin_root),
         None => Vec::new(),
@@ -1053,8 +1203,13 @@ fn frontmatter_hook_map(fm: &str) -> Option<serde_json::Value> {
 }
 
 /// The hooks of a parsed frontmatter `hooks:` value ([`frontmatter_hooks`]).
-fn hooks_from_map(map: &serde_json::Value, path: &Path, skill_dir: &Path, plugin_root: Option<&Path>) -> Vec<crate::models::AgentHook> {
-    use crate::scanners::hook_sources::{claude_plugin_vars, extract_hook_map, Dialect, HookCtx};
+fn hooks_from_map(
+    map: &serde_json::Value,
+    path: &Path,
+    skill_dir: &Path,
+    plugin_root: Option<&Path>,
+) -> Vec<crate::models::AgentHook> {
+    use crate::scanners::hook_sources::{Dialect, HookCtx, claude_plugin_vars, extract_hook_map};
     let mut ctx = HookCtx::new(path, Dialect::Claude);
     ctx.own_dir = Some(".claude");
     ctx.vars.push(("${CLAUDE_SKILL_DIR}", skill_dir.to_path_buf()));
@@ -1080,7 +1235,9 @@ fn git_tracked_through_links(path: &Path, root: &Path) -> Option<bool> {
         .take_while(|a| a.starts_with(root) && *a != root)
         .find(|a| std::fs::symlink_metadata(a).is_ok_and(|m| m.file_type().is_symlink()));
     let Some(link) = link else { return Some(false) };
-    let Ok(real) = canonicalize(path) else { return Some(false) };
+    let Ok(real) = canonicalize(path) else {
+        return Some(false);
+    };
     Some(git_tracked_state(link)? && git_tracked_state(&real)?)
 }
 
@@ -1161,9 +1318,18 @@ fn scan_skill_bundles(
                     DirLink::Refuse(info) => {
                         budget -= 1;
                         let manifest = path.join("SKILL.md");
-                        let read = SkillRead { read_at: None, symlink: Some(info) };
+                        let read = SkillRead {
+                            read_at: None,
+                            symlink: Some(info),
+                        };
                         let name = file_name.to_string();
-                        jobs.push(FileJob { path: manifest, name, file_type: "skill-manifest".into(), analyze: true, read });
+                        jobs.push(FileJob {
+                            path: manifest,
+                            name,
+                            file_type: "skill-manifest".into(),
+                            analyze: true,
+                            read,
+                        });
                     }
                     DirLink::NotASkill => {}
                 }
@@ -1199,16 +1365,20 @@ fn scan_skill_bundles(
             let containment = if let Some(proj) = project_root.filter(|_| scope == "project") {
                 proj.to_path_buf()
             } else if is_command {
-                path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
+                path.parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| root.to_path_buf())
             } else {
                 cache
                     .skill_dir_of(&path, root)
                     .or_else(|| plugin_root.clone())
                     .unwrap_or_else(|| root.to_path_buf())
             };
-            let repo_root = project_root.filter(|_| scope == "project").map(Path::to_path_buf).or(plugin_root);
-            let Some(mut read) =
-                read_skill_file(&path, is_link, &containment, repo_root.as_deref(), ctx, &mut cache)
+            let repo_root = project_root
+                .filter(|_| scope == "project")
+                .map(Path::to_path_buf)
+                .or(plugin_root);
+            let Some(mut read) = read_skill_file(&path, is_link, &containment, repo_root.as_deref(), ctx, &mut cache)
             else {
                 continue;
             };
@@ -1246,7 +1416,13 @@ fn scan_skill_bundles(
             } else {
                 ext.to_string()
             };
-            jobs.push(FileJob { path, name, file_type, analyze: is_manifest || is_command, read });
+            jobs.push(FileJob {
+                path,
+                name,
+                file_type,
+                analyze: is_manifest || is_command,
+                read,
+            });
         }
     }
     process_jobs(jobs, framework, scope, project_root, ctx, results);
@@ -1271,8 +1447,12 @@ enum DirLink {
 fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext) -> DirLink {
     use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
     let home = ctx.home.as_path();
-    let Ok(target) = std::fs::read_link(link) else { return DirLink::NotASkill };
-    let Ok(real) = canonicalize(link) else { return DirLink::NotASkill };
+    let Ok(target) = std::fs::read_link(link) else {
+        return DirLink::NotASkill;
+    };
+    let Ok(real) = canonicalize(link) else {
+        return DirLink::NotASkill;
+    };
     // Existence only: the manifest is not opened here.
     if std::fs::symlink_metadata(real.join("SKILL.md")).is_err() {
         return DirLink::NotASkill;
@@ -1282,7 +1462,10 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
     let lexical = lexical_join(link.parent().unwrap_or(root), &target);
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     let repo = project_root.filter(|_| scope == "project").map(canon_or_lexical);
-    let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
+    let in_repo = |p: &Path| {
+        repo.as_ref()
+            .is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r))
+    };
     let sensitive = (!in_skill_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, real_home))
         || (!in_skill_area(&lexical) && !in_repo(&lexical) && is_sensitive_read_target(&lexical, home));
     let kind = read_kind(&lexical, home, &real, real_home);
@@ -1333,7 +1516,13 @@ const MAX_AGENT_DEPTH: usize = 4;
 /// (code.claude.com/docs/en/sub-agents.md, fetched 2026-10-23). Subfolders are real
 /// directories only (a symlinked one is not descended), dot-directories are skipped, and
 /// the walk is bounded in depth and count; each folder is scanned like the root.
-fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext, results: &mut Vec<AgentSkill>) {
+fn scan_agents_tree(
+    root: &Path,
+    scope: &str,
+    project_root: Option<&Path>,
+    ctx: &PluginContext,
+    results: &mut Vec<AgentSkill>,
+) {
     scan_skill_dir(root, "claude-code-agent", scope, project_root, ctx, results);
     if matches!(judge_walk_root(root, scope, project_root, ctx), RootLink::Refuse(_)) {
         // A refused walk root is one directory-level entry (scan_skill_dir); nothing under it.
@@ -1346,12 +1535,18 @@ fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: 
         if depth >= MAX_AGENT_DEPTH {
             continue;
         }
-        let Ok(rd) = crate::scanners::probe_read_dir(&d) else { continue };
+        let Ok(rd) = crate::scanners::probe_read_dir(&d) else {
+            continue;
+        };
         let mut children: Vec<PathBuf> = rd
             .flatten()
             .inspect(|_| walk_note(|w| w.entries += 1))
             .map(|e| e.path())
-            .filter(|p| !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.')))
+            .filter(|p| {
+                !p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+            })
             .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
             .collect();
         children.sort();
@@ -1410,13 +1605,13 @@ fn scan_skill_dir(
             continue;
         }
 
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Only scan known skill file types
-        if !matches!(ext, "md" | "txt" | "yaml" | "yml" | "json" | "sh" | "bash" | "py" | "js" | "ts") {
+        if !matches!(
+            ext,
+            "md" | "txt" | "yaml" | "yml" | "json" | "sh" | "bash" | "py" | "js" | "ts"
+        ) {
             continue;
         }
         if is_agents_dir && ext != "md" {
@@ -1448,9 +1643,19 @@ fn scan_skill_dir(
             .unwrap_or("unknown")
             .to_string();
 
-        let file_type = if is_agents_dir { "agent".to_string() } else { ext.to_string() };
+        let file_type = if is_agents_dir {
+            "agent".to_string()
+        } else {
+            ext.to_string()
+        };
         let analyze = is_commands_dir && ext == "md";
-        jobs.push(FileJob { path, name, file_type, analyze, read });
+        jobs.push(FileJob {
+            path,
+            name,
+            file_type,
+            analyze,
+            read,
+        });
     }
     process_jobs(jobs, framework, scope, project_root, ctx, results);
 }
@@ -1579,8 +1784,18 @@ pub(crate) fn module_source_dangerous(src: &str) -> Vec<crate::models::RulesFile
 /// with no shell (code.claude.com/docs/en/plugins/mods/api.md, fetched 2026-10-23), so
 /// `run` counts when it is called as `process.run`.
 const MODULE_EXEC_CALLS: &[&str] = &[
-    "exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "execa", "execaSync", "execaCommand",
-    "execaCommandSync", "system", "Command",
+    "exec",
+    "execSync",
+    "execFile",
+    "execFileSync",
+    "spawn",
+    "spawnSync",
+    "execa",
+    "execaSync",
+    "execaCommand",
+    "execaCommandSync",
+    "system",
+    "Command",
 ];
 /// Template tags that run the template as a shell command (Bun's and zx's `$`, execa).
 const MODULE_EXEC_TAGS: &[&str] = &["$", "execa", "execaSync", "execaCommand"];
@@ -1622,7 +1837,12 @@ pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
             continue;
         }
         // Regex literal where an operand is expected.
-        if c == b'/' && matches!(last_sig, b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';' | b'\n') {
+        if c == b'/'
+            && matches!(
+                last_sig,
+                b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';' | b'\n'
+            )
+        {
             let mut j = i + 1;
             let mut class = false;
             while j < b.len() && b[j] != b'\n' {
@@ -1694,7 +1914,11 @@ pub(crate) fn module_exec_strings(src: &str) -> (Vec<String>, String) {
             ident.clear();
         }
         if !c.is_ascii_whitespace() || c == b'\n' {
-            last_sig = if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' { b'x' } else { c };
+            last_sig = if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+                b'x'
+            } else {
+                c
+            };
         }
         // Copy one whole character (the source is UTF-8).
         let w = src[i..].chars().next().map_or(1, char::len_utf8);
@@ -1728,11 +1952,27 @@ pub(crate) fn module_source_verdict(src: &str) -> (Vec<crate::models::RulesFileF
 /// Raw network socket clients: they only ever send what they are given.
 const SOCKET_CLIENTS: &[&str] = &["nc", "ncat", "netcat", "socat", "telnet"];
 /// Interpreters whose one-liners can make a network request themselves.
-const SCRIPT_INTERPRETERS: &[&str] = &["python", "python2", "python3", "node", "ruby", "perl", "deno", "bun", "php"];
+const SCRIPT_INTERPRETERS: &[&str] = &[
+    "python", "python2", "python3", "node", "ruby", "perl", "deno", "bun", "php",
+];
 /// What an interpreter one-liner's HTTP or socket request looks like.
 const SCRIPT_NET_MARKERS: &[&str] = &[
-    "urlopen", "urllib", "requests.", "http.client", "httpx", "fetch(", "https.request", "http.request", "https.get",
-    "http.get", "net::http", "net/http", "socket", "open-uri", "lwp::", "axios",
+    "urlopen",
+    "urllib",
+    "requests.",
+    "http.client",
+    "httpx",
+    "fetch(",
+    "https.request",
+    "http.request",
+    "https.get",
+    "http.get",
+    "net::http",
+    "net/http",
+    "socket",
+    "open-uri",
+    "lwp::",
+    "axios",
 ];
 
 /// Data piped (or redirected) into a raw network socket: a pipeline stage after the
@@ -1742,7 +1982,10 @@ pub fn pipes_into_socket(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     lower.contains("/dev/tcp/")
         || lower.contains("/dev/udp/")
-        || pipe_stages(&lower).iter().skip(1).any(|s| SOCKET_CLIENTS.contains(&stage_program(s).as_str()))
+        || pipe_stages(&lower)
+            .iter()
+            .skip(1)
+            .any(|s| SOCKET_CLIENTS.contains(&stage_program(s).as_str()))
 }
 
 /// Local data handed to a network sender: a pipeline stage after the first whose program
@@ -1756,12 +1999,22 @@ pub fn feeds_network_sender(cmd: &str) -> bool {
         return true;
     }
     let stages = pipe_stages(&lower);
-    if stages.iter().skip(1).any(|s| SENDERS.contains(&stage_program(s).as_str())) {
+    if stages
+        .iter()
+        .skip(1)
+        .any(|s| SENDERS.contains(&stage_program(s).as_str()))
+    {
         return true;
     }
     let words = || lower.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | '"' | '\''));
     // A URL's last path segment (`https://x/curl`) is not a program.
-    let base = |w: &str| if w.contains("://") { String::new() } else { w.rsplit('/').next().unwrap_or(w).to_string() };
+    let base = |w: &str| {
+        if w.contains("://") {
+            String::new()
+        } else {
+            w.rsplit('/').next().unwrap_or(w).to_string()
+        }
+    };
     let substitutes = lower.contains("$(") || lower.contains('`');
     if substitutes && words().any(|w| SENDERS.contains(&base(w).as_str())) {
         return true;
@@ -1773,8 +2026,23 @@ pub fn feeds_network_sender(cmd: &str) -> bool {
 /// and gcloud CLIs, netrc, npm/PyPI publish tokens, Docker and Kubernetes auth, `.env`
 /// files, SSH private keys, and generic `credentials` / `token(s)` files.
 const CREDENTIAL_COMPONENTS: &[&str] = &[
-    ".aws", ".ssh", ".kube", ".netrc", "_netrc", ".npmrc", ".pypirc", ".env", ".git-credentials", "credentials",
-    "credentials.json", "token", "tokens", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+    ".aws",
+    ".ssh",
+    ".kube",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pypirc",
+    ".env",
+    ".git-credentials",
+    "credentials",
+    "credentials.json",
+    "token",
+    "tokens",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
 ];
 const CREDENTIAL_COMPONENT_PAIRS: &[(&str, &str)] =
     &[(".config", "gh"), (".config", "gcloud"), (".docker", "config.json")];
@@ -1783,8 +2051,12 @@ const CREDENTIAL_COMPONENT_PAIRS: &[(&str, &str)] =
 /// `./secrets/.env.production`) names a credential file or directory. Lowercase input.
 fn is_credential_path(run: &str) -> bool {
     let comps: Vec<&str> = run.split('/').filter(|c| !c.is_empty()).collect();
-    comps.iter().any(|c| CREDENTIAL_COMPONENTS.contains(c) || c.starts_with(".env."))
-        || comps.windows(2).any(|w| CREDENTIAL_COMPONENT_PAIRS.contains(&(w[0], w[1])))
+    comps
+        .iter()
+        .any(|c| CREDENTIAL_COMPONENTS.contains(c) || c.starts_with(".env."))
+        || comps
+            .windows(2)
+            .any(|w| CREDENTIAL_COMPONENT_PAIRS.contains(&(w[0], w[1])))
 }
 
 /// Shell words of one line as byte ranges: whitespace splits only outside quotes and
@@ -1831,7 +2103,8 @@ fn shell_word_ranges(line: &str) -> Vec<(usize, usize)> {
 /// (`-H "Authorization: $(cat ~/.config/gh/token)"`) is how a credential helper
 /// authenticates to its own service and is not counted.
 pub fn sends_credential_file(text: &str) -> bool {
-    text.lines().any(|line| line_sends_credential_file(&line.to_ascii_lowercase()))
+    text.lines()
+        .any(|line| line_sends_credential_file(&line.to_ascii_lowercase()))
 }
 
 fn line_sends_credential_file(line: &str) -> bool {
@@ -1839,7 +2112,9 @@ fn line_sends_credential_file(line: &str) -> bool {
         .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | '"' | '\'' | '`'))
         .filter(|w| !w.is_empty() && !w.contains("://"))
         .collect();
-    let has_sender = words.iter().any(|w| SENDERS.contains(&w.rsplit('/').next().unwrap_or(w)));
+    let has_sender = words
+        .iter()
+        .any(|w| SENDERS.contains(&w.rsplit('/').next().unwrap_or(w)));
     let script = script_makes_request(line);
     if !has_sender && !script {
         return false;
@@ -1881,7 +2156,9 @@ fn line_sends_credential_file(line: &str) -> bool {
             continue;
         }
         let file_flag = matches!(prev, "<" | "--post-file" | "--body-file" | "--upload-file" | "-t")
-            || ["--post-file=", "--body-file=", "--upload-file="].iter().any(|f| bare.starts_with(f));
+            || ["--post-file=", "--body-file=", "--upload-file="]
+                .iter()
+                .any(|f| bare.starts_with(f));
         // Path-like runs of the word with their byte offsets (char boundaries only).
         let mut runs: Vec<(usize, &str)> = Vec::new();
         let mut run_start: Option<usize> = None;
@@ -1931,9 +2208,18 @@ fn script_makes_request(lower: &str) -> bool {
 pub fn script_sends_local_data(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     script_makes_request(&lower)
-        && ["os.environ", "getenv", "process.env", "env[", "open(", "readfile", "file.read", "io.read"]
-            .iter()
-            .any(|m| lower.contains(m))
+        && [
+            "os.environ",
+            "getenv",
+            "process.env",
+            "env[",
+            "open(",
+            "readfile",
+            "file.read",
+            "io.read",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
 }
 
 /// Pipeline stages, split on `|` (not `||`).
@@ -1969,11 +2255,15 @@ fn stage_program(stage: &str) -> String {
         .unwrap_or_default()
 }
 
-const INTERPRETERS: &[&str] =
-    &["sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "python", "python3", "perl", "node", "ruby", "php"];
+const INTERPRETERS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "python", "python3", "perl", "node", "ruby",
+    "php",
+];
 
 fn is_b64_decode(s: &str) -> bool {
-    ["base64 -d", "base64 --decode", "base64 -D", "base64 -di"].iter().any(|p| s.contains(p))
+    ["base64 -d", "base64 --decode", "base64 -D", "base64 -di"]
+        .iter()
+        .any(|p| s.contains(p))
 }
 
 /// A base64 decode whose output a shell or interpreter executes: `... | base64 -d | sh`,
@@ -1985,13 +2275,19 @@ pub fn decodes_into_shell(cmd: &str) -> bool {
     }
     let stages = pipe_stages(&lower);
     if let Some(i) = stages.iter().position(|s| is_b64_decode(s))
-        && stages[i + 1..].iter().any(|s| INTERPRETERS.contains(&stage_program(s).as_str()))
+        && stages[i + 1..]
+            .iter()
+            .any(|s| INTERPRETERS.contains(&stage_program(s).as_str()))
     {
         return true;
     }
     let substitutes = lower.contains("$(") || lower.contains("<(") || lower.contains('`');
-    let runs = lower.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '(').any(|w| matches!(w, "eval" | "source" | "."))
-        || [" -c ", " -c\"", " -c'", "sh <(", "bash <("].iter().any(|p| lower.contains(p));
+    let runs = lower
+        .split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '(')
+        .any(|w| matches!(w, "eval" | "source" | "."))
+        || [" -c ", " -c\"", " -c'", "sh <(", "bash <("]
+            .iter()
+            .any(|p| lower.contains(p));
     substitutes && runs
 }
 
@@ -2004,7 +2300,9 @@ pub fn sends_encoded_data(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     let stages = pipe_stages(&lower);
     if let Some(i) = stages.iter().position(|s| ENCODERS.iter().any(|e| s.contains(e)))
-        && stages[i + 1..].iter().any(|s| SENDERS.contains(&stage_program(s).as_str()))
+        && stages[i + 1..]
+            .iter()
+            .any(|s| SENDERS.contains(&stage_program(s).as_str()))
     {
         return true;
     }
@@ -2016,9 +2314,7 @@ pub fn sends_encoded_data(cmd: &str) -> bool {
         return false;
     }
     let inside = substitution_mask(&lower);
-    ENCODERS
-        .iter()
-        .any(|e| lower.match_indices(e).any(|(i, _)| inside[i]))
+    ENCODERS.iter().any(|e| lower.match_indices(e).any(|(i, _)| inside[i]))
 }
 
 /// For each byte of `s`: whether it lies inside a command substitution, `$( ... )`
@@ -2126,7 +2422,11 @@ pub fn extract_dynamic_commands(text: &str) -> Vec<(String, bool)> {
             // supply the closing fence for this one).
             break;
         };
-        let end = if close > start && chars[close - 1] == '\n' { close - 1 } else { close };
+        let end = if close > start && chars[close - 1] == '\n' {
+            close - 1
+        } else {
+            close
+        };
         let cmd: String = chars[start..end.max(start)].iter().collect();
         let cmd = cmd.trim().replace("\r\n", "\n");
         if !cmd.is_empty() {
@@ -2165,7 +2465,10 @@ fn tokenize_tools(s: &str, out: &mut Vec<String>) {
     let mut depth = 0i32;
     let mut cur = String::new();
     let flush = |cur: &mut String, out: &mut Vec<String>| {
-        let t = cur.trim().trim_matches(|c| c == '[' || c == ']' || c == '"' || c == '\'').trim();
+        let t = cur
+            .trim()
+            .trim_matches(|c| c == '[' || c == ']' || c == '"' || c == '\'')
+            .trim();
         if !t.is_empty() {
             out.push(t.to_string());
         }
@@ -2228,7 +2531,10 @@ pub fn parse_allowed_tools(frontmatter: &str) -> Vec<String> {
 pub fn grants_unrestricted_shell(tokens: &[String]) -> bool {
     tokens.iter().any(|t| {
         let t = t.replace(' ', "");
-        matches!(t.as_str(), "Bash" | "Bash(*)" | "Bash(**)" | "PowerShell" | "PowerShell(*)")
+        matches!(
+            t.as_str(),
+            "Bash" | "Bash(*)" | "Bash(**)" | "PowerShell" | "PowerShell(*)"
+        )
     })
 }
 
@@ -2241,11 +2547,7 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
         .map(PathBuf::from)
         .filter(|p| crate::scanners::probe_dir(p))
         .collect();
-    if dirs.is_empty() {
-        None
-    } else {
-        Some(dirs)
-    }
+    if dirs.is_empty() { None } else { Some(dirs) }
 }
 
 fn sha256_hex(content: &str) -> String {
@@ -2381,11 +2683,19 @@ mod tests {
             let cmds = dir.join("commands");
             std::fs::create_dir_all(&cmds).unwrap();
             for f in 0..5 {
-                std::fs::write(cmds.join(format!("c{f}.md")), format!("---\nname: c{f}\n---\nUse playwright, read !`cat notes-{d}-{f}.txt`\n")).unwrap();
+                std::fs::write(
+                    cmds.join(format!("c{f}.md")),
+                    format!("---\nname: c{f}\n---\nUse playwright, read !`cat notes-{d}-{f}.txt`\n"),
+                )
+                .unwrap();
             }
             for f in 0..41 {
                 let body = "x".repeat(d * 100 + f);
-                std::fs::write(dir.join(format!("f{f}.sh")), format!("#!/bin/sh\n# {body}\nsqlite3 db 'select 1'\n")).unwrap();
+                std::fs::write(
+                    dir.join(format!("f{f}.sh")),
+                    format!("#!/bin/sh\n# {body}\nsqlite3 db 'select 1'\n"),
+                )
+                .unwrap();
             }
             std::os::unix::fs::symlink("f0.sh", dir.join("linked.sh")).unwrap();
             std::os::unix::fs::symlink("../../../../../../../.ssh/id_ed25519", dir.join("key.sh")).unwrap();
@@ -2418,17 +2728,39 @@ mod tests {
             let w = WALK.with(|c| c.get());
             let hooks: usize = results.iter().map(|r| r.hooks.len()).sum();
             let json: Vec<String> = results.iter().map(|r| serde_json::to_string(r).unwrap()).collect();
-            runs.push((jobs, json, w.entries, w.bytes_hashed, read1 - read0, missing1 - missing0, hooks, resolutions() - res0));
+            runs.push((
+                jobs,
+                json,
+                w.entries,
+                w.bytes_hashed,
+                read1 - read0,
+                missing1 - missing0,
+                hooks,
+                resolutions() - res0,
+            ));
         }
         let _ = std::fs::remove_dir_all(&base);
         let (_, one, entries, bytes, files, missing, hooks, res) = &runs[0];
         assert_eq!(one.len(), 4 * (1 + 5 + 41 + 3), "every judged file is an entry");
-        assert!(*hooks >= 4 && *bytes > 0 && *files >= 4 * 47, "fixture exercises hooks and hashing: {hooks} {bytes} {files}");
-        assert!(one.iter().any(|j| j.contains("\"dangerous\":true")), "a dangerous dynamic command");
-        assert!(one.iter().any(|j| j.contains("symlink-not-followed")), "the credential link is not read");
+        assert!(
+            *hooks >= 4 && *bytes > 0 && *files >= 4 * 47,
+            "fixture exercises hooks and hashing: {hooks} {bytes} {files}"
+        );
+        assert!(
+            one.iter().any(|j| j.contains("\"dangerous\":true")),
+            "a dangerous dynamic command"
+        );
+        assert!(
+            one.iter().any(|j| j.contains("symlink-not-followed")),
+            "the credential link is not read"
+        );
         let (_, four, entries4, bytes4, files4, missing4, hooks4, res4) = &runs[1];
         assert_eq!(one, four, "entries or their order differ between jobs 1 and jobs 4");
-        assert_eq!((entries, bytes, files, missing, hooks), (entries4, bytes4, files4, missing4, hooks4), "walk counts");
+        assert_eq!(
+            (entries, bytes, files, missing, hooks),
+            (entries4, bytes4, files4, missing4, hooks4),
+            "walk counts"
+        );
         assert_eq!(res, res4, "path resolutions moved off the walk thread or changed");
     }
 
@@ -2455,17 +2787,27 @@ mod tests {
                 WALK.with(|c| c.set(WalkCounts::default()));
                 let mut results = Vec::new();
                 scan_skill_bundles(&root, "claude-code", "global", None, &ctx, &mut results);
-                assert!(WALK.with(|c| c.get()).budget_exhausted, "jobs {jobs}: walk.budget_exhausted");
+                assert!(
+                    WALK.with(|c| c.get()).budget_exhausted,
+                    "jobs {jobs}: walk.budget_exhausted"
+                );
                 results
             });
             let stat = pending.finalize();
             assert!(stat.truncated, "jobs {jobs}: truncated");
             assert_eq!(stat.files_read as usize, MAX_BUNDLE_FILES, "jobs {jobs}: files read");
-            runs.push(out.iter().map(|r| serde_json::to_string(r).unwrap()).collect::<Vec<_>>());
+            runs.push(
+                out.iter()
+                    .map(|r| serde_json::to_string(r).unwrap())
+                    .collect::<Vec<_>>(),
+            );
         }
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(runs[0].len(), MAX_BUNDLE_FILES);
-        assert!(runs[0].iter().all(|j| !j.contains("\"unreadable\"")), "every judged file read and hashed");
+        assert!(
+            runs[0].iter().all(|j| !j.contains("\"unreadable\"")),
+            "every judged file read and hashed"
+        );
         assert_eq!(runs[0], runs[1], "entries differ between jobs 1 and jobs 4");
     }
 
@@ -2498,14 +2840,20 @@ mod tests {
         scan_skill_bundles(&plugins, "claude-code-plugin", "global", None, &ctx, &mut results);
         let walk = resolutions() - before;
         assert_eq!(results.len(), 200);
-        assert!(results.iter().all(|r| r.sha256.len() == 64), "every file read and hashed");
+        assert!(
+            results.iter().all(|r| r.sha256.len() == 64),
+            "every file read and hashed"
+        );
         assert!(walk < 40, "200 files in 4 directories resolved {walk} times");
 
         let before = resolutions();
         dedupe_results(&mut results);
         let dedupe = resolutions() - before;
         assert_eq!(results.len(), 200);
-        assert!(dedupe < 40, "deduping 200 entries in 4 directories resolved {dedupe} times");
+        assert!(
+            dedupe < 40,
+            "deduping 200 entries in 4 directories resolved {dedupe} times"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

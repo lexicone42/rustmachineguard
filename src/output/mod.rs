@@ -1,9 +1,9 @@
-pub mod terminal;
-pub mod json;
-pub mod html;
-pub mod sbom;
 pub mod blueprint;
 pub mod fleet;
+pub mod html;
+pub mod json;
+pub mod sbom;
+pub mod terminal;
 
 use crate::models::ScanReport;
 

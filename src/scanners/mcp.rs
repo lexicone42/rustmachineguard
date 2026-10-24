@@ -1,6 +1,6 @@
 use crate::models::{McpConfig, McpServerDetail};
 use crate::platform::PlatformInfo;
-use crate::scanners::{is_git_tracked, Scanner};
+use crate::scanners::{Scanner, is_git_tracked};
 
 pub struct McpScanner;
 
@@ -58,40 +58,41 @@ impl Scanner for McpScanner {
         let claude_json = platform.home_dir().join(".claude.json");
         if crate::scanners::probe_file(&claude_json)
             && let Some(content) = crate::scanners::read_bounded(&claude_json)
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
-                    && let Some(projects) = v.get("projects").and_then(|v| v.as_object()) {
-                        for (proj_path, _) in projects {
-                            let mcp_json = std::path::PathBuf::from(proj_path).join(".mcp.json");
-                            if !crate::scanners::probe_file(&mcp_json) {
-                                continue;
-                            }
-                            let proj_content = match crate::scanners::read_bounded(&mcp_json) {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                            let (server_names, servers) = match serde_json::from_str::<serde_json::Value>(&proj_content) {
-                                Ok(pv) => {
-                                    let names = extract_mcp_servers(&pv);
-                                    let details = extract_mcp_server_details(&pv);
-                                    (names, details)
-                                }
-                                Err(_) => continue,
-                            };
-                            if server_names.is_empty() {
-                                continue;
-                            }
-                            let server_count = server_names.len();
-                            results.push(McpConfig {
-                                config_source: format!("Project MCP ({})", proj_path),
-                                config_path: mcp_json.display().to_string(),
-                                vendor: "Project".to_string(),
-                                server_names,
-                                server_count,
-                                git_tracked: is_git_tracked(&mcp_json),
-                                servers,
-                            });
-                        }
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(projects) = v.get("projects").and_then(|v| v.as_object())
+        {
+            for (proj_path, _) in projects {
+                let mcp_json = std::path::PathBuf::from(proj_path).join(".mcp.json");
+                if !crate::scanners::probe_file(&mcp_json) {
+                    continue;
+                }
+                let proj_content = match crate::scanners::read_bounded(&mcp_json) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let (server_names, servers) = match serde_json::from_str::<serde_json::Value>(&proj_content) {
+                    Ok(pv) => {
+                        let names = extract_mcp_servers(&pv);
+                        let details = extract_mcp_server_details(&pv);
+                        (names, details)
                     }
+                    Err(_) => continue,
+                };
+                if server_names.is_empty() {
+                    continue;
+                }
+                let server_count = server_names.len();
+                results.push(McpConfig {
+                    config_source: format!("Project MCP ({})", proj_path),
+                    config_path: mcp_json.display().to_string(),
+                    vendor: "Project".to_string(),
+                    server_names,
+                    server_count,
+                    git_tracked: is_git_tracked(&mcp_json),
+                    servers,
+                });
+            }
+        }
 
         results
     }
@@ -141,7 +142,9 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
     let server_maps: Vec<&serde_json::Map<String, serde_json::Value>> = [
         json.get("mcpServers").and_then(|v| v.as_object()),
         json.get("mcp_servers").and_then(|v| v.as_object()),
-        json.get("mcp").and_then(|v| v.get("servers")).and_then(|v| v.as_object()),
+        json.get("mcp")
+            .and_then(|v| v.get("servers"))
+            .and_then(|v| v.as_object()),
         json.get("context_servers").and_then(|v| v.as_object()),
     ]
     .into_iter()
@@ -196,7 +199,6 @@ pub fn redact_arg(arg: &str, prev: Option<&str>) -> String {
     crate::scanners::redact_secrets_in_text(arg)
 }
 
-
 /// True if a CLI flag name suggests its value is a secret. Reuses the shared key-name
 /// heuristic, so `--api-key`, `--token`, `--password`, `--dsn` are all covered.
 fn flag_names_a_secret(flag: &str) -> bool {
@@ -209,7 +211,10 @@ fn flag_names_a_secret(flag: &str) -> bool {
     }
     let f = flag.trim_start_matches('-').replace('-', "_");
     crate::scanners::env_files::is_secret_key_name(&f)
-        || matches!(f.to_ascii_lowercase().as_str(), "dsn" | "conn" | "connection" | "u" | "p" | "pw")
+        || matches!(
+            f.to_ascii_lowercase().as_str(),
+            "dsn" | "conn" | "connection" | "u" | "p" | "pw"
+        )
 }
 
 fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
@@ -240,9 +245,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
     let transport = match explicit.as_deref() {
         Some("stdio") => "stdio".to_string(),
         Some("sse") => "sse".to_string(),
-        Some("http" | "streamable-http" | "streamablehttp" | "streamable_http" | "http-stream") => {
-            "http".to_string()
-        }
+        Some("http" | "streamable-http" | "streamablehttp" | "streamable_http" | "http-stream") => "http".to_string(),
         _ if url.is_some() => "http".to_string(),
         _ if command.is_some() => "stdio".to_string(),
         _ => "unknown".to_string(),
@@ -314,7 +317,15 @@ fn is_inline_literal(value: &str) -> bool {
     // Common "fill me in" placeholders aren't real committed secrets.
     let lower = v.to_ascii_lowercase();
     const PLACEHOLDERS: &[&str] = &[
-        "your", "changeme", "change-me", "placeholder", "example", "xxx", "todo", "<", "...",
+        "your",
+        "changeme",
+        "change-me",
+        "placeholder",
+        "example",
+        "xxx",
+        "todo",
+        "<",
+        "...",
     ];
     if PLACEHOLDERS.iter().any(|p| lower.starts_with(p)) {
         return false;
@@ -323,10 +334,7 @@ fn is_inline_literal(value: &str) -> bool {
 }
 
 /// Infer package ecosystem, name, and version from a launcher command and its args.
-pub fn infer_package_from_command(
-    command: &str,
-    args: &[String],
-) -> (Option<String>, Option<String>, Option<String>) {
+pub fn infer_package_from_command(command: &str, args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
     let cmd_base = std::path::Path::new(command)
         .file_name()
         .and_then(|n| n.to_str())
@@ -335,9 +343,7 @@ pub fn infer_package_from_command(
     match cmd_base {
         "npx" | "bunx" | "pnpx" => parse_npm_launcher(args),
         "uvx" | "pipx" => parse_python_launcher(args),
-        "uv" if args.first().is_some_and(|a| a == "run" || a == "tool") => {
-            parse_python_launcher(&args[1..])
-        }
+        "uv" if args.first().is_some_and(|a| a == "run" || a == "tool") => parse_python_launcher(&args[1..]),
         "python" | "python3" if args.first().is_some_and(|a| a == "-m") => {
             if let Some(module) = args.get(1) {
                 (Some("pypi".to_string()), Some(module.clone()), None)

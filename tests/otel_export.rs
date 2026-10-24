@@ -38,7 +38,10 @@ const SLOW_SKIP: &str = "ai,frameworks,ide,node,containers,notebooks";
 
 fn rmguard(home: &Path, endpoint_port: Option<u16>, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rmguard"));
-    cmd.env_clear().env("HOME", home).env("PATH", "/usr/bin:/bin").args(args);
+    cmd.env_clear()
+        .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
+        .args(args);
     if let Some(port) = endpoint_port {
         let base = format!("http://127.0.0.1:{port}");
         cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &base)
@@ -64,7 +67,11 @@ fn run_measuring_tail(mut cmd: Command) -> (Output, Duration) {
     use std::io::Read;
     use std::process::Stdio;
     use std::sync::mpsc;
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn rmguard");
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rmguard");
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr_pipe = child.stderr.take().unwrap();
     let err_reader = std::thread::spawn(move || {
@@ -92,7 +99,14 @@ fn run_measuring_tail(mut cmd: Command) -> (Output, Duration) {
     }
     let tail = last_chunk.map_or(Duration::ZERO, |at| exited.saturating_duration_since(at));
     let stderr_bytes = err_reader.join().unwrap();
-    (Output { status, stdout: out_bytes, stderr: stderr_bytes }, tail)
+    (
+        Output {
+            status,
+            stdout: out_bytes,
+            stderr: stderr_bytes,
+        },
+        tail,
+    )
 }
 
 fn stderr(out: &Output) -> String {
@@ -100,9 +114,7 @@ fn stderr(out: &Output) -> String {
 }
 
 fn json(out: &Output) -> serde_json::Value {
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!("stdout is not JSON ({e}); stderr:\n{}", stderr(out))
-    })
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("stdout is not JSON ({e}); stderr:\n{}", stderr(out)))
 }
 
 /// Nothing connected, not even a completed handshake waiting in the backlog.
@@ -117,7 +129,10 @@ fn assert_never_connected(listener: &TcpListener) {
 
 #[test]
 fn help_documents_otel_flag() {
-    let out = Command::new(env!("CARGO_BIN_EXE_rmguard")).arg("--help").output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .arg("--help")
+        .output()
+        .unwrap();
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(help.contains("--otel"), "{help}");
     assert!(help.contains("OTEL_EXPORTER_OTLP_ENDPOINT"), "{help}");
@@ -194,7 +209,12 @@ fn children_never_inherit_otel_env() {
             .env("OTEL_RESOURCE_ATTRIBUTES", "team=E2EOTELHEADERKEY")
             .env("otel_lowercase_too", "E2EOTELHEADERKEY");
         let (out, _) = run(cmd);
-        assert!(out.status.success(), "{tag}: exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        assert!(
+            out.status.success(),
+            "{tag}: exit {:?}; stderr:\n{}",
+            out.status,
+            stderr(&out)
+        );
         json(&out);
 
         let probe_env = std::fs::read_to_string(&probe_dump)
@@ -206,8 +226,14 @@ fn children_never_inherit_otel_env() {
         for site in ["ARGV0=ghcs", "ARGV0=ps"] {
             assert!(child_env.contains(site), "{tag}: {site} never ran:\n{child_env}");
         }
-        for (what, text) in [("probed MCP server", &probe_env), ("--version/ps/git child", &child_env)] {
-            assert!(!text.contains("E2EOTELHEADERKEY"), "{tag}: the collector key reached a {what}:\n{text}");
+        for (what, text) in [
+            ("probed MCP server", &probe_env),
+            ("--version/ps/git child", &child_env),
+        ] {
+            assert!(
+                !text.contains("E2EOTELHEADERKEY"),
+                "{tag}: the collector key reached a {what}:\n{text}"
+            );
             assert!(
                 !text.lines().any(|l| l.to_ascii_uppercase().starts_with("OTEL_")),
                 "{tag}: an OTEL_ variable reached a {what}:\n{text}"
@@ -241,7 +267,8 @@ fn no_bare_command_new_outside_child_command() {
             if !line.contains("Command::new(") {
                 continue;
             }
-            if f.ends_with("src/scanners/mod.rs") && line.trim() == "let mut cmd = std::process::Command::new(program);" {
+            if f.ends_with("src/scanners/mod.rs") && line.trim() == "let mut cmd = std::process::Command::new(program);"
+            {
                 allowed += 1;
                 continue;
             }
@@ -277,7 +304,12 @@ fn no_child_command_spawns_a_program_by_bare_name() {
         for (i, line) in text.lines().enumerate() {
             for (at, _) in line.match_indices("child_command(\"") {
                 let lit = &line[at + "child_command(\"".len()..];
-                assert!(lit.starts_with('/'), "{}:{}: spawn a system tool through system_command, not by name: {line}", f.display(), i + 1);
+                assert!(
+                    lit.starts_with('/'),
+                    "{}:{}: spawn a system tool through system_command, not by name: {line}",
+                    f.display(),
+                    i + 1
+                );
             }
         }
     }
@@ -289,10 +321,17 @@ fn otel_flag_without_feature_warns() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let home = temp_home("nofeature");
-    let (out, _) = run(rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]));
+    let (out, _) = run(rmguard(
+        &home,
+        Some(port),
+        &["--otel", "--format", "json", "--skip", SLOW_SKIP],
+    ));
     assert!(out.status.success(), "exit {:?}", out.status);
     json(&out);
-    let n = stderr(&out).lines().filter(|l| l.contains("built without the `otel` feature")).count();
+    let n = stderr(&out)
+        .lines()
+        .filter(|l| l.contains("built without the `otel` feature"))
+        .count();
     assert_eq!(n, 1, "{}", stderr(&out));
     assert_never_connected(&listener);
     let _ = std::fs::remove_dir_all(&home);
@@ -351,7 +390,14 @@ mod enabled {
                     }
                 }
             });
-            Collector { port, got, agents, stop, live, accept: Some(accept) }
+            Collector {
+                port,
+                got,
+                agents,
+                stop,
+                live,
+                accept: Some(accept),
+            }
         }
 
         /// Stop accepting and wait (at most 5 s) for open connections to drain.
@@ -389,12 +435,16 @@ mod enabled {
                 .lines()
                 .find_map(|l| {
                     let (k, v) = l.split_once(':')?;
-                    k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok())?
+                    k.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse().ok())?
                 })
                 .unwrap_or(0);
             let ua = head.lines().find_map(|l| {
                 let (k, v) = l.split_once(':')?;
-                k.trim().eq_ignore_ascii_case("user-agent").then(|| v.trim().to_string())
+                k.trim()
+                    .eq_ignore_ascii_case("user-agent")
+                    .then(|| v.trim().to_string())
             });
             agents.lock().unwrap().push(ua.unwrap_or_default());
             let total = head_end + 4 + len;
@@ -406,8 +456,7 @@ mod enabled {
             }
             got.lock().unwrap().push((path, buf[head_end + 4..total].to_vec()));
             buf.drain(..total);
-            if s
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n")
+            if s.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n")
                 .is_err()
             {
                 return;
@@ -440,7 +489,10 @@ mod enabled {
     }
 
     fn attr<'a>(kvs: &'a [KeyValue], key: &str) -> Option<&'a any_value::Value> {
-        kvs.iter().find(|kv| kv.key == key).and_then(|kv| kv.value.as_ref()).and_then(|v| v.value.as_ref())
+        kvs.iter()
+            .find(|kv| kv.key == key)
+            .and_then(|kv| kv.value.as_ref())
+            .and_then(|v| v.value.as_ref())
     }
 
     fn attr_str(kvs: &[KeyValue], key: &str) -> Option<String> {
@@ -463,7 +515,10 @@ mod enabled {
         fn kv_strings(kvs: &[KeyValue], out: &mut Vec<String>) {
             for kv in kvs {
                 out.push(kv.key.clone());
-                if let Some(AnyValue { value: Some(any_value::Value::StringValue(s)) }) = &kv.value {
+                if let Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(s)),
+                }) = &kv.value
+                {
                     out.push(s.clone());
                 }
             }
@@ -499,11 +554,15 @@ mod enabled {
                         out.push(m.name.clone());
                         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
                         match &m.data {
-                            Some(Data::Sum(s)) => s.data_points.iter().for_each(|p| kv_strings(&p.attributes, &mut out)),
+                            Some(Data::Sum(s)) => {
+                                s.data_points.iter().for_each(|p| kv_strings(&p.attributes, &mut out))
+                            }
                             Some(Data::Histogram(h)) => {
                                 h.data_points.iter().for_each(|p| kv_strings(&p.attributes, &mut out))
                             }
-                            Some(Data::Gauge(g)) => g.data_points.iter().for_each(|p| kv_strings(&p.attributes, &mut out)),
+                            Some(Data::Gauge(g)) => {
+                                g.data_points.iter().for_each(|p| kv_strings(&p.attributes, &mut out))
+                            }
                             _ => {}
                         }
                     }
@@ -522,7 +581,10 @@ mod enabled {
     }
 
     fn warning_lines(out: &Output) -> usize {
-        stderr(out).lines().filter(|l| l.starts_with("warning: OpenTelemetry export")).count()
+        stderr(out)
+            .lines()
+            .filter(|l| l.starts_with("warning: OpenTelemetry export"))
+            .count()
     }
 
     #[test]
@@ -535,24 +597,42 @@ mod enabled {
         let agents = agents.lock().unwrap().clone();
         assert!(!agents.is_empty());
         for ua in &agents {
-            assert_eq!(ua, concat!("rmguard/", env!("CARGO_PKG_VERSION")), "documented user agent");
+            assert_eq!(
+                ua,
+                concat!("rmguard/", env!("CARGO_PKG_VERSION")),
+                "documented user agent"
+            );
         }
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         let report = json(&out);
-        assert!(stderr(&out).contains("info: OpenTelemetry export enabled"), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("info: OpenTelemetry export enabled"),
+            "{}",
+            stderr(&out)
+        );
         assert_eq!(warning_lines(&out), 0, "{}", stderr(&out));
 
         let tr = traces(&bodies);
         let mr = metrics(&bodies);
-        assert!(!tr.is_empty(), "no /v1/traces request; got paths {:?}", bodies.iter().map(|b| &b.0).collect::<Vec<_>>());
+        assert!(
+            !tr.is_empty(),
+            "no /v1/traces request; got paths {:?}",
+            bodies.iter().map(|b| &b.0).collect::<Vec<_>>()
+        );
         assert!(!mr.is_empty(), "no /v1/metrics request");
 
         // Resource.
         let res = tr[0].resource_spans[0].resource.as_ref().expect("resource");
         assert_eq!(attr_str(&res.attributes, "service.name").as_deref(), Some("rmguard"));
-        assert_eq!(attr_str(&res.attributes, "service.version").as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            attr_str(&res.attributes, "service.version").as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
         assert!(attr_str(&res.attributes, "os.type").is_some());
-        assert!(attr_str(&res.attributes, "host.name").is_none(), "host.name must not be exported");
+        assert!(
+            attr_str(&res.attributes, "host.name").is_none(),
+            "host.name must not be exported"
+        );
 
         // One trace, one root.
         let all = spans(&tr);
@@ -560,7 +640,10 @@ mod enabled {
         assert_eq!(roots.len(), 1, "expected exactly one root span");
         let root = roots[0];
         assert!(root.parent_span_id.is_empty(), "root span has a parent");
-        assert!(all.iter().all(|s| s.trace_id == root.trace_id), "spans span several traces");
+        assert!(
+            all.iter().all(|s| s.trace_id == root.trace_id),
+            "spans span several traces"
+        );
         assert_eq!(
             all.iter().filter(|s| s.parent_span_id.is_empty()).count(),
             1,
@@ -593,11 +676,23 @@ mod enabled {
             let a = &s.attributes;
             assert_eq!(attr_str(a, "rmguard.scanner").as_deref(), Some(label));
             assert_eq!(attr_int(a, "rmguard.files.read"), row["files_read"].as_i64(), "{name}");
-            assert_eq!(attr_int(a, "rmguard.files.missing"), row["files_missing"].as_i64(), "{name}");
+            assert_eq!(
+                attr_int(a, "rmguard.files.missing"),
+                row["files_missing"].as_i64(),
+                "{name}"
+            );
             assert_eq!(attr_int(a, "rmguard.items"), row["items"].as_i64(), "{name}");
-            assert_eq!(attr_int(a, "rmguard.duration_ms"), row["duration_ms"].as_i64(), "{name}");
+            assert_eq!(
+                attr_int(a, "rmguard.duration_ms"),
+                row["duration_ms"].as_i64(),
+                "{name}"
+            );
             let span_ms = (s.end_time_unix_nano - s.start_time_unix_nano) / 1_000_000;
-            assert_eq!(Some(span_ms as i64), row["duration_ms"].as_i64(), "{name} span duration");
+            assert_eq!(
+                Some(span_ms as i64),
+                row["duration_ms"].as_i64(),
+                "{name} span duration"
+            );
             assert!(reaches_root(s), "{name} does not reach the root span");
             checked += 1;
         }
@@ -612,8 +707,7 @@ mod enabled {
             }
             let p = by_id.get(s.parent_span_id.as_slice()).expect("parent exported");
             assert!(
-                p.start_time_unix_nano <= s.start_time_unix_nano
-                    && s.end_time_unix_nano <= p.end_time_unix_nano,
+                p.start_time_unix_nano <= s.start_time_unix_nano && s.end_time_unix_nano <= p.end_time_unix_nano,
                 "{} [{}..{}] escapes its parent {} [{}..{}]",
                 s.name,
                 s.start_time_unix_nano,
@@ -627,7 +721,11 @@ mod enabled {
         assert!(all.iter().all(reaches_root), "a span is detached from the root");
 
         let names = metric_names(&mr);
-        for m in ["rmguard.scanner.duration", "rmguard.scanner.files_read", "rmguard.scan.duration"] {
+        for m in [
+            "rmguard.scanner.duration",
+            "rmguard.scanner.files_read",
+            "rmguard.scan.duration",
+        ] {
             assert!(names.contains(m), "metric {m} missing; got {names:?}");
         }
 
@@ -655,7 +753,10 @@ mod enabled {
         let proj = home.join("proj");
         // A git repository whose config mentions `include`, so git config is spawned on
         // it, with a nested bare git dir planted inside (the CVE-2026-45033 shape).
-        write(&proj.join(".git/config"), "[core]\n\tbare = false\n[include]\n\tpath = extra\n");
+        write(
+            &proj.join(".git/config"),
+            "[core]\n\tbare = false\n[include]\n\tpath = extra\n",
+        );
         write(&proj.join(".git/HEAD"), "ref: refs/heads/main\n");
         std::fs::create_dir_all(proj.join(".git/objects")).unwrap();
         std::fs::create_dir_all(proj.join(".git/refs")).unwrap();
@@ -672,9 +773,15 @@ mod enabled {
             &home.join(".claude/skills/demo/SKILL.md"),
             "---\nname: demo\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: echo hi\n---\nDemo skill.\n",
         );
-        write(&home.join(".claude/skills/demo/scripts/run.sh"), "#!/bin/sh\necho run\n");
+        write(
+            &home.join(".claude/skills/demo/scripts/run.sh"),
+            "#!/bin/sh\necho run\n",
+        );
         write(&home.join(".claude/commands/go.md"), "Go somewhere.\n");
-        write(&proj.join(".claude/skills/p/SKILL.md"), "---\nname: p\n---\nProject skill.\n");
+        write(
+            &proj.join(".claude/skills/p/SKILL.md"),
+            "---\nname: p\n---\nProject skill.\n",
+        );
         // One transcript store with two files.
         write(&home.join(".claude/projects/x/a.jsonl"), "hello");
         write(&home.join(".claude/projects/x/b.jsonl"), "world!");
@@ -701,7 +808,8 @@ mod enabled {
         // T1: every exec span names its program, from the closed table or `other`.
         let mut programs = BTreeMap::new();
         for s in all.iter().filter(|s| s.name.starts_with("exec.")) {
-            let p = attr_str(&s.attributes, "rmguard.exec.program").unwrap_or_else(|| panic!("{} has no program", s.name));
+            let p =
+                attr_str(&s.attributes, "rmguard.exec.program").unwrap_or_else(|| panic!("{} has no program", s.name));
             assert!(
                 p == "other" || rustmachineguard::otel::EXEC_PROGRAMS.contains(&p.as_str()),
                 "{} program {p:?} is not a closed value",
@@ -728,12 +836,23 @@ mod enabled {
             let a = &w.attributes;
             let kind = attr_str(a, "rmguard.walk.kind").unwrap();
             let scope = attr_str(a, "rmguard.walk.scope").unwrap();
-            assert!(["commands", "agents", "hooks", "codex", "skills", "plugins"].contains(&kind.as_str()), "{kind}");
+            assert!(
+                ["commands", "agents", "hooks", "codex", "skills", "plugins"].contains(&kind.as_str()),
+                "{kind}"
+            );
             assert!(["global", "project"].contains(&scope.as_str()), "{scope}");
             let link = attr_str(a, "rmguard.walk.root_link").unwrap();
             assert!(["plain", "followed", "refused"].contains(&link.as_str()), "{link}");
-            assert!(matches!(attr(a, "rmguard.walk.budget_exhausted"), Some(any_value::Value::BoolValue(false))));
-            for k in ["rmguard.walk.entries", "rmguard.walk.files", "rmguard.walk.bytes_hashed", "rmguard.walk.hooks"] {
+            assert!(matches!(
+                attr(a, "rmguard.walk.budget_exhausted"),
+                Some(any_value::Value::BoolValue(false))
+            ));
+            for k in [
+                "rmguard.walk.entries",
+                "rmguard.walk.files",
+                "rmguard.walk.bytes_hashed",
+                "rmguard.walk.hooks",
+            ] {
                 assert!(attr_int(a, k).is_some_and(|n| n >= 0), "{k} missing on {kind}/{scope}");
             }
             files += attr_int(a, "rmguard.walk.files").unwrap();
@@ -742,15 +861,29 @@ mod enabled {
             items += attr_int(a, "rmguard.items").unwrap();
             kinds.insert((kind, scope));
         }
-        for k in [("commands", "global"), ("commands", "project"), ("agents", "global"), ("agents", "project"),
-                  ("hooks", "global"), ("skills", "global"), ("skills", "project"), ("plugins", "global")] {
-            assert!(kinds.contains(&(k.0.to_string(), k.1.to_string())), "no {k:?} walk; got {kinds:?}");
+        for k in [
+            ("commands", "global"),
+            ("commands", "project"),
+            ("agents", "global"),
+            ("agents", "project"),
+            ("hooks", "global"),
+            ("skills", "global"),
+            ("skills", "project"),
+            ("plugins", "global"),
+        ] {
+            assert!(
+                kinds.contains(&(k.0.to_string(), k.1.to_string())),
+                "no {k:?} walk; got {kinds:?}"
+            );
         }
         // 1 global + 1 project commands walk, agents likewise, hooks, global skills,
         // plugins, project skills (no ~/.codex, so no codex walk).
         assert_eq!(walks.len(), 8, "{kinds:?}");
         let skill_rows = report["agent_skills"].as_array().unwrap();
-        let report_hooks: usize = skill_rows.iter().map(|r| r["hooks"].as_array().map_or(0, Vec::len)).sum();
+        let report_hooks: usize = skill_rows
+            .iter()
+            .map(|r| r["hooks"].as_array().map_or(0, Vec::len))
+            .sum();
         let report_bytes: i64 = skill_rows.iter().map(|r| r["size_bytes"].as_i64().unwrap()).sum();
         assert_eq!(items as usize, skill_rows.len(), "walk items vs the report's skills");
         assert_eq!(hooks as usize, report_hooks, "walk hooks vs the report");
@@ -767,12 +900,22 @@ mod enabled {
         let nested_walk = one("gitconfig.nested_walk");
         assert_eq!(parent(repos).map(|p| p.span_id.clone()), Some(gc.span_id.clone()));
         assert_eq!(parent(nested_walk).map(|p| p.span_id.clone()), Some(gc.span_id.clone()));
-        assert_eq!(attr_int(&repos.attributes, "rmguard.repos"), Some(2), "proj and the cwd");
+        assert_eq!(
+            attr_int(&repos.attributes, "rmguard.repos"),
+            Some(2),
+            "proj and the cwd"
+        );
         let na = &nested_walk.attributes;
-        assert!(attr_int(na, "rmguard.repos").is_some_and(|n| n >= 1), "the planted nested git dir");
+        assert!(
+            attr_int(na, "rmguard.repos").is_some_and(|n| n >= 1),
+            "the planted nested git dir"
+        );
         assert!(attr_int(na, "rmguard.walk.dirs").is_some_and(|n| n >= 4));
         assert!(attr_int(na, "rmguard.walk.entries").is_some_and(|n| n >= 10));
-        assert!(matches!(attr(na, "rmguard.walk.budget_exhausted"), Some(any_value::Value::BoolValue(false))));
+        assert!(matches!(
+            attr(na, "rmguard.walk.budget_exhausted"),
+            Some(any_value::Value::BoolValue(false))
+        ));
         for e in all.iter().filter(|s| s.name.starts_with("exec.")) {
             let mut cur = e;
             let mut chain = Vec::new();
@@ -788,9 +931,15 @@ mod enabled {
                 );
             }
         }
-        let git_in_repos = all.iter().filter(|s| s.name.starts_with("exec.") && parent(s).is_some_and(|p| p.name == "gitconfig.repos")).count();
+        let git_in_repos = all
+            .iter()
+            .filter(|s| s.name.starts_with("exec.") && parent(s).is_some_and(|p| p.name == "gitconfig.repos"))
+            .count();
         if std::path::Path::new("/usr/bin/git").exists() {
-            assert!(git_in_repos >= 1, "the proj config mentions include, so git config ran under gitconfig.repos");
+            assert!(
+                git_in_repos >= 1,
+                "the proj config mentions include, so git config ran under gitconfig.repos"
+            );
         }
 
         // T4: one transcripts.store span per store, with the walked numbers.
@@ -798,15 +947,23 @@ mod enabled {
         assert_eq!(stores.len(), 6);
         let proj_store = stores
             .iter()
-            .find(|s| attr_str(&s.attributes, "rmguard.transcripts.kind").as_deref() == Some("conversation transcripts"))
+            .find(|s| {
+                attr_str(&s.attributes, "rmguard.transcripts.kind").as_deref() == Some("conversation transcripts")
+            })
             .unwrap();
         let a = &proj_store.attributes;
-        assert_eq!(attr_str(a, "rmguard.transcripts.framework").as_deref(), Some("claude-code"));
+        assert_eq!(
+            attr_str(a, "rmguard.transcripts.framework").as_deref(),
+            Some("claude-code")
+        );
         assert_eq!(attr_int(a, "rmguard.walk.files"), Some(2));
         assert_eq!(attr_int(a, "rmguard.walk.bytes"), Some(11));
         assert_eq!(attr_int(a, "rmguard.walk.entries"), Some(3), "x/ and its two files");
         // An int 0 is an int, not a bool: an absent store still says files = 0.
-        let empty = stores.iter().find(|s| attr_str(&s.attributes, "rmguard.transcripts.framework").as_deref() == Some("codex")).unwrap();
+        let empty = stores
+            .iter()
+            .find(|s| attr_str(&s.attributes, "rmguard.transcripts.framework").as_deref() == Some("codex"))
+            .unwrap();
         assert_eq!(attr_int(&empty.attributes, "rmguard.walk.files"), Some(0));
 
         // The exec metric is grouped by program too.
@@ -818,8 +975,11 @@ mod enabled {
                         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
                         if let Some(Data::Histogram(h)) = &m.data {
                             for p in &h.data_points {
-                                let prog = attr_str(&p.attributes, "rmguard.exec.program").expect("program on exec metric");
-                                assert!(prog == "other" || rustmachineguard::otel::EXEC_PROGRAMS.contains(&prog.as_str()));
+                                let prog =
+                                    attr_str(&p.attributes, "rmguard.exec.program").expect("program on exec metric");
+                                assert!(
+                                    prog == "other" || rustmachineguard::otel::EXEC_PROGRAMS.contains(&prog.as_str())
+                                );
                                 saw_program_on_metric = true;
                             }
                         }
@@ -827,13 +987,27 @@ mod enabled {
                 }
             }
         }
-        assert!(saw_program_on_metric || programs.is_empty(), "exec spans but no exec metric points");
+        assert!(
+            saw_program_on_metric || programs.is_empty(),
+            "exec spans but no exec metric points"
+        );
 
         // No path, no fixture text: only closed labels and counts.
         let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
         let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
-        for needle in [home.to_string_lossy().as_bytes(), b"demo", b"payload", b"echo hi", b"hello", b"go.md"] {
-            assert!(!contains(needle), "{:?} reached the collector", String::from_utf8_lossy(needle));
+        for needle in [
+            home.to_string_lossy().as_bytes(),
+            b"demo",
+            b"payload",
+            b"echo hi",
+            b"hello",
+            b"go.md",
+        ] {
+            assert!(
+                !contains(needle),
+                "{:?} reached the collector",
+                String::from_utf8_lossy(needle)
+            );
         }
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -858,7 +1032,10 @@ mod enabled {
         // workers take the scanners after it.
         write(&home.join(".claude/skills/big/SKILL.md"), "---\nname: big\n---\nBig.\n");
         for i in 0..400 {
-            write(&home.join(format!(".claude/skills/big/ref/f{i}.md")), "reference text\n");
+            write(
+                &home.join(format!(".claude/skills/big/ref/f{i}.md")),
+                "reference text\n",
+            );
         }
         // A project whose nested-git walk lists more than 4,000 directories.
         let big = home.join("big");
@@ -867,7 +1044,10 @@ mod enabled {
                 std::fs::create_dir_all(big.join(format!("d{i}/e{j}"))).unwrap();
             }
         }
-        write(&big.join(".git/config"), "[core]\n\tbare = false\n[include]\n\tpath = extra\n");
+        write(
+            &big.join(".git/config"),
+            "[core]\n\tbare = false\n[include]\n\tpath = extra\n",
+        );
         write(&big.join(".git/HEAD"), "ref: refs/heads/main\n");
         std::fs::create_dir_all(big.join(".git/objects")).unwrap();
         std::fs::create_dir_all(big.join(".git/refs")).unwrap();
@@ -877,7 +1057,11 @@ mod enabled {
         // pnpm as an npm global install leaves it: a link into node_modules/pnpm/.
         let pnpm = home.join("npm-global/lib/node_modules/pnpm");
         write(&pnpm.join("bin/pnpm.cjs"), "#!/bin/sh\nexit 3\n");
-        std::fs::set_permissions(pnpm.join("bin/pnpm.cjs"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            pnpm.join("bin/pnpm.cjs"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         write(&pnpm.join("package.json"), r#"{"name":"pnpm","version":"10.28.1"}"#);
         let fake_bin = home.join("npm-global/bin");
         std::fs::create_dir_all(&fake_bin).unwrap();
@@ -889,8 +1073,13 @@ mod enabled {
         let mut phases_overlapped = BTreeMap::new();
         for jobs in ["4", "1"] {
             let collector = Collector::start();
-            let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json", "--jobs", jobs]);
-            cmd.current_dir(&home).env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()));
+            let mut cmd = rmguard(
+                &home,
+                Some(collector.port),
+                &["--otel", "--format", "json", "--jobs", jobs],
+            );
+            cmd.current_dir(&home)
+                .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()));
             let (out, _) = run(cmd);
             let bodies = collector.finish();
             assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
@@ -914,14 +1103,24 @@ mod enabled {
                 } else {
                     "phase.home_pass"
                 };
-                assert_eq!(parent(s).map(|p| p.name.as_str()), Some(want), "--jobs {jobs}: parent of {}", s.name);
+                assert_eq!(
+                    parent(s).map(|p| p.name.as_str()),
+                    Some(want),
+                    "--jobs {jobs}: parent of {}",
+                    s.name
+                );
                 let truncated = match attr(&s.attributes, "rmguard.scanner.truncated") {
                     Some(any_value::Value::BoolValue(b)) => *b,
                     other => panic!("--jobs {jobs}: {} truncated = {other:?}", s.name),
                 };
                 assert_eq!(truncated, label == "gitconfig", "--jobs {jobs}: {} truncated", s.name);
             }
-            let gc_row = report["diagnostics"].as_array().unwrap().iter().find(|r| r["scanner"] == "gitconfig").unwrap();
+            let gc_row = report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["scanner"] == "gitconfig")
+                .unwrap();
             assert_eq!(gc_row["truncated"], true);
 
             let execs: Vec<&Span> = all.iter().filter(|s| s.name.starts_with("exec.")).collect();
@@ -955,7 +1154,9 @@ mod enabled {
                 let kids: Vec<&&Span> = scanners.iter().filter(|s| s.parent_span_id == ph.span_id).collect();
                 for (i, a) in kids.iter().enumerate() {
                     for b in &kids[i + 1..] {
-                        if a.start_time_unix_nano < b.end_time_unix_nano && b.start_time_unix_nano < a.end_time_unix_nano {
+                        if a.start_time_unix_nano < b.end_time_unix_nano
+                            && b.start_time_unix_nano < a.end_time_unix_nano
+                        {
                             any = true;
                         }
                     }
@@ -964,13 +1165,21 @@ mod enabled {
             overlapped.insert(jobs, any);
 
             // The primary pair of phases: siblings under the root, side by side at --jobs 4.
-            let global = all.iter().find(|s| s.name == "phase.global_scanners").expect("global phase");
+            let global = all
+                .iter()
+                .find(|s| s.name == "phase.global_scanners")
+                .expect("global phase");
             let home_pass = all
                 .iter()
                 .find(|s| s.name == "phase.home_pass" && attr_int(&s.attributes, "rmguard.root.index") == Some(0))
                 .expect("primary home pass");
             for ph in [global, home_pass] {
-                assert_eq!(parent(ph).map(|p| p.name.as_str()), Some("rmguard.scan"), "--jobs {jobs}: parent of {}", ph.name);
+                assert_eq!(
+                    parent(ph).map(|p| p.name.as_str()),
+                    Some("rmguard.scan"),
+                    "--jobs {jobs}: parent of {}",
+                    ph.name
+                );
             }
             phases_overlapped.insert(
                 jobs,
@@ -978,8 +1187,14 @@ mod enabled {
                     && home_pass.start_time_unix_nano < global.end_time_unix_nano,
             );
 
-            let walk = all.iter().find(|s| s.name == "gitconfig.nested_walk").expect("nested walk span");
-            assert!(attr_int(&walk.attributes, "rmguard.walk.pruned").is_some_and(|n| n >= 1), "--jobs {jobs}: walk.pruned");
+            let walk = all
+                .iter()
+                .find(|s| s.name == "gitconfig.nested_walk")
+                .expect("nested walk span");
+            assert!(
+                attr_int(&walk.attributes, "rmguard.walk.pruned").is_some_and(|n| n >= 1),
+                "--jobs {jobs}: walk.pruned"
+            );
 
             let reads: Vec<&Span> = all.iter().filter(|s| s.name == "version.read").collect();
             let pnpm_read = reads
@@ -987,19 +1202,43 @@ mod enabled {
                 .find(|s| attr_str(&s.attributes, "rmguard.exec.program").as_deref() == Some("pnpm"))
                 .unwrap_or_else(|| panic!("--jobs {jobs}: no version.read for pnpm"));
             assert_eq!(parent(pnpm_read).map(|p| p.name.as_str()), Some("scanner.node"));
-            assert_eq!(attr_str(&pnpm_read.attributes, "rmguard.version.source").as_deref(), Some("package_json"));
+            assert_eq!(
+                attr_str(&pnpm_read.attributes, "rmguard.version.source").as_deref(),
+                Some("package_json")
+            );
             for r in &reads {
                 let src = attr_str(&r.attributes, "rmguard.version.source");
                 assert!(matches!(src.as_deref(), Some("package_json" | "spawn")), "{src:?}");
             }
-            let row = report["node_package_managers"].as_array().unwrap().iter().find(|m| m["name"] == "pnpm").unwrap();
+            let row = report["node_package_managers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["name"] == "pnpm")
+                .unwrap();
             assert_eq!(row["version"], "10.28.1");
         }
         let _ = std::fs::remove_dir_all(&home);
-        assert_eq!(phases_overlapped.get("4"), Some(&true), "the global and home phases did not overlap at --jobs 4");
-        assert_eq!(phases_overlapped.get("1"), Some(&false), "the global and home phases overlapped at --jobs 1");
-        assert_eq!(overlapped.get("4"), Some(&true), "no two scanner spans overlapped at --jobs 4");
-        assert_eq!(overlapped.get("1"), Some(&false), "scanner spans overlapped at --jobs 1");
+        assert_eq!(
+            phases_overlapped.get("4"),
+            Some(&true),
+            "the global and home phases did not overlap at --jobs 4"
+        );
+        assert_eq!(
+            phases_overlapped.get("1"),
+            Some(&false),
+            "the global and home phases overlapped at --jobs 1"
+        );
+        assert_eq!(
+            overlapped.get("4"),
+            Some(&true),
+            "no two scanner spans overlapped at --jobs 4"
+        );
+        assert_eq!(
+            overlapped.get("1"),
+            Some(&false),
+            "scanner spans overlapped at --jobs 1"
+        );
     }
 
     /// A HOME full of E2E-prefixed canaries in every place the scanners read.
@@ -1027,7 +1266,11 @@ mod enabled {
     fn otel_never_exports_secrets_paths_or_names() {
         let home = canary_home("secrecy");
         let collector = Collector::start();
-        let (out, _) = run(rmguard(&home, Some(collector.port), &["--otel", "--probe-mcp", "--format", "json"]));
+        let (out, _) = run(rmguard(
+            &home,
+            Some(collector.port),
+            &["--otel", "--probe-mcp", "--format", "json"],
+        ));
         let bodies = collector.finish();
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         let report = json(&out);
@@ -1041,7 +1284,10 @@ mod enabled {
         let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
         let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
         assert!(!contains(b"E2EOTEL"), "a canary reached the collector");
-        assert!(!contains(home.to_string_lossy().as_bytes()), "the HOME path reached the collector");
+        assert!(
+            !contains(home.to_string_lossy().as_bytes()),
+            "the HOME path reached the collector"
+        );
 
         let tr = traces(&bodies);
         let mr = metrics(&bodies);
@@ -1055,13 +1301,17 @@ mod enabled {
         let all = spans(&tr);
         // Program names are an inventory of installed tools: not exported.
         assert!(
-            all.iter().all(|s| attr(&s.attributes, "process.executable.name").is_none()),
+            all.iter()
+                .all(|s| attr(&s.attributes, "process.executable.name").is_none()),
             "process.executable.name exported"
         );
         let probes: Vec<&Span> = all.iter().filter(|s| s.name == "mcp.probe").collect();
         assert_eq!(probes.len(), 1, "expected one mcp.probe span");
         let p = probes[0];
-        assert_eq!(attr_str(&p.attributes, "rmguard.mcp.outcome").as_deref(), Some("spawn_failed"));
+        assert_eq!(
+            attr_str(&p.attributes, "rmguard.mcp.outcome").as_deref(),
+            Some("spawn_failed")
+        );
         assert_eq!(attr_int(&p.attributes, "rmguard.mcp.server_index"), Some(0));
         let status = p.status.as_ref().expect("status");
         assert_eq!(status.code, StatusCode::Error as i32);
@@ -1076,14 +1326,25 @@ mod enabled {
             l.local_addr().unwrap().port()
         };
         let home = temp_home("dead");
-        let (out, tail) =
-            run_measuring_tail(rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]));
+        let (out, tail) = run_measuring_tail(rmguard(
+            &home,
+            Some(port),
+            &["--otel", "--format", "json", "--skip", SLOW_SKIP],
+        ));
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         assert_eq!(warning_lines(&out), 1, "{}", stderr(&out));
-        assert!(stderr(&out).contains("export failed (could not connect)"), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("export failed (could not connect)"),
+            "{}",
+            stderr(&out)
+        );
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
-        assert!(!stderr(&out).contains(&format!(":{port}")), "the endpoint was echoed: {}", stderr(&out));
+        assert!(
+            !stderr(&out).contains(&format!(":{port}")),
+            "the endpoint was echoed: {}",
+            stderr(&out)
+        );
         // A refused port costs about a millisecond after the report is out; the in-code
         // shutdown deadline is 2 s, and 2.3 s still catches a deadline loop that stopped
         // working (the sequential-shutdown regression cost 3.03 s).
@@ -1101,8 +1362,11 @@ mod enabled {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let home = temp_home("blackhole");
-        let (out, tail) =
-            run_measuring_tail(rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]));
+        let (out, tail) = run_measuring_tail(rmguard(
+            &home,
+            Some(port),
+            &["--otel", "--format", "json", "--skip", SLOW_SKIP],
+        ));
         drop(listener);
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
@@ -1131,7 +1395,11 @@ mod enabled {
         let port = listener.local_addr().unwrap().port();
         let home = temp_home("flush");
         let mut cmd = rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
-        let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn rmguard");
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn rmguard");
         let mut stdout = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let reader = std::thread::spawn(move || {
@@ -1175,7 +1443,10 @@ mod enabled {
             "rmguard exited before stdout went quiet, so this run did not exercise the shutdown window"
         );
         serde_json::from_slice::<serde_json::Value>(&got).unwrap_or_else(|e| {
-            panic!("report on stdout was incomplete when the OpenTelemetry shutdown began ({e}); {} bytes", got.len())
+            panic!(
+                "report on stdout was incomplete when the OpenTelemetry shutdown began ({e}); {} bytes",
+                got.len()
+            )
         });
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1188,11 +1459,16 @@ mod enabled {
         let port = listener.local_addr().unwrap().port();
         let home = temp_home("unknownexp");
         let mut cmd = rmguard(&home, Some(port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
-        cmd.env("OTEL_TRACES_EXPORTER", "console").env("OTEL_METRICS_EXPORTER", "zipkin");
+        cmd.env("OTEL_TRACES_EXPORTER", "console")
+            .env("OTEL_METRICS_EXPORTER", "zipkin");
         let (out, _) = run(cmd);
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
-        assert!(stderr(&out).contains("OTEL_TRACES_EXPORTER supports only"), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("OTEL_TRACES_EXPORTER supports only"),
+            "{}",
+            stderr(&out)
+        );
         assert!(stderr(&out).contains("OpenTelemetry export off"), "{}", stderr(&out));
         assert_never_connected(&listener);
         let _ = std::fs::remove_dir_all(&home);
@@ -1226,7 +1502,10 @@ mod enabled {
         assert_eq!(out.status.code(), Some(2), "stderr:\n{}", stderr(&out));
         json(&out);
         let all = spans(&traces(&bodies));
-        assert!(all.iter().any(|s| s.name == "rmguard.scan"), "root span not flushed before exit 2");
+        assert!(
+            all.iter().any(|s| s.name == "rmguard.scan"),
+            "root span not flushed before exit 2"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1245,7 +1524,13 @@ mod enabled {
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         let err = stderr(&out);
-        assert_eq!(err.lines().filter(|l| l.contains("OTEL_EXPORTER_OTLP_PROTOCOL is ignored")).count(), 1, "{err}");
+        assert_eq!(
+            err.lines()
+                .filter(|l| l.contains("OTEL_EXPORTER_OTLP_PROTOCOL is ignored"))
+                .count(),
+            1,
+            "{err}"
+        );
         assert_eq!(warning_lines(&out), 1, "{err}");
         assert!(err.contains("export failed (could not connect)"), "{err}");
         let _ = std::fs::remove_dir_all(&home);
@@ -1259,8 +1544,19 @@ mod enabled {
         let proxy_url = format!("http://127.0.0.1:{}", proxy.local_addr().unwrap().port());
         let home = temp_home("proxy");
         let collector = Collector::start();
-        let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json", "--skip", SLOW_SKIP]);
-        for var in ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        let mut cmd = rmguard(
+            &home,
+            Some(collector.port),
+            &["--otel", "--format", "json", "--skip", SLOW_SKIP],
+        );
+        for var in [
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+        ] {
             cmd.env(var, &proxy_url);
         }
         let (out, _) = run(cmd);
@@ -1268,7 +1564,11 @@ mod enabled {
         assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
         json(&out);
         assert_eq!(warning_lines(&out), 0, "{}", stderr(&out));
-        assert!(bodies.iter().any(|(p, _)| p == "/v1/traces"), "no direct export; stderr:\n{}", stderr(&out));
+        assert!(
+            bodies.iter().any(|(p, _)| p == "/v1/traces"),
+            "no direct export; stderr:\n{}",
+            stderr(&out)
+        );
         assert!(bodies.iter().any(|(p, _)| p == "/v1/metrics"), "no direct export");
         assert_never_connected(&proxy);
         let _ = std::fs::remove_dir_all(&home);

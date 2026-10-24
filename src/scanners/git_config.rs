@@ -1,7 +1,7 @@
 use crate::models::GitAutorunConfig;
-use crate::platform::PlatformInfo;
-use crate::scanners::{read_bounded, Scanner};
 use crate::otel::{Attr, Key};
+use crate::platform::PlatformInfo;
+use crate::scanners::{Scanner, read_bounded};
 use std::path::{Path, PathBuf};
 
 /// Detects git configuration that makes an ordinary git command execute an attacker's
@@ -31,14 +31,7 @@ const EXEC_KEYS: &[&str] = &[
 ];
 
 /// Key suffixes for the `<section>.<name>.<key>` forms git executes.
-const EXEC_KEY_SUFFIXES: &[&str] = &[
-    ".textconv",
-    ".clean",
-    ".smudge",
-    ".process",
-    ".driver",
-    ".command",
-];
+const EXEC_KEY_SUFFIXES: &[&str] = &[".textconv", ".clean", ".smudge", ".process", ".driver", ".command"];
 
 impl Scanner for GitConfigScanner {
     type Output = Vec<GitAutorunConfig>;
@@ -86,7 +79,11 @@ impl Scanner for GitConfigScanner {
             });
             nested
         };
-        local.into_iter().zip(nested).flat_map(|(l, n)| l.into_iter().chain(n)).collect()
+        local
+            .into_iter()
+            .zip(nested)
+            .flat_map(|(l, n)| l.into_iter().chain(n))
+            .collect()
     }
 }
 
@@ -246,8 +243,20 @@ fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
 /// handed to git anyway: the conservative direction is to spawn.
 fn config_needs_git(cfg: &Path) -> bool {
     const NEEDLES: &[&str] = &[
-        "fsmonitor", "hookspath", "sshcommand", "gitproxy", "external", "credential",
-        "textconv", "clean", "smudge", "process", "driver", "command", "include", "ext",
+        "fsmonitor",
+        "hookspath",
+        "sshcommand",
+        "gitproxy",
+        "external",
+        "credential",
+        "textconv",
+        "clean",
+        "smudge",
+        "process",
+        "driver",
+        "command",
+        "include",
+        "ext",
     ];
     let Some(text) = crate::scanners::read_bounded(cfg) else {
         return true;
@@ -269,8 +278,16 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
     /// skipping them by name would be a deterministic way to hide a gitdir. Those are
     /// recognised by marker instead (see GENERATED_MARKERS).
     const PRUNE_BY_NAME: &[&str] = &[
-        "node_modules", ".tox", ".mypy_cache", ".pytest_cache", "__pycache__", ".cache",
-        ".npm", ".cargo", "site-packages", "dist-packages",
+        "node_modules",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        "__pycache__",
+        ".cache",
+        ".npm",
+        ".cargo",
+        "site-packages",
+        "dist-packages",
     ];
     /// A directory whose listing contains one of these was produced by a tool, not
     /// committed: `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's
@@ -362,8 +379,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
         // git also validates HEAD's CONTENT (validate_headref): a symref or an object
         // id. A junk HEAD is not a git dir to git, so reporting it would be a false
         // positive from a scanner whose whole design is to not cry wolf.
-        let is_git_dir =
-            has_head && has_objects && has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
+        let is_git_dir = has_head && has_objects && has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
         if dir == own_git {
             continue; // the project's own .git is handled by scan_repo_local
         }
@@ -396,8 +412,7 @@ fn scan_nested_repos(root: &Path, out: &mut Vec<GitAutorunConfig>, stats: &mut W
 
 fn collect(text: &str, location: &Path, scope: &str, nested: bool, out: &mut Vec<GitAutorunConfig>) {
     for (origin, key, value) in parse_z(text) {
-        let is_exec_key = EXEC_KEYS.contains(&key.as_str())
-            || EXEC_KEY_SUFFIXES.iter().any(|s| key.ends_with(s));
+        let is_exec_key = EXEC_KEYS.contains(&key.as_str()) || EXEC_KEY_SUFFIXES.iter().any(|s| key.ends_with(s));
         // protocol.ext.allow re-enables the `ext::` transport, which runs an arbitrary
         // command as the git transport. git's default is `never` precisely because of
         // that, and there is no mainstream legitimate reason for a repo to flip it.
@@ -499,7 +514,10 @@ mod needs_git_tests {
 
     #[test]
     fn boring_config_does_not_spawn_git() {
-        let p = tmp("boring", "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/x.git\n");
+        let p = tmp(
+            "boring",
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/x.git\n",
+        );
         assert!(!config_needs_git(&p));
         let _ = std::fs::remove_file(p);
     }
@@ -562,7 +580,7 @@ fn is_bare_gitdir(dir: &Path) -> bool {
 
 #[cfg(test)]
 mod walk_projects_tests {
-    use super::{walk_projects, WalkStats};
+    use super::{WalkStats, walk_projects};
     use std::path::{Path, PathBuf};
 
     /// A buried bare git dir at `<project>/<rel>` whose `core.fsmonitor` runs a script
@@ -582,7 +600,10 @@ mod walk_projects_tests {
     }
 
     fn findings(nested: &[Vec<crate::models::GitAutorunConfig>]) -> Vec<Vec<String>> {
-        nested.iter().map(|o| o.iter().map(|c| serde_json::to_string(c).unwrap()).collect()).collect()
+        nested
+            .iter()
+            .map(|o| o.iter().map(|c| serde_json::to_string(c).unwrap()).collect())
+            .collect()
     }
 
     /// Three projects (one registered but not walkable) walked at `jobs` 1 and `jobs` 4:
@@ -614,7 +635,11 @@ mod walk_projects_tests {
                 continue;
             }
             assert_eq!(per.len(), 2, "project {i}: {per:?}");
-            assert!(per.iter().all(|f| f.contains(&format!("proj{i}")) && f.contains(&format!("p{i}-"))), "project {i}: {per:?}");
+            assert!(
+                per.iter()
+                    .all(|f| f.contains(&format!("proj{i}")) && f.contains(&format!("p{i}-"))),
+                "project {i}: {per:?}"
+            );
         }
         assert_eq!(s1.repos, 6);
         assert_eq!(s1.pruned, 3);
@@ -657,9 +682,17 @@ mod walk_projects_tests {
         let (f4, s4, truncated4) = &seen[1];
         assert_eq!(seen[0].0, *f4, "findings differ between jobs 1 and jobs 4");
         assert_eq!(seen[0].1, *s4, "counts differ between jobs 1 and jobs 4");
-        assert!(seen[0].2 && *truncated4, "truncated: jobs 1 {}, jobs 4 {truncated4}", seen[0].2);
+        assert!(
+            seen[0].2 && *truncated4,
+            "truncated: jobs 1 {}, jobs 4 {truncated4}",
+            seen[0].2
+        );
         assert!(s4.budget_exhausted);
-        assert_eq!(s4.dirs, 4_000 + alone.dirs, "the big project's own budget, the small one complete");
+        assert_eq!(
+            s4.dirs,
+            4_000 + alone.dirs,
+            "the big project's own budget, the small one complete"
+        );
         assert_eq!(f4[0].len(), 0);
         assert_eq!(f4[1].len(), 2, "small project findings: {:?}", f4[1]);
         assert!(f4[1][0].contains("small-") && f4[1][1].contains("small-"));

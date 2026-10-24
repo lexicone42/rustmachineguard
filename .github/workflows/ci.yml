@@ -51,14 +51,16 @@ jobs:
       - run: cargo test --doc --no-default-features
 
   clippy:
-    name: clippy (deny warnings)
+    name: clippy (deny warnings) + rustfmt check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # Formatting is rustfmt.toml at the repo root (max_width = 120).
+      - run: cargo fmt --all -- --check
       # The crate is clippy-clean at the default lint set; any deliberate exception
       # carries a targeted #[allow(clippy::...)] with its reason at the site.
       - run: cargo clippy --all-targets -- -D warnings

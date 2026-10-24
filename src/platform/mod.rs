@@ -1,7 +1,7 @@
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use crate::models::DeviceInfo;
 use std::path::PathBuf;
@@ -36,13 +36,7 @@ pub enum Ide {
 }
 
 impl Ide {
-    pub const ALL: &[Ide] = &[
-        Ide::VsCode,
-        Ide::Cursor,
-        Ide::Windsurf,
-        Ide::Zed,
-        Ide::Antigravity,
-    ];
+    pub const ALL: &[Ide] = &[Ide::VsCode, Ide::Cursor, Ide::Windsurf, Ide::Zed, Ide::Antigravity];
 
     pub fn name(self) -> &'static str {
         match self {
