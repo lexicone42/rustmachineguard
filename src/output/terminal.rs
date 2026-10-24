@@ -941,7 +941,11 @@ fn render_inner(report: &ScanReport) -> String {
                 finding.version.red(),
                 finding.advisory.yellow(),
             ));
-            out.push_str(&format!("    found in: {}\n", finding.found_in.dimmed()));
+            out.push_str(&format!(
+                "    found in: {}{}\n",
+                finding.found_in.dimmed(),
+                root_label(finding).dimmed()
+            ));
         }
         out.push('\n');
     }
@@ -1101,4 +1105,13 @@ fn render_diagnostics_inner(report: &ScanReport) -> String {
     }
     out.push('\n');
     out
+}
+
+/// ` (uv-tool mistral-vibe)`: the install root an exposure was found in, when known.
+fn root_label(f: &crate::models::ExposureFinding) -> String {
+    match (f.root_kind, f.root_name.as_deref()) {
+        (Some(k), Some(n)) => format!(" ({} {})", k.label(), crate::scanners::sanitize_display(n, 128)),
+        (Some(k), None) => format!(" ({})", k.label()),
+        _ => String::new(),
+    }
 }

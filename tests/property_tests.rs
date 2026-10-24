@@ -2032,6 +2032,8 @@ fn blueprint_threats_carry_cves_and_capec() {
             version: "0.1.10".into(),
             advisory: "CVE-2025-6514 (CVSS 9.6): OS command injection via crafted OAuth URL.".into(),
             found_in: "/p/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -2091,6 +2093,8 @@ fn findings_rank_critical_first() {
             version: "1.0".into(),
             advisory: "bad".into(),
             found_in: "/m/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let f = collect_findings(&report);
@@ -2459,6 +2463,8 @@ fn fleet_counts_are_exact_per_severity() {
                 version: "1".into(),
                 advisory: "x".into(),
                 found_in: "/m".into(),
+                root_kind: None,
+                root_name: None,
             },
             ExposureFinding {
                 ecosystem: "npm".into(),
@@ -2466,6 +2472,8 @@ fn fleet_counts_are_exact_per_severity() {
                 version: "1".into(),
                 advisory: "x".into(),
                 found_in: "/m".into(),
+                root_kind: None,
+                root_name: None,
             },
         ];
         r.ssh_keys = vec![SshKey {
@@ -2511,6 +2519,8 @@ fn html_report_leads_with_findings_and_is_escaped() {
             version: "1.0".into(),
             advisory: "bad".into(),
             found_in: "/m".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let html = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Html);
@@ -2592,6 +2602,8 @@ fn scan_report_json_round_trips() {
             version: "1".into(),
             advisory: "a".into(),
             found_in: "/m".into(),
+            root_kind: None,
+            root_name: None,
         }];
         // env_files/agent_settings left empty → omitted from JSON → must default on read
     });
@@ -2619,6 +2631,8 @@ fn fleet_ranks_machines_by_severity_and_aggregates() {
             version: "1".into(),
             advisory: "bad".into(),
             found_in: "/m".into(),
+            root_kind: None,
+            root_name: None,
         }];
         r.ssh_keys = vec![SshKey {
             path: "/k".into(),
@@ -2995,6 +3009,8 @@ fn blueprint_exposure_findings_become_behaviors() {
             version: "1.0.0".into(),
             advisory: "Known malicious package".into(),
             found_in: "/test/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -3519,6 +3535,8 @@ fn blueprint_no_dangling_refs_with_unmatched_extension_exposure() {
             version: "1.0.0".into(),
             advisory: "Steals Facebook session cookies".into(),
             found_in: "Firefox".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);
@@ -3607,6 +3625,8 @@ fn blueprint_no_dangling_refs_full_report() {
             version: "1.0".into(),
             advisory: "test".into(),
             found_in: "/p/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
         r.mcp_probes = vec![McpProbeResult {
             server_name: "fs".into(),
@@ -3760,6 +3780,8 @@ fn blueprint_exposure_matched_to_existing_server() {
             version: "1.0".into(),
             advisory: "bad".into(),
             found_in: "/p/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let output = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);

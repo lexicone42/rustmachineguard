@@ -571,6 +571,8 @@ mod tests {
             version: "1".into(),
             advisory: "x".into(),
             found_in: "/m".into(),
+            root_kind: None,
+            root_name: None,
         }];
         r.rules_files = vec![RulesFile {
             path: "/r".into(),

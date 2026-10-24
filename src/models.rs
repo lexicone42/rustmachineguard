@@ -880,6 +880,52 @@ pub struct ExposureFinding {
     pub version: String,
     pub advisory: String,
     pub found_in: String,
+    /// Which kind of install root the package was found in (installed Python
+    /// distributions only), so the report says whether to fix it with `uv tool
+    /// upgrade`, `pipx upgrade`, a project lock file or the system package manager.
+    /// Absent for every other source and in reports that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_kind: Option<PackageRootKind>,
+    /// The uv tool, pipx venv or agent-private venv the package belongs to: the
+    /// directory name, sanitized. Absent for system, user, project and uv-python roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_name: Option<String>,
+}
+
+/// The kind of Python install root a distribution was found in. A closed set: the
+/// report, the terminal and the HTML show these labels verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageRootKind {
+    /// An interpreter's site-packages under /usr/lib, /usr/local/lib, /opt/homebrew/lib.
+    System,
+    /// `~/.local/lib/python*/site-packages` (pip `--user`).
+    User,
+    /// A virtualenv in a registered project root or the working directory.
+    Project,
+    /// A `uv tool install` environment.
+    UvTool,
+    /// A `pipx install` environment.
+    Pipx,
+    /// A virtualenv inside an agent's own directory (`~/.claude`, `~/.codex`, ...).
+    AgentVenv,
+    /// A uv-managed interpreter's own site-packages.
+    UvPython,
+}
+
+impl PackageRootKind {
+    /// The label as serialized.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::UvTool => "uv-tool",
+            Self::Pipx => "pipx",
+            Self::AgentVenv => "agent-venv",
+            Self::UvPython => "uv-python",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

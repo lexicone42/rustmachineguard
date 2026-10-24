@@ -161,12 +161,11 @@ impl Scanner for PersistenceScanner {
         let home = platform.home_dir();
         let mut out = Vec::new();
 
-        // Python startup hooks in every site-packages root the package scanner knows.
-        let mut seen_roots = std::collections::HashSet::new();
-        for root in crate::scanners::python_packages::site_package_roots(platform) {
-            if seen_roots.insert(root.clone()) {
-                scan_site_packages(&root, &mut out);
-            }
+        // Python startup hooks in every site-packages root the package scanner knows
+        // (system, user, project venvs, uv tools, pipx, agent venvs, uv pythons), each
+        // listed once by its real path.
+        for root in crate::scanners::python_packages::python_roots(platform) {
+            scan_site_packages(&root.path, &mut out);
         }
 
         // Project-rooted shapes.

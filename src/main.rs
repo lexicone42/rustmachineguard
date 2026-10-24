@@ -950,12 +950,18 @@ fn main() {
             });
             report.summary.python_packages_count = pkgs.len();
             for pkg in &pkgs {
-                report.exposure_findings.extend(catalog.check_extension(
-                    "pypi",
-                    &pkg.name,
-                    &pkg.version,
-                    &pkg.location,
-                ));
+                // Where it lives decides how it is fixed (`uv tool upgrade`, `pipx
+                // upgrade`, a project lock file, the system package manager).
+                report.exposure_findings.extend(
+                    catalog
+                        .check_extension("pypi", &pkg.name, &pkg.version, &pkg.location)
+                        .into_iter()
+                        .map(|mut f| {
+                            f.root_kind = Some(pkg.root_kind);
+                            f.root_name = pkg.root_name.clone();
+                            f
+                        }),
+                );
             }
         }
 

@@ -55,10 +55,18 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     let home = platform.home_dir();
     let mut roots = Vec::new();
 
-    // System / global installs.
+    // System / global installs. Each npm prefix is also read with `lib64`: Gentoo's
+    // nodejs ebuild rewrites npm's `'lib'` to `$(get_libdir)` (`sed -i -e
+    // "s/'lib'/'${LIBDIR}'/" deps/npm/lib/npm.js`, net-libs/nodejs in
+    // https://github.com/gentoo/gentoo, after https://github.com/iojs/io.js/issues/504),
+    // so on a multilib amd64 box `npm i -g` writes `<prefix>/lib64/node_modules` and the
+    // `lib` spelling holds nothing (npm's own layout:
+    // https://docs.npmjs.com/cli/v10/configuring-npm/folders).
     for base in [
         "/usr/lib/node_modules",
+        "/usr/lib64/node_modules",
         "/usr/local/lib/node_modules",
+        "/usr/local/lib64/node_modules",
         "/opt/homebrew/lib/node_modules",
     ] {
         roots.push(PathBuf::from(base));
@@ -66,7 +74,9 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     // Per-user global prefixes, one per package manager.
     for rel in [
         ".npm-global/lib/node_modules",
+        ".npm-global/lib64/node_modules",
         ".local/lib/node_modules",
+        ".local/lib64/node_modules",
         ".bun/install/global/node_modules",
         ".config/yarn/global/node_modules",
         ".local/share/pnpm/global/5/node_modules",
@@ -94,7 +104,11 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
     for proj in projects {
         roots.push(proj.join("node_modules"));
     }
-    roots.retain(|p| crate::scanners::probe_dir(p));
+    // A `lib64 -> lib` link would list the same tree twice: one root per real path.
+    let mut real = std::collections::HashSet::new();
+    roots.retain(|p| {
+        crate::scanners::probe_dir(p) && real.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+    });
     roots
 }
 

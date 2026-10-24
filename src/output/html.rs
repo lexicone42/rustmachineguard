@@ -247,7 +247,11 @@ fn render_sections(report: &ScanReport) -> String {
                 html_escape(&e.name),
                 html_escape(&e.version),
                 html_escape(&e.advisory),
-                html_escape(&e.found_in)
+                html_escape(&match (e.root_kind, e.root_name.as_deref()) {
+                    (Some(k), Some(n)) => format!("{} ({} {n})", e.found_in, k.label()),
+                    (Some(k), None) => format!("{} ({})", e.found_in, k.label()),
+                    _ => e.found_in.clone(),
+                })
             ));
         }
         html.push_str("</table></div>");

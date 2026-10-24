@@ -56,6 +56,8 @@ impl ExposureCatalog {
                 version: server.package_version.clone().unwrap_or_else(|| "unknown".to_string()),
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: config_path.to_string(),
+                root_kind: None,
+                root_name: None,
             });
         }
 
@@ -81,6 +83,8 @@ impl ExposureCatalog {
                 version: version.to_string(),
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: found_in.to_string(),
+                root_kind: None,
+                root_name: None,
             });
         }
 

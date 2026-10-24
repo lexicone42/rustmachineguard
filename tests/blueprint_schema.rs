@@ -267,6 +267,8 @@ fn rich_blueprint_conforms() {
             version: "1.0.0".into(),
             advisory: "test advisory".into(),
             found_in: "/p/.mcp.json".into(),
+            root_kind: None,
+            root_name: None,
         }];
         r.mcp_probes = vec![McpProbeResult {
             server_name: "fs".into(),
@@ -396,6 +398,8 @@ fn every_emitted_behavior_is_a_taxonomy_value() {
             version: "1".into(),
             advisory: "a".into(),
             found_in: "Firefox".into(),
+            root_kind: None,
+            root_name: None,
         }];
     });
     let rendered = rustmachineguard::output::render(&report, rustmachineguard::output::OutputFormat::Blueprint);

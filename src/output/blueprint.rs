@@ -1474,7 +1474,17 @@ impl BlueprintDocument {
                         name: "rmg:found-in".into(),
                         value: finding.found_in.clone(),
                     },
-                ],
+                ]
+                .into_iter()
+                .chain(finding.root_kind.map(|k| Property {
+                    name: "rmg:root-kind".into(),
+                    value: k.label().into(),
+                }))
+                .chain(finding.root_name.as_ref().map(|n| Property {
+                    name: "rmg:root-name".into(),
+                    value: n.clone(),
+                }))
+                .collect(),
             });
 
             // Actor = matched MCP server asset if one exists, else the exposure asset
