@@ -1066,7 +1066,9 @@ fn env_file_parses_keys_and_flags_secrets() {
     assert!(secrets.contains(&"API_TOKEN".to_string()));
     assert!(secrets.contains(&"AWS_SECRET_ACCESS_KEY".to_string()));
     assert!(!secrets.contains(&"PORT".to_string()), "PORT is not secret-bearing");
-    assert!(!secrets.contains(&"DATABASE_URL".to_string()), "URL alone is not flagged");
+    // A connection-string NAME is flagged (its userinfo carries the password), so a
+    // committed .env holding one stays a committed secret; a plain `*_URL` is not.
+    assert!(secrets.contains(&"DATABASE_URL".to_string()), "DATABASE_URL is a connection string");
     // Crucially, no values are present in the parsed output.
     assert!(!secrets.iter().any(|k| k.contains("abc123") || k.contains("postgres")));
 }
@@ -1840,6 +1842,51 @@ fn findings_flag_git_tracked_env_as_critical() {
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].severity, Severity::Critical);
     assert_eq!(f[0].category, "Secret leak");
+}
+
+/// C3: a committed .env is graded by whether it holds a secret-named key (values are
+/// never read). Only PORT / NODE_ENV / LOG_LEVEL: a Low advisory, nothing Medium or
+/// above (on 2ab0c6d this is Critical "committed secrets"). DATABASE_URL (a connection
+/// string) or AWS_SECRET_ACCESS_KEY: Critical, as before. `.env.example` and friends are
+/// not scanned at all.
+#[test]
+fn tracked_env_is_graded_by_its_secret_named_keys() {
+    use rustmachineguard::analysis::{collect_findings, Severity};
+    use rustmachineguard::models::*;
+    use rustmachineguard::scanners::env_files::parse_env_keys;
+    let graded = |content: &str| {
+        let (key_count, secret_keys) = parse_env_keys(content);
+        let report = make_test_report(|r| {
+            r.env_files = vec![EnvFile {
+                path: "/proj/.env".into(), git_tracked: true, world_readable: false,
+                key_count, secret_keys, ..Default::default()
+            }];
+        });
+        collect_findings(&report)
+    };
+    let f = graded("PORT=3000\nNODE_ENV=production\nLOG_LEVEL=debug\n");
+    assert!(
+        f.iter().all(|x| !matches!(x.severity, Severity::Critical | Severity::High | Severity::Medium)),
+        "a tracked .env with no secret-named key is not a committed secret: {:?}",
+        f.iter().map(|x| (&x.severity, &x.title)).collect::<Vec<_>>()
+    );
+    assert!(f.iter().any(|x| x.severity == Severity::Low && x.title.contains("no secret-named keys")), "{f:?}");
+    for content in ["PORT=3000\nDATABASE_URL=postgres://u:p@db/app\n", "AWS_SECRET_ACCESS_KEY=x\nPORT=1\n", "export REDIS_URL=redis://h\n", "SENTRY_DSN=x\n"] {
+        let f = graded(content);
+        assert!(
+            f.iter().any(|x| x.severity == Severity::Critical && x.category == "Secret leak"),
+            "{content:?} still holds a credential-named key: {f:?}"
+        );
+    }
+    // A tracked .env whose keys were not read (key_count 0: empty, unreadable or a
+    // symlink) says nothing about being clean and keeps the Critical grade.
+    let report = make_test_report(|r| {
+        r.env_files = vec![EnvFile { path: "/proj/.env".into(), git_tracked: true, ..Default::default() }];
+    });
+    assert!(collect_findings(&report).iter().any(|x| x.severity == Severity::Critical));
+    // Connection-string names are a name rule; ordinary *_URL settings are not secrets.
+    let (_, keys) = parse_env_keys("DATABASE_URL=a\nMONGODB_URI=b\nAPI_URL=c\nPUBLIC_URL=d\nDB_URL=e\nAPP_DB_URL=f\n");
+    assert_eq!(keys, ["DATABASE_URL", "MONGODB_URI", "DB_URL", "APP_DB_URL"]);
 }
 
 #[test]
@@ -6116,5 +6163,76 @@ proptest! {
         for (c, _) in rustmachineguard::scanners::skills::extract_dynamic_commands(&s) {
             prop_assert!(!c.is_empty() && c.trim() == c);
         }
+    }
+}
+
+// ─── redaction idempotency (C1) ────────────────────────────
+
+/// The shapes fuzz_redact_secrets found where redacting twice changed the text again.
+/// Each is the minimised fuzz input (or the token of it that matters) of one root cause.
+/// The first four, and the last one for redact_command_text, fail on 2ab0c6d (the second
+/// pass redacts something the first kept: `<redacted>@auth:/` -> `<redacted>@auth:<redacted>`);
+/// the two marked "intermediate" broke only a partial fix and guard against it.
+#[test]
+fn redaction_idempotent_on_fuzz_found_shapes() {
+    use rustmachineguard::scanners::{redact_command_text, redact_secrets_in_text};
+    for s in [
+        // userinfo rule returned early; the pair rule then fired only on the second pass
+        ":D@auth:/",
+        // a "scheme" that is not one (`1:D@oauth2=`) hid scheme-less userinfo
+        "1:D@oauth2=://x",
+        // the userinfo rule dropped a quote, changing the quote state the next tokens owe
+        "\n::@:\n\n':@@:\n:@:\n\n\n':@@$",
+        // a pair segment became a non-pair after redaction and was absorbed on pass two
+        "oauth:*?&\0(((6:<@A'J\"",
+        // intermediate: a quote inside the redacted userinfo changed the quote balance
+        "\u{b}\n:':@<}< ':':@<}< '",
+        // intermediate: the webhook pass inserted a marker the token pass reacted to
+        "\"idcs[or`app.com/api.telegram.org/bota#pi'/\u{b}жж\u{b}жnidcs[or`app.com/a#pi'/\u{b}жж\u{b}жncc?",
+        // redact_command_text: the entropy pass hid the `=` that kept userinfo unredacted
+        "==a00Aa0AA0AA00Aa000Auser:pw@host",
+    ] {
+        let once = redact_secrets_in_text(s);
+        assert_eq!(redact_secrets_in_text(&once), once, "redact_secrets_in_text not idempotent on {s:?}");
+        let once = redact_command_text(s);
+        assert_eq!(redact_command_text(&once), once, "redact_command_text not idempotent on {s:?}");
+    }
+    // The fix redacts more, never less: the host stays, the credential and a secret-named
+    // pair after the userinfo go.
+    assert_eq!(redact_secrets_in_text("u:p@token=X"), "<redacted>@token=<redacted>");
+    assert_eq!(redact_secrets_in_text("'u:p@h"), "'<redacted>@h");
+    assert_eq!(redact_secrets_in_text("https://u:p@h.example/x"), "https://<redacted>@h.example/x");
+}
+
+/// Adversarial pieces: quotes, markers already present, `=`/`:` runs, URL userinfo,
+/// secret-named keys and flags, schemes, webhook prefixes, unicode and separators.
+fn redaction_piece() -> impl Strategy<Value = String> {
+    prop_oneof![
+        prop::sample::select(vec![
+            "'", "\"", "`", "$'", "$\"", "<redacted>", "<redacted>@", "=", ":", "==", "::", ":=", "=:",
+            "@", "@@", "://", "https://", "u:p@", "user:pw@host", "token", "password", "auth",
+            "oauth2", "Authorization", "Authorization:", "Bearer", "Cookie:", "--token", "--password",
+            "-p", "-u", "--user=", "mysql", "&", ";", ",", "?", "#", "/", "(", ")", "{", "}",
+            "hooks.slack.com/services/", "api.telegram.org/bot", "discord.com/api/webhooks/",
+            "sk-ant-api03-", "ghp_", "AKIA", "жж", "é", "\u{200b}", " ", "  ", "\t", "\n",
+        ])
+        .prop_map(str::to_string),
+        "[A-Za-z0-9]{1,12}",
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(4000))]
+
+    /// redact(redact(x)) == redact(x) for every report-facing redactor, on inputs built
+    /// from the pieces the redactors key on (random `\PC*` almost never hits them).
+    #[test]
+    fn redaction_is_idempotent_on_adversarial_text(pieces in prop::collection::vec(redaction_piece(), 0..24)) {
+        use rustmachineguard::scanners::{redact_command_text, redact_secrets_in_text};
+        let s: String = pieces.concat();
+        let once = redact_secrets_in_text(&s);
+        prop_assert_eq!(redact_secrets_in_text(&once), once.clone(), "input {:?}", s);
+        let once = redact_command_text(&s);
+        prop_assert_eq!(redact_command_text(&once), once.clone(), "command input {:?}", s);
     }
 }

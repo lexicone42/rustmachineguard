@@ -21,28 +21,18 @@ impl MacOsPlatform {
 
 impl PlatformInfo for MacOsPlatform {
     fn device_info(&self) -> DeviceInfo {
-        let hostname = crate::scanners::child_command("hostname")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let (hostname, kernel_version) = super::uname()
+            .map(|(node, release)| (if node.is_empty() { "unknown".to_string() } else { node }, release))
+            .unwrap_or_else(|| ("unknown".to_string(), String::new()));
 
-        let os_version = crate::scanners::child_command("sw_vers")
-            .arg("-productVersion")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        let kernel_version = crate::scanners::child_command("uname")
-            .arg("-r")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        // /usr/bin/sw_vers by absolute path, under a deadline.
+        let os_version = crate::scanners::output_with_timeout(
+            crate::scanners::system_command("sw_vers").arg("-productVersion"),
+            std::time::Duration::from_secs(5),
+        )
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
 
         let user_identity =
             std::env::var("USER").unwrap_or_else(|_| {

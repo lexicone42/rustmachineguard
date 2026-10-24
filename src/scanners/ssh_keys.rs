@@ -113,22 +113,13 @@ pub fn classify_key(first_line: &str, content: &str, path: &std::path::Path) -> 
 
 /// Use ssh-keygen to probe whether a key file is passphrase-protected.
 fn probe_passphrase(path: &std::path::Path) -> PassphraseStatus {
-    let mut x = crate::otel::exec_span("ssh_keygen", std::ffi::OsStr::new("ssh-keygen"));
-    let result = crate::scanners::child_command("ssh-keygen")
-        .args(["-y", "-P", "", "-f"])
-        .arg(path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match &result {
-        Ok(status) => super::note_exit(&mut x, status),
-        Err(_) => x.outcome("spawn_failed"),
-    }
-    drop(x);
-
-    match result {
-        Ok(status) if status.success() => PassphraseStatus::NoPassphrase,
-        Ok(_) => PassphraseStatus::Encrypted,
-        Err(_) => PassphraseStatus::Unknown,
+    // The system ssh-keygen by absolute path, under a deadline (the exec span is the
+    // runner's): a PATH entry cannot substitute a program that is handed the key file.
+    let mut cmd = crate::scanners::system_command("ssh-keygen");
+    cmd.args(["-y", "-P", "", "-f"]).arg(path);
+    match super::output_with_timeout_at(&mut cmd, std::time::Duration::from_secs(5), "ssh_keygen") {
+        Some(out) if out.status.success() => PassphraseStatus::NoPassphrase,
+        Some(_) => PassphraseStatus::Encrypted,
+        None => PassphraseStatus::Unknown,
     }
 }

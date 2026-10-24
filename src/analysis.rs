@@ -100,6 +100,12 @@ pub fn guidance(category: &str) -> Guidance {
             fix: "Remove the file from tracking (git rm --cached), add it to .gitignore, ROTATE the credential immediately (assume it is public), and scrub history if the repo was shared.",
             reference: "committed secret",
         },
+        "Secret hygiene" => Guidance {
+            what: "A .env file is tracked by git, but none of its key names looks like a credential (only settings such as PORT, NODE_ENV or LOG_LEVEL). rmguard reads key names only, never values.",
+            why: "Nothing secret-named is committed, so this is not a leak. A tracked .env is still where a credential tends to get added later, or hides under a neutral name.",
+            fix: "Confirm no value is a credential. Consider committing a .env.example with the settings and adding .env to .gitignore so a later secret is not committed by habit.",
+            reference: "tracked .env without secret-named keys",
+        },
         "Git autorun" => Guidance {
             what: "A git configuration setting whose value git executes as a command — for example core.fsmonitor, which git runs every time it refreshes the index, so an ordinary `git status` or `git add` triggers it.",
             why: "It turns routine git use into code execution, with no prompt and no vulnerability required. The dangerous case is a repository you did not write supplying the config: a git directory buried inside a project is auto-discovered by git and its config is honoured, which is the class behind CVE-2026-45033.",
@@ -784,7 +790,25 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     // .env secrets in agent project roots.
     for e in &report.env_files {
-        if e.git_tracked {
+        // A committed .env is a committed secret only if it holds one. The values are
+        // never read, so that is judged by the key NAMES (secret-named or a connection
+        // string, plus ANTHROPIC_CUSTOM_HEADERS); a .env of only PORT / NODE_ENV /
+        // LOG_LEVEL is a Low advisory. A file whose keys were not read (a symlink, an
+        // empty or unreadable file: key_count 0) keeps the Critical grade, since nothing
+        // says it is clean.
+        let credential_named = !e.secret_keys.is_empty() || e.agent_overrides.iter().any(|o| o.kind == "headers");
+        if e.git_tracked && !credential_named && e.key_count > 0 && e.symlink.is_none() {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Secret hygiene".into(),
+                title: format!(
+                    ".env is git-tracked ({} keys, no secret-named keys) — check that no credential is committed under another name",
+                    e.key_count
+                ),
+                location: e.path.clone(),
+                evidence: None,
+            });
+        } else if e.git_tracked {
             f.push(Finding {
                 severity: Severity::Critical,
                 category: "Secret leak".into(),

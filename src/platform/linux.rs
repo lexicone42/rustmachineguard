@@ -36,13 +36,7 @@ impl PlatformInfo for LinuxPlatform {
             .or_else(|| Self::read_os_release_field("NAME"))
             .unwrap_or_else(|| "Linux".to_string());
         let os_version = Self::read_os_release_field("VERSION_ID").unwrap_or_default();
-        let kernel_version = crate::scanners::child_command("uname")
-            .arg("-r")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        let kernel_version = super::uname().map(|(_, release)| release).unwrap_or_default();
         let user_identity = std::env::var("USER")
             .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "unknown".to_string()));
 
@@ -238,12 +232,8 @@ impl PlatformInfo for LinuxPlatform {
 fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| {
-            crate::scanners::child_command("hostname")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        })
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| super::uname().map(|(node, _)| node).filter(|n| !n.is_empty()))
+        .unwrap_or_else(|| "unknown".to_string())
 }

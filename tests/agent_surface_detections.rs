@@ -2254,6 +2254,36 @@ fn git_is_never_resolved_through_relative_path_entries() {
     assert!(answered.iter().all(|a| *a), "a tracked .env must still be answered from the real git: {answered:?}");
 }
 
+/// C4: system tools are never resolved through PATH. A PATH whose first entry holds a
+/// fake `hostname`, `uname`, `ps`, `ssh-keygen`, `sw_vers` and `defaults` (each leaves a
+/// marker if run) must leave no marker: hostname and kernel come from `uname(2)`, the
+/// rest run from the fixed system directories. On 2ab0c6d the fake `uname` (always) and
+/// `hostname` (Linux without /etc/hostname, every macOS run) and `ps`, `ssh-keygen` ran.
+/// Positive controls: the device fields are filled and the key is still inventoried.
+#[test]
+fn system_tools_are_never_resolved_through_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp_home("systools");
+    let fake = home.join("fakebin");
+    let markers = home.join("markers");
+    fs::create_dir_all(&markers).unwrap();
+    let tools = ["hostname", "uname", "ps", "ssh-keygen", "sw_vers", "defaults"];
+    for t in tools {
+        write(&fake.join(t), &format!("#!/bin/sh\necho ran > '{}'\nexit 0\n", markers.join(t).display()));
+        fs::set_permissions(fake.join(t), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(&home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n");
+    for path in [format!("{}:/usr/bin:/bin", fake.display()), format!(".:{}:/usr/bin:/bin:/usr/sbin:/sbin", fake.display())] {
+        let (_, report) = scan_with_path(&home, &["ssh", "ai"], &path);
+        let ran: Vec<&str> = tools.iter().copied().filter(|t| markers.join(t).exists()).collect();
+        assert!(ran.is_empty(), "PATH={path}: a PATH-resolved system tool ran: {ran:?}");
+        assert!(!report.device.hostname.is_empty() && report.device.hostname != "unknown", "{:?}", report.device);
+        assert!(!report.device.kernel_version.is_empty(), "{:?}", report.device);
+        assert!(report.ssh_keys.iter().any(|k| k.path.ends_with("id_ed25519")), "{:?}", report.ssh_keys);
+    }
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// Committed per-mode .env files (.env.development, .env.production, .env.test) are an
 /// app framework's config, not loaded by coding agents: Low, worded as application
 /// config. Azure AI Foundry and NVIDIA NIM endpoints are first-party providers. A

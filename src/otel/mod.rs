@@ -528,7 +528,7 @@ pub fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration
 /// exported as `other`.
 pub const EXEC_PROGRAMS: &[&str] = &[
     // rmguard's own helpers
-    "git", "ps", "ssh-keygen",
+    "git", "ps", "ssh-keygen", "sw_vers", "defaults",
     // node toolchain (scanner.node)
     "node", "npm", "yarn", "pnpm", "bun",
     // AI CLIs and agents (scanner.ai)

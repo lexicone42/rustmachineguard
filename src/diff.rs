@@ -247,6 +247,52 @@ fn collect_mcp_servers(report: &Value) -> Vec<Value> {
     servers
 }
 
+/// Fields that tell apart rows sharing a diff key: one extension id installed for two
+/// IDEs or browser profiles, one vulnerable package found in two projects, one MCP
+/// server name in two projects of the same client. Used only when keys collide.
+const DISAMBIGUATORS: &[&str] = &["ide_type", "browser", "profile", "found_in", "config_path", "install_path", "binary_path", "path"];
+
+/// Index rows by `key`, independent of the rows' order. Collecting straight into a map
+/// kept the LAST row of a shared key and dropped the others, so the same rows in another
+/// order printed a different --diff (and a change to the dropped copy never showed).
+/// Colliding rows are told apart by the fewest [`DISAMBIGUATORS`] that make them unique
+/// (`key|vscode`), and anything still equal by its canonical JSON (`key#2`).
+fn index_rows<'a>(rows: &'a [Value], key: impl Fn(&Value) -> Option<String>) -> BTreeMap<String, &'a Value> {
+    let mut groups: BTreeMap<String, Vec<&'a Value>> = BTreeMap::new();
+    for v in rows {
+        if let Some(k) = key(v) {
+            groups.entry(k).or_default().push(v);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (k, mut vs) in groups {
+        if vs.len() == 1 {
+            out.insert(k, vs[0]);
+            continue;
+        }
+        let disc = |v: &Value, n: usize| -> String {
+            DISAMBIGUATORS[..n]
+                .iter()
+                .filter_map(|f| v.get(*f)?.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        let n = (1..=DISAMBIGUATORS.len())
+            .find(|&n| vs.iter().map(|v| disc(v, n)).collect::<BTreeSet<_>>().len() == vs.len())
+            .unwrap_or(DISAMBIGUATORS.len());
+        vs.sort_by_cached_key(|v| (disc(v, n), v.to_string()));
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        for v in vs {
+            let d = disc(v, n);
+            let base = if d.is_empty() { k.clone() } else { format!("{k}|{d}") };
+            let i = seen.entry(base.clone()).or_default();
+            *i += 1;
+            out.insert(if *i == 1 { base } else { format!("{base}#{i}") }, v);
+        }
+    }
+    out
+}
+
 fn get_array(report: &Value, key: &str) -> Vec<Value> {
     report
         .get(key)
@@ -280,15 +326,8 @@ fn diff_array_section(
         }
     };
 
-    let baseline_map: BTreeMap<String, &Value> = baseline
-        .iter()
-        .filter_map(|v| Some((composite_key(v)?, v)))
-        .collect();
-
-    let current_map: BTreeMap<String, &Value> = current
-        .iter()
-        .filter_map(|v| Some((composite_key(v)?, v)))
-        .collect();
+    let baseline_map = index_rows(&baseline, composite_key);
+    let current_map = index_rows(&current, composite_key);
 
     let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
     let current_keys: BTreeSet<&String> = current_map.keys().collect();
@@ -382,15 +421,9 @@ fn normalize_hooks(v: Option<&Value>) -> Option<Value> {
 fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "path";
 
-    let baseline_map: BTreeMap<String, &Value> = baseline
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
-
-    let current_map: BTreeMap<String, &Value> = current
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
+    let key = |v: &Value| Some(v.get(key_field)?.as_str()?.to_string());
+    let baseline_map = index_rows(&baseline, key);
+    let current_map = index_rows(&current, key);
 
     let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
     let current_keys: BTreeSet<&String> = current_map.keys().collect();
@@ -467,15 +500,9 @@ fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "path";
 
-    let baseline_map: BTreeMap<String, &Value> = baseline
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
-
-    let current_map: BTreeMap<String, &Value> = current
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
+    let key = |v: &Value| Some(v.get(key_field)?.as_str()?.to_string());
+    let baseline_map = index_rows(&baseline, key);
+    let current_map = index_rows(&current, key);
 
     let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
     let current_keys: BTreeSet<&String> = current_map.keys().collect();
@@ -563,14 +590,9 @@ fn diff_skills(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
 /// never re-confirm. Keyed by server_name, then by tool name.
 fn diff_mcp_probes(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
     let key_field = "server_name";
-    let baseline_map: BTreeMap<String, &Value> = baseline
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
-    let current_map: BTreeMap<String, &Value> = current
-        .iter()
-        .filter_map(|v| Some((v.get(key_field)?.as_str()?.to_string(), v)))
-        .collect();
+    let key = |v: &Value| Some(v.get(key_field)?.as_str()?.to_string());
+    let baseline_map = index_rows(&baseline, key);
+    let current_map = index_rows(&current, key);
 
     let baseline_keys: BTreeSet<&String> = baseline_map.keys().collect();
     let current_keys: BTreeSet<&String> = current_map.keys().collect();
@@ -811,6 +833,61 @@ mod hook_diff_tests {
         let mut sorted = s.removed.clone();
         sorted.sort();
         assert_eq!(s.removed, sorted);
+    }
+
+    /// The same two reports print the same --diff whatever order their rows arrive in
+    /// (C2). Rows sharing a key -- one extension id in two IDEs, one package found in two
+    /// projects -- used to collapse to the last one inserted, so a reordering changed the
+    /// output and a change to the dropped copy was invisible. On 2ab0c6d the shuffled runs
+    /// print different text (and `ext.a|cursor` / `left-pad|/p/b` never appear).
+    #[test]
+    fn diff_output_is_independent_of_row_order() {
+        use serde_json::json;
+        let ext = |ide: &str, v: &str| json!({"id": "ext.a", "ide_type": ide, "version": v, "path": format!("/{ide}/ext.a-{v}")});
+        let pkg = |at: &str, v: &str| json!({"name": "left-pad", "ecosystem": "npm", "version": v, "advisory": "A-1", "found_in": at});
+        let key = |p: &str, t: &str| json!({"path": p, "key_type": t, "has_passphrase": false});
+        let base_rows = (
+            vec![ext("vscode", "1.0"), ext("cursor", "1.0"), json!({"id": "ext.b", "ide_type": "vscode", "version": "2.0"})],
+            vec![pkg("/p/a", "1.0.0"), pkg("/p/b", "1.0.0")],
+            (0..12).map(|i| key(&format!("/k/{i:02}"), "ed25519")).collect::<Vec<_>>(),
+        );
+        let cur_rows = (
+            vec![ext("vscode", "1.0"), ext("cursor", "1.1"), json!({"id": "ext.c", "ide_type": "vscode", "version": "3.0"})],
+            vec![pkg("/p/a", "1.0.0"), pkg("/p/b", "1.0.1")],
+            (4..16).map(|i| key(&format!("/k/{i:02}"), if i % 3 == 0 { "rsa" } else { "ed25519" })).collect::<Vec<_>>(),
+        );
+        // A fixed permutation per run (an LCG), so each run inserts the rows in another order.
+        let shuffle = |mut v: Vec<Value>, seed: u64| {
+            let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            for i in (1..v.len()).rev() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                v.swap(i, (x >> 33) as usize % (i + 1));
+            }
+            v
+        };
+        let report = |rows: &(Vec<Value>, Vec<Value>, Vec<Value>), seed: u64| {
+            json!({
+                "ide_extensions": shuffle(rows.0.clone(), seed),
+                "exposure_findings": shuffle(rows.1.clone(), seed + 1),
+                "ssh_keys": shuffle(rows.2.clone(), seed + 2),
+            })
+        };
+        let expected = [
+            "=== Scan Diff Report ===", "",
+            "--- IDE Extensions ---", "  + ext.c (version=3.0)", "  - ext.b (version=2.0)", "  ~ ext.a|cursor", "      version: 1.0 -> 1.1", "",
+            "--- SSH Keys ---",
+            "  + /k/12 (key_type=rsa, has_passphrase=false)", "  + /k/13 (key_type=ed25519, has_passphrase=false)",
+            "  + /k/14 (key_type=ed25519, has_passphrase=false)", "  + /k/15 (key_type=rsa, has_passphrase=false)",
+            "  - /k/00 (key_type=ed25519, has_passphrase=false)", "  - /k/01 (key_type=ed25519, has_passphrase=false)",
+            "  - /k/02 (key_type=ed25519, has_passphrase=false)", "  - /k/03 (key_type=ed25519, has_passphrase=false)",
+            "  ~ /k/06", "      key_type: ed25519 -> rsa", "  ~ /k/09", "      key_type: ed25519 -> rsa", "",
+            "--- Exposure Findings ---", "  ~ left-pad|/p/b", "      version: 1.0.0 -> 1.0.1", "", "",
+        ]
+        .join("\n");
+        for run in 0..20u64 {
+            let text = render_diff(&diff_reports(&report(&base_rows, run * 7), &report(&cur_rows, run * 13 + 5)));
+            assert_eq!(text, expected, "run {run} printed a different diff");
+        }
     }
 
     /// A baseline written before hook kinds and grading fields existed compares equal to

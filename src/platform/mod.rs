@@ -6,6 +6,25 @@ mod linux;
 use crate::models::DeviceInfo;
 use std::path::PathBuf;
 
+/// `(nodename, release)` from `uname(2)`: the hostname and kernel version with no
+/// process spawned, so no `hostname` or `uname` on PATH is ever run (it used to be, by
+/// name). `nodename` is what `hostname` and `gethostname(2)` print.
+#[cfg(unix)]
+pub(crate) fn uname() -> Option<(String, String)> {
+    let mut u = std::mem::MaybeUninit::<libc::utsname>::zeroed();
+    // SAFETY: uname writes into the struct it is given; an all-zero utsname is valid.
+    if unsafe { libc::uname(u.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: uname succeeded, so the struct is initialised (and was zeroed before).
+    let u = unsafe { u.assume_init() };
+    let field = |f: &[libc::c_char]| {
+        let bytes: Vec<u8> = f.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    };
+    Some((field(&u.nodename), field(&u.release)))
+}
+
 /// IDE identifiers used across the platform layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ide {

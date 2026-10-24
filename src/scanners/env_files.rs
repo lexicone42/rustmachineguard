@@ -31,6 +31,27 @@ pub fn is_secret_key_name(name: &str) -> bool {
     SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
 }
 
+/// A .env key NAME that by convention holds a connection string, whose userinfo carries
+/// the password: `DATABASE_URL` (the twelve-factor / Heroku Postgres convention, also
+/// Prisma's and Rails'), `REDIS_URL`, `MONGODB_URI`, `SENTRY_DSN`, `*_CONNECTION_STRING`.
+/// The value is never read, so this is a name rule like [`is_secret_key_name`]; it is
+/// kept separate so the MCP inline-secret check keeps its narrower list.
+pub fn is_connection_string_key_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    const STORES: &[&str] = &[
+        "DATABASE", "DB", "POSTGRES", "PG", "MYSQL", "MARIADB", "MONGO", "MONGODB", "REDIS", "AMQP", "RABBITMQ",
+        "BROKER", "CELERY_BROKER", "ELASTICSEARCH", "CLICKHOUSE", "SUPABASE_DB",
+    ];
+    upper == "DSN"
+        || upper.ends_with("_DSN")
+        || upper.contains("CONNECTION_STRING")
+        || upper.ends_with("_CONN_STR")
+        || ["_URL", "_URI"]
+            .iter()
+            .filter_map(|s| upper.strip_suffix(s))
+            .any(|stem| STORES.iter().any(|st| stem == *st || stem.ends_with(&format!("_{st}"))))
+}
+
 impl Scanner for EnvFilesScanner {
     type Output = Vec<EnvFile>;
 
@@ -426,7 +447,7 @@ pub fn parse_env_keys(content: &str) -> (usize, Vec<String>) {
             continue;
         }
         count += 1;
-        if is_secret_key_name(key) && !secrets.contains(&key.to_string()) {
+        if (is_secret_key_name(key) || is_connection_string_key_name(key)) && !secrets.contains(&key.to_string()) {
             secrets.push(key.to_string());
         }
     }

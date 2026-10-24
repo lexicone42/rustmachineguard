@@ -413,7 +413,7 @@ mod tests {
         "Plugin marketplace", "Settings secret", "Auto-run task", "Config integrity", "Git autorun",
         "Persistence", "Binary planting", "Repo symlink",
         "Plugin pin", "Skill symlink", "Skill command", "Skill grant", "Agent redirection",
-        "Helper command", "Login gateway", "Extension code", "Ollama exposure",
+        "Helper command", "Login gateway", "Extension code", "Ollama exposure", "Secret hygiene",
     ];
 
     fn empty_report() -> ScanReport {
@@ -455,9 +455,13 @@ mod tests {
         }
     }
 
-    /// Categories the tool emits but deliberately maps to no framework control. Empty
-    /// today; anything added here must say why in a comment.
-    const UNMAPPED_BY_DESIGN: &[&str] = &[];
+    /// Categories the tool emits but deliberately maps to no framework control. Anything
+    /// added here must say why in a comment.
+    const UNMAPPED_BY_DESIGN: &[&str] = &[
+        // A tracked .env with no secret-named key is an advisory, not evidence that a
+        // credential control fails; a secret-named one is "Secret leak" and is mapped.
+        "Secret hygiene",
+    ];
 
     /// The inverse of the test below. Seven categories -- every VS Code auto-run task,
     /// every git autorun config, every leaked .env, every passphrase-less SSH key --

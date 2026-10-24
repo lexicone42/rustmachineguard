@@ -67,7 +67,7 @@ fn process_names() -> &'static [String] {
 fn snapshot_process_names() -> Vec<String> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let mut cmd = child_command("ps");
+        let mut cmd = system_command("ps");
         cmd.args(["-A", "-o", "ucomm="]);
         if let Some(out) = output_with_timeout_at(&mut cmd, Duration::from_secs(5), "process_list")
             && out.status.success()
@@ -416,6 +416,24 @@ fn is_invisible(ch: char) -> bool {
 /// text is usually the finding itself — a git credential.helper command, a registry
 /// URL — and blanking it would destroy the signal.
 pub fn redact_secrets_in_text(text: &str) -> String {
+    // Redaction must be idempotent: a redacted report fed back through the tool must not
+    // change again (fuzz_redact_secrets asserts it). The token pass and the pattern passes
+    // after it interact -- a marker one inserts changes what another sees on the
+    // next run (`:D@auth:/`, `1:D@oauth2=://x`, `':@@:`, a quoted Telegram URL) -- so
+    // the pass is repeated until nothing changes. A pass only replaces text with the marker;
+    // in practice the second pass is already the fixed point; the bound is a backstop.
+    let mut cur = redact_secrets_once(text);
+    for _ in 0..8 {
+        let next = redact_secrets_once(&cur);
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn redact_secrets_once(text: &str) -> String {
     // Tokenise on whitespace, keeping the spans so the original whitespace is copied
     // back verbatim (splitting on ' ' alone once let a tab-separated secret through).
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -775,6 +793,21 @@ fn redact_entropy_runs_in_token(tok: &str) -> String {
 /// any URL path (`https://example.com/hook/<key>`), judged per segment before the run
 /// rule so the host stays readable.
 pub fn redact_command_text(text: &str) -> String {
+    // Idempotent for the same reason as redact_secrets_in_text: the entropy pass can hide
+    // the `=` that kept the userinfo rule from firing (`==a0..user:pw@host`), so a second
+    // run would redact more. Repeat to the fixed point; the bound is a backstop.
+    let mut cur = redact_command_text_once(text);
+    for _ in 0..8 {
+        let next = redact_command_text_once(&cur);
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn redact_command_text_once(text: &str) -> String {
     let base = redact_config_set_values(&redact_generic_secret_flags(&redact_stdin_password_feeds(
         &redact_program_secret_flags(&redact_secrets_in_text(text)),
     )));
@@ -1307,19 +1340,30 @@ fn redact_url(url: &str) -> String {
 /// Strip `user:pass@` from a value, with or without a URL scheme. The HOST is kept --
 /// it is the security-relevant half of the finding; the credential is not.
 fn redact_userinfo(value: &str) -> String {
-    if value.contains("://") {
+    // Only a real scheme (`[A-Za-z][A-Za-z0-9+.-]*`) makes this a URL. `1:D@oauth2=://x`
+    // used to be read as a URL with the "scheme" `1:D@oauth2=`, which kept the userinfo;
+    // the oauth2 pair rule then removed the `://`, and a second pass found the
+    // scheme-less userinfo (fuzz_redact_secrets: redaction was not idempotent).
+    if let Some(sc) = value.find("://")
+        && value[..sc].chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && value[..sc].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    {
         return redact_url(value);
     }
     // Scheme-less `user:pass@host`, as pip's `trusted-host` and git remotes write it.
     // Require a non-empty password segment so plain `user@host` and email addresses,
     // which carry no credential, are left intact.
+    // A leading quote is the shell's, not the credential's: it is kept, so the quote
+    // state a later pass reads from the redacted text is the one this pass acted on.
+    let lead = usize::from(value.starts_with(['"', '\'']));
     if let Some(at) = value.rfind('@')
         && at + 1 < value.len()
-        && let Some(colon) = value[..at].find(':')
+        && at > lead
+        && let Some(colon) = value[lead..at].find(':').map(|c| lead + c)
         && colon + 1 < at
         && !value[..at].contains('=')
     {
-        return format!("<redacted>@{}", &value[at + 1..]);
+        return format!("{}<redacted>@{}", &value[..lead], &value[at + 1..]);
     }
     value.to_string()
 }
@@ -1356,10 +1400,13 @@ fn redact_segment(seg: &str) -> (String, Option<char>) {
     {
         return (redact_url(seg), None);
     }
+    // Userinfo first; the pair rule below then runs on what is left. It used to return
+    // here, so `:D@auth:/` gave `<redacted>@auth:/` and a second pass read that as the
+    // secret-named key `<redacted>@auth` and redacted `/` (fuzz_redact_secrets found it:
+    // redaction was not idempotent). Running the pair rule on the redacted form gives the
+    // fixed point in one pass, and `u:p@token=X` no longer keeps X.
     let userinfo = redact_userinfo(seg);
-    if userinfo != seg {
-        return (userinfo, None);
-    }
+    let seg = userinfo.as_str();
     let Some((k, sep, v)) = split_pair(seg) else {
         return (seg.to_string(), None);
     };
@@ -1481,7 +1528,11 @@ fn redact_token(
         }
     }
     segs.push((&tok[start..], None));
-    let pairs = segs
+    // Pairs are counted and recognised on the RENDERED segments: the userinfo rule turns
+    // the pair `x:y@h` into the non-pair `<redacted>@h`, and judging the raw segment let
+    // a second pass absorb what the first had kept (redaction was not idempotent).
+    let rendered: Vec<(String, Option<char>)> = segs.iter().map(|(sg, _)| redact_segment(sg)).collect();
+    let pairs = rendered
         .iter()
         .filter(|(sg, _)| split_pair(sg).is_some_and(|(_, _, v)| !v.is_empty()))
         .count();
@@ -1489,16 +1540,15 @@ fn redact_token(
     let mut absorb = false;
     let mut prev_sep: Option<char> = None;
     let mut opened: Option<char> = None;
-    for (seg, sep_after) in segs {
-        let pair = split_pair(seg);
+    for ((seg, sep_after), (shown, q)) in segs.into_iter().zip(rendered) {
+        let pair = split_pair(&shown);
         // After ';' in a single-pair token, a path-like or command-like segment is the
         // next shell command, not more of the secret.
         let shell_command_position = prev_sep == Some(';') && pairs < 2 && looks_like_command(seg);
         if absorb && pair.is_none() && !seg.is_empty() && !shell_command_position {
             out.push_str("<redacted>");
         } else {
-            let (rendered, q) = redact_segment(seg);
-            out.push_str(&rendered);
+            out.push_str(&shown);
             opened = q;
             absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && is_secret_key(k));
         }
@@ -1510,8 +1560,10 @@ fn redact_token(
     // `'password=my secret'`: the quote opened BEFORE the key, so the value's own check
     // never saw it. If this token redacted anything and opens an unclosed quote, the
     // tokens up to the closing quote are the rest of the value.
+    // The quote is read from the RENDERED token: reading `tok` let a quote that the
+    // userinfo rule removed decide what the tokens after it owed.
     if opened.is_none() && out != tok {
-        opened = unclosed_quote(tok);
+        opened = unclosed_quote(&out);
     }
     (out, opened.map_or(Pending::None, Pending::Quote))
 }
@@ -1688,6 +1740,41 @@ pub fn git_command() -> std::process::Command {
         Some(p) => cmd.env("PATH", p),
         None => cmd.env_remove("PATH"),
     };
+    cmd
+}
+
+/// The only directories a system tool (`ps`, `ssh-keygen`, `sw_vers`, `defaults`) is run
+/// from, in this order. They are root-owned on every supported system (SIP-protected on
+/// macOS; `/run/current-system/sw/bin` is NixOS's system profile), so neither the
+/// user's PATH nor the directory a scan runs in can put a program of that name in front
+/// of the real one. `hostname` and `uname` are not run at all: `uname(2)` answers both.
+pub const SYSTEM_TOOL_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"];
+
+/// The absolute path of system tool `name` in [`SYSTEM_TOOL_DIRS`], or None. Debug
+/// builds first try `RMGUARD_TEST_SYSTEM_TOOL_DIR` (like `RMGUARD_TEST_SYSTEM_ROOT`), so
+/// the end-to-end tests can stand a recording `ps` in for the real one; release builds
+/// never read it.
+pub fn system_tool_path(name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("RMGUARD_TEST_SYSTEM_TOOL_DIR").filter(|d| !d.is_empty()) {
+        let p = std::path::PathBuf::from(dir).join(name);
+        if is_executable_file(&p) {
+            return Some(p);
+        }
+    }
+    SYSTEM_TOOL_DIRS.iter().map(|d| std::path::Path::new(d).join(name)).find(|p| is_executable_file(p))
+}
+
+/// A [`child_command`] for system tool `name` by absolute path ([`system_tool_path`]),
+/// whose own PATH is [`SYSTEM_TOOL_DIRS`]. With no such tool the program is a path that
+/// cannot exist, so the spawn fails cleanly and the answer is "unknown". Run it through
+/// [`output_with_timeout`] (or the crate-internal variant with a site name) so it has a
+/// deadline and an exec span.
+pub fn system_command(name: &str) -> std::process::Command {
+    let program = system_tool_path(name)
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/nonexistent/rmguard-no-{name}")));
+    let mut cmd = child_command(program);
+    cmd.env("PATH", SYSTEM_TOOL_DIRS.join(":"));
     cmd
 }
 

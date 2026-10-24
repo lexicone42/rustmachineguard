@@ -211,6 +211,23 @@ fn no_canary_survives_redaction() {
     );
 }
 
+/// The idempotency fix (C1: redaction repeated to its fixed point, userinfo and pair
+/// rules made consistent) must not redact LESS: every canary is still gone after one
+/// pass and after two, through both report-facing redactors, and the second pass
+/// changes nothing.
+#[test]
+fn every_canary_stays_redacted_and_redaction_is_idempotent() {
+    use rustmachineguard::scanners::redact_command_text;
+    for (canary, raw) in surfaces() {
+        for (name, f) in [("redact_secrets_in_text", redact as fn(&str) -> String), ("redact_command_text", redact_command_text)] {
+            let once = f(&raw);
+            let twice = f(&once);
+            assert!(!once.contains(canary), "{name}: {canary} survived: {raw:?} -> {once:?}");
+            assert_eq!(twice, once, "{name}: not idempotent on {raw:?}");
+        }
+    }
+}
+
 /// Redaction must not blind detection. The parts of a command that make it DANGEROUS —
 /// the binary, the pipe-to-shell, the auth scheme, the host — have to stay visible, or
 /// the finding is unactionable even though it is technically secret-free.

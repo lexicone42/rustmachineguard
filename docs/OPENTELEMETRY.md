@@ -192,7 +192,7 @@ starts a thread.
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` |
-| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
+| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
 | `rmguard.skills.projects` | scanner.skills | number of project directories walked (no path, no index) |

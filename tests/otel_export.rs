@@ -184,7 +184,10 @@ fn children_never_inherit_otel_env() {
             args.insert(0, "--otel");
         }
         let mut cmd = rmguard(&home, Some(closed), &args);
+        // `ps` is a system tool, run from the system directories and never from PATH; the
+        // debug-only knob stands the recorder in for it.
         cmd.env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("RMGUARD_TEST_SYSTEM_TOOL_DIR", &bin)
             .env("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer E2EOTELHEADERKEY")
             .env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-api-key=E2EOTELHEADERKEY")
             .env("OTEL_RESOURCE_ATTRIBUTES", "team=E2EOTELHEADERKEY")
@@ -249,6 +252,34 @@ fn no_bare_command_new_outside_child_command() {
         }
     }
     assert_eq!(allowed, 1, "child_command itself not found");
+}
+
+/// A system tool is never spawned by bare name: `child_command("uname")` searched the
+/// user's PATH. Every literal program handed to `child_command` is an absolute path;
+/// tools go through `system_command` (fixed system directories) or `hardened_git`.
+#[test]
+fn no_child_command_spawns_a_program_by_bare_name() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            for (at, _) in line.match_indices("child_command(\"") {
+                let lit = &line[at + "child_command(\"".len()..];
+                assert!(lit.starts_with('/'), "{}:{}: spawn a system tool through system_command, not by name: {line}", f.display(), i + 1);
+            }
+        }
+    }
 }
 
 #[cfg(not(feature = "otel"))]

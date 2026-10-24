@@ -374,10 +374,11 @@ fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {
     {
         let plist = app_path.join("Contents/Info.plist");
         if crate::scanners::probe_file(&plist) {
-            if let Ok(output) = crate::scanners::child_command("defaults")
-                .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"])
-                .output()
-            {
+            if let Some(output) = crate::scanners::output_with_timeout(
+                crate::scanners::system_command("defaults")
+                    .args(["read", plist.to_str().unwrap_or(""), "CFBundleShortVersionString"]),
+                std::time::Duration::from_secs(5),
+            ) {
                 let v = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !v.is_empty() {
                     return Some(v);
