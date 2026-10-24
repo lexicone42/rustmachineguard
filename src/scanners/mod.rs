@@ -2596,7 +2596,7 @@ pub mod telemetry {
 
         /// Take one from `which` (hooks or probes); false once it is spent.
         fn take(slot: &AtomicUsize) -> bool {
-            slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            slot.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_ok()
         }
         pub(crate) fn take_hook(&self) -> bool {
