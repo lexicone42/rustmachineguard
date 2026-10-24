@@ -912,6 +912,50 @@ pub struct Summary {
     pub agent_settings_commands_count: usize,
 }
 
+impl Summary {
+    /// Every count in the summary, as (`rmguard.inventory.kind`, count): the field name
+    /// without `_count`. A closed set of `&'static str` kinds, in field order, each
+    /// number the summary's own; `agent_hooks_by_framework` (keyed by framework names)
+    /// is the one summary field not here. `summary_inventory_tests::inventory_is_every_summary_count`
+    /// fails when a `_count` field is added without a row.
+    pub fn inventory(&self) -> [(&'static str, usize); 32] {
+        [
+            ("ai_agents_and_tools", self.ai_agents_and_tools_count),
+            ("ai_frameworks", self.ai_frameworks_count),
+            ("ide_installations", self.ide_installations_count),
+            ("ide_extensions", self.ide_extensions_count),
+            ("mcp_configs", self.mcp_configs_count),
+            ("mcp_servers", self.mcp_servers_count),
+            ("node_package_managers", self.node_package_managers_count),
+            ("shell_configs", self.shell_configs_count),
+            ("ssh_keys", self.ssh_keys_count),
+            ("cloud_credentials", self.cloud_credentials_count),
+            ("container_tools", self.container_tools_count),
+            ("notebook_servers", self.notebook_servers_count),
+            ("browser_extensions", self.browser_extensions_count),
+            ("package_config_audits", self.package_config_audits_count),
+            ("rules_files", self.rules_files_count),
+            ("agent_skills", self.agent_skills_count),
+            ("agent_settings", self.agent_settings_count),
+            ("agent_hooks", self.agent_hooks_count),
+            ("ai_credentials", self.ai_credentials_count),
+            ("env_files", self.env_files_count),
+            ("rules_file_findings", self.rules_file_findings_count),
+            ("exposure_findings", self.exposure_findings_count),
+            ("transcript_stores", self.transcript_stores_count),
+            ("marketplaces", self.marketplaces_count),
+            ("vscode_autorun_tasks", self.vscode_autorun_tasks_count),
+            ("git_autorun_configs", self.git_autorun_configs_count),
+            ("python_packages", self.python_packages_count),
+            ("npm_packages", self.npm_packages_count),
+            ("jetbrains_plugins", self.jetbrains_plugins_count),
+            ("persistence_artifacts", self.persistence_artifacts_count),
+            ("agent_hooks_inactive", self.agent_hooks_inactive_count),
+            ("agent_settings_commands", self.agent_settings_commands_count),
+        ]
+    }
+}
+
 impl ScanReport {
     pub fn compute_summary(&mut self) {
         self.summary = Summary {
@@ -1042,4 +1086,32 @@ pub struct JetBrainsPlugin {
     pub vendor: Option<String>,
     pub ide: String,
     pub location: String,
+}
+
+#[cfg(test)]
+mod summary_inventory_tests {
+    use super::Summary;
+
+    /// Every `*_count` key the JSON summary has is an inventory kind with the same value.
+    /// Each field gets a distinct number, so a row reading the wrong field is caught too.
+    #[test]
+    fn inventory_is_every_summary_count() {
+        let mut v = serde_json::to_value(Summary::default()).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        let keys: Vec<String> = obj.keys().filter(|k| k.ends_with("_count")).cloned().collect();
+        for (i, k) in keys.iter().enumerate() {
+            obj.insert(k.clone(), serde_json::json!(i + 1));
+        }
+        let s: Summary = serde_json::from_value(v.clone()).unwrap();
+        let inv = s.inventory();
+        assert_eq!(inv.len(), keys.len(), "summary counts vs inventory rows");
+        for (kind, n) in inv {
+            let key = format!("{kind}_count");
+            assert_eq!(v[&key].as_u64(), Some(n as u64), "{kind}");
+            assert!(
+                kind.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{kind} is not a snake_case label"
+            );
+        }
+    }
 }

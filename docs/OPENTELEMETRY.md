@@ -2,8 +2,11 @@
 
 rmguard can export the timing of a scan as OpenTelemetry traces and metrics, so you can
 see where a slow scan spends its time, or watch scanner health across a fleet in the
-observability stack you already run. Export is off by default. It sends **labels,
-counts and durations only**, and never anything the scan found.
+observability stack you already run, and, through the [posture metrics](#posture-metrics),
+how many findings of each severity and category, and how many items of each inventory
+kind, each machine has. Export is off by default. It sends **labels, counts and
+durations only**, and never the content of anything the scan found: no finding title,
+evidence, path, name or value.
 
 ## Turning it on
 
@@ -15,7 +18,7 @@ counts and durations only**, and never anything the scan found.
 | `--otel` + `OTEL_TRACES_EXPORTER=none` | metrics only |
 | `--otel` + `OTEL_METRICS_EXPORTER=none` | traces only |
 | `--otel` + both `=none` | no (`info:` line) |
-| `--otel` + `--report <DIR>` (fleet mode) | no (`warning:` line) |
+| `--otel` + `--report <DIR>` (fleet mode) | no (`warning:` line): fleet mode aggregates other machines' JSON reports into one dashboard and scans nothing, so there is no scan of this machine to time or report posture for, and exporting the aggregated reports as this process's telemetry would attribute every machine's posture to one resource |
 | `--otel` on a binary built with `--no-default-features` | no (`warning:` line, exit code unchanged) |
 
 Why the flag and not the environment: `OTEL_EXPORTER_OTLP_ENDPOINT` is common on
@@ -184,12 +187,16 @@ starts a thread.
 | `rmguard.search_dirs.count` | root | number of `--search-dirs` entries |
 | `rmguard.probe_mcp`, `rmguard.verify_registry`, `rmguard.diff` | root | bool |
 | `rmguard.exposure_findings` | root | count |
+| `rmguard.findings.critical`, `rmguard.findings.high`, `rmguard.findings.medium`, `rmguard.findings.low` | root | findings of that severity (the same findings `--fail-on` and the report's risk summary count) |
 | `rmguard.scanners_run` | root | count of non-skipped diagnostics rows |
 | `rmguard.jobs` | root | threads a scan phase may use (`--jobs`, or the default) |
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
 | `rmguard.scanner` | scanner.*, metrics | scanner label (`mcp`, `packages`, ...) |
+| `rmguard.finding.severity` | `rmguard.findings` | `critical` \| `high` \| `medium` \| `low` |
+| `rmguard.finding.category` | `rmguard.findings` | one of the 36 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
+| `rmguard.inventory.kind` | `rmguard.inventory` | one of the 32 report summary counts, named without `_count` (`mcp_servers`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
@@ -259,18 +266,89 @@ Exported once, as a cumulative snapshot when the scan ends.
 | `rmguard.exec.duration` | histogram | s | `rmguard.exec.site`, `rmguard.exec.program`, `rmguard.exec.outcome` |
 | `rmguard.mcp.probe.duration` | histogram | s | `rmguard.mcp.outcome` |
 | `rmguard.registry.lookup.duration` | histogram | s | `rmguard.registry.verdict` |
+| `rmguard.findings` | counter | `{finding}` | `rmguard.finding.severity`, `rmguard.finding.category` |
+| `rmguard.inventory` | counter | `{item}` | `rmguard.inventory.kind` |
+| `rmguard.scan.truncated_scanners` | counter | `{scanner}` | `rmguard.scanner` |
 
-That is nine names, but a plain scan exports seven: `rmguard.mcp.probe.duration` appears
+That is twelve names, but a plain scan exports ten: `rmguard.mcp.probe.duration` appears
 only with `--probe-mcp` (and at least one stdio server probed), and
 `rmguard.registry.lookup.duration` only with `--verify-registry` (and at least one
-lookup). An instrument with no recorded value is not exported.
+lookup). An instrument with no recorded value is not exported. (`rmguard.findings`
+always has a value on a machine with at least one finding; on a machine with none it is
+absent, which is the answer "no findings".)
 
 Histogram buckets (s): 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30.
 
-Counts are posture metadata. `rmguard.scanner.items` labelled `aicreds` or `ssh`, and
-`rmguard.exposure_findings` on the root span, tell a collector how many credentials or
-exposure findings a machine has, never which ones or where. Choose the collector with
-that in mind.
+Counts are posture metadata. `rmguard.scanner.items` labelled `aicreds` or `ssh`,
+`rmguard.exposure_findings` and the severity totals on the root span, and the posture
+metrics below tell a collector how many credentials or findings of each kind a machine
+has, never which ones or where. Choose the collector with that in mind.
+
+### Posture metrics
+
+`rmguard.findings` and `rmguard.inventory` are recorded once per scan from the finished
+report, after analysis and before the export shutdown (and only under `--otel`: a plain
+run does not compute them); `rmguard.scan.truncated_scanners` is recorded with the other
+per-scanner metrics as each diagnostics row is final. All three are exported in the one
+snapshot at the end of the scan.
+
+| Name | Data points | Equals |
+|---|---|---|
+| `rmguard.findings` | one per (severity, category) pair with at least one finding; pairs with none are not exported | the report's findings grouped by severity and `category` (`analysis::collect_findings`, the list the terminal and HTML risk summary and `--fail-on` use) |
+| `rmguard.inventory` | one per kind, all 32, zeros included | the JSON report's `summary.<kind>_count` |
+| `rmguard.scan.truncated_scanners` | one per scanner that ran: 0, or the number of its rows (one per home pass) that stopped early | diagnostics rows with `truncated: true` |
+
+The severity totals are also on the root span as ints (`rmguard.findings.critical`,
+`.high`, `.medium`, `.low`), so a trace on its own shows the machine's posture.
+
+The labels are closed sets defined in code, each pinned by a test:
+`rmguard.finding.severity` is the `Severity` enum's lowercase label;
+`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (36 entries), the
+category strings exactly as the terminal, HTML and compliance reports show them. A unit test walks `src/analysis.rs`
+for every `category: "..."` literal and every `(severity, "...", title)` tuple and fails
+if one is not in the table (or a table entry is never emitted), a second checks the
+table against the categories `guidance` explains, and a debug build asserts every
+emitted category is listed. The exported value is the table's own `&'static str`
+(`analysis::category_label`, which returns `other` for anything else, never its input).
+`rmguard.inventory.kind` is `Summary::inventory`, whose test fails when a `_count` field
+is added to the summary without a row. `agent_hooks_by_framework`, keyed by framework
+names, is the one summary field not exported.
+
+**Not exported**, here or anywhere: finding titles, evidence (the hook command, the git
+config value, ...), locations and paths, server, package, extension, skill or key
+names, versions, hosts and users. A dashboard can say "this machine has 2 critical
+`Exposure` findings"; only the machine's own report says which packages.
+
+The names follow the OpenTelemetry metric naming guidance
+([semantic conventions: metrics](https://opentelemetry.io/docs/specs/semconv/general/metrics/)):
+lowercase dot-separated namespaces under `rmguard.`, a count's unit an annotation in
+braces (`{finding}`, `{item}`, `{scanner}`), and no unit or `_total` in the name.
+
+Each run is its own process, so each export is one cumulative snapshot whose start time
+is that run's: read the counters as "the value of the latest scan", not as a rate. The
+export carries no host identity (no `host.name`; see below), so a fleet needs one of its
+own choosing, for example `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=<asset tag>`,
+or every machine's series land on the same labels. With the collector's `prometheus`
+exporter and its default underscore translation, the counters become
+`rmguard_findings_total`, `rmguard_inventory_total` and
+`rmguard_scan_truncated_scanners_total`, with labels such as `rmguard_finding_severity`
+and `instance` from `service.instance.id`:
+
+```promql
+# Fleet findings by severity, from each machine's latest scan in the last day
+sum by (rmguard_finding_severity) (last_over_time(rmguard_findings_total[1d]))
+
+# Critical and high findings by category across the fleet (a Grafana bar chart)
+sum by (rmguard_finding_category) (
+  last_over_time(rmguard_findings_total{rmguard_finding_severity=~"critical|high"}[1d])
+)
+
+# Machines with at least one critical finding
+count(sum by (instance) (last_over_time(rmguard_findings_total{rmguard_finding_severity="critical"}[1d])) > 0)
+
+# Machines whose last scan stopped a walk early (results may be incomplete)
+count(sum by (instance) (last_over_time(rmguard_scan_truncated_scanners_total[1d])) > 0)
+```
 
 ## What is never exported, and why
 
@@ -285,6 +363,8 @@ so none of that map goes out:
 - package names and versions, registry URLs and response bodies;
 - error message text from servers, ureq or the OS (only the fixed categories above);
 - host names, user names, file contents, secret values;
+- finding titles, evidence and locations (only the closed severity and category
+  labels, and counts);
 - `--trace` / `RMGUARD_TRACE` lines. They are per-path and are fine on your own terminal,
   but they are not shipped. Per-scanner counts already answer the performance question.
 
@@ -334,7 +414,9 @@ It listens on 127.0.0.1 only, waits for the `rmguard.scan` span, and prints the 
 tree with durations and attributes (runs of identical leaf spans, such as one walk per
 project, are folded into one `xN` line), totals by span name, exec time by program and
 site, and for each phase and scanner the time no child span covers: the part of the
-scan the trace does not yet explain. `--save FILE` writes the decoded spans as JSON.
+scan the trace does not yet explain, then every metric's data points with their
+attributes (the posture metrics first; histograms as count and sum). `--save FILE`
+writes the decoded spans and metric points as JSON.
 
 ## Failure behavior
 
@@ -393,6 +475,63 @@ scan the trace does not yet explain. `--save FILE` writes the decoded spans as J
   monotonic time since. A clock step during the run (NTP, a manual change) cannot put
   a child span outside its parent or change any duration; the price is that every span
   is off from the wall clock by however far it was stepped during the run.
+
+## Verified against
+
+The OpenTelemetry Collector Contrib distribution, image
+`docker.io/otel/opentelemetry-collector-contrib:latest` = 0.163.2 (image id
+`a64fa52ad3b5`, digest `sha256:989669581ee1f89184f3fd9dd5adfc6615ed6c9692c026aaea89e07a20dfb177`,
+built 2026-10-21; from `podman image inspect`), run under podman on 2026-10-24 with its
+OTLP/HTTP receiver behind the `bearertokenauth` extension, published on a 127.0.0.1 port
+only:
+
+```yaml
+extensions:
+  bearertokenauth:
+    token: "<random 48 hex chars>"
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  extensions: [bearertokenauth]
+  telemetry:
+    logs:
+      level: debug
+  pipelines:
+    traces:   { receivers: [otlp], exporters: [debug] }
+    metrics:  { receivers: [otlp], exporters: [debug] }
+```
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port> \
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>" \
+  rmguard --otel --format json -o scan.json
+```
+
+- **Right token: accepted.** Exit 0, no warning line. The collector's debug exporter
+  logged one traces batch of 217 spans and one metrics batch of 10 metrics and 183 data
+  points, including `rmguard.findings` (8 points on that machine), `rmguard.inventory`
+  (32), `rmguard.scan.truncated_scanners` and the root span's
+  `rmguard.findings.critical/high/medium/low` ints.
+- **Wrong token: rejected.** The collector answered 401 (confirmed with `curl` against
+  the same receiver: wrong and missing tokens both get `HTTP 401`) and logged nothing
+  for the rejected requests, not even at debug level: the 401 is visible on the client
+  side only. rmguard printed its one line,
+  `warning: OpenTelemetry export failed (HTTP 401); telemetry only, the report and exit code are not affected by this`,
+  exited 0, and wrote a report identical (bar timestamps and durations) to a run
+  without `--otel`; with `--fail-on high` it exited 2, the same as without `--otel`.
+- **Nothing identifying arrived.** The accepted batch's log holds no home directory,
+  user name, host name, `/datar` path, `CLAUDE.md` or key file name; the only `.ssh` /
+  `.env` substrings are the fixed span names `exec.ssh_keygen`, `scanner.ssh` and
+  `scanner.envfiles`, and every string value in it is a closed label or a
+  version (`service.version`, the SDK's).
 
 ## Implementation and credits
 

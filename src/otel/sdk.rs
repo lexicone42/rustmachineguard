@@ -70,6 +70,9 @@ struct Instruments {
     exec_duration: Histogram<f64>,
     mcp_probe_duration: Histogram<f64>,
     registry_lookup_duration: Histogram<f64>,
+    findings: Counter<u64>,
+    inventory: Counter<u64>,
+    truncated_scanners: Counter<u64>,
 }
 
 /// A failed export, as a fixed category. Never the error text: ureq's messages carry
@@ -440,6 +443,23 @@ pub(super) fn init() -> Result<(), InitError> {
                 "rmguard.registry.lookup.duration",
                 "Wall time of one MCP registry lookup",
             ),
+            // Posture. Names and `{annotation}` units follow the OpenTelemetry metric
+            // naming conventions (opentelemetry.io/docs/specs/semconv/general/metrics/).
+            findings: meter
+                .u64_counter("rmguard.findings")
+                .with_unit("{finding}")
+                .with_description("Findings of the scan, by severity and category")
+                .build(),
+            inventory: meter
+                .u64_counter("rmguard.inventory")
+                .with_unit("{item}")
+                .with_description("Report summary counts, by kind")
+                .build(),
+            truncated_scanners: meter
+                .u64_counter("rmguard.scan.truncated_scanners")
+                .with_unit("{scanner}")
+                .with_description("Scanner runs that stopped at a walk budget")
+                .build(),
         }
     });
 
@@ -607,6 +627,8 @@ pub(super) fn record(metric: Metric, v: f64, attrs: Vec<Attr>) {
         Metric::ExecDuration => inst.exec_duration.record(v, &kv),
         Metric::McpProbeDuration => inst.mcp_probe_duration.record(v, &kv),
         Metric::RegistryLookupDuration => inst.registry_lookup_duration.record(v, &kv),
+        Metric::Findings => inst.findings.add(n, &kv),
+        Metric::Inventory => inst.inventory.add(n, &kv),
     }
 }
 
@@ -619,6 +641,8 @@ pub(super) fn record_scanner(label: &'static str, stat: &ScannerStat, elapsed: D
     inst.files_read.add(stat.files_read, &kv);
     inst.files_missing.add(stat.files_missing, &kv);
     inst.items.add(stat.items as u64, &kv);
+    // 0 for a scanner that finished its walk, so every scanner that ran has a point.
+    inst.truncated_scanners.add(u64::from(stat.truncated), &kv);
 }
 
 /// Flush both pipelines concurrently under one deadline, then return whatever happened.

@@ -1110,16 +1110,29 @@ fn write_report_to_stdout(text: &str) {
 
 /// End the root span with the scan's totals, record its duration, and flush/stop
 /// OpenTelemetry export. Nothing happens here unless `--otel` started export.
+///
+/// Posture (findings by severity and category, the summary's inventory counts) is
+/// computed here, from the finished report, only when export is on: a plain run does
+/// not run the finding analysis an extra time.
 fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &ScanReport) {
-    root.set(|| {
-        vec![
-            Attr::int(Key::ExposureFindings, report.exposure_findings.len() as i64),
-            Attr::int(
-                Key::ScannersRun,
-                report.diagnostics.iter().filter(|d| !d.skipped).count() as i64,
-            ),
-        ]
-    });
+    if otel::enabled() {
+        let findings = rustmachineguard::analysis::collect_findings(report);
+        let [critical, high, medium, low] = otel::severity_totals(&findings);
+        root.set(|| {
+            vec![
+                Attr::int(Key::ExposureFindings, report.exposure_findings.len() as i64),
+                Attr::int(
+                    Key::ScannersRun,
+                    report.diagnostics.iter().filter(|d| !d.skipped).count() as i64,
+                ),
+                Attr::int(Key::FindingsCritical, critical),
+                Attr::int(Key::FindingsHigh, high),
+                Attr::int(Key::FindingsMedium, medium),
+                Attr::int(Key::FindingsLow, low),
+            ]
+        });
+        otel::record_posture(&findings, &report.summary);
+    }
     if let Some(t) = scan_start {
         otel::record(Metric::ScanDuration, t.elapsed().as_secs_f64(), Vec::new);
     }

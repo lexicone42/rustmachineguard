@@ -15,7 +15,10 @@ export, and prints:
   * totals by span name (count, total and max duration);
   * exec spans by program and site (`rmguard.exec.program`, `rmguard.exec.site`);
   * per phase and per scanner, the time no child span covers ("uncovered"): work the
-    trace does not yet explain.
+    trace does not yet explain;
+  * every counter's data points with their attributes (the posture metrics
+    `rmguard.findings`, `rmguard.inventory`, `rmguard.scan.truncated_scanners` first),
+    and each histogram's per-attribute-set count and sum.
 
 Either start the scan yourself:
 
@@ -27,7 +30,7 @@ or let the script run it, with the endpoint set for you:
     uv run scripts/otel-tree.py -- target/release/rmguard --otel --format json -o /dev/null
 
 Nothing is sent anywhere: the receiver listens on loopback and answers 200 to every
-request. `--save FILE` also writes the decoded spans as JSON.
+request. `--save FILE` also writes the decoded spans and metric points as JSON.
 """
 
 from __future__ import annotations
@@ -78,6 +81,9 @@ class Store:
         self.lock = threading.Lock()
         self.spans = []
         self.metrics = set()
+        # name -> {"kind", "unit", "points": [{"attrs", "value"} | {"attrs", "count", "sum"}]},
+        # the last export of each (export is cumulative: the last is the scan's total).
+        self.points = {}
         self.root_seen = threading.Event()
         self.last = time.monotonic()
 
@@ -110,6 +116,16 @@ class Store:
                 for sm in rm.scope_metrics:
                     for m in sm.metrics:
                         self.metrics.add(m.name)
+                        kind = m.WhichOneof("data")
+                        pts = []
+                        if kind == "sum":
+                            for p in m.sum.data_points:
+                                v = p.as_int if p.WhichOneof("value") == "as_int" else p.as_double
+                                pts.append({"attrs": attrs(p.attributes), "value": v})
+                        elif kind == "histogram":
+                            for p in m.histogram.data_points:
+                                pts.append({"attrs": attrs(p.attributes), "count": p.count, "sum": p.sum})
+                        self.points[m.name] = {"kind": kind, "unit": m.unit, "points": pts}
             self.last = time.monotonic()
 
 
@@ -167,6 +183,26 @@ def label(span):
     a = {k: v for k, v in span["attrs"].items() if k not in HIDDEN}
     short = " ".join(f"{k.removeprefix('rmguard.')}={v}" for k, v in sorted(a.items()))
     return short
+
+
+POSTURE = ("rmguard.findings", "rmguard.inventory", "rmguard.scan.truncated_scanners")
+
+
+def print_points(points, out):
+    names = [n for n in POSTURE if n in points] + sorted(n for n in points if n not in POSTURE)
+    print("\nmetric data points (last export):", file=out)
+    for name in names:
+        m = points[name]
+        print(f"  {name} [{m['kind']}, {m['unit']}] {len(m['points'])} point(s)", file=out)
+        rows = []
+        for p in m["points"]:
+            a = ", ".join(f"{k}={v}" for k, v in sorted(p["attrs"].items())) or "(no attributes)"
+            if "value" in p:
+                rows.append((a, f"{p['value']}"))
+            else:
+                rows.append((a, f"count={p['count']} sum={p['sum']:.4f}s"))
+        for a, v in sorted(rows):
+            print(f"    {a:<72} {v}", file=out)
 
 
 def print_report(spans, metrics, max_depth, min_ms, out):
@@ -298,10 +334,12 @@ def main():
     with store.lock:
         spans = list(store.spans)
         metrics = set(store.metrics)
+        points = dict(store.points)
     if args.save:
         with open(args.save, "w") as f:
-            json.dump({"spans": spans, "metrics": sorted(metrics)}, f, indent=1)
+            json.dump({"spans": spans, "metrics": sorted(metrics), "points": points}, f, indent=1)
     print_report(spans, metrics, args.depth, args.min_ms, sys.stdout)
+    print_points(points, sys.stdout)
     return 0
 
 

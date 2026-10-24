@@ -446,7 +446,10 @@ trace, every scanner on one thread.
 http/protobuf: one `rmguard.scan` trace with a span per phase, per scanner, per
 instrumented subprocess (`--version` probes, `git ls-files`, `ssh-keygen`; the device-info
 lookups are not), per MCP probe and per registry lookup, plus duration histograms and
-files-read/missing/items counters.
+files-read/missing/items counters. Posture metrics count the scan's findings by severity
+and category (`rmguard.findings`), its summary inventory by kind (`rmguard.inventory`) and
+the scanners that stopped at a walk budget, with closed labels only, never a finding's
+title, evidence or path ([Posture metrics](docs/OPENTELEMETRY.md#posture-metrics)).
 
 ```bash
 docker run --rm -p 4318:4318 otel/opentelemetry-collector   # or Jaeger all-in-one

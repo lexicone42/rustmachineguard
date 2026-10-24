@@ -443,44 +443,9 @@ mod tests {
 
     /// The finding categories `collect_findings` can emit — control mappings must
     /// reference only these (guards against typos like "Rules File" vs "Rules file").
-    const KNOWN_CATEGORIES: &[&str] = &[
-        "Exposure",
-        "Hook",
-        "MCP auto-approval",
-        "Permissions",
-        "Credential",
-        "Secret leak",
-        "Secret exposure",
-        "SSH key",
-        "Rules file",
-        "Toxic Flow",
-        "Registry",
-        "Agent identity",
-        "Gateway routing",
-        "MCP transport",
-        "MCP scope",
-        "MCP secret",
-        "MCP command",
-        "Transcript exposure",
-        "Plugin marketplace",
-        "Settings secret",
-        "Auto-run task",
-        "Config integrity",
-        "Git autorun",
-        "Persistence",
-        "Binary planting",
-        "Repo symlink",
-        "Plugin pin",
-        "Skill symlink",
-        "Skill command",
-        "Skill grant",
-        "Agent redirection",
-        "Helper command",
-        "Login gateway",
-        "Extension code",
-        "Ollama exposure",
-        "Secret hygiene",
-    ];
+    /// The one table of finding categories (`analysis::FINDING_CATEGORIES`), which
+    /// pins itself against the analysis source.
+    const KNOWN_CATEGORIES: &[&str] = crate::analysis::FINDING_CATEGORIES;
 
     fn empty_report() -> ScanReport {
         // A minimal report; only the fields findings/assess touch need to be sane.

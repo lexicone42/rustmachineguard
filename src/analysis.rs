@@ -50,6 +50,62 @@ pub struct Finding {
     pub evidence: Option<String>,
 }
 
+/// Every `category` [`collect_findings`] can emit: a closed set. It is the value set of
+/// the `rmguard.finding.category` OpenTelemetry attribute (docs/OPENTELEMETRY.md), which
+/// exports [`category_label`]'s `&'static str`, never the finding's own `String`.
+/// `finding_category_tests::finding_categories_match_the_source` walks this file for category literals and
+/// fails when one is missing here, and a debug build asserts every emitted category is
+/// listed, so a new category cannot be added silently.
+pub const FINDING_CATEGORIES: &[&str] = &[
+    "Exposure",
+    "Hook",
+    "MCP auto-approval",
+    "Permissions",
+    "Credential",
+    "Secret leak",
+    "Secret exposure",
+    "SSH key",
+    "Rules file",
+    "Toxic Flow",
+    "Registry",
+    "Agent identity",
+    "Gateway routing",
+    "MCP transport",
+    "MCP scope",
+    "MCP secret",
+    "MCP command",
+    "Transcript exposure",
+    "Plugin marketplace",
+    "Settings secret",
+    "Auto-run task",
+    "Config integrity",
+    "Git autorun",
+    "Persistence",
+    "Binary planting",
+    "Repo symlink",
+    "Plugin pin",
+    "Skill symlink",
+    "Skill command",
+    "Skill grant",
+    "Agent redirection",
+    "Helper command",
+    "Login gateway",
+    "Extension code",
+    "Ollama exposure",
+    "Secret hygiene",
+];
+
+/// `category` as its [`FINDING_CATEGORIES`] entry, or `other` for a string outside the
+/// table. The input is runtime text; the output is always a `&'static str` of the table
+/// or the literal `other`, never the input.
+pub fn category_label(category: &str) -> &'static str {
+    FINDING_CATEGORIES
+        .iter()
+        .copied()
+        .find(|c| *c == category)
+        .unwrap_or("other")
+}
+
 /// Human-facing explanation for a finding category — the "click to learn more" detail:
 /// what was found, why it matters, how to fix it, and the framework it maps to.
 pub struct Guidance {
@@ -1076,6 +1132,13 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     collect_agent_surface_findings(report, &mut f);
 
+    debug_assert!(
+        f.iter().all(|x| FINDING_CATEGORIES.contains(&x.category.as_str())),
+        "a finding category is missing from FINDING_CATEGORIES: {:?}",
+        f.iter()
+            .map(|x| x.category.as_str())
+            .find(|c| !FINDING_CATEGORIES.contains(c))
+    );
     f.sort_by_key(|x| x.severity.rank());
     f
 }
@@ -3080,5 +3143,95 @@ mod hook_ladder_tests {
         assert_eq!(plugin_root_of("/c/m/p/1.0/hooks/hooks.json"), "/c/m/p/1.0");
         assert_eq!(plugin_root_of("/c/m/p/1.0/.codex-plugin/plugin.json"), "/c/m/p/1.0");
         assert_eq!(plugin_root_of("/c/m/p/hooks.json"), "/c/m/p");
+    }
+}
+
+#[cfg(test)]
+mod finding_category_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// The production part of this file (everything before the first `#[cfg(test)]`).
+    fn source() -> &'static str {
+        let src = include_str!("analysis.rs");
+        &src[..src.find("#[cfg(test)]").expect("test module")]
+    }
+
+    /// Every category literal in the source is in [`FINDING_CATEGORIES`], and every
+    /// table entry is emitted somewhere. Two shapes exist: `category: "X".into()` on a
+    /// `Finding`, and a `(severity, "X", title)` tuple whose second element is a line
+    /// of its own; a `Finding` built from a variable (`category: category.into()`) is
+    /// only fed by those tuples, and a new variable-fed site fails the count below so
+    /// its literals get looked at.
+    #[test]
+    fn finding_categories_match_the_source() {
+        let src = source();
+        let mut found = BTreeSet::new();
+        for (at, _) in src.match_indices("category: \"") {
+            let rest = &src[at + "category: \"".len()..];
+            found.insert(&rest[..rest.find('"').unwrap()]);
+        }
+        let literal_sites = found.len();
+        assert!(literal_sites >= 30, "only {literal_sites} category literals found");
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            // A tuple's category: a capitalised string literal alone on its line, right
+            // after the severity expression.
+            if t.starts_with('"') && t.ends_with("\",") && t.chars().nth(1).is_some_and(|c| c.is_ascii_uppercase()) {
+                let prev = lines[i - 1].trim();
+                if prev.contains("Severity::") || prev == "sev," {
+                    found.insert(&t[1..t.len() - 2]);
+                }
+            }
+        }
+        let variable_sites = src.matches("category: category.into()").count();
+        assert_eq!(
+            variable_sites, 2,
+            "a new Finding takes its category from a variable: make sure the literals feeding it are \
+             in FINDING_CATEGORIES, then update this count"
+        );
+        let table: BTreeSet<&str> = FINDING_CATEGORIES.iter().copied().collect();
+        assert_eq!(table.len(), FINDING_CATEGORIES.len(), "duplicate in FINDING_CATEGORIES");
+        let missing: Vec<_> = found.difference(&table).collect();
+        assert!(
+            missing.is_empty(),
+            "categories emitted but not in FINDING_CATEGORIES: {missing:?}"
+        );
+        let unused: Vec<_> = table.difference(&found).collect();
+        assert!(
+            unused.is_empty(),
+            "FINDING_CATEGORIES entries never emitted: {unused:?}"
+        );
+    }
+
+    /// `guidance` has a bespoke arm for exactly the table's categories.
+    #[test]
+    fn guidance_arms_are_the_category_table() {
+        let src = source();
+        let body = &src[src.find("pub fn guidance(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let mut arms = BTreeSet::new();
+        for line in body.lines() {
+            let t = line.trim();
+            if t.starts_with('"') && t.ends_with("=> Guidance {") {
+                for alt in t.trim_end_matches("=> Guidance {").split('|') {
+                    arms.insert(alt.trim().trim_matches('"'));
+                }
+            }
+        }
+        let table: BTreeSet<&str> = FINDING_CATEGORIES.iter().copied().collect();
+        assert_eq!(arms, table);
+    }
+
+    #[test]
+    fn category_label_is_closed() {
+        for c in FINDING_CATEGORIES {
+            assert_eq!(category_label(c), *c);
+        }
+        assert_eq!(category_label("hook"), "other", "case-sensitive");
+        assert_eq!(category_label("/home/u/.env"), "other");
+        assert_eq!(category_label(""), "other");
+        assert!(!FINDING_CATEGORIES.contains(&"other"));
     }
 }
