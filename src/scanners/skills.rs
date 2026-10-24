@@ -19,6 +19,27 @@ pub struct PluginContext {
     install_paths: Vec<(PathBuf, String, String)>,
     /// `plugin@marketplace` keys set to false in ~/.claude/settings.json enabledPlugins.
     disabled: HashSet<String>,
+    /// HOME-derived paths the symlink judgement compares against, resolved on first use
+    /// and then reused for every file of the scan (see [`ScanPaths`]).
+    paths: std::sync::OnceLock<ScanPaths>,
+}
+
+/// The per-scan constants of the symlink judgement: the canonical HOME and the user's
+/// skill areas ([`skill_areas`], lexical and canonical). Resolving them is ~60
+/// `canonicalize` calls (one `readlink` per path component each); doing that for every
+/// file of a 2,400-file plugin tree was 600,000 `readlink`s per scan.
+///
+/// TOCTOU: resolving these once per scan is no weaker than resolving them per file.
+/// Neither was ever atomic with the read: a per-file `canonicalize(home)` could change
+/// right after it returned just as a per-scan one can. What protects the read is that
+/// each file is opened at its own real path with `O_NOFOLLOW` and the descriptor's path
+/// checked against it ([`crate::scanners::read_bounded_nofollow`]); the file's own path
+/// and a link's own target are still resolved per file.
+struct ScanPaths {
+    /// `canonicalize(HOME)`, or HOME normalised lexically when it does not resolve.
+    real_home: PathBuf,
+    /// [`skill_areas`] of HOME.
+    areas: Vec<PathBuf>,
 }
 
 impl PluginContext {
@@ -61,6 +82,15 @@ impl PluginContext {
             }
         }
         ctx
+    }
+
+    /// The scan's HOME-derived paths, resolved once.
+    fn paths(&self) -> &ScanPaths {
+        self.paths.get_or_init(|| {
+            let real_home = canon_or_lexical(&self.home);
+            let areas = skill_areas(&self.home, &real_home);
+            ScanPaths { real_home, areas }
+        })
     }
 
     /// Installed plugin versions: (installPath, plugin, marketplace), under `cache/`.
@@ -201,8 +231,7 @@ impl Scanner for SkillsScanner {
         // a project (project_dirs_excluding_home), so a global and a project entry with
         // one key are two loading surfaces joined by a link: a repository's
         // `.claude/commands -> ~/...` must not be hidden behind the user's own entry.
-        let mut seen = std::collections::HashSet::new();
-        results.retain(|r| seen.insert((r.scope.clone(), dedupe_key(Path::new(&r.path)))));
+        dedupe_results(&mut results);
         // Deduped on the raw path above; the report carries it sanitized (skill and
         // project directory names are attacker-chosen text: ESC, OSC, newlines).
         for r in &mut results {
@@ -296,10 +325,25 @@ fn walk_span(
 /// `path` with its parent directory canonicalized, so the same file reached through a
 /// symlinked HOME or project directory is recognised as one entry.
 pub(crate) fn dedupe_key(path: &Path) -> PathBuf {
-    match (path.parent().and_then(|p| std::fs::canonicalize(p).ok()), path.file_name()) {
+    match (path.parent().and_then(|p| canonicalize(p).ok()), path.file_name()) {
         (Some(dir), Some(name)) => dir.join(name),
         _ => path.to_path_buf(),
     }
+}
+
+/// The scan's dedupe (see [`SkillsScanner::scan`]): by scope and [`dedupe_key`], with each
+/// parent directory canonicalized once rather than once per entry.
+fn dedupe_results(results: &mut Vec<AgentSkill>) {
+    let mut cache = WalkCache::default();
+    let mut seen = HashSet::new();
+    results.retain(|r| {
+        let path = Path::new(&r.path);
+        let key = match (path.parent().and_then(|p| cache.canon(p)), path.file_name()) {
+            (Some(dir), Some(name)) => dir.join(name),
+            _ => path.to_path_buf(),
+        };
+        seen.insert((r.scope.clone(), key))
+    });
 }
 
 /// Project directories worth walking as "project" content: not HOME itself or an
@@ -369,8 +413,7 @@ const OTHER_AGENT_SKILL_DIRS: &[&str] = &["skills", "commands", "prompts"];
 /// directory or is not itself a sensitive path: `~/.claude/commands -> ~/.config/gh` must
 /// not make the gh credential directory a "skill area" (review round 6), while
 /// `~/.claude -> ~/.config/claude` keeps `~/.config/claude/commands`.
-fn skill_areas(home: &Path) -> Vec<PathBuf> {
-    let real_home = canon_or_lexical(home);
+fn skill_areas(home: &Path, real_home: &Path) -> Vec<PathBuf> {
     let claude = SKILL_LINK_OK_DIRS.iter().map(|d| home.join(".claude").join(d));
     let others = OTHER_AGENT_HOMES
         .iter()
@@ -382,7 +425,7 @@ fn skill_areas(home: &Path) -> Vec<PathBuf> {
             let unlinked = l.strip_prefix(home).is_ok_and(|r| real_home.join(r) == canon);
             let keep = unlinked
                 || canon.file_name() == l.file_name()
-                || !crate::scanners::persistence::is_sensitive_read_target(&canon, &real_home);
+                || !crate::scanners::persistence::is_sensitive_read_target(&canon, real_home);
             keep.then_some(canon).into_iter().chain([l])
         })
         .collect()
@@ -406,8 +449,9 @@ enum RootLink {
 /// or contains HOME is never walked; a project's root is walked only inside its
 /// repository; the user's own linked root (a dotfiles-managed `~/.claude/commands`) is
 /// walked, and each file under it records the link.
-fn judge_walk_root(root: &Path, scope: &str, project_root: Option<&Path>, home: &Path) -> RootLink {
+fn judge_walk_root(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext) -> RootLink {
     use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    let home = ctx.home.as_path();
     let project = scope == "project";
     // Project roots are `<dir>/.claude/<x>`; global roots are under HOME.
     let Some(base) = (if project { root.parent().and_then(Path::parent) } else { Some(home) }) else {
@@ -431,15 +475,14 @@ fn judge_walk_root(root: &Path, scope: &str, project_root: Option<&Path>, home: 
     if !linked {
         return RootLink::Plain;
     }
-    let Ok(real) = std::fs::canonicalize(root) else { return RootLink::Plain };
-    let real_home = canon_or_lexical(home);
-    let areas = skill_areas(home);
+    let Ok(real) = canonicalize(root) else { return RootLink::Plain };
+    let ScanPaths { real_home, areas } = ctx.paths();
     let in_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     let repo = project_root.filter(|_| project).map(canon_or_lexical);
     let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
-    let sensitive = (!in_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, &real_home))
+    let sensitive = (!in_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, real_home))
         || (!in_area(&lexical) && !in_repo(&lexical) && is_sensitive_read_target(&lexical, home));
-    let kind = read_kind(&lexical, home, &real, &real_home);
+    let kind = read_kind(&lexical, home, &real, real_home);
     let info = |escapes: bool, sensitive_target: bool, followed: bool| SkillSymlink {
         target: sanitize_display(&real.to_string_lossy(), 300),
         escapes,
@@ -488,7 +531,7 @@ fn refused_root_entry(
 /// file's own real path as the target.
 fn record_root_link(read: &mut SkillRead, path: &Path, info: &SkillSymlink) {
     if read.symlink.is_none() {
-        let real = std::fs::canonicalize(path).map(|r| r.to_string_lossy().to_string()).unwrap_or_default();
+        let real = canonicalize(path).map(|r| r.to_string_lossy().to_string()).unwrap_or_default();
         read.symlink = Some(SkillSymlink { target: sanitize_display(&real, 300), ..info.clone() });
     }
 }
@@ -499,9 +542,74 @@ struct SkillRead {
     symlink: Option<SkillSymlink>,
 }
 
+/// `std::fs::canonicalize`, the one path resolution of this module (one `readlink` per
+/// component). Tests count the calls on their own thread, so the regression test can
+/// hold the walk to O(directories) resolutions rather than O(files).
+fn canonicalize(p: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(test)]
+    RESOLUTIONS.with(|c| c.set(c.get() + 1));
+    std::fs::canonicalize(p)
+}
+
+#[cfg(test)]
+thread_local! {
+    static RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The canonical form of `p`, or its lexical normalisation when it does not resolve.
 fn canon_or_lexical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+    canonicalize(p).unwrap_or_else(|_| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+}
+
+/// Resolutions memoised for one walk: every file in a directory shares its directory's
+/// canonical path, its skill directory and its containment and plugin roots, so those are
+/// resolved once per directory, not once per file. Lives for one walk (one
+/// [`scan_skill_bundles`] or [`scan_skill_dir`] call, or the scan's final dedupe); the
+/// TOCTOU argument is the one at [`ScanPaths`].
+#[derive(Default)]
+struct WalkCache {
+    /// Directory -> `canonicalize(directory)` (None when it did not resolve).
+    canon: HashMap<PathBuf, Option<PathBuf>>,
+    /// A file's parent directory -> [`skill_dir_of`] of a file in it.
+    skill_dir: HashMap<PathBuf, Option<PathBuf>>,
+}
+
+impl WalkCache {
+    /// `canonicalize(dir)`, memoised.
+    fn canon(&mut self, dir: &Path) -> Option<PathBuf> {
+        if let Some(r) = self.canon.get(dir) {
+            return r.clone();
+        }
+        let r = canonicalize(dir).ok();
+        self.canon.insert(dir.to_path_buf(), r.clone());
+        r
+    }
+
+    /// [`canon_or_lexical`], memoised.
+    fn canon_or_lexical(&mut self, p: &Path) -> PathBuf {
+        self.canon(p).unwrap_or_else(|| crate::scanners::persistence::lexical_join(Path::new("/"), p))
+    }
+
+    /// The real path of a file the walk saw as NOT a symlink (`symlink_metadata`): its
+    /// parent's real path joined with its name, which is what `canonicalize(path)`
+    /// returns for a non-link. A link is never passed here: its target is resolved per
+    /// file.
+    fn real_path_of_non_link(&mut self, path: &Path) -> Option<PathBuf> {
+        let (parent, name) = (path.parent()?, path.file_name()?);
+        Some(self.canon(parent)?.join(name))
+    }
+
+    /// [`skill_dir_of`], memoised by the file's parent directory (`root` is fixed for a
+    /// walk).
+    fn skill_dir_of(&mut self, path: &Path, root: &Path) -> Option<PathBuf> {
+        let Some(parent) = path.parent() else { return skill_dir_of(path, root) };
+        if let Some(r) = self.skill_dir.get(parent) {
+            return r.clone();
+        }
+        let r = skill_dir_of(path, root);
+        self.skill_dir.insert(parent.to_path_buf(), r.clone());
+        r
+    }
 }
 
 #[cfg(unix)]
@@ -598,11 +706,13 @@ fn read_skill_file(
     is_link: bool,
     containment: &Path,
     repo_root: Option<&Path>,
-    home: &Path,
+    ctx: &PluginContext,
+    cache: &mut WalkCache,
 ) -> Option<SkillRead> {
     use crate::scanners::persistence::{is_sensitive_read_name, is_sensitive_read_target, lexical_join};
-    let real_home = canon_or_lexical(home);
-    let areas = skill_areas(home);
+    let home = ctx.home.as_path();
+    let ScanPaths { real_home, areas } = ctx.paths();
+    let real_home = real_home.as_path();
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     // The content's own tree: the skill directory, plus the repository or plugin root. A
     // tree that contains HOME is never "own" (a project registered at ~ would otherwise
@@ -610,7 +720,7 @@ fn read_skill_file(
     let own_roots: Vec<PathBuf> = [Some(containment), repo_root]
         .into_iter()
         .flatten()
-        .flat_map(|r| [r.to_path_buf(), canon_or_lexical(r)])
+        .flat_map(|r| [r.to_path_buf(), cache.canon_or_lexical(r)])
         .filter(|r| !home.starts_with(r) && !real_home.starts_with(r))
         .collect();
     let inside_own = |p: &Path| own_roots.iter().any(|r| p.starts_with(r));
@@ -627,22 +737,22 @@ fn read_skill_file(
         let Some(repo) = repo_root else {
             // Opened at its real path without following; a credential NAME (`.env`,
             // `credentials.json`, a key) is never opened, wherever the walk found it.
-            let real = std::fs::canonicalize(path).ok()?;
+            let real = cache.real_path_of_non_link(path)?;
             let content = if is_sensitive_read_name(&real) { None } else { read(&real) };
             return Some(SkillRead { content, symlink: None });
         };
-        let real = std::fs::canonicalize(path).ok()?;
-        if real.starts_with(canon_or_lexical(repo)) {
+        let real = cache.real_path_of_non_link(path)?;
+        if real.starts_with(cache.canon_or_lexical(repo)) {
             return Some(SkillRead { content: read(&real), symlink: None });
         }
-        let sensitive = sensitive_at(&real, &real_home);
+        let sensitive = sensitive_at(&real, real_home);
         return Some(SkillRead {
             content: None,
             symlink: Some(SkillSymlink {
                 target: sanitize_display(&real.to_string_lossy(), 300),
                 escapes: true,
                 sensitive_target: sensitive,
-                sensitive_kind: read_kind(&real, &real_home, &real, &real_home).filter(|_| sensitive),
+                sensitive_kind: read_kind(&real, real_home, &real, real_home).filter(|_| sensitive),
                 followed: false,
                 through_directory: true,
                 ..Default::default()
@@ -653,8 +763,9 @@ fn read_skill_file(
     let target = std::fs::read_link(path).ok()?;
     let shown = sanitize_display(&target.to_string_lossy(), 300);
     let lexical = lexical_join(path.parent().unwrap_or(containment), &target);
-    let real = std::fs::canonicalize(path).ok();
-    let sensitive = sensitive_at(&lexical, home) || real.as_ref().is_some_and(|r| sensitive_at(r, &real_home));
+    // The link's own target: resolved per file, every hop.
+    let real = canonicalize(path).ok();
+    let sensitive = sensitive_at(&lexical, home) || real.as_ref().is_some_and(|r| sensitive_at(r, real_home));
     if sensitive {
         let inside = inside_own(&lexical) && real.as_ref().is_none_or(|r| inside_own(r));
         return Some(SkillRead {
@@ -663,7 +774,7 @@ fn read_skill_file(
                 target: shown,
                 escapes: !inside,
                 sensitive_target: true,
-                sensitive_kind: read_kind(&lexical, home, real.as_deref().unwrap_or(&lexical), &real_home),
+                sensitive_kind: read_kind(&lexical, home, real.as_deref().unwrap_or(&lexical), real_home),
                 followed: false,
                 ..Default::default()
             }),
@@ -692,13 +803,13 @@ fn read_skill_file(
     if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
         return None;
     }
-    let within = real.starts_with(canon_or_lexical(containment));
-    let in_repo = repo_root.is_some_and(|r| real.starts_with(canon_or_lexical(r)));
+    let within = real.starts_with(cache.canon_or_lexical(containment));
+    let in_repo = repo_root.is_some_and(|r| real.starts_with(cache.canon_or_lexical(r)));
     let store = real.starts_with("/nix/store");
     let users_own = repo_root.is_none()
-        && real.starts_with(&real_home)
+        && real.starts_with(real_home)
         && owned_by_current_user(&real)
-        && user_link_target_ok(&real, &real_home);
+        && user_link_target_ok(&real, real_home);
     let followed = has_skill_ext(&real) && (within || in_skill_area(&real) || in_repo || users_own || store);
     Some(SkillRead {
         content: if followed { read(&real) } else { None },
@@ -863,7 +974,7 @@ fn git_tracked_through_links(path: &Path, root: &Path) -> Option<bool> {
         .take_while(|a| a.starts_with(root) && *a != root)
         .find(|a| std::fs::symlink_metadata(a).is_ok_and(|m| m.file_type().is_symlink()));
     let Some(link) = link else { return Some(false) };
-    let Ok(real) = std::fs::canonicalize(path) else { return Some(false) };
+    let Ok(real) = canonicalize(path) else { return Some(false) };
     Some(git_tracked_state(link)? && git_tracked_state(&real)?)
 }
 
@@ -896,12 +1007,13 @@ fn scan_skill_bundles(
     if !crate::scanners::probe_dir(root) {
         return;
     }
-    let root_link = judge_walk_root(root, scope, project_root, &ctx.home);
+    let root_link = judge_walk_root(root, scope, project_root, ctx);
     note_root_link(&root_link);
     if let RootLink::Refuse(info) = root_link {
         results.push(refused_root_entry(root, info, framework, scope, project_root, ctx));
         return;
     }
+    let mut cache = WalkCache::default();
     let mut budget = MAX_BUNDLE_FILES;
     let mut entries_left = MAX_BUNDLE_ENTRIES;
     let mut stack = vec![root.to_path_buf()];
@@ -931,7 +1043,7 @@ fn scan_skill_bundles(
                 && meta.file_type().is_symlink()
                 && std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
             {
-                match skill_dir_link(&path, root, scope, project_root, &ctx.home) {
+                match skill_dir_link(&path, root, scope, project_root, ctx) {
                     DirLink::Follow(info) => {
                         dir_links.push((path.clone(), info));
                         stack.push(path);
@@ -981,12 +1093,15 @@ fn scan_skill_bundles(
             } else if is_command {
                 path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
             } else {
-                skill_dir_of(&path, root)
+                cache
+                    .skill_dir_of(&path, root)
                     .or_else(|| plugin_root.clone())
                     .unwrap_or_else(|| root.to_path_buf())
             };
             let repo_root = project_root.filter(|_| scope == "project").map(Path::to_path_buf).or(plugin_root);
-            let Some(mut read) = read_skill_file(&path, is_link, &containment, repo_root.as_deref(), &ctx.home) else {
+            let Some(mut read) =
+                read_skill_file(&path, is_link, &containment, repo_root.as_deref(), ctx, &mut cache)
+            else {
                 continue;
             };
             // A file found under a followed skill-directory link records that link (unless
@@ -1046,24 +1161,24 @@ enum DirLink {
 /// itself is never walked; a project's link is walked only inside the repository; the
 /// user's own link is walked into their own directories under HOME, into their skill
 /// areas and into /nix/store. Everything else is inventoried unread (Low).
-fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&Path>, home: &Path) -> DirLink {
+fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext) -> DirLink {
     use crate::scanners::persistence::{is_sensitive_read_target, lexical_join};
+    let home = ctx.home.as_path();
     let Ok(target) = std::fs::read_link(link) else { return DirLink::NotASkill };
-    let Ok(real) = std::fs::canonicalize(link) else { return DirLink::NotASkill };
+    let Ok(real) = canonicalize(link) else { return DirLink::NotASkill };
     // Existence only: the manifest is not opened here.
     if std::fs::symlink_metadata(real.join("SKILL.md")).is_err() {
         return DirLink::NotASkill;
     }
     let shown = sanitize_display(&target.to_string_lossy(), 300);
-    let real_home = canon_or_lexical(home);
+    let ScanPaths { real_home, areas } = ctx.paths();
     let lexical = lexical_join(link.parent().unwrap_or(root), &target);
-    let areas = skill_areas(home);
     let in_skill_area = |p: &Path| areas.iter().any(|a| p.starts_with(a));
     let repo = project_root.filter(|_| scope == "project").map(canon_or_lexical);
     let in_repo = |p: &Path| repo.as_ref().is_some_and(|r| p.starts_with(r) && !real_home.starts_with(r));
-    let sensitive = (!in_skill_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, &real_home))
+    let sensitive = (!in_skill_area(&real) && !in_repo(&real) && is_sensitive_read_target(&real, real_home))
         || (!in_skill_area(&lexical) && !in_repo(&lexical) && is_sensitive_read_target(&lexical, home));
-    let kind = read_kind(&lexical, home, &real, &real_home);
+    let kind = read_kind(&lexical, home, &real, real_home);
     let info = |escapes: bool, sensitive_target: bool, followed: bool| SkillSymlink {
         target: shown.clone(),
         escapes,
@@ -1087,7 +1202,7 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
         None => {
             in_skill_area(&real)
                 || real.starts_with("/nix/store")
-                || (real.starts_with(&real_home) && owned_by_current_user(&real))
+                || (real.starts_with(real_home) && owned_by_current_user(&real))
         }
     };
     if follow {
@@ -1113,7 +1228,7 @@ const MAX_AGENT_DEPTH: usize = 4;
 /// the walk is bounded in depth and count; each folder is scanned like the root.
 fn scan_agents_tree(root: &Path, scope: &str, project_root: Option<&Path>, ctx: &PluginContext, results: &mut Vec<AgentSkill>) {
     scan_skill_dir(root, "claude-code-agent", scope, project_root, ctx, results);
-    if matches!(judge_walk_root(root, scope, project_root, &ctx.home), RootLink::Refuse(_)) {
+    if matches!(judge_walk_root(root, scope, project_root, ctx), RootLink::Refuse(_)) {
         // A refused walk root is one directory-level entry (scan_skill_dir); nothing under it.
         return;
     }
@@ -1157,7 +1272,7 @@ fn scan_skill_dir(
     ctx: &PluginContext,
     results: &mut Vec<AgentSkill>,
 ) {
-    let root_link = judge_walk_root(dir, scope, project_root, &ctx.home);
+    let root_link = judge_walk_root(dir, scope, project_root, ctx);
     note_root_link(&root_link);
     if let RootLink::Refuse(info) = root_link {
         if crate::scanners::probe_dir(dir) {
@@ -1172,6 +1287,7 @@ fn scan_skill_dir(
     let is_commands_dir = dir.file_name().is_some_and(|n| n == "commands");
     // `agents/` holds subagent definitions: markdown only.
     let is_agents_dir = framework == "claude-code-agent" || dir.file_name().is_some_and(|n| n == "agents");
+    let mut cache = WalkCache::default();
 
     for entry in entries.flatten() {
         walk_note(|w| w.entries += 1);
@@ -1211,7 +1327,7 @@ fn scan_skill_dir(
         // prompt files between .claude/commands and other agents' rule directories).
         let project = project_root.filter(|_| scope == "project");
         let containment = project.unwrap_or(dir);
-        let Some(mut read) = read_skill_file(&path, is_link, containment, project, &ctx.home) else {
+        let Some(mut read) = read_skill_file(&path, is_link, containment, project, ctx, &mut cache) else {
             continue;
         };
         if let RootLink::Follow(info) = &root_link {
@@ -2136,4 +2252,54 @@ pub fn infer_capabilities(content: &str) -> Vec<String> {
     }
 
     caps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolutions() -> usize {
+        RESOLUTIONS.with(|c| c.get())
+    }
+
+    /// The plugins walk resolves paths O(directories), not O(files): 200 files in 4
+    /// skill directories of one installed plugin. Before the per-scan [`ScanPaths`] and
+    /// the per-walk [`WalkCache`] every file re-resolved HOME, the ~60 skill areas, its
+    /// own path and its containment and plugin roots (over 12,000 `canonicalize` calls
+    /// here, 600,000 `readlink`s on a real 2,400-file plugin tree).
+    #[test]
+    fn plugin_walk_resolves_per_directory_not_per_file() {
+        let base = std::env::temp_dir().join(format!("rmg-skills-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let plugins = home.join(".claude").join("plugins");
+        let version = plugins.join("cache").join("m").join("p").join("1.0");
+        for d in 0..4 {
+            let dir = version.join("skills").join(format!("s{d}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "---\nname: s\n---\nbody\n").unwrap();
+            for f in 0..49 {
+                std::fs::write(dir.join(format!("f{f}.sh")), format!("echo {f}\n")).unwrap();
+            }
+        }
+        let ctx = PluginContext::load(&home);
+        // The per-scan constants are resolved once (about 60 calls) and not counted here.
+        let _ = ctx.paths();
+
+        let before = resolutions();
+        let mut results = Vec::new();
+        scan_skill_bundles(&plugins, "claude-code-plugin", "global", None, &ctx, &mut results);
+        let walk = resolutions() - before;
+        assert_eq!(results.len(), 200);
+        assert!(results.iter().all(|r| r.sha256.len() == 64), "every file read and hashed");
+        assert!(walk < 40, "200 files in 4 directories resolved {walk} times");
+
+        let before = resolutions();
+        dedupe_results(&mut results);
+        let dedupe = resolutions() - before;
+        assert_eq!(results.len(), 200);
+        assert!(dedupe < 40, "deduping 200 entries in 4 directories resolved {dedupe} times");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
