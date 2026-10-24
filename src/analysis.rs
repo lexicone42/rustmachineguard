@@ -95,16 +95,16 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "EAA-006 · supply-chain",
         },
         "Secret leak" => Guidance {
-            what: "A secret-bearing file (a .env or a config with an inline credential) is tracked by git — i.e. committed into a repository.",
+            what: "A secret-bearing file (a .env or a config with an inline credential) is tracked by git — i.e. committed into a repository. A tracked .env whose keys could not be read (unreadable, or a symlink rmguard does not open) is treated the same way, since nothing shows it is clean.",
             why: "A committed secret is in the repo's history for every clone, fork, and CI run; deleting it later does not remove it from history. This is the highest-confidence credential exposure.",
             fix: "Remove the file from tracking (git rm --cached), add it to .gitignore, ROTATE the credential immediately (assume it is public), and scrub history if the repo was shared.",
             reference: "committed secret",
         },
         "Secret hygiene" => Guidance {
-            what: "A .env file is tracked by git, but none of its key names looks like a credential (only settings such as PORT, NODE_ENV or LOG_LEVEL). rmguard reads key names only, never values.",
-            why: "Nothing secret-named is committed, so this is not a leak. A tracked .env is still where a credential tends to get added later, or hides under a neutral name.",
-            fix: "Confirm no value is a credential. Consider committing a .env.example with the settings and adding .env to .gitignore so a later secret is not committed by habit.",
-            reference: "tracked .env without secret-named keys",
+            what: "A .env file is tracked by git or world-readable, but rmguard read it and none of its key names looks like a credential (only settings such as PORT, NODE_ENV or LOG_LEVEL, or no keys at all). rmguard reads key names only, never values.",
+            why: "Nothing secret-named is committed or exposed, so this is not a leak. A tracked or world-readable .env is still where a credential tends to get added later, or hides under a neutral name.",
+            fix: "Confirm no value is a credential. For a tracked .env, consider committing a .env.example with the settings and adding .env to .gitignore so a later secret is not committed by habit; for a world-readable one, chmod 600 it.",
+            reference: "tracked or world-readable .env without secret-named keys",
         },
         "Git autorun" => Guidance {
             what: "A git configuration setting whose value git executes as a command — for example core.fsmonitor, which git runs every time it refreshes the index, so an ordinary `git status` or `git add` triggers it.",
@@ -155,7 +155,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "least privilege",
         },
         "Secret exposure" => Guidance {
-            what: "A .env file in an agent project root is world-readable.",
+            what: "A .env file in an agent project root is world-readable and holds a secret-named key, or its keys could not be read (unreadable, or a symlink rmguard does not open), so nothing shows it is clean.",
             why: ".env files hold API keys and DB credentials; world-readable means any local user or process can read them.",
             fix: "chmod 600 the file. Rotate anything in it if the machine is multi-user.",
             reference: "least privilege",
@@ -876,29 +876,54 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     // .env secrets in agent project roots.
     for e in &report.env_files {
-        // A committed .env is a committed secret only if it holds one. The values are
-        // never read, so that is judged by the key NAMES (secret-named or a connection
-        // string, plus ANTHROPIC_CUSTOM_HEADERS); a .env of only PORT / NODE_ENV /
-        // LOG_LEVEL is a Low advisory. A file whose keys were not read (a symlink, an
-        // empty or unreadable file: key_count 0) keeps the Critical grade, since nothing
-        // says it is clean.
+        // A .env is graded by what was actually read. The values are never read, so a
+        // secret is judged by the key NAMES (secret-named or a connection string, plus
+        // ANTHROPIC_CUSTOM_HEADERS). When the file was opened and parsed and no name is
+        // credential-shaped (only PORT / NODE_ENV / LOG_LEVEL, or no keys at all), a
+        // committed or world-readable .env is a Low advisory. A file whose keys were not
+        // read (a symlink, never opened, or a file that could not be read) keeps the
+        // Critical / High grade, since nothing shows it is clean. `key_count > 0` also
+        // proves a read, so a report from before `read_ok` existed grades as it did.
         let credential_named = !e.secret_keys.is_empty() || e.agent_overrides.iter().any(|o| o.kind == "headers");
-        if e.git_tracked && !credential_named && e.key_count > 0 && e.symlink.is_none() {
+        let keys_read = e.symlink.is_none() && (e.read_ok || e.key_count > 0);
+        let clean = keys_read && !credential_named;
+        if e.git_tracked && clean {
+            let title = if e.key_count == 0 {
+                ".env is git-tracked and empty — check that no credential is added to it later".to_string()
+            } else {
+                format!(
+                    ".env is git-tracked ({} keys, no secret-named keys) — check that no credential is committed under another name",
+                    e.key_count
+                )
+            };
             f.push(Finding {
                 severity: Severity::Low,
                 category: "Secret hygiene".into(),
-                title: format!(
-                    ".env is git-tracked ({} keys, no secret-named keys) — check that no credential is committed under another name",
-                    e.key_count
-                ),
+                title,
                 location: e.path.clone(),
                 evidence: None,
             });
         } else if e.git_tracked {
+            let title = if keys_read {
+                format!(".env is git-tracked ({} keys) — committed secrets", e.key_count)
+            } else {
+                ".env is git-tracked and its keys could not be read (unreadable, or a symlink rmguard does not open); treated as committed secrets".to_string()
+            };
             f.push(Finding {
                 severity: Severity::Critical,
                 category: "Secret leak".into(),
-                title: format!(".env is git-tracked ({} keys) — committed secrets", e.key_count),
+                title,
+                location: e.path.clone(),
+                evidence: None,
+            });
+        } else if e.world_readable && clean {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Secret hygiene".into(),
+                title: format!(
+                    ".env is world-readable ({} keys, no secret-named keys) — check that no credential is stored under another name",
+                    e.key_count
+                ),
                 location: e.path.clone(),
                 evidence: None,
             });

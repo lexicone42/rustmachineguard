@@ -2166,7 +2166,7 @@ fn tracked_env_is_graded_by_its_secret_named_keys() {
             "{content:?} still holds a credential-named key: {f:?}"
         );
     }
-    // A tracked .env whose keys were not read (key_count 0: empty, unreadable or a
+    // A tracked .env whose keys were not read (key_count 0, read_ok false: unreadable or a
     // symlink) says nothing about being clean and keeps the Critical grade.
     let report = make_test_report(|r| {
         r.env_files = vec![EnvFile {

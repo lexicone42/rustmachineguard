@@ -114,6 +114,7 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
     } else {
         crate::scanners::read_bounded_nofollow(path, None)
     };
+    let read_ok = content.is_some();
     let (key_count, secret_keys) = match content.as_deref() {
         Some(content) => parse_env_keys(content),
         None => (0, Vec::new()),
@@ -129,6 +130,7 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
         git_tracked: is_git_tracked(path),
         world_readable,
         key_count,
+        read_ok,
         secret_keys,
         agent_overrides,
         symlink,

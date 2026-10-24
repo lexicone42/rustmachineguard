@@ -751,6 +751,11 @@ pub struct EnvFile {
     pub world_readable: bool,
     /// Count of `KEY=value` lines (names parsed, values never stored).
     pub key_count: usize,
+    /// The file was opened and parsed (key_count is then the real count, possibly 0).
+    /// False for a symlink (never opened) and for a file that could not be read; absent
+    /// in reports from before this field existed, which reads as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_ok: bool,
     /// NAMES (never values) of keys that look secret-bearing (TOKEN/SECRET/KEY/...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_keys: Vec<String>,

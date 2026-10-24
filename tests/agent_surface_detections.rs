@@ -639,9 +639,11 @@ fn env_agent_home_gateway_proxy_overrides() {
         "{eb:#?}"
     );
 
+    // projc's .env.local is world-readable (umask) with no secret-named key: a Low
+    // "Secret hygiene" advisory, which is not what this test is about.
     let fc: Vec<_> = at("/projc/")
         .into_iter()
-        .filter(|f| f.category != "Secret exposure")
+        .filter(|f| f.category != "Secret exposure" && f.category != "Secret hygiene")
         .collect();
     assert!(
         fc.is_empty(),
@@ -9474,4 +9476,112 @@ fn node_js_tool_version_is_read_from_package_json_without_a_spawn() {
         "name mismatch must fall back to the spawn"
     );
     assert!(spawned, "the fallback spawn did not run");
+}
+
+// ── .env graded by what was actually read ────────────────────────────────────────
+
+/// Plant `content` as `<home>/<project>/.env` with `mode`, optionally committed, register
+/// the project and return the .env findings plus the scanned record. `None` when git is
+/// needed and unavailable.
+fn env_case(
+    tag: &str,
+    content: &str,
+    mode: u32,
+    commit: bool,
+) -> Option<(Vec<Finding>, rustmachineguard::models::EnvFile)> {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp_home(tag);
+    let proj = home.join("app");
+    if commit {
+        if !git_repo(&proj, &home) {
+            let _ = fs::remove_dir_all(&home);
+            return None;
+        }
+    } else {
+        fs::create_dir_all(&proj).unwrap();
+    }
+    let env = proj.join(".env");
+    write(&env, content);
+    if commit {
+        git(&proj, &home, &["add", "-f", ".env"]);
+        git(&proj, &home, &["commit", "-q", "-m", "env"]);
+    }
+    fs::set_permissions(&env, fs::Permissions::from_mode(mode)).unwrap();
+    register_projects(&home, &[&proj]);
+    let (_, mut report) = scan(&home, &["envfiles"]);
+    let _ = fs::set_permissions(&env, fs::Permissions::from_mode(0o600));
+    let _ = fs::remove_dir_all(&home);
+    let findings: Vec<Finding> = collect_findings(&report)
+        .into_iter()
+        .filter(|f| f.location.ends_with("app/.env"))
+        .collect();
+    let pos = report.env_files.iter().position(|e| e.path.ends_with("app/.env"))?;
+    Some((findings, report.env_files.swap_remove(pos)))
+}
+
+/// A world-readable .env that was read and holds only settings is a Low "Secret
+/// hygiene" advisory, not High "Secret exposure" (on 9e7d90c it is High).
+#[test]
+fn world_readable_env_without_secret_names_is_low() {
+    let (f, e) = env_case("wrenv-plain", "PORT=3000\nNODE_ENV=production\n", 0o644, false).unwrap();
+    let dump = format!("{f:#?}");
+    assert!(
+        e.world_readable && !e.git_tracked && e.read_ok && e.key_count == 2,
+        "{dump}"
+    );
+    assert_eq!(f.len(), 1, "{dump}");
+    assert_eq!(f[0].severity, Severity::Low, "{dump}");
+    assert_eq!(f[0].category, "Secret hygiene", "{dump}");
+    assert!(
+        f[0].title.contains("world-readable") && f[0].title.contains("no secret-named keys"),
+        "{dump}"
+    );
+}
+
+/// Control: a world-readable .env with a secret-named key stays High.
+#[test]
+fn world_readable_env_with_secret_name_stays_high() {
+    let (f, _) = env_case("wrenv-secret", "AWS_SECRET_ACCESS_KEY=x\nPORT=1\n", 0o644, false).unwrap();
+    let dump = format!("{f:#?}");
+    assert_eq!(f.len(), 1, "{dump}");
+    assert_eq!(f[0].severity, Severity::High, "{dump}");
+    assert_eq!(f[0].category, "Secret exposure", "{dump}");
+}
+
+/// A committed EMPTY .env was read (read_ok) and holds nothing: a Low advisory, not
+/// Critical "committed secrets" (on 9e7d90c the report cannot tell it from an
+/// unreadable file and it is Critical).
+#[test]
+fn tracked_empty_readable_env_is_low() {
+    let Some((f, e)) = env_case("trenv-empty", "", 0o600, true) else {
+        eprintln!("git unavailable; skipping");
+        return;
+    };
+    let dump = format!("{f:#?}");
+    assert!(e.git_tracked && e.read_ok && e.key_count == 0, "{dump}");
+    assert_eq!(f.len(), 1, "{dump}");
+    assert_eq!(f[0].severity, Severity::Low, "{dump}");
+    assert_eq!(f[0].category, "Secret hygiene", "{dump}");
+    assert!(f[0].title.contains("empty"), "{dump}");
+}
+
+/// The honest floor: a committed .env that could not be read (mode 000) shows nothing
+/// clean, so it stays Critical, now saying why. Root reads a mode-000 file, so the case
+/// cannot be built as root.
+#[test]
+fn tracked_unreadable_env_stays_critical() {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("running as root: a mode-000 file is still readable; skipping");
+        return;
+    }
+    let Some((f, e)) = env_case("trenv-unread", "AWS_SECRET_ACCESS_KEY=x\n", 0o000, true) else {
+        eprintln!("git unavailable; skipping");
+        return;
+    };
+    let dump = format!("{f:#?}");
+    assert!(e.git_tracked && !e.read_ok && e.key_count == 0, "{dump}");
+    assert_eq!(f.len(), 1, "{dump}");
+    assert_eq!(f[0].severity, Severity::Critical, "{dump}");
+    assert_eq!(f[0].category, "Secret leak", "{dump}");
+    assert!(f[0].title.contains("could not be read"), "{dump}");
 }
