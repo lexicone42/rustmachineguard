@@ -114,30 +114,55 @@ const fn shape(
 
 /// The token prefixes, a closed table: the first entry whose prefix a word starts with
 /// decides it (`sk-ant-` before `sk-`). Lengths are of the body after the prefix, which
-/// must run to the end of the word. Sources (index: GitHub's secret-scanning pattern list,
-/// <https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns>):
+/// must run to the end of the word. Sources, each page fetched 2026-10-25; where the
+/// vendor documents a prefix but no length or charset, the length here is the issued
+/// form and the index is GitHub's secret-scanning pattern list,
+/// <https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns>:
 ///
-/// - Anthropic `sk-ant-` (`sk-ant-api03-`, `sk-ant-admin01-`): the GitHub list
-///   (`anthropic_api_key`, `anthropic_admin_api_key`) and
-///   <https://docs.anthropic.com/en/api/admin-api/apikeys/get-api-key>.
-/// - OpenAI `sk-proj-`, `sk-svcacct-`, `sk-admin-` and legacy `sk-`:
-///   <https://platform.openai.com/docs/api-reference/authentication> and the GitHub list
+/// - Anthropic `sk-ant-` (`sk-ant-api03-`, `sk-ant-admin01-`): the API-key object's
+///   `partial_key_hint` example (`sk-ant-api03-...`),
+///   <https://platform.claude.com/docs/en/api/beta/organization/api_keys/retrieve>, and
+///   "Admin API key (starting with `sk-ant-admin...`)",
+///   <https://platform.claude.com/docs/en/manage-claude/admin-api>. No length is
+///   documented; the GitHub list has `anthropic_api_key` and `anthropic_admin_api_key`.
+/// - OpenAI `sk-proj-`, `sk-svcacct-`, `sk-admin-` and legacy `sk-`: OpenAI's API
+///   reference (<https://developers.openai.com/api/reference/overview>) documents bearer
+///   authentication but no public key format, so the source is the GitHub list
 ///   (`openai_api_key`).
-/// - GitHub `ghp_` `gho_` `ghu_` `ghs_` `ghr_` (36 base62) and `github_pat_`:
+/// - GitHub `ghp_` `gho_` `ghu_` `ghs_` `ghr_` and `github_pat_`: the prefix list,
+///   <https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github>,
+///   and the base62 body with a CRC32 checksum in its last six characters,
 ///   <https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/>.
-/// - AWS access key ids `AKIA` (long-term) and `ASIA` (temporary), 16 more `[A-Z0-9]`:
-///   <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-unique-ids>.
-/// - Slack `xoxb-` (bot) and `xoxp-` (user): <https://api.slack.com/concepts/token-types>.
-/// - GitLab `glpat-` (personal access token):
-///   <https://docs.gitlab.com/security/tokens/#token-prefixes>.
-/// - Hugging Face `hf_`: <https://huggingface.co/docs/hub/security-tokens>.
-/// - npm `npm_` (36 base62):
-///   <https://github.blog/changelog/2021-09-23-npm-has-a-new-access-token-format/>.
-/// - Google API keys `AIza` (35 more `[A-Za-z0-9_-]`):
-///   <https://cloud.google.com/docs/authentication/api-keys> and the GitHub list
-///   (`google_api_key`).
-/// - PEM private keys (`-----BEGIN ... PRIVATE KEY-----` followed by a base64 body):
-///   RFC 7468, <https://www.rfc-editor.org/rfc/rfc7468>; matched by [`pem_private_key`].
+///   Neither page states a length: 36 is the issued body of the classic tokens (40 in
+///   all). The first page also says that since 2026-04-27 new GitHub App installation
+///   tokens have a stateless `ghs_APPID_JWT` form, which is not 40 characters; the 36-byte
+///   `ghs_` shape below does not match it.
+/// - AWS access key ids `AKIA` (access key) and `ASIA` (temporary STS key), 16 more
+///   `[A-Z0-9]`: the prefixes,
+///   <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-prefixes>.
+///   AWS documents the id only as 16 to 128 `[\w]` characters
+///   (<https://docs.aws.amazon.com/IAM/latest/APIReference/API_AccessKey.html>); 20 in all is
+///   the issued form.
+/// - Slack `xoxb-` (bot) and `xoxp-` (user): <https://docs.slack.dev/authentication/tokens>
+///   (no length documented; the GitHub list has `slack_api_token`).
+/// - GitLab `glpat-` (personal, impersonation, project and group access tokens):
+///   <https://docs.gitlab.com/security/tokens/#token-prefixes> (no length documented; the
+///   GitHub list has `gitlab_access_token`).
+/// - Hugging Face `hf_`: shown only as `hf_...` in
+///   <https://huggingface.co/docs/hub/security-tokens>, with no length or charset, so the
+///   source for the shape is the GitHub list (`hf_user_access_token`).
+/// - npm `npm_` (36 base62): the prefix and the base62 CRC32 checksum in the last six
+///   characters, <https://github.blog/changelog/2021-09-23-npm-has-a-new-access-token-format/>.
+///   The page gives no length for the new format (its "36 characters" is the old UUID
+///   format); 36 is the issued body. The GitHub list has `npm_access_token`.
+/// - Google API keys `AIza` (35 more `[A-Za-z0-9_-]`): the example key in
+///   <https://docs.cloud.google.com/docs/authentication/api-keys> is `AIza` and 35 such
+///   characters; no length is stated. The GitHub list has `google_api_key`.
+/// - PEM private keys (`-----BEGIN ... PRIVATE KEY-----` followed by a base64 body): the
+///   encapsulation boundaries and the `PRIVATE KEY` / `ENCRYPTED PRIVATE KEY` labels are
+///   RFC 7468, <https://www.rfc-editor.org/rfc/rfc7468>; the `RSA`, `EC` and `OPENSSH`
+///   labels this also matches are not in it (they are OpenSSL's and OpenSSH's own).
+///   Matched by [`pem_private_key`].
 pub const TOKEN_SHAPES: &[TokenShape] = &[
     shape(
         b"sk-ant-",
@@ -334,7 +359,9 @@ fn shown_as_name(name: &str) -> bool {
 /// The `.env` scanner's secret-NAME rule, the same three tests it applies to a key: a
 /// secret-named key (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `*_PASSWORD`), a
 /// connection-string key (`DATABASE_URL`, `REDIS_URL`, `*_DSN`), or a webhook key
-/// (`SLACK_WEBHOOK_URL`).
+/// (`SLACK_WEBHOOK_URL`). `KEY` counts only as a word, as in the command redactor
+/// ([`key_word_hint`](crate::scanners::env_files::key_word_hint)): `KEYBOARD_LAYOUT`,
+/// `KEYWORD`, `HOTKEY` and `MONKEY` are not secret names here.
 pub fn is_secret_name(name: &str) -> bool {
     use crate::scanners::env_files::{is_connection_string_key_name, is_secret_env_key_name, is_webhook_key_name};
     is_secret_env_key_name(name) || is_connection_string_key_name(name) || is_webhook_key_name(name)

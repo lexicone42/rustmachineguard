@@ -165,10 +165,10 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "committed secret",
         },
         "Secret hygiene" => Guidance {
-            what: "A .env file is tracked by git or world-readable, but rmguard read it and none of its key names looks like a credential (only settings such as PORT, NODE_ENV or LOG_LEVEL, or no keys at all). rmguard reads key names only, never values.",
-            why: "Nothing secret-named is committed or exposed, so this is not a leak. A tracked or world-readable .env is still where a credential tends to get added later, or hides under a neutral name.",
-            fix: "Confirm no value is a credential. For a tracked .env, consider committing a .env.example with the settings and adding .env to .gitignore so a later secret is not committed by habit; for a world-readable one, chmod 600 it.",
-            reference: "tracked or world-readable .env without secret-named keys",
+            what: "Secret-shaped names in agent-reachable files, with nothing exposed to other users: env files and agent transcripts. A .env that is git-tracked or world-readable but whose key names include no credential (only settings such as PORT or NODE_ENV, or no keys at all). Agent transcripts that mention secret-named keys or token-shaped strings, found in your own transcript stores. rmguard reports names, labels and counts only, never values.",
+            why: "Nothing secret-named is committed or readable by other users, so this is not a leak. An agent reads both: a tracked or world-readable .env is where a credential tends to be added later or hide under a neutral name, and a transcript keeps whatever was pasted into or printed in a conversation, for every later session, tool and backup that reads it.",
+            fix: "For a .env: confirm no value is a credential, chmod 600 a world-readable one, and for a tracked one commit a .env.example and add .env to .gitignore. For a transcript: rotate any credential that was pasted into or printed in a conversation, and delete the session files you no longer need. For both: move real values into your OS keychain or a secret manager and reference them by name.",
+            reference: "secret-shaped names in env files and agent transcripts",
         },
         "Git autorun" => Guidance {
             what: "A git configuration setting whose value git executes as a command — for example core.fsmonitor, which git runs every time it refreshes the index, so an ordinary `git status` or `git add` triggers it.",

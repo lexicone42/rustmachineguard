@@ -84,7 +84,8 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
     "version_range": "<1.0.3",
-    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp; low GHSA-8qgq-27v6-55w3 (SSE authentication and custom headers logged verbatim, from 0.14.2, published 2026-10-21). The split packages @modelcontextprotocol/inspector-server and @modelcontextprotocol/inspector-client have their own rows. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22."
+    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp; low GHSA-8qgq-27v6-55w3 (SSE authentication and custom headers logged verbatim, from 0.14.2, published 2026-10-21). The split packages @modelcontextprotocol/inspector-server and @modelcontextprotocol/inspector-client have their own rows. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "critical"
   },
   {
     "ecosystem": "npm",
@@ -125,7 +126,8 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/sdk",
     "version_range": "<1.32.0",
-    "advisory": "MCP TypeScript SDK 1.x: CVE-2025-66414 (DNS rebinding, fixed 1.24.0), CVE-2026-25536 (cross-client data leak, fixed 1.26.0), CVE-2026-104850 / GHSA-6qxp-vccf-f47h (CVSS 7.5: OAuth client sent stored refresh tokens and client secrets to whichever authorization server the MCP server named, fixed 1.31.0), GHSA-f897-62hf-6gxq (no request-body or batch size limit, fixed 1.30.1), and four October 2026 advisories fixed in 1.32.0: CVE-2026-111767 (experimental tasks not bound to their session), CVE-2026-111768 (one in-limit request exhausts server memory), CVE-2026-111769 (cross-origin redirects re-send custom headers and bodies), CVE-2026-111771 (bearer tokens issued for another service accepted). Fixed: 1.32.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters Aviral2642, AlexMelanFromRingo, Gal3m, JosephDoUrden, Igfray, OriginalKazdov, lwebmedia; cipher-creator; root-Brainoverflow; nickelsec; gdegrange), vulnerablemcp.info. Verified against primary sources 2026-10-22."
+    "advisory": "MCP TypeScript SDK 1.x: CVE-2025-66414 (DNS rebinding, fixed 1.24.0), CVE-2026-25536 (cross-client data leak, fixed 1.26.0), CVE-2026-104850 / GHSA-6qxp-vccf-f47h (CVSS 7.5: OAuth client sent stored refresh tokens and client secrets to whichever authorization server the MCP server named, fixed 1.31.0), GHSA-f897-62hf-6gxq (no request-body or batch size limit, fixed 1.30.1), and four October 2026 advisories fixed in 1.32.0: CVE-2026-111767 (experimental tasks not bound to their session), CVE-2026-111768 (one in-limit request exhausts server memory), CVE-2026-111769 (cross-origin redirects re-send custom headers and bodies), CVE-2026-111771 (bearer tokens issued for another service accepted). Fixed: 1.32.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters Aviral2642, AlexMelanFromRingo, Gal3m, JosephDoUrden, Igfray, OriginalKazdov, lwebmedia; cipher-creator; root-Brainoverflow; nickelsec; gdegrange), vulnerablemcp.info. Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "pypi",
@@ -137,7 +139,8 @@
     "ecosystem": "pypi",
     "name": "mcp",
     "version_range": "<1.30.0",
-    "advisory": "MCP Python SDK 1.x line: CVE-2025-66416 (DNS rebinding, fixed 1.23.0, GHSA-9h52-p55h-vw2f), CVE-2026-52869/52870 (fixed 1.27.2), CVE-2026-59950 (fixed 1.28.1), CVE-2026-109527 / GHSA-fmmv-w9g8-j3gc (unbounded request bodies, fixed 1.29.1), and five advisories fixed in 1.30.0: CVE-2026-115563 / GHSA-qx49-fqc8-xw99 (CVSS 7.5: OAuth client sent client_secret, authorization code and PKCE verifier to the authorization server the MCP server named; Cycode and others), CVE-2026-59951 / GHSA-84m7-p3x7-pcfv (Streamable HTTP sessions never reclaimed), GHSA-rwrf-2pqf-9j8j (client fetched server-chosen $ref URLs while validating tool output schemas), GHSA-w4fh-qvv9-3v23 (bearer tokens for another resource server accepted), GHSA-5h93-6whr-6q8j (cross-origin redirects carry headers and bodies). Fixed: 1.30.0 (the 2.x line has its own row). Source: modelcontextprotocol/python-sdk advisories (Cycode / Yuval Elbar, Aviral2642, AlexMelanFromRingo, Gal3m, mrostamipoor, RoniGurvich, mahmoudalbustan1, rharang, Hem1700, u-ktdi, dodge1218, nickelsec, razashariff, shmulc8), vulnerablemcp.info. Verified against primary sources 2026-10-22."
+    "advisory": "MCP Python SDK 1.x line: CVE-2025-66416 (DNS rebinding, fixed 1.23.0, GHSA-9h52-p55h-vw2f), CVE-2026-52869/52870 (fixed 1.27.2), CVE-2026-59950 (fixed 1.28.1), CVE-2026-109527 / GHSA-fmmv-w9g8-j3gc (unbounded request bodies, fixed 1.29.1), and five advisories fixed in 1.30.0: CVE-2026-115563 / GHSA-qx49-fqc8-xw99 (CVSS 7.5: OAuth client sent client_secret, authorization code and PKCE verifier to the authorization server the MCP server named; Cycode and others), CVE-2026-59951 / GHSA-84m7-p3x7-pcfv (Streamable HTTP sessions never reclaimed), GHSA-rwrf-2pqf-9j8j (client fetched server-chosen $ref URLs while validating tool output schemas), GHSA-w4fh-qvv9-3v23 (bearer tokens for another resource server accepted), GHSA-5h93-6whr-6q8j (cross-origin redirects carry headers and bodies). Fixed: 1.30.0 (the 2.x line has its own row). Source: modelcontextprotocol/python-sdk advisories (Cycode / Yuval Elbar, Aviral2642, AlexMelanFromRingo, Gal3m, mrostamipoor, RoniGurvich, mahmoudalbustan1, rharang, Hem1700, u-ktdi, dodge1218, nickelsec, razashariff, shmulc8), vulnerablemcp.info. Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "vscode",
@@ -265,7 +268,8 @@
     "ecosystem": "npm",
     "name": "@mcpjam/inspector",
     "version_range": "<1.4.3",
-    "advisory": "CVE-2026-23744 (GHSA-232v-j27c-5pp6): binds 0.0.0.0 with no auth; crafted HTTP request installs+runs a malicious MCP server (unauth RCE). Affects <=1.4.2, fixed 1.4.3. Distinct from @modelcontextprotocol/inspector. Source: GitHub Advisory DB"
+    "advisory": "CVE-2026-23744 (GHSA-232v-j27c-5pp6): binds 0.0.0.0 with no auth; crafted HTTP request installs+runs a malicious MCP server (unauth RCE). Affects <=1.4.2, fixed 1.4.3. Distinct from @modelcontextprotocol/inspector. Source: GitHub Advisory DB",
+    "advisory_severity": "critical"
   },
   {
     "ecosystem": "npm",
@@ -878,7 +882,8 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server",
     "version_range": ">=2.0.0, <2.3.0",
-    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111770 / GHSA-jm63-cq47-j5jp (shared transport/server instances delivered one HTTP client's messages to another), CVE-2026-111768 (memory exhaustion), CVE-2026-111771 (bearer tokens for another service accepted), all fixed 2.3.0; GHSA-f897-62hf-6gxq (no body-size limit) fixed 2.1.0. Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters DavidCarliez, legitu1337 and others). Verified against primary sources 2026-10-22."
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111770 / GHSA-jm63-cq47-j5jp (shared transport/server instances delivered one HTTP client's messages to another), CVE-2026-111768 (memory exhaustion), CVE-2026-111771 (bearer tokens for another service accepted), all fixed 2.3.0; GHSA-f897-62hf-6gxq (no body-size limit) fixed 2.1.0. Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters DavidCarliez, legitu1337 and others). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "npm",
@@ -890,13 +895,15 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/node",
     "version_range": ">=2.0.0, <2.1.0",
-    "advisory": "MCP TypeScript SDK v2 split package: GHSA-f897-62hf-6gxq (high, no CVE): HTTP server transports did not limit request body size or JSON-RPC batch length (DoS). Fixed 2.1.0 (sibling @modelcontextprotocol/hono fixed 2.0.1). Source: modelcontextprotocol/typescript-sdk advisories (fix by maxisbey; reporters cybercraftsolutionsllc, hewei-gikaku, Jvr2022, Gal3m and others). Verified against primary sources 2026-10-22."
+    "advisory": "MCP TypeScript SDK v2 split package: GHSA-f897-62hf-6gxq (high, no CVE): HTTP server transports did not limit request body size or JSON-RPC batch length (DoS). Fixed 2.1.0 (sibling @modelcontextprotocol/hono fixed 2.0.1). Source: modelcontextprotocol/typescript-sdk advisories (fix by maxisbey; reporters cybercraftsolutionsllc, hewei-gikaku, Jvr2022, Gal3m and others). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
     "version_range": ">=2.0.0, <2.12.0",
-    "advisory": "MCP Inspector 2.x line, fixed 2.12.0 (2026-10-21): GHSA-q978-78c7-phqw (high, CVSS 8.8: a remote MCP server's OAuth authorization URL reached PowerShell through the 'open' package, so $(...) subexpressions executed during sign-in on Windows/WSL), GHSA-vcc9-3xgm-p9v4 (high: incomplete fix for CVE-2025-49596, DNS-rebinding disclosure of the API token and stored OAuth tokens), GHSA-m5pj-3536-3xcp (medium: /api/fetch proxy has no size cap). Fixed: 2.12.0. Source: modelcontextprotocol/inspector advisories (Pillar Security / eilonc-pillar, 0xParth, hackyhunter, CloneOfAlex). Verified against primary sources 2026-10-22."
+    "advisory": "MCP Inspector 2.x line, fixed 2.12.0 (2026-10-21): GHSA-q978-78c7-phqw (high, CVSS 8.8: a remote MCP server's OAuth authorization URL reached PowerShell through the 'open' package, so $(...) subexpressions executed during sign-in on Windows/WSL), GHSA-vcc9-3xgm-p9v4 (high: incomplete fix for CVE-2025-49596, DNS-rebinding disclosure of the API token and stored OAuth tokens), GHSA-m5pj-3536-3xcp (medium: /api/fetch proxy has no size cap). Fixed: 2.12.0. Source: modelcontextprotocol/inspector advisories (Pillar Security / eilonc-pillar, 0xParth, hackyhunter, CloneOfAlex). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "npm",
@@ -997,19 +1004,22 @@
     "ecosystem": "pypi",
     "name": "fastmcp",
     "version_range": ">=2.10.0, <3.4.10",
-    "advisory": "FastMCP 2.x/3.x line, sixteen advisories 2026-10-16 to 10-20. Critical GHSA-gpgx-58w2-xwwf (fixed 3.4.8): remote code execution in the FastMCP client when parsing a server-supplied tool output schema (untrusted schema title passed to pydantic ForwardRef). High GHSA-57vm-5fr9-3r5x (fixed 3.4.8): incomplete fix for CVE-2025-64340, command injection in the 'fastmcp install claude-code' and 'gemini-cli' installers. Also GHSA-7xgj-8392-5q4r (authorization skipped on transformed components, fixed 3.4.10) and GHSA-pwp3-fpg3-p53c (a symlinked SKILL.md escaping its skill folder, fixed 3.4.9). Fixed: 3.4.10 (4.x has its own row; fastmcp-slim has its own rows). Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, GEONWOOHAN). Verified against primary sources 2026-10-22."
+    "advisory": "FastMCP 2.x/3.x line, sixteen advisories 2026-10-16 to 10-20. Critical GHSA-gpgx-58w2-xwwf (fixed 3.4.8): remote code execution in the FastMCP client when parsing a server-supplied tool output schema (untrusted schema title passed to pydantic ForwardRef). High GHSA-57vm-5fr9-3r5x (fixed 3.4.8): incomplete fix for CVE-2025-64340, command injection in the 'fastmcp install claude-code' and 'gemini-cli' installers. Also GHSA-7xgj-8392-5q4r (authorization skipped on transformed components, fixed 3.4.10) and GHSA-pwp3-fpg3-p53c (a symlinked SKILL.md escaping its skill folder, fixed 3.4.9). Fixed: 3.4.10 (4.x has its own row; fastmcp-slim has its own rows). Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, GEONWOOHAN). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "critical"
   },
   {
     "ecosystem": "pypi",
     "name": "fastmcp",
     "version_range": ">=4.0.0, <4.1.2",
-    "advisory": "FastMCP 4.x line: the same October 2026 advisories as the 3.x row (client RCE GHSA-gpgx-58w2-xwwf and installer injection GHSA-57vm-5fr9-3r5x fixed 4.0.11; authorization bypass GHSA-7xgj-8392-5q4r fixed 4.1.2; symlinked SKILL.md GHSA-pwp3-fpg3-p53c fixed 4.1.0) plus GHSA-vqqp-x5qm-5qp4 (CVSS 5.9: OAuth client secret sent to an attacker-advertised authorization server, fixed 4.1.2). Pre-releases 4.0.0a1 onward are affected. Fixed: 4.1.2. Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, LHMisme420, GEONWOOHAN). Verified against primary sources 2026-10-22."
+    "advisory": "FastMCP 4.x line: the same October 2026 advisories as the 3.x row (client RCE GHSA-gpgx-58w2-xwwf and installer injection GHSA-57vm-5fr9-3r5x fixed 4.0.11; authorization bypass GHSA-7xgj-8392-5q4r fixed 4.1.2; symlinked SKILL.md GHSA-pwp3-fpg3-p53c fixed 4.1.0) plus GHSA-vqqp-x5qm-5qp4 (CVSS 5.9: OAuth client secret sent to an attacker-advertised authorization server, fixed 4.1.2). Pre-releases 4.0.0a1 onward are affected. Fixed: 4.1.2. Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, LHMisme420, GEONWOOHAN). Verified against primary sources 2026-10-22.",
+    "advisory_severity": "critical"
   },
   {
     "ecosystem": "pypi",
     "name": "mcp",
     "version_range": ">=2.0.0, <2.2.0",
-    "advisory": "MCP Python SDK 2.x line: the six late-September/October 2026 advisories of the 1.x row (CVE-2026-115563 / GHSA-qx49-fqc8-xw99 OAuth credential misdirection from 2.0.0a1, CVE-2026-59951 session accumulation, GHSA-rwrf-2pqf-9j8j $ref fetching, GHSA-w4fh-qvv9-3v23 cross-service bearer tokens, GHSA-5h93-6whr-6q8j redirect header leak, all fixed 2.2.0; CVE-2026-109527 unbounded bodies fixed 2.1.0). Fixed: 2.2.0. Source: modelcontextprotocol/python-sdk advisories. Verified against primary sources 2026-10-22."
+    "advisory": "MCP Python SDK 2.x line: the six late-September/October 2026 advisories of the 1.x row (CVE-2026-115563 / GHSA-qx49-fqc8-xw99 OAuth credential misdirection from 2.0.0a1, CVE-2026-59951 session accumulation, GHSA-rwrf-2pqf-9j8j $ref fetching, GHSA-w4fh-qvv9-3v23 cross-service bearer tokens, GHSA-5h93-6whr-6q8j redirect header leak, all fixed 2.2.0; CVE-2026-109527 unbounded bodies fixed 2.1.0). Fixed: 2.2.0. Source: modelcontextprotocol/python-sdk advisories. Verified against primary sources 2026-10-22.",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "pypi",
@@ -1027,13 +1037,15 @@
     "ecosystem": "pypi",
     "name": "mistral-vibe",
     "version_range": ">=1.3.4, <2.25.4",
-    "advisory": "Mistral Vibe coding-agent CLI, Mistral advisory MAI-2026-003 (2026-09-14): six shell-permission bypasses, CVE-2026-87983 (quoted absolute paths), -87984 (redirection targets), -87985 (ANSI-C quoting), -87986 (incomplete parsing), -87987 (environment-variable-prefixed commands, CVSS 10 per NVD) and -87988 (allowlist and path gaps), letting model output run commands the allowlist should have blocked. All fixed 2.25.4. Discovered by HiddenLayer SAI (Esteban Tonglet). Verified against the vendor advisory 2026-10-22."
+    "advisory": "Mistral Vibe coding-agent CLI, Mistral advisory MAI-2026-003 (2026-09-14): six shell-permission bypasses, CVE-2026-87983 (quoted absolute paths), -87984 (redirection targets), -87985 (ANSI-C quoting), -87986 (incomplete parsing), -87987 (environment-variable-prefixed commands, CVSS 10 per NVD) and -87988 (allowlist and path gaps), letting model output run commands the allowlist should have blocked. All fixed 2.25.4. Discovered by HiddenLayer SAI (Esteban Tonglet). Verified against the vendor advisory 2026-10-22.",
+    "advisory_severity": "critical"
   },
   {
     "ecosystem": "pypi",
     "name": "hermes-agent",
     "version_range": ">=0.18.2, <0.21.1",
-    "advisory": "CVE-2026-71963 (GHSA-7x36-8jrh-v4pw, GitSpawn family): Hermes Agent ran git during context gathering with repository-local core.fsmonitor honoured, executing a prepared repo's command. Fixed in commit f6234d00 (2026-09-02), first tagged in v2026.9.7 as 0.21.1; the PyPI package is stale at 0.19.0, so every PyPI release is affected, and the install script's git clone under ~/.hermes/hermes-agent must be checked by commit ancestry instead. Reported by Manifold Security (Francisco Rosales). Verified against OSV and the fix commit 2026-10-22."
+    "advisory": "CVE-2026-71963 (GHSA-cc88-9pxf-j2wv, high, CVSS 8.8; GitSpawn family): Hermes Agent ran git during context gathering with repository-local core.fsmonitor honoured, executing a prepared repo's command. Fixed in commit f6234d00 (2026-09-02), first tagged in v2026.9.7 as 0.21.1; the PyPI package is stale at 0.19.0, so every PyPI release is affected, and the install script's git clone under ~/.hermes/hermes-agent must be checked by commit ancestry instead. Reported by Manifold Security (Francisco Rosales). Verified against OSV and the fix commit 2026-10-22; advisory id corrected 2026-10-25 (the GitHub record for the CVE is GHSA-cc88-9pxf-j2wv; GHSA-7x36-8jrh-v4pw resolves nowhere).",
+    "advisory_severity": "high"
   },
   {
     "ecosystem": "vscode",

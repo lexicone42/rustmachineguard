@@ -441,11 +441,12 @@ fn npx_cache(home: &Path) {
     );
 }
 
-/// Y5: a vulnerable version range matched only in an npx cache nothing launches is High,
+/// Y5: a vulnerable version range matched only in an npx cache nothing launches is one
+/// step below the row's advisory severity (High then; Medium since the row is `high`),
 /// titled as dormant, names the package the cache was fetched for, and keeps the
 /// advisory IDs. Fails on f91d034 (Critical "Known-bad npm package").
 #[test]
-fn vulnerable_sdk_in_npx_cache_is_high_and_dormant() {
+fn vulnerable_sdk_in_npx_cache_is_dormant_one_step_below() {
     let home = temp_home("npx");
     npx_cache(&home);
     let (_, _, findings) = scan(&home, &["npmpkgs"]);
@@ -454,11 +455,12 @@ fn vulnerable_sdk_in_npx_cache_is_high_and_dormant() {
         .filter(|f| f.category == "Exposure" && f.title.contains("@modelcontextprotocol/server"))
         .collect();
     assert_eq!(hit.len(), 1, "{findings:#?}");
-    assert_eq!(hit[0].severity, Severity::High);
+    // The row's advisory_severity is high (catalog 2026-10-25.3): dormant is one below.
+    assert_eq!(hit[0].severity, Severity::Medium);
     assert!(
         hit[0]
             .title
-            .starts_with("Vulnerable MCP SDK version in npx cache (dormant unless re-run)"),
+            .starts_with("Vulnerable MCP SDK version (advisory severity: high) in npx cache (dormant unless re-run)"),
         "{}",
         hit[0].title
     );
@@ -479,18 +481,20 @@ fn sdk_hits(findings: &[Finding]) -> Vec<&Finding> {
         .collect()
 }
 
-fn assert_active_critical(hits: &[&Finding]) {
+/// Active: graded at the row's advisory_severity, high since catalog 2026-10-25.3.
+fn assert_active_at_advisory_severity(hits: &[&Finding]) {
     assert_eq!(hits.len(), 1, "{hits:#?}");
     let f = hits[0];
-    assert_eq!(f.severity, Severity::Critical, "{}", f.title);
+    assert_eq!(f.severity, Severity::High, "{}", f.title);
     assert!(f.title.starts_with("Vulnerable npm package version"), "{}", f.title);
     assert!(!f.title.contains("dormant"));
 }
 
-/// Y5: the same version is Critical in an active install, a registered project's
-/// node_modules. Fails on f91d034, whose title called a vulnerable version "Known-bad".
+/// Y5: the same version is graded at the advisory severity (Critical then; High since
+/// catalog 2026-10-25.3) in an active install, a registered project's node_modules.
+/// Fails on f91d034, whose title called a vulnerable version "Known-bad".
 #[test]
-fn vulnerable_sdk_in_a_project_install_stays_critical() {
+fn vulnerable_sdk_in_a_project_install_is_graded_at_advisory_severity() {
     let home = temp_home("active-proj");
     let proj = home.join("proj");
     write(
@@ -502,15 +506,15 @@ fn vulnerable_sdk_in_a_project_install_stays_critical() {
         &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
     );
     let (_, _, findings) = scan(&home, &["npmpkgs"]);
-    assert_active_critical(&sdk_hits(&findings));
+    assert_active_at_advisory_severity(&sdk_hits(&findings));
     let _ = fs::remove_dir_all(&home);
 }
 
 /// Y5: an npx cache that a configured MCP server launches (`npx -y
-/// @upstash/context7-mcp`, the package the cache was fetched for) is active: Critical.
+/// @upstash/context7-mcp`, the package the cache was fetched for) is active: at the advisory severity.
 /// Fails on f91d034 (title "Known-bad").
 #[test]
-fn vulnerable_sdk_in_an_npx_cache_a_server_launches_stays_critical() {
+fn vulnerable_sdk_in_an_npx_cache_a_server_launches_is_active() {
     let home = temp_home("active-npx");
     npx_cache(&home);
     write(
@@ -518,7 +522,7 @@ fn vulnerable_sdk_in_an_npx_cache_a_server_launches_stays_critical() {
         r#"{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]}}}"#,
     );
     let (_, _, findings) = scan(&home, &["mcp", "npmpkgs"]);
-    assert_active_critical(&sdk_hits(&findings));
+    assert_active_at_advisory_severity(&sdk_hits(&findings));
     let _ = fs::remove_dir_all(&home);
 }
 
@@ -610,8 +614,8 @@ fn disabled_mcp_servers_mark_local_servers_off() {
 }
 
 /// V2: the same vulnerable version in an npx cache and in a project's `node_modules` is
-/// two exposure rows: the cache copy (`cache: "npx cache"`, graded dormant High) and the
-/// project install (no `cache`, Critical). Fails on 4e23ef8, whose (name, version)
+/// two exposure rows: the cache copy (`cache: "npx cache"`, graded dormant, one step below) and the
+/// project install (no `cache`, at the advisory severity). Fails on 4e23ef8, whose (name, version)
 /// dedupe kept only the npx-cache copy (scanned first): one row, High.
 #[test]
 fn npx_cache_copy_does_not_hide_an_active_install() {
@@ -645,7 +649,7 @@ fn npx_cache_copy_does_not_hide_an_active_install() {
     sev.sort();
     assert_eq!(hits.len(), 2, "{hits:#?}");
     assert!(
-        sev.contains(&Severity::Critical) && sev.contains(&Severity::High),
+        sev.contains(&Severity::High) && sev.contains(&Severity::Medium),
         "{hits:#?}"
     );
     let _ = fs::remove_dir_all(&home);

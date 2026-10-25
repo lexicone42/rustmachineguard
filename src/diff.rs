@@ -47,6 +47,9 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             // `url` distinguishes a plaintext downgrade (https -> http maps to the same
             // `transport`) and a redirect to a new host; `inline_secret_env_keys` and
             // `git_tracked` catch a trusted config gaining a committed credential.
+            // `enabled`, `approved` and `awaits_approval` say whether the server is
+            // active (a plugin enabled, a project server approved); `unpinned` and
+            // `extra_packages` say what code its launch fetches.
             &[
                 "transport",
                 "package_name",
@@ -55,6 +58,11 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
                 "url",
                 "inline_secret_env_keys",
                 "git_tracked",
+                "enabled",
+                "approved",
+                "awaits_approval",
+                "unpinned",
+                "extra_packages",
             ],
         ),
         diff_array_section(
@@ -99,7 +107,9 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             get_array(baseline, "exposure_findings"),
             get_array(current, "exposure_findings"),
             "name",
-            &["ecosystem", "version", "advisory"],
+            // `advisory_severity` sets the grade; `cache` says whether the copy is a
+            // dormant npx cache or an install.
+            &["ecosystem", "version", "advisory", "advisory_severity", "cache"],
         ),
         diff_mcp_probes(get_array(baseline, "mcp_probes"), get_array(current, "mcp_probes")),
         // Agent settings are the persistence-tampering surface: a hook, a permission-mode
@@ -125,6 +135,13 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
                 "allow_managed_hooks_only",
                 "disable_all_hooks",
                 "force_enabled_plugins",
+                // Permission-mode guards and the auto-mode block; the rules that are
+                // graded (see `normalize_permission_rules`), not the inventoried ones.
+                "disable_bypass_mode",
+                "disable_auto_mode",
+                "skip_dangerous_mode_prompt",
+                "auto_mode",
+                "permission_rules",
             ],
         ),
         // Plugin marketplaces: a source flipping to auto-update, or a new third-party
@@ -150,7 +167,9 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             get_array(baseline, "env_files"),
             get_array(current, "env_files"),
             "path",
-            &["git_tracked", "agent_overrides"],
+            // `world_readable` and `unreachable_via` say whether other users can read it;
+            // `key_count`, `read_ok` and `unparsed_lines` are not compared.
+            &["git_tracked", "agent_overrides", "world_readable", "unreachable_via"],
         ),
         diff_array_section(
             "Shell Configs",
@@ -158,6 +177,41 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             get_array(current, "shell_configs"),
             "config_path",
             &["ollama_host"],
+        ),
+        diff_array_section(
+            "Network Listeners",
+            collect_listeners(baseline),
+            collect_listeners(current),
+            "listener",
+            &["serves_shell"],
+        ),
+        diff_array_section(
+            "Agent Output Dirs",
+            collect_output_dirs(baseline),
+            collect_output_dirs(current),
+            "path",
+            &["git_state"],
+        ),
+        diff_array_section(
+            "Vibe Configs",
+            get_array(baseline, "vibe_configs"),
+            get_array(current, "vibe_configs"),
+            "path",
+            &[
+                "auto_approve",
+                "enable_auto_update",
+                "enable_update_checks",
+                "enable_telemetry",
+                "bypass_tool_permissions",
+                "tool_permissions",
+                "tool_paths",
+                "agent_paths",
+                "skill_paths",
+                "trusted_folders",
+                "untrusted_folders",
+                "session_dir",
+                "env_file",
+            ],
         ),
     ];
 
@@ -265,6 +319,76 @@ pub fn render_diff(diff: &ScanDiff) -> String {
     }
 
     crate::output::terminal::scrub_all(&out)
+}
+
+/// Listening sockets keyed by what they are, not by the process that holds them: the
+/// program, the port and the bind class (`terminal-bridge:7681 (all-interfaces)`). The
+/// pid, age, working directory and counted files change from scan to scan and are
+/// dropped; `address` is kept only to tell an IPv4 and an IPv6 socket of one key apart.
+fn collect_listeners(report: &Value) -> Vec<Value> {
+    get_array(report, "network_listeners")
+        .iter()
+        .map(|l| {
+            let program = l.get("program").and_then(|v| v.as_str()).unwrap_or("unknown program");
+            let port = l.get("port").map(|v| display_value(Some(v))).unwrap_or_default();
+            let bind = l.get("bind").and_then(|v| v.as_str()).unwrap_or("?");
+            serde_json::json!({
+                "listener": format!("{program}:{port} ({bind})"),
+                "address": l.get("address").cloned().unwrap_or(Value::Null),
+                "serves_shell": l.get("serves_shell").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+/// Agent output directories (`.playwright-mcp/`) with their git state as one word, the
+/// posture of the directory: `not in a repository`, `tracked` (files committed),
+/// `ignored`, `not ignored`, or `unknown`. File counts are not compared.
+fn collect_output_dirs(report: &Value) -> Vec<Value> {
+    get_array(report, "agent_output_dirs")
+        .iter()
+        .map(|d| {
+            let tracked = d.get("tracked_files").and_then(|v| v.as_u64()).unwrap_or(0);
+            let state = if d.get("in_repo").and_then(|v| v.as_bool()) != Some(true) {
+                "not in a repository"
+            } else if tracked > 0 {
+                "tracked"
+            } else {
+                match d.get("ignored").and_then(|v| v.as_bool()) {
+                    Some(true) => "ignored",
+                    Some(false) => "not ignored",
+                    None => "unknown",
+                }
+            };
+            serde_json::json!({
+                "path": d.get("path").cloned().unwrap_or(Value::Null),
+                "framework": d.get("framework").cloned().unwrap_or(Value::Null),
+                "git_state": state,
+            })
+        })
+        .collect()
+}
+
+/// The permission rules drift sees: the allow rules rmguard grades (those with a
+/// `class`), as `list rule (class)`, sorted. Unclassified rules are inventory and their
+/// order in the file is not posture. None when there are none.
+fn normalize_permission_rules(v: Option<&Value>) -> Option<Value> {
+    let mut rules: Vec<String> = v?
+        .as_array()?
+        .iter()
+        .filter_map(|r| {
+            let class = r.get("class")?.as_str()?;
+            let list = r.get("list").and_then(|x| x.as_str()).unwrap_or("?");
+            let rule = r.get("rule").and_then(|x| x.as_str()).unwrap_or("?");
+            Some(format!("{list} {rule} ({class})"))
+        })
+        .collect();
+    if rules.is_empty() {
+        return None;
+    }
+    rules.sort();
+    rules.dedup();
+    Some(Value::Array(rules.into_iter().map(Value::String).collect()))
 }
 
 fn collect_mcp_servers(report: &Value) -> Vec<Value> {
@@ -440,6 +564,10 @@ fn diff_array_section(
             let (bv, cv) = if matches!(*field, "hooks" | "helper_commands") {
                 bn = normalize_hooks(b.get(*field));
                 cn = normalize_hooks(c.get(*field));
+                (bn.as_ref(), cn.as_ref())
+            } else if *field == "permission_rules" {
+                bn = normalize_permission_rules(b.get(*field));
+                cn = normalize_permission_rules(c.get(*field));
                 (bn.as_ref(), cn.as_ref())
             } else {
                 (b.get(*field), c.get(*field))
@@ -793,7 +921,13 @@ fn format_item(v: &Value, key_field: &str, fields: &[&str]) -> String {
     let details: Vec<String> = fields
         .iter()
         .filter_map(|f| {
-            let val = v.get(*f)?;
+            let normalized;
+            let val = if *f == "permission_rules" {
+                normalized = normalize_permission_rules(v.get(*f))?;
+                &normalized
+            } else {
+                v.get(*f)?
+            };
             if val.is_null() {
                 return None;
             }

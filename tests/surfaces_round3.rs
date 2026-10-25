@@ -368,7 +368,7 @@ fn an_older_plugin_version_in_use_is_inventoried_and_noted() {
 }
 
 /// Two npx caches holding the same vulnerable MCP SDK version; a process runs a script
-/// from the first. The running one is Critical and says so, the other stays the dormant High.
+/// from the first. The running one is Critical and says so, the other stays dormant, one step below the advisory severity.
 ///
 /// Fails on 530ed6a: both are "dormant unless re-run" High.
 #[cfg(target_os = "linux")]
@@ -406,7 +406,8 @@ fn a_vulnerable_npx_cache_a_process_runs_from_is_critical() {
     assert_eq!(hot.severity, Severity::Critical, "{d}");
     assert!(hot.title.contains("in npx cache, running (pid count 1)"), "{d}");
     let cold = hits.iter().find(|f| f.location.contains("fedcba0987654321")).unwrap();
-    assert_eq!(cold.severity, Severity::High, "{d}");
+    // The row's advisory_severity is high (catalog 2026-10-25.3): dormant is one below.
+    assert_eq!(cold.severity, Severity::Medium, "{d}");
     assert!(cold.title.contains("(dormant unless re-run)"), "{d}");
     let running = rows(&v, "npx_caches_running");
     assert_eq!(running.len(), 1, "{text}");

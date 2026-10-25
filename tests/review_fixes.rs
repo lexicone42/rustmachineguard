@@ -340,23 +340,25 @@ fn r9_npx_cache_matches_the_launch_spec_not_the_name() {
     let home = npx_cache_home("npx-other", "foo-mcp@1.0.0", "foo-mcp@2.0.0");
     let (_, _, findings) = scan(&home, &["mcp", "npmpkgs"]);
     let f = sdk_hit(&findings);
-    assert_eq!(f.severity, Severity::High, "{}", f.title);
+    // The row's advisory_severity is high (catalog 2026-10-25.3): active is High and
+    // dormant one below.
+    assert_eq!(f.severity, Severity::Medium, "{}", f.title);
     assert!(f.title.contains("dormant unless re-run"), "{}", f.title);
     let _ = fs::remove_dir_all(&home);
 
     let home = npx_cache_home("npx-same", "foo-mcp@1.0.0", "foo-mcp@1.0.0");
     let (_, _, findings) = scan(&home, &["mcp", "npmpkgs"]);
-    assert_eq!(sdk_hit(&findings).severity, Severity::Critical);
+    assert_eq!(sdk_hit(&findings).severity, Severity::High);
     let _ = fs::remove_dir_all(&home);
 
     // An unpinned launch re-runs an unpinned cache, not a pinned one.
     let home = npx_cache_home("npx-float", "foo-mcp", "foo-mcp@latest");
     let (_, _, findings) = scan(&home, &["mcp", "npmpkgs"]);
-    assert_eq!(sdk_hit(&findings).severity, Severity::Critical);
+    assert_eq!(sdk_hit(&findings).severity, Severity::High);
     let _ = fs::remove_dir_all(&home);
     let home = npx_cache_home("npx-float-pinned", "foo-mcp@1.0.0", "foo-mcp");
     let (_, _, findings) = scan(&home, &["mcp", "npmpkgs"]);
-    assert_eq!(sdk_hit(&findings).severity, Severity::High);
+    assert_eq!(sdk_hit(&findings).severity, Severity::Medium);
     let _ = fs::remove_dir_all(&home);
 }
 

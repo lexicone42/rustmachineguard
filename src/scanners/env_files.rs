@@ -51,16 +51,19 @@ pub fn auth_word_hint(name: &str) -> bool {
     key_words(name).iter().any(|w| is_auth_word(w))
 }
 
-/// A word of a `.env` NAME that is a secret hint: a long hint as a substring of the
-/// word (`GITHUBTOKEN`, `APIKEY`, `dbPassword`; `TOKEN` not in `TOKENIZER`), the
-/// [`is_auth_word`] rule, or a [`SECRET_LAST_WORDS`] word whole.
-fn is_env_hint_word(w: &str) -> bool {
+/// A word of a `.env` NAME that is a secret hint: a long hint other than `KEY` as a
+/// substring of the word (`GITHUBTOKEN`, `dbPassword`; `TOKEN` not in `TOKENIZER`), `KEY`
+/// as a word by [`key_word_hint`]'s rule (`key_hint`: `APIKEY`, `apiKey`, `keyPem`; not
+/// `KEYBOARD`, `KEYWORD`, `HOTKEY`, `MONKEY`), the [`is_auth_word`] rule, or a
+/// [`SECRET_LAST_WORDS`] word whole.
+fn is_env_hint_word(w: &str, key_hint: bool) -> bool {
     let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
-    is_auth_word(w)
+    key_hint
+        || is_auth_word(w)
         || SECRET_LAST_WORDS.contains(&w)
         || SECRET_KEY_HINTS
             .iter()
-            .any(|h| w.contains(h) && !(*h == "TOKEN" && w.contains("TOKENIZ")))
+            .any(|h| *h != "KEY" && w.contains(h) && !(*h == "TOKEN" && w.contains("TOKENIZ")))
 }
 
 /// The `.env` secret-NAME rule: the name has a hint word ([`is_env_hint_word`]) and no
@@ -68,15 +71,20 @@ fn is_env_hint_word(w: &str) -> bool {
 /// `VIEW_PASS`, `SECRET_KEY_BASE`, `GITHUB_TOKEN_B64`, `GITHUB_TOKEN_READONLY` and
 /// `API_KEY_2` are secret names (an unknown trailing word fails safe); `VIEW_TOKEN_IPS`,
 /// `WEBAUTHN_RP_ID` (no hint: `ID` is not one and `WEBAUTHN` is not `AUTH`),
-/// `DB_PASS_FILE`, `API_KEY_ID` and `AWS_ACCESS_KEY_ID` are not.
-/// The MCP and command checks keep [`is_secret_key_name`]: there a missed name can
-/// show a value, while here the record is a NAME and the value is never read.
+/// `DB_PASS_FILE`, `API_KEY_ID` and `AWS_ACCESS_KEY_ID` are not. `KEY` counts only as
+/// a word ([`key_word_hint`]'s rule, as in the command redactor): `KEYBOARD_LAYOUT`,
+/// `KEYWORD`, `HOTKEY`, `MONKEY` and `TURKEY` are not secret names, in a `.env` or in a
+/// transcript.
+/// The MCP inline-secret check keeps [`is_secret_key_name`]'s substring rule: there a
+/// missed name can show a value, while here the record is a NAME and the value is never
+/// read.
 pub fn is_secret_env_key_name(name: &str) -> bool {
     if name.eq_ignore_ascii_case("PWD") {
         return false;
     }
-    let words = key_words(name);
-    let Some(i) = words.iter().rposition(|w| is_env_hint_word(w)) else {
+    let tagged = key_words_with_key_hint(name);
+    let words: Vec<String> = tagged.iter().map(|(w, _)| w.clone()).collect();
+    let Some(i) = tagged.iter().rposition(|(w, k)| is_env_hint_word(w, *k)) else {
         return false;
     };
     let after = &words[i + 1..];
@@ -214,9 +222,9 @@ pub fn has_secret_key_hint(name: &str) -> bool {
 /// [`is_secret_key_name`] for the command redactor, with the `KEY` hint matched as a
 /// word ([`key_word_hint`]) instead of as a substring: `ssh -o StrictHostKeyChecking=no`
 /// is an ssh option, not a secret, and `KEYBOARD=us`, `MONKEY=1`, `TURKEY=1` are not
-/// secret names. The other hints and the last-word rule are unchanged. The .env and MCP
-/// checks keep the broader substring rule: they record a NAME, and over-flagging one
-/// costs nothing there, while here it hides the command a reviewer needs to read.
+/// secret names. The other hints and the last-word rule are unchanged. The `.env` and
+/// transcript name rule ([`is_secret_env_key_name`]) uses the same `KEY` word rule; the
+/// MCP inline-secret check keeps the broader substring rule.
 pub fn is_secret_command_key_name(name: &str) -> bool {
     if has_secret_command_key_hint(name) {
         return true;
@@ -289,6 +297,12 @@ const KEY_WORD_STEMS: &[&str] = &["MON", "TUR", "DON", "HOC", "JOC", "WHIS", "LA
 /// (`StrictHostKeyChecking`, `HostKeyAlgorithms`, and a glued `Pubkey` in
 /// `PubkeyAuthentication`) or at the start of a longer word (`KEYBOARD`, `KEYWORD`).
 pub fn key_word_hint(name: &str) -> bool {
+    key_words_with_key_hint(name).iter().any(|(_, k)| *k)
+}
+
+/// The words of a NAME ([`key_words`]), each with whether it is a `KEY` word by
+/// [`key_word_hint`]'s rule, judged within its `_`/`-`/`.` segment.
+fn key_words_with_key_hint(name: &str) -> Vec<(String, bool)> {
     let value_word = |w: &str| {
         KEY_VALUE_WORDS.contains(&w) || KEY_VALUE_WORDS.contains(&w.trim_end_matches(|c: char| c.is_ascii_digit()))
     };
@@ -302,27 +316,29 @@ pub fn key_word_hint(name: &str) -> bool {
                 || (value_word(&w[i + 3..]) && !KEY_WORD_STEMS.contains(&&w[..i]))
         })
     };
-    name.split(|c: char| !c.is_ascii_alphanumeric()).any(|seg| {
+    let mut out = Vec::new();
+    for seg in name.split(|c: char| !c.is_ascii_alphanumeric()) {
         let words = key_words(seg);
-        words.iter().enumerate().any(|(i, w)| {
+        for (i, word) in words.iter().enumerate() {
             // A version or index suffix is not part of the word (`API_KEY2`, `apiKey2`).
-            let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
-            if !w.contains("KEY") {
-                return false;
-            }
-            if w == "KEY" || w == "KEYS" {
-                return i + 1 == words.len()
+            let w = word.trim_end_matches(|c: char| c.is_ascii_digit());
+            let hint = if !w.contains("KEY") {
+                false
+            } else if w == "KEY" || w == "KEYS" {
+                i + 1 == words.len()
                     || (i > 0 && KEY_QUALIFIERS.contains(&words[i - 1].as_str()))
-                    || value_word(&words[i + 1]);
-            }
-            // A glued `...KEY` word inside a longer camelCase name is part of an option
-            // name (`PubkeyAuthentication=no`, ssh_config), not a key's name.
-            if w.ends_with("KEY") || w.ends_with("KEYS") {
-                return i + 1 == words.len() && glued(w);
-            }
-            glued(w)
-        })
-    })
+                    || value_word(&words[i + 1])
+            } else if w.ends_with("KEY") || w.ends_with("KEYS") {
+                // A glued `...KEY` word inside a longer camelCase name is part of an
+                // option name (`PubkeyAuthentication=no`, ssh_config), not a key's name.
+                i + 1 == words.len() && glued(w)
+            } else {
+                glued(w)
+            };
+            out.push((word.clone(), hint));
+        }
+    }
+    out
 }
 
 /// A .env key NAME with `WEBHOOK` as one of its words (`SLACK_WEBHOOK_URL`,
