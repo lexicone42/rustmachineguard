@@ -5,7 +5,7 @@
 //! by the scanner's diagnostics. Each file with hooks becomes one [`AgentSettings`]
 //! entry; parsing is in [`crate::scanners::hook_sources`].
 //!
-//! Formats and paths are from the vendors' docs, fetched 2026-10-23 (README "Agent
+//! Formats and paths are from the vendors' docs, fetched 2026-10-23 (docs/COVERAGE.md "Agent
 //! Settings" and docs/THREAT-CATALOG.md "Detection techniques" carry the URLs and the
 //! floors: what is documented but not read).
 

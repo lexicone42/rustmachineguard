@@ -1457,7 +1457,7 @@ fn value_shaped(w: &str) -> bool {
 /// `log in` or `sign in`; and after `password:` / `passphrase:` / `secret:` every word
 /// to the end of the clause (`.`, `;` or a line break), not one. A comma right after a
 /// secret word does not end the search (`My secret, which you need, X`). Prose
-/// redaction is a heuristic (README floors): it narrows what a prompt shows, it does not
+/// redaction is a heuristic (docs/SECURITY.md floors): it narrows what a prompt shows, it does not
 /// prove a prompt holds no credential.
 pub fn shown_prompt(prompt: &str) -> String {
     let base = redact_command_text(prompt);

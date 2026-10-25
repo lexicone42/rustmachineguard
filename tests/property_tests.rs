@@ -3272,8 +3272,8 @@ fn builtin_catalog_entry_count_is_pinned() {
     assert_eq!(
         catalog.len(),
         307,
-        "catalog size changed — update this pin and the counts quoted in README.md \
-         and docs/THREAT-CATALOG.md"
+        "catalog size changed — update this pin and the count quoted in \
+         docs/THREAT-CATALOG.md (README.md and docs/COVERAGE.md state no count)"
     );
 }
 

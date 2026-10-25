@@ -8266,7 +8266,7 @@ fn hook_manifest_repeats_and_path_heavy_commands_are_bounded() {
 /// DANGEROUS in the inventory while graded Low; the event JSON passed through `cat` and an
 /// authenticated topic are notification hooks like the jq one (Low, as the http hook to
 /// the host); a credential file piped to the same host stays Critical; a module whose
-/// shell command matches only a medium pattern is the README's Low row; Codex's
+/// shell command matches only a medium pattern is docs/COVERAGE.md's Low row; Codex's
 /// deprecated `codex_hooks = false` turns Codex hooks off; statusLine is counted as a
 /// settings command.
 #[test]

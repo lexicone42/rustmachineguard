@@ -107,8 +107,8 @@ The baseline is "the state I have reviewed and accept". Rotate it **after** you 
 a diff and decided every entry in it is expected (you installed that server, you upgraded
 that extension), and not before: rotating without reading turns a rug-pull into the new
 normal. Also rotate after upgrading rmguard if the first diff lists surfaces the new
-version inventories for the first time (the README's
-[Temporal analysis](../README.md#temporal--cross-server-analysis) section describes this).
+version inventories for the first time (COVERAGE.md's
+[Temporal analysis](COVERAGE.md#temporal--cross-server-analysis) section describes this).
 
 [`scripts/rmguard-baseline.sh`](../scripts/rmguard-baseline.sh) does this safely:
 without `--force` it prints the drift and changes nothing; with `--force` it keeps the
@@ -419,7 +419,7 @@ posture series.
 ### JSON reports and `--report`
 
 No collector needed: collect each machine's `latest.json` however you already move files
-(MDM, a shared drive, a CI artifact), named by asset tag, and aggregate:
+(MDM, a shared drive, a CI artifact, S3, a git repo), named by asset tag, and aggregate:
 
 ```console
 $ mkdir -p ~/scans && cp ~/box-0042.json ~/scans/ && rmguard --report ~/scans -o ~/fleet.html
@@ -432,6 +432,26 @@ A file in the directory that is not an rmguard scan is skipped with
 `warning: skipping <path> (not a valid rmguard JSON scan)`; a directory with none exits 1.
 Unlike the metrics, these files contain the full report (paths, names, redacted
 commands): store and move them like the sensitive inventory they are.
+
+`fleet.html` ranks machines by the severity of their findings (most at-risk first),
+shows fleet-wide critical/high/medium totals, and links to each machine's findings.
+The aggregator only reads the JSON files — it's agnostic about how they got there:
+
+```bash
+# On each machine (cron, MDM, or manual):
+rmguard --format json --output /shared/scans/$(hostname).json
+
+# Anywhere the JSONs are collected:
+rmguard --report /shared/scans/ --output fleet.html
+```
+
+To **gate** on posture instead of just reporting it — a pre-commit hook, an onboarding
+check, or a CI step that must fail a machine with serious findings — use `--fail-on`:
+
+```bash
+# Exits 3 (report still prints) if any Critical finding is present; else 0.
+rmguard --fail-on critical || echo "machine failed its security gate"
+```
 
 ## Grafana dashboard
 

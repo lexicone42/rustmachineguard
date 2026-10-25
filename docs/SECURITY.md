@@ -1,0 +1,108 @@
+# Security and privacy model
+
+rmguard is itself a security-sensitive program: it reads credential-adjacent files, runs
+`git` inside repositories it does not trust, and can spawn MCP servers. This file is the
+full design (what it reads, what it never reads, how output is redacted), the test-only
+knobs, and every documented floor: a limit that is known and kept by design. The
+[README](../README.md#security-and-privacy-model) has the short version.
+
+## Design decisions
+
+- **No secret leakage**: Scanners report key *names*, file existence and permissions — never values. The one deliberate exception is variables that relocate an agent's home or redirect its traffic (`CLAUDE_CONFIG_DIR`, `*_BASE_URL`, `HTTPS_PROXY`, `OLLAMA_HOST`, ...): their path or host is not a secret and is shown after sanitization, with URL userinfo dropped; `ANTHROPIC_CUSTOM_HEADERS` is recorded by presence only. Anything that echoes user-controlled text into a finding (a hook command, an MCP launch line, a registry URL, a git config value) passes through one redaction helper that understands URL userinfo and query parameters, `key=value` and `key: value` pairs, HTTP `Authorization` schemes, curl/wget basic-auth and header forms, connection strings, compact JSON bodies and quoted values with whitespace — and keeps the parts a finding needs (the host, the binary, `| bash`). The guarantee is tested end to end, one canary per surface, with positive controls. The account and organization identifiers Claude Code puts in synced-skill directory names (`~/.claude/skills/synced/<org>_<account>/`) are masked as `<org>_<account>` in every output and in `--diff`, including against a baseline written before the mask.
+- **Attacker text cannot forge the report**: every string an attacker chooses (a package version, an extension name, a plugin ID, a probed server's error message, hook and helper commands, skill paths, extension directory names) is sanitized when it is extracted, every finding's title, location and evidence is sanitized again in the terminal renderer, and the whole terminal report is rendered from a copy in which no string can carry a control character. The terminal output keeps only the SGR codes the renderer itself emits (no conceal, black or background codes), so no ANSI sequence or line break can draw a green "clean" line. `--diff` output is sanitized per line and keeps no escape sequence at all. Text the tool *scans* for injection (tool descriptions, server instructions) is kept raw for the scanner and never printed.
+- **Adversarially reviewed**: the redaction, the git walk, the probe and the diagnostics have each been through multiple rounds of multi-agent adversarial review in which every finding was independently reproduced by a second agent before being accepted. Several of those rounds found that a fix had introduced a second edge; each is documented in the commit history along with the floors that remain by design.
+- **SSH passphrase detection**: Uses `ssh-keygen` probing for OpenSSH-format keys (the PEM `ENCRYPTED` marker is unreliable for modern key formats); reports a tri-state (encrypted / no-passphrase / unknown) so a missing `ssh-keygen` is never reported as "unprotected".
+- **MCP probing is opt-in**: `--probe-mcp` spawns local MCP servers and is gated behind an explicit flag with a runtime warning; each server runs in its own process group under a watchdog, its output is read with enforced deadlines, and the whole group is killed when the probe ends or the user interrupts.
+- **Telemetry export is opt-in and content-free**: `--otel` exports OTLP traces/metrics of scan timing; ambient `OTEL_*` env never enables it; only labels, counts, durations and fixed outcome categories are exported (attribute keys are a closed enum, attribute values are `&'static str`, integers or booleans, and span names are joined from `&'static str` parts, so no runtime text can become an attribute or a span name; `compile_fail` doc tests, run in CI, check both); child processes never inherit `OTEL_*` variables, so a collector API key never reaches a probed server; a dead collector costs ≤2 s and never changes the report or exit code. Tested end to end with canaries in every scanned surface, a fake-tool canary for child environments, and a check that a default run with every `OTEL_*` endpoint variable set never connects to the collector port they name (rmguard's own process; tools it runs for `--version` are not covered).
+- **HTML XSS prevention**: Report data is base64-encoded in script tags to prevent injection; all user content is HTML-escaped including single quotes.
+- **Input validation**: `--format`, `--fail-on`, `--walk-budget`, `--otel-instance` and the other flag values are validated at parse time with clear error messages (a usage error exits 2). An unknown `--skip` category is a `warning:` line that lists the valid names; it is ignored and the scan goes on.
+- **No `/tmp` fallback**: Fails fast if `$HOME` cannot be determined rather than scanning a shared directory.
+- **What is read from `/proc` (Linux), and why**: only the scanning user's own processes (`stat(2)` of `/proc/<pid>`, owner = euid) are looked into, and nothing is spawned. The `liveness` scanner checks that a `.in_use/<pid>` marker under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` names a live process (that `stat` only; the marker is an OBSERVED Claude Code signal, not documented: the plugin docs describe only `.orphaned_at`), and reads `/proc/<pid>/cmdline` (at most 16 KiB, at most 8,192 processes scaled by `--walk-budget`) to see whether a process runs from an npx cache: each argument is compared in memory by path prefix against `~/.npm/_npx/`, only the hex `<hash>` directory name and a process count are kept, the buffer is zeroed before the next process, and no argv text is stored, logged, traced or printed (a test plants canary arguments and checks every output format and `--trace`). The command line is read because nothing else finds these processes: the npx-launched `playwright-mcp` servers this was written against run as the system `node` with their `cwd` in a project and no open descriptor or mapping under the cache, so `exe`, `cwd`, `fd/*` and `maps` miss all of them (checked 2026-10-24). The `listeners` scanner reads `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/stat`, and per own process `comm`, `stat`, the `exe` and `cwd` links, `fd/*` link targets and `task/<tid>/children`; it never opens `cmdline` or `environ`. No scanner opens `/proc/<pid>/environ`. Floors: off Linux there is no `/proc` and neither signal is reported; an npx cache moved by `npm_config_cache` is not followed.
+- **Bounded, regular-file-only reads**: Config files are read up to 1 MiB; identity files (`package.json`, `METADATA`, `plugin.xml`) are read as a bounded head so padding cannot hide a package; readers refuse FIFOs and devices so a planted named pipe cannot stall the scan; subprocesses (`git config`, `git ls-files`, `--version` probes) run under timeouts with stdin closed, and the git-tracked check refuses, without spawning git, a repository whose HEAD, index, config or commondir is not a regular file (behind a `gitdir:` file too) or whose config includes a non-regular file. Each repository is listed once per scan (`git ls-files -z`), and all tracked-file listings share a 20 s budget, so a repository built to stall git costs one timeout, not one per file. Directory walks are budgeted, and budgets are spent on directories rather than files so junk files cannot exhaust them.
+- **The scanner cannot be turned against itself by a repository**: rmguard runs `git` inside project directories it does not trust, which is the GitSpawn shape it catalogues (a repo-local `core.fsmonitor` or `core.hooksPath` turning any git call into code execution). Every working-tree git invocation goes through one hardened command (`-c core.fsmonitor=false -c core.hooksPath=/dev/null -c safe.bareRepository=explicit`, with `GIT_DIR`-style environment scrubbed). The `git` program itself is resolved once, by absolute path, from the absolute PATH entries only, and the child's PATH keeps only those: git runs with its working directory inside the repository, and a relative entry (`.`, `node_modules/.bin`, an empty entry) would otherwise find a `git` the repository ships (a canary test plants one and runs with `PATH=.:/usr/bin:/bin`), and a canary test commits a repo whose fsmonitor would create a file and asserts the scan leaves it uncreated. This was found by automated review after the fact: an earlier `git ls-files` check was exploitable, which is exactly why the catalogue entry exists.
+- **System tools never come from PATH**: the hostname and kernel version are read with `uname(2)` (no `hostname` or `uname` process at all), and the system tools rmguard does run (`ps`, `ssh-keygen`, and on macOS `sw_vers` and `defaults`) are taken by absolute path from `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` or NixOS's `/run/current-system/sw/bin` only, with that as their PATH, under a timeout and an exec span; a missing tool is an "unknown" answer, never a PATH lookup. A canary test puts a fake of each tool first on PATH and asserts none runs. (The AI tools whose `--version` is read are found on PATH by design: that is how they are installed.)
+- **Fuzzed & schema-validated**: Untrusted-input parsers (MCP config, threat catalog, `.env` and its agent overrides, settings hooks and helpers, skill dynamic context and `allowed-tools`, marketplace git files, `OLLAMA_HOST` readers, diff, the redaction helper) have `cargo-fuzz` targets; Blueprint output is validated against the vendored CycloneDX 2.0 schema in CI.
+- **CI-gated**: every push runs the full suite on Linux **and** macOS, denies clippy correctness lints, keeps the fuzz targets compiling, and audits the dependency tree against RustSec advisories (`cargo audit`) — a supply-chain scanner should hold its own dependencies to the standard it scans for.
+
+## How the guarantees are tested
+
+Two end-to-end suites run the shipped binary against planted fixtures:
+
+- `tests/vulnerable_range.rs` builds a deliberately-vulnerable "machine" (a threat-catalog
+  MCP server, a `curl | bash` hook, MCP auto-approval, a poisoned rules file, a toxic-flow
+  skill, a world-readable `.env`, a world-readable agent transcript store) and asserts the
+  binary catches every planted issue. It's both a regression guard and a reference for
+  "what a compromised machine looks like."
+- `tests/no_secret_leakage.rs` plants a distinct credential in every surface that echoes
+  user-controlled text — MCP launch args and commands, hook and task commands, every
+  package-registry config, agent configs, marketplace URLs, a token file, agent transcripts
+  (key names and token labels only) — renders every
+  output format, and asserts none of them survives. Each fixture also carries a positive
+  control (its host or provider name) that must appear, so a fixture the scanner never
+  read cannot pass as "clean."
+
+To generate a shareable demo report from the vulnerable fixtures, point `--search-dirs`
+at a scratch copy and render HTML — the planted issues surface at the top of the report
+(plus anything real on the host, since your own home directory is scanned too).
+
+## Test-only knobs
+
+The end-to-end tests run the debug binary with `HOME` and `RMGUARD_TEST_SYSTEM_ROOT` pointed at temp directories; the latter re-roots the machine-wide paths (`/etc/claude-code`, `/etc/systemd/system`, `/Library/...`) so a developer machine's own managed settings or Ollama unit cannot change a test's result. Release builds ignore it, so run the suite in debug (`cargo test`, as CI does): under `cargo test --release` those tests would read the host's real system paths.
+
+## Floors
+
+A floor is something rmguard knowingly does not read or does not grade. Most are stated
+next to the behaviour they limit in [COVERAGE.md](COVERAGE.md); the longer lists are here.
+
+### Hook surfaces
+
+Floors (documented but not read):
+- Claude Code: inline hooks in a marketplace entry (`marketplace.json` `plugins[].hooks`), link-mode and local-path plugins (an `installPath` outside the cache), `~/.claude/dev-mods` session mods, `CLAUDE_CODE_PLUGIN_CACHE_DIR` relocation, plugin monitors, and data flows inside a mod that use no process call (`$.fs.read` of a credential then `$.http.fetch`).
+- Cursor: team hooks (cloud-distributed, not on disk as configuration) and installed marketplace plugins (their on-disk location is not documented).
+- Codex: intermediate project config layers between the repository root and the cwd, `commandWindows` (not pattern-checked), and plugin activation in `config.toml` `[plugins."p@m"] enabled` (every cached plugin's graded version is treated as active).
+- Copilot CLI: `COPILOT_HOME` relocation, Windows registry policies, and agent-scoped hooks in custom-agent frontmatter.
+- Gemini CLI: `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the `hooksConfig.disabled` per-hook list.
+- Devin: plugin hooks (install location undocumented), ancestor-directory discovery between the repository root and the cwd, and dashboard-distributed enterprise hooks.
+- OpenCode: npm plugin package sources (installed by Bun into `~/.cache/opencode`).
+- Kiro: legacy IDE `*.kiro.hook` files and CLI 2.x profile-scoped hooks.
+- Claude Code: an `asyncRewake` hook's `rewakeMessage` and `rewakeSummary` text (used by the official security-guidance plugin; code.claude.com/docs/en/hooks documents `asyncRewake` but not these fields, fetched 2026-10-23) is not read or graded; if they are documented as text put in the agent's context, they will be graded as conversation text.
+- Everywhere: Windows paths (`%APPDATA%`, `ProgramData`).
+- Budgets: at most 500 hooks per file entry and per plugin (a plugin manifest's list of hook files is read once per path and only until the plugin's cap) and 10,000 per scan; hooks past either are not parsed (the file is counted as a miss in the diagnostics and traced as "hook budget spent" under `--trace`). The on-disk checks of one command (native-binary probe, symlink check) stop after 16 path words, program words first, and after 20,000 per scan; the lexical agent-directory check still sees every word.
+
+### More agents
+
+Floors: what is inventoried but not graded, or not read:
+
+- **Roo Code:** approval toggles (`alwaysAllowExecute`, ...) live in VS Code's SQLite
+  `state.vscdb` and are not read. Custom modes' `groups` are not graded; the files are rules
+  rows.
+- **Cline:** hook contents are not read; hooks are listed by name. The VS Code state that
+  predates `~/.cline/data` is not read.
+- **Continue:** `cn --auto` and `--allow` are launch flags and leave nothing on disk. The
+  `.continueignore` file is not read.
+- **Aider:** a `read` or `load` path outside the project, and `.aider.tags.cache.v*`, are
+  listed or ignored, not read. `env-file` is not read.
+- **Goose:** `GOOSE_MODE` from the environment, `GOOSE_PATH_ROOT`, recipes, plugins and
+  hooks under `.agents/`, and `~/.local/state/goose/logs` (LLM request logs) are not read.
+- **Zed:** the Rules Library (an LMDB file) is not read. The threads database is counted
+  and sampled as bytes.
+- **Junie:** the IDE plugin's Brave Mode, allowlist and global MCP live in IDE settings
+  whose location is not documented. The CLI's sessions directory is not documented.
+  Project hooks are documented as ignored.
+- **Amp:** threads are stored on ampcode.com. The removed `amp.permissions` and
+  `amp.dangerouslyAllowAll` keys are not read. Plugins are listed, not read or graded,
+  because whether a workspace plugin waits for approval is not documented.
+- **Warp:** app execution profiles (`[agents.profiles]`, edited in the UI), Warp Drive
+  rules and MCP servers, and the state database are not read.
+- **All agents:** environment-variable relocations (`CLINE_DIR`, `CONTINUE_GLOBAL_DIR`,
+  `JUNIE_HOME`, `XDG_*`) are the scanning user's own and are not applied.
+
+### Floors stated elsewhere
+
+- Agent skills: plugins installed in link mode are not walked ([Agent Skills](COVERAGE.md#agent-skills)).
+- Persistence: macOS URL handlers (LaunchServices database, app bundles' `Info.plist`) are not parsed ([Persistence Artifacts](COVERAGE.md#persistence-artifacts)).
+- Network listeners: macOS has no `/proc`, so the scanner is skipped with a warning ([Network Listeners](COVERAGE.md#network-listeners-linux)).
+- Hooks: prose redaction of prompt text is a heuristic; short passwords after a flag with no secret-shaped name are not recognised; Devin CLI, Devin Desktop and Gemini CLI prompts are `undocumented` and graded as conversation text; a command built in a variable and passed to an exec call is advisory ([Hook surfaces](COVERAGE.md#hook-surfaces)).
+- `/proc` signals: off Linux neither signal is reported; an npx cache moved by `npm_config_cache` is not followed ([Design decisions](#design-decisions)).
+- OpenTelemetry: see [OPENTELEMETRY.md](OPENTELEMETRY.md#known-limits).
+- Scheduled runs: see [OPERATIONS.md](OPERATIONS.md#caveats).

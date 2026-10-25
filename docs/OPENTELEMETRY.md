@@ -102,7 +102,10 @@ docker run --rm -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one
 rmguard --otel
 rmguard --otel --probe-mcp --verbose
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.internal:4318 rmguard --otel --format json -o scan.json
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 rmguard --otel --otel-instance "$ASSET_TAG"
 ```
+
+With no endpoint set, `--otel` sends to `http://localhost:4318`.
 
 On stderr you get one `info: OpenTelemetry export enabled ...` line. If the collector
 cannot be reached you also get exactly one `warning: OpenTelemetry export ...` line,
@@ -238,6 +241,10 @@ frontmatter hooks (which spend the scan's hook budget) and its counts stay on th
 scanner's thread, in walk order, so `rmguard.walk.files`, `rmguard.walk.bytes_hashed`
 and `rmguard.walk.hooks` are the same at any `--jobs`. With `--jobs 1` neither scanner
 starts a thread.
+
+The hook surfaces add no spans of their own: their reads go through the same readers, so
+they count in the `settings` and `skills` scanner spans and diagnostics (and in the
+`skills.walk` span of the walk that found them).
 
 ## Attributes
 
@@ -537,6 +544,7 @@ without a collector. It needs only `uv` (its dependencies, `opentelemetry-proto`
 ```bash
 cargo build --release
 uv run scripts/otel-tree.py --port 0 -- target/release/rmguard --otel --format json -o /dev/null
+uv run scripts/otel-tree.py -- rmguard --otel   # default port 4318
 # or listen, and run rmguard yourself:
 uv run scripts/otel-tree.py --port 4318 &
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 rmguard --otel
