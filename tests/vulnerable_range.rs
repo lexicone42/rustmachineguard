@@ -215,10 +215,20 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
         has(&|f| f.category == "Secret exposure" && f.location.contains("/webapp/.env")),
         "should flag the world-readable .env"
     );
-    // 7. World-readable agent transcript store (EAA-005, high).
+    // 7. World-readable agent transcript store (EAA-005, high). The grade counts what
+    // other users can open, so when a directory ABOVE the fixture is not traversable
+    // (macOS keeps `$TMPDIR` under a user-private folder) the same store is honestly
+    // graded Low "not reachable" instead.
+    let blocked_above = std::env::temp_dir().ancestors().any(|a| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(a)
+            .map(|m| m.permissions().mode() & 0o001 == 0)
+            .unwrap_or(false)
+    });
+    let store_grade = if blocked_above { Severity::Low } else { Severity::High };
     assert!(
         has(&|f| f.category == "Transcript exposure"
-            && f.severity == Severity::High
+            && f.severity == store_grade
             && f.location.contains("/.claude/projects")),
         "should flag the world-readable transcript store"
     );
