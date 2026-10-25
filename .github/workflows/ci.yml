@@ -33,6 +33,15 @@ jobs:
       # (tests/blueprint_schema.rs) and the vulnerable-range end-to-end test,
       # which builds a compromised machine and runs the real binary against it.
       - run: cargo test --all-targets
+      # macOS keeps $TMPDIR under a user-private directory, so fixtures built there are
+      # "not reachable" to other users and reachability-graded findings honestly downgrade.
+      # Reproduce that condition on Linux too, so a fixture that assumes traversable temp
+      # ancestors fails here and not only on the macOS job.
+      - if: runner.os == 'Linux'
+        name: test with TMPDIR under a 0700 parent (the macOS temp layout)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private/T" && chmod 700 "$RUNNER_TEMP/private"
+          TMPDIR="$RUNNER_TEMP/private/T" cargo test --all-targets --no-fail-fast
       # --all-targets skips doc tests, and two of them are load-bearing: the
       # compile_fail checks in src/otel/mod.rs that runtime text cannot become an
       # OpenTelemetry attribute value or span name.
