@@ -1345,8 +1345,18 @@ mod enabled {
         std::fs::write(home.join(".claude.json"), claude.to_string()).unwrap();
         std::fs::write(proj.join(".env"), "SECRET_TOKEN=E2EOTELDOTENV\n").unwrap();
         std::fs::write(home.join(".aider.conf.yml"), "openai-api-key: E2EOTELAIDER\n").unwrap();
+        // A synced skill: its directory name is the account's organization and account
+        // UUIDs (see [`SYNCED_ORG`]).
+        let synced = home.join(format!(".claude/skills/synced/{SYNCED_ORG}_{SYNCED_ACCT}/s"));
+        std::fs::create_dir_all(synced.join("scripts")).unwrap();
+        std::fs::write(synced.join("SKILL.md"), "---\nname: s\n---\nbody\n").unwrap();
+        std::fs::write(synced.join("scripts/run.py"), "import os\n").unwrap();
         home
     }
+
+    /// Organization and account UUIDs in a synced-skill directory name: never exported.
+    const SYNCED_ORG: &str = "3e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b";
+    const SYNCED_ACCT: &str = "4e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5c";
 
     #[test]
     fn otel_never_exports_secrets_paths_or_names() {
@@ -1365,11 +1375,21 @@ mod enabled {
         let text = report.to_string();
         assert!(text.contains("E2EOTELNAME"), "the MCP server was not reported");
         assert!(text.contains(".aider.conf.yml"), "the Aider config was not reported");
+        assert!(
+            text.contains("synced/<org>_<account>/s"),
+            "the synced skill was not reported"
+        );
         assert!(!bodies.is_empty(), "nothing exported");
 
         let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
         let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
         assert!(!contains(b"E2EOTEL"), "a canary reached the collector");
+        for id in [SYNCED_ORG, SYNCED_ACCT, &SYNCED_ORG[..8], &SYNCED_ACCT[..8]] {
+            assert!(
+                !contains(id.as_bytes()),
+                "a synced-skill account identifier reached the collector"
+            );
+        }
         assert!(
             !contains(home.to_string_lossy().as_bytes()),
             "the HOME path reached the collector"

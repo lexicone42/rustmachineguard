@@ -3318,11 +3318,91 @@ pub fn prompt_credential_paths(text: &str) -> Vec<String> {
     out
 }
 
+/// Mask the account identifiers Claude Code puts in synced-skill directory names.
+///
+/// Synced skills live under `~/.claude/skills/synced/<organizationUuid>_<accountUuid>/`
+/// (observed 2026-10-24): the same organization and account UUIDs `~/.claude.json`'s
+/// `oauthAccount` holds, which no report prints. A path segment directly under a
+/// `skills/synced/` component (or under a leading `synced/`, a skill's name relative to
+/// its skills directory) that is `<uuid>_<uuid>` becomes `<org>_<account>`, and a bare
+/// `<uuid>` becomes `<account>` (8-4-4-4-12 hex, either case). Display and serialization
+/// only: dedupe keys and content hashes are computed on the real path before this runs,
+/// and the masked text is deterministic, so a `--diff` of two scans keys on the same
+/// string.
+pub fn mask_identifiers(s: &str) -> std::borrow::Cow<'_, str> {
+    const MARK: &str = "synced";
+    if !s.contains(MARK) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let b = s.as_bytes();
+    let sep = |c: u8| c == b'/' || c == b'\\';
+    let mut out = String::with_capacity(s.len());
+    let mut copied = 0;
+    let mut from = 0;
+    while let Some(off) = s[from..].find(MARK) {
+        let at = from + off;
+        from = at + MARK.len();
+        // `synced` must be a whole component followed by a separator: after `skills/`,
+        // or a relative path's first component (`synced/<id>/x/SKILL.md`, a skill's name
+        // relative to its skills directory, alone or inside a line or a reference).
+        let name_byte = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
+        let under_skills = at >= 7 && sep(b[at - 1]) && s[..at - 1].ends_with("skills") && {
+            let k = at - 7;
+            k == 0 || !name_byte(b[k - 1])
+        };
+        let leading = at == 0 || !(name_byte(b[at - 1]) || sep(b[at - 1]));
+        if !(under_skills || leading) || !b.get(from).copied().is_some_and(sep) {
+            continue;
+        }
+        let seg_start = from + 1;
+        let seg_end = s[seg_start..]
+            .find(|c: char| !(c.is_ascii_hexdigit() || c == '-' || c == '_'))
+            .map_or(s.len(), |o| seg_start + o);
+        let seg = &s[seg_start..seg_end];
+        // The segment must end the component: a separator, the end, or a non-name byte.
+        let ends = seg_end == s.len() || !(b[seg_end].is_ascii_alphanumeric() || b[seg_end] == b'.');
+        if !ends {
+            continue;
+        }
+        let mask = match seg.split_once('_') {
+            Some((o, a)) if is_uuid(o) && is_uuid(a) => "<org>_<account>",
+            None if is_uuid(seg) => "<account>",
+            _ => continue,
+        };
+        out.push_str(&s[copied..seg_start]);
+        out.push_str(mask);
+        copied = seg_end;
+        from = seg_end;
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    out.push_str(&s[copied..]);
+    std::borrow::Cow::Owned(out)
+}
+
+/// `8-4-4-4-12` hex digits, either case.
+fn is_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, &c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
 /// Make attacker-controlled free text safe to print: control characters (including ESC,
 /// so no ANSI sequence can forge a green "clean" line), C1 controls and line breaks are
 /// replaced, and the result is capped. For names, versions, error messages and paths
 /// that a manifest, a package or a probed server gets to choose.
+///
+/// Account identifiers in synced-skill paths are masked first ([`mask_identifiers`]), so
+/// the cap never cuts a UUID into a prefix that escapes the mask.
 pub fn sanitize_display(s: &str, max: usize) -> String {
+    let s = mask_identifiers(s);
     let mut out = String::with_capacity(s.len().min(max));
     let chars: Vec<char> = s.chars().collect();
     let smuggled = bmp_selector_runs(&chars);
@@ -3880,5 +3960,73 @@ mod par_map_tests {
                 "jobs {jobs}: a helper's mark_truncated reaches the scanner row"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_identifiers_tests {
+    use super::{mask_identifiers, sanitize_display};
+
+    const O: &str = "0e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b";
+    const A: &str = "1E2E0A1B-2C3D-4E5F-8A9B-0C1D2E3F4A5C";
+
+    #[test]
+    fn synced_segments_are_masked() {
+        let m = |s: &str| mask_identifiers(s).into_owned();
+        assert_eq!(
+            m(&format!("/h/.claude/skills/synced/{O}_{A}/x/SKILL.md")),
+            "/h/.claude/skills/synced/<org>_<account>/x/SKILL.md"
+        );
+        assert_eq!(
+            m(&format!("/h/.claude/skills/synced/{A}/x")),
+            "/h/.claude/skills/synced/<account>/x"
+        );
+        assert_eq!(
+            m(&format!("/h/.claude/skills/synced/{O}_{A}")),
+            "/h/.claude/skills/synced/<org>_<account>"
+        );
+        // A skill's name, relative to its skills directory, and inside a bom-ref.
+        assert_eq!(
+            m(&format!("synced/{O}_{A}/x/run.py")),
+            "synced/<org>_<account>/x/run.py"
+        );
+        assert_eq!(
+            m(&format!("a skills/synced/{O}_{A}/x and skills/synced/{A}/y")),
+            "a skills/synced/<org>_<account>/x and skills/synced/<account>/y"
+        );
+        assert_eq!(
+            m(&format!("/p (synced/{O}_{A}/x) skill:claude-code:synced/{A}/y")),
+            "/p (synced/<org>_<account>/x) skill:claude-code:synced/<account>/y"
+        );
+        assert_eq!(
+            m(&format!(r"C:\u\.claude\skills\synced\{O}_{A}\x")),
+            r"C:\u\.claude\skills\synced\<org>_<account>\x"
+        );
+        // The cap applies after the mask: no UUID prefix survives a truncation.
+        let long = format!("/{}/.claude/skills/synced/{O}_{A}/x", "d".repeat(60));
+        assert!(!sanitize_display(&long, 100).contains(&O[..8]));
+    }
+
+    #[test]
+    fn other_text_is_left_alone() {
+        for s in [
+            format!("/h/.claude/skills/{O}_{A}/x"),
+            format!("/h/notskills/synced/{O}_{A}/x"),
+            format!("/h/.claude/skills/synced2/{A}/x"),
+            format!("/h/.claude/skills/synced/{A}x/y"),
+            format!("/h/.claude/skills/synced/{A}.bak/y"),
+            format!("/h/.claude/skills/synced/{O}_{A}_{A}/y"),
+            format!("/h/.claude/skills/synced/x/{A}/y"),
+            "/h/.claude/skills/synced/0e2e0a1b-2c3d/y".to_string(),
+            "/h/.claude/skills/synced".to_string(),
+            format!("/h/x/synced/{A}/y"),
+            format!("prefix.synced/{A}/y"),
+            "plain text".to_string(),
+        ] {
+            assert_eq!(mask_identifiers(&s), s.as_str(), "{s}");
+        }
+        // Idempotent.
+        let once = mask_identifiers(&format!("skills/synced/{O}_{A}/x")).into_owned();
+        assert_eq!(mask_identifiers(&once), once.as_str());
     }
 }

@@ -34,6 +34,10 @@ impl ScanDiff {
 }
 
 pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
+    // A baseline written before synced-skill identifiers were masked carries them raw:
+    // both sides are compared (and printed) masked, so such a baseline neither leaks
+    // them into the diff nor reports every synced skill as removed and re-added.
+    let (baseline, current) = (&mask_strings(baseline), &mask_strings(current));
     let sections = vec![
         diff_array_section(
             "MCP Servers",
@@ -190,6 +194,21 @@ fn diff_catalog(baseline: &Value, current: &Value) -> Option<String> {
             "threat catalog: {base} -> {cur} (findings may change without any change on this machine)"
         )),
         Some(_) => None,
+    }
+}
+
+/// `value` with [`crate::scanners::mask_identifiers`] applied to every string in it
+/// (object keys included).
+fn mask_strings(value: &Value) -> Value {
+    match value {
+        Value::String(s) => Value::String(crate::scanners::mask_identifiers(s).into_owned()),
+        Value::Array(a) => Value::Array(a.iter().map(mask_strings).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| (crate::scanners::mask_identifiers(k).into_owned(), mask_strings(v)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -816,6 +835,23 @@ fn get_string_array(v: &Value, field: &str) -> Vec<String> {
 #[cfg(test)]
 mod hook_diff_tests {
     use super::*;
+
+    /// A baseline from before synced-skill identifiers were masked: the same skill
+    /// compares equal to the masked row, and the raw UUIDs never reach the diff.
+    #[test]
+    fn a_raw_synced_baseline_equals_its_masked_rescan() {
+        let id = "0e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b_1e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5c";
+        let row = |seg: &str, sha: &str| {
+            serde_json::json!({"agent_skills": [{
+                "path": format!("/h/.claude/skills/synced/{seg}/x/run.py"),
+                "name": format!("synced/{seg}/x/run.py"), "framework": "claude-code", "sha256": sha
+            }]})
+        };
+        let d = diff_reports(&row(id, "a"), &row("<org>_<account>", "a"));
+        assert!(d.is_empty(), "{}", render_diff(&d));
+        let text = render_diff(&diff_reports(&row(id, "a"), &row("<org>_<account>", "b")));
+        assert!(text.contains("<org>_<account>") && !text.contains("0e2e0a1b"), "{text}");
+    }
 
     #[test]
     fn skill_frontmatter_hooks_and_settings_provenance_changes_are_drift() {

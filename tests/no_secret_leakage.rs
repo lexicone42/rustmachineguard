@@ -1279,3 +1279,123 @@ fn round4_redactor_canaries_reach_no_output() {
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+/// Claude Code keeps synced skills under `~/.claude/skills/synced/<org>_<account>/`:
+/// the directory name is the user's organization and account UUIDs, the same
+/// identifiers `~/.claude.json`'s `oauthAccount` holds and no report prints. Both UUIDs
+/// are canaries: no output format and no `--diff` may carry them, the masked segment is
+/// shown in their place, and a diff of two scans of one fixture is empty (the key is
+/// stable).
+#[test]
+fn synced_skill_account_identifiers_reach_no_output() {
+    use std::fs;
+    const ORG: &str = "0E2E0A1B-2C3D-4E5F-8A9B-0C1D2E3F4A5B";
+    const ACCT: &str = "1e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5c";
+    const BARE: &str = "2e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5d";
+    let home = std::env::temp_dir().join(format!("rmg-e2e-synced-uuid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let w = |p: std::path::PathBuf, t: &str| {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, t).unwrap();
+    };
+    let synced = home.join(".claude/skills/synced");
+    w(
+        synced.join(format!("{ORG}_{ACCT}/x/SKILL.md")),
+        "---\nname: x\ndescription: synced x\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: \"echo synced-hook\"\n---\nContext: !`id`\n",
+    );
+    // A bundled script: its inventory name is its path relative to the skills
+    // directory (`synced/<id>/x/scripts/run.py`), which the terminal, SBOM and Blueprint
+    // print and build their references from.
+    w(
+        synced.join(format!("{ORG}_{ACCT}/x/scripts/run.py")),
+        "import subprocess\nsubprocess.run(['id'])\n",
+    );
+    w(
+        synced.join(format!("{BARE}/y/SKILL.md")),
+        "---\nname: y\ndescription: synced y\n---\nbody\n",
+    );
+    // A link out of the synced directory: its target is reported too.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        synced.join(format!("{ORG}_{ACCT}/x/SKILL.md")),
+        synced.join(format!("{ORG}_{ACCT}/z.md")),
+    )
+    .unwrap();
+    w(home.join(".claude.json"), "{}");
+    let skip = "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,\
+                aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence";
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(args)
+            .args(["--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let leaked = |text: &str| -> Vec<&str> {
+        let lower = text.to_ascii_lowercase();
+        [ORG, ACCT, BARE]
+            .into_iter()
+            .filter(|u| lower.contains(&u.to_ascii_lowercase()))
+            .collect()
+    };
+    let baseline = home.join("baseline.json");
+    fs::write(&baseline, run(&["--format", "json"])).unwrap();
+    let base = baseline.to_string_lossy().to_string();
+    // A baseline written before the mask (837d9aa and earlier) carries the raw names.
+    let raw_baseline = home.join("baseline-raw.json");
+    fs::write(
+        &raw_baseline,
+        fs::read_to_string(&baseline)
+            .unwrap()
+            .replace("<org>_<account>", &format!("{ORG}_{ACCT}"))
+            .replace("<account>", BARE),
+    )
+    .unwrap();
+    let raw_base = raw_baseline.to_string_lossy().to_string();
+    for args in [
+        vec!["--diff", raw_base.as_str()],
+        vec!["--format", "terminal"],
+        vec!["--format", "terminal", "--verbose"],
+        vec!["--format", "json"],
+        vec!["--format", "html"],
+        vec!["--format", "sbom"],
+        vec!["--format", "blueprint"],
+        vec!["--diff", base.as_str()],
+    ] {
+        let text = run(&args);
+        assert!(
+            leaked(&text).is_empty(),
+            "{args:?}: account identifiers reached the output: {:?}",
+            leaked(&text)
+        );
+        if args[0] == "--diff" {
+            assert!(
+                !text.contains("synced"),
+                "a rescan of the same synced skills is a change: {text}"
+            );
+        } else if args[1] == "json" {
+            // Positive control: the skills were reported, under the masked names.
+            for shown in ["synced/<org>_<account>/x/SKILL.md", "synced/<account>/y/SKILL.md"] {
+                assert!(text.contains(shown), "{shown} not in the report: {text}");
+            }
+        } else if args[1] != "html" {
+            // The HTML report shows skill counts only; every other format names them.
+            assert!(
+                text.contains("<org>_<account>"),
+                "{args:?}: the masked name is not shown: {text}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}

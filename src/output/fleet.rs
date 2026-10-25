@@ -208,8 +208,10 @@ fn render_machine_details(machines: &[MachineReport]) -> String {
                     class = f.severity.label(),
                     sev = f.severity.label(),
                     cat = html_escape(&f.category),
-                    title = html_escape(&f.title),
-                    loc = html_escape(&f.location),
+                    // A scan written before synced-skill identifiers were masked
+                    // carries them raw: masked here too.
+                    title = html_escape(&crate::scanners::mask_identifiers(&f.title)),
+                    loc = html_escape(&crate::scanners::mask_identifiers(&f.location)),
                 ));
             }
         }
