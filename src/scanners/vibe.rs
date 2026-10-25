@@ -313,6 +313,10 @@ fn inspect_store(path: &Path, kind: &str) -> Option<AgentTranscriptStore> {
         group_readable: perms.as_ref().is_some_and(|(_, _, g)| *g),
         mode: perms.map(|(m, _, _)| m),
         unreachable_via: crate::scanners::transcripts::untraversable_ancestor(path),
+        // Vibe's session logs are not shell-environment stores, so no exported-name
+        // sample; the other-login-accounts count is attached by the Claude store pass.
+        exported_names: None,
+        other_login_accounts: None,
     })
 }
 
