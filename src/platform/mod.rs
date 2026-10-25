@@ -607,3 +607,43 @@ fn platform_with_scope(home: PathBuf, scope: PassScope) -> Box<dyn PlatformInfo>
         compile_error!("Only macOS and Linux are supported");
     }
 }
+
+/// The `User` directories of the VS Code family under `home` (editor label, directory):
+/// where an extension's `globalStorage/<publisher.name>/` and the user `settings.json`
+/// live. The locations are VS Code's ("**macOS** `$HOME/Library/Application\
+/// Support/Code/User/settings.json`", "**Linux** `$HOME/.config/Code/User/settings.json`",
+/// microsoft/vscode-docs `docs/configure/settings.md`, fetched 2026-10-25); the forks keep
+/// the same layout under their own product name.
+pub fn vscode_user_dirs(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    const PRODUCTS: &[(&str, &str)] = &[
+        ("VS Code", "Code"),
+        ("VS Code Insiders", "Code - Insiders"),
+        ("VSCodium", "VSCodium"),
+        ("Cursor", "Cursor"),
+        ("Windsurf", "Windsurf"),
+    ];
+    #[cfg(target_os = "macos")]
+    let base = home.join("Library").join("Application Support");
+    #[cfg(not(target_os = "macos"))]
+    let base = home.join(".config");
+    PRODUCTS
+        .iter()
+        .map(|(label, dir)| (*label, base.join(dir).join("User")))
+        .collect()
+}
+
+/// Zed's data directory under `home`: "macOS: `~/Library/Application Support/Zed`",
+/// Linux `$XDG_DATA_HOME/zed`, i.e. `~/.local/share/zed` (zed-industries/zed
+/// `crates/paths/src/paths.rs` `data_dir()`, and docs/src/extensions/installing-extensions.md,
+/// fetched 2026-10-25). `XDG_DATA_HOME` is the scanning user's environment and is not
+/// applied to a scanned home.
+pub fn zed_data_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library").join("Application Support").join("Zed")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        home.join(".local").join("share").join("zed")
+    }
+}

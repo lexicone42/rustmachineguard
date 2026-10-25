@@ -653,6 +653,11 @@ pub const EXEC_PROGRAMS: &[&str] = &[
     "goose",
     "tabby",
     "vibe",
+    "cline",
+    "cn",
+    "amp",
+    "junie",
+    "warp-terminal",
     // local model servers (scanner.frameworks)
     "ollama",
     "local-ai",

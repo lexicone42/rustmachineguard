@@ -1,4 +1,5 @@
 pub mod agent_settings;
+pub mod agents_more;
 pub mod ai_credentials;
 pub mod ai_frameworks;
 pub mod ai_tools;

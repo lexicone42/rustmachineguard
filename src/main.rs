@@ -190,6 +190,7 @@ const VALID_SKIP: &[&str] = &[
     "vibe",
     "statusline",
     "listeners",
+    "agents",
 ];
 
 /// One scanner of a phase, ready to run on any thread: it returns its diagnostics row
@@ -595,6 +596,23 @@ fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
                         scanners::vibe::VibeOut::Config(x) => r.surfaces.vibe_configs.push(x),
                         scanners::vibe::VibeOut::Mcp(x) => r.mcp_configs.push(x),
                         scanners::vibe::VibeOut::Store(x) => r.transcripts.push(x),
+                    }
+                }
+            },
+        ));
+    }
+    if !skip.contains(&"agents") {
+        list.push(job(
+            "agents",
+            Some(plat.home_dir()),
+            move || scanners::agents_more::scan_home(plat),
+            |r, v| {
+                for o in v {
+                    match o {
+                        scanners::agents_more::AgentsOut::Posture(x) => r.surfaces.agent_postures.push(x),
+                        scanners::agents_more::AgentsOut::Mcp(x) => r.mcp_configs.push(x),
+                        scanners::agents_more::AgentsOut::Store(x) => r.transcripts.push(x),
+                        scanners::agents_more::AgentsOut::Rules(x) => r.rules_files.push(x),
                     }
                 }
             },

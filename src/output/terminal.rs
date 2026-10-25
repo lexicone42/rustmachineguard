@@ -1375,6 +1375,53 @@ fn surfaces_section(report: &ScanReport) -> String {
         }
         out.push('\n');
     }
+    if !v.agent_postures.is_empty() {
+        section_header(
+            &mut out,
+            &format!(
+                "Agent Settings: Cline, Roo Code, Continue, Aider, Goose, Zed, Junie, Amp, Warp ({})",
+                v.agent_postures.len()
+            ),
+        );
+        for p in &v.agent_postures {
+            out.push_str(&format!(
+                "  {} {} ({}) {}\n",
+                "→".bold(),
+                p.agent,
+                p.scope,
+                p.path.dimmed()
+            ));
+            for a in &p.auto_approve {
+                let default = if a.default { " (default)" } else { "" };
+                out.push_str(&format!(
+                    "    runs without asking: {} = {} [{}]{default}\n",
+                    a.setting, a.value, a.reach
+                ));
+            }
+            if p.mcp_server_count > 0 {
+                out.push_str(&format!(
+                    "    {} MCP server(s), {} pre-approved tool(s)\n",
+                    p.mcp_server_count, p.mcp_auto_approved_tools
+                ));
+            }
+            for c in &p.auto_run_commands {
+                out.push_str(&format!("    runs after edits: {c}\n"));
+            }
+            if !p.hook_files.is_empty() {
+                out.push_str(&format!("    hooks: {}\n", p.hook_files.join(", ")));
+            }
+            for h in &p.hot_load_paths {
+                out.push_str(&format!("    loads: {h}\n"));
+            }
+            for k in &p.key_files {
+                out.push_str(&format!("    key file {} ({})\n", k.path, k.mode));
+            }
+            if let Some(l) = &p.symlink {
+                out.push_str(&format!("    symlink, not read: {}\n", l.target));
+            }
+        }
+        out.push('\n');
+    }
     if !v.settings_command_scripts.is_empty() {
         section_header(&mut out, "Settings Command Scripts");
         for s in &v.settings_command_scripts {

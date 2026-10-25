@@ -117,7 +117,7 @@ const TOOLS: &[ToolDef] = &[
         vendor: "Aider",
         tool_type: AiToolType::CliTool,
         binary_names: &["aider"],
-        process_name: None,
+        process_name: Some("aider"),
         config_dir_check: Some(|p| p.aider_config_dir()),
         verify_binary: false,
     },
@@ -193,13 +193,68 @@ const TOOLS: &[ToolDef] = &[
         config_dir_check: Some(|p| p.open_interpreter_config_dir()),
         verify_binary: false,
     },
+    // Goose: "macOS/Linux: `~/.config/goose/config.yaml`" (aaif-goose/goose, formerly
+    // block/goose, documentation/docs/guides/config-files.md, fetched 2026-10-25).
     ToolDef {
         name: "Goose",
         vendor: "Block",
         tool_type: AiToolType::Agent,
         binary_names: &["goose"],
+        process_name: Some("goose"),
+        config_dir_check: Some(|p| p.home_dir().join(".config/goose")),
+        verify_binary: false,
+    },
+    // Round-4 agents (scanners::agents_more reads their configuration). Versions of the
+    // npm-installed CLIs come from their package.json ([`NPM_TOOLS`]); the others are not
+    // spawned for one ([`NO_SPAWN`]). Sources, fetched 2026-10-25: the npm registry
+    // (`cline` -> bin `cline`, repository cline/cline apps/cli; `@continuedev/cli` -> bin
+    // `cn`; `@sourcegraph/amp` -> bin `amp`), docs.cline.bot/getting-started/config.md
+    // (`~/.cline`), ampcode.com/docs/cli/settings (`~/.config/amp`), junie.jetbrains.com/docs/
+    // junie-cli.html (`~/.junie`), docs.warp.dev/terminal/settings/file-locations.md
+    // (`~/.warp`).
+    ToolDef {
+        name: "Cline CLI",
+        vendor: "Cline",
+        tool_type: AiToolType::CliTool,
+        binary_names: &["cline"],
+        process_name: None,
+        config_dir_check: Some(|p| p.home_dir().join(".cline")),
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Continue CLI",
+        vendor: "Continue",
+        tool_type: AiToolType::CliTool,
+        binary_names: &["cn"],
         process_name: None,
         config_dir_check: None,
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Amp",
+        vendor: "Amp",
+        tool_type: AiToolType::Agent,
+        binary_names: &["amp"],
+        process_name: None,
+        config_dir_check: Some(|p| p.home_dir().join(".config/amp")),
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Junie CLI",
+        vendor: "JetBrains",
+        tool_type: AiToolType::CliTool,
+        binary_names: &["junie"],
+        process_name: Some("junie"),
+        config_dir_check: Some(|p| p.home_dir().join(".junie")),
+        verify_binary: false,
+    },
+    ToolDef {
+        name: "Warp",
+        vendor: "Warp",
+        tool_type: AiToolType::DesktopApp,
+        binary_names: &["warp-terminal"],
+        process_name: Some("warp-terminal"),
+        config_dir_check: Some(|p| p.home_dir().join(".warp")),
         verify_binary: false,
     },
     // Mistral Vibe (github.com/mistralai/mistral-vibe): `vibe` is the CLI; `vibe-acp`, the
@@ -228,7 +283,59 @@ const TOOLS: &[ToolDef] = &[
 /// is read from the distribution's `METADATA` in the virtual environment the PATH entry
 /// lives in ([`venv_dist_version`]) instead of starting an interpreter for `--version`
 /// (`vibe --version` took about 1.2 s of a 1.3 s scan on the machine this was measured on).
-const PYTHON_DISTS: &[(&str, &str)] = &[("Mistral Vibe", "mistral-vibe")];
+/// Aider: "The PyPI distribution name is `aider-chat`" (pyproject.toml `name = "aider-chat"`;
+/// install.md `uv tool install ... aider-chat@latest`, `pipx install aider-chat`).
+const PYTHON_DISTS: &[(&str, &str)] = &[("Mistral Vibe", "mistral-vibe"), ("Aider", "aider-chat")];
+
+/// (tool, npm package) for CLIs installed from npm: the version is the package's
+/// `package.json` `version`, read from the `node_modules/<package>/` the PATH entry
+/// resolves into ([`npm_bin_version`]). A PATH entry that does not resolve into that
+/// package is not this tool: `cn` is a short name other programs use, so for these tools
+/// the binary is reported only when the package answers, and never run.
+const NPM_TOOLS: &[(&str, &str)] = &[
+    ("Cline CLI", "cline"),
+    ("Continue CLI", "@continuedev/cli"),
+    ("Amp", "@sourcegraph/amp"),
+];
+
+/// Tools never started for a version: a GUI program (`warp-terminal` would open a window)
+/// or one whose version command is not `--version` (`amp version`, ampcode.com/docs/cli;
+/// Junie's is not documented).
+const NO_SPAWN: &[&str] = &["Amp", "Junie CLI", "Warp", "Cline CLI", "Continue CLI"];
+
+/// `version` from the `package.json` of npm package `pkg` (scoped names included) whose
+/// file `bin` (a PATH entry) is, after following its symlink chain: the resolved file must
+/// sit under `node_modules/<pkg>/`, the manifest (read no-follow, bounded) must name `pkg`,
+/// and its version must be plain version text ([`crate::scanners::extract_version`]
+/// returns it unchanged).
+pub fn npm_bin_version(bin: &Path, pkg: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        name: Option<String>,
+        version: Option<String>,
+    }
+    let real = std::fs::canonicalize(bin).ok()?;
+    let depth = pkg.split('/').count();
+    let pkg_dir = real.ancestors().skip(1).find(|a| {
+        let mut up = a.to_path_buf();
+        for _ in 0..depth {
+            if !up.pop() {
+                return false;
+            }
+        }
+        up.file_name() == Some(std::ffi::OsStr::new("node_modules")) && a.strip_prefix(&up).ok() == Some(Path::new(pkg))
+    })?;
+    let manifest = pkg_dir.join("package.json");
+    let text = crate::scanners::read_bounded_nofollow(&manifest, Some(&manifest))?;
+    let m: Manifest = serde_json::from_str(&text).ok()?;
+    if m.name.as_deref() != Some(pkg) {
+        return None;
+    }
+    let v = m.version?;
+    (crate::scanners::npm_packages::is_valid_version(&v)
+        && crate::scanners::extract_version(&v).as_deref() == Some(v.as_str()))
+    .then_some(v)
+}
 
 /// The version of tool `name` found at `path`: from its Python distribution on disk when
 /// that answers, else `<binary> --version` as before.
@@ -238,6 +345,12 @@ const PYTHON_DISTS: &[(&str, &str)] = &[("Mistral Vibe", "mistral-vibe")];
 /// `dist_info` when `METADATA` answered, `spawn` when it did not and the
 /// `exec.version_probe` that follows does).
 fn tool_version(name: &str, path: &Path) -> Option<String> {
+    if let Some((_, pkg)) = NPM_TOOLS.iter().find(|(t, _)| *t == name) {
+        return npm_bin_version(path, pkg);
+    }
+    if NO_SPAWN.contains(&name) {
+        return None;
+    }
     let Some((_, dist)) = PYTHON_DISTS.iter().find(|(t, _)| *t == name) else {
         return get_binary_version(path.to_str().unwrap_or(""));
     };
@@ -393,6 +506,14 @@ impl Scanner for AiToolsScanner {
                 }
             }
 
+            // `cn` is reported only when it is Continue's npm package (see NPM_TOOLS).
+            if def.name == "Continue CLI"
+                && let Some(p) = &found_binary
+                && npm_bin_version(p, "@continuedev/cli").is_none()
+            {
+                found_binary = None;
+            }
+
             if found_binary.is_none() {
                 for (name, paths) in fallback_paths {
                     if *name == def.name {
@@ -468,6 +589,8 @@ impl Scanner for AiToolsScanner {
             });
         }
 
+        results.extend(extension_agents(platform));
+
         if let Some(app_path) = platform.claude_desktop_app()
             && let Some(version) = read_claude_desktop_version(&app_path)
             && version_gte(&version, (0, 7))
@@ -502,6 +625,70 @@ impl Scanner for AiToolsScanner {
 
         results
     }
+}
+
+/// Agents that ship as VS Code-family extensions: (agent, vendor, extension id, lower
+/// case as the directory is named). Ids from the marketplace listings and the projects'
+/// `package.json` (`saoudrizwan.claude-dev`, cline/cline apps/vscode/package.json;
+/// `RooVeterinaryInc.roo-cline`, RooCodeInc/Roo-Code, archived 2026-05;
+/// `Continue.continue`, continuedev/continue extensions/vscode), fetched 2026-10-25.
+const EXTENSION_AGENTS: &[(&str, &str, &str)] = &[
+    ("Cline", "Cline", "saoudrizwan.claude-dev"),
+    ("Roo Code", "Roo Code", "rooveterinaryinc.roo-cline"),
+    ("Continue", "Continue", "continue.continue"),
+];
+
+/// Extension directory entries looked at per editor.
+const MAX_EXTENSION_ENTRIES: usize = 5_000;
+
+/// One row per [`EXTENSION_AGENTS`] extension installed in an editor's extension
+/// directory (`<publisher.name>-<version>`), named `"<agent> (<editor>)"`, with the version
+/// from the directory name (sanitized). Nothing is run or opened.
+fn extension_agents(platform: &dyn PlatformInfo) -> Vec<AiTool> {
+    use crate::platform::Ide;
+    let mut out = Vec::new();
+    for &ide in Ide::ALL.iter().filter(|i| **i != Ide::Zed) {
+        let Some(dir) = platform.ide_extension_dir(ide) else {
+            continue;
+        };
+        let Ok(rd) = crate::scanners::probe_read_dir(&dir) else {
+            continue;
+        };
+        let mut found: Vec<(String, String, String, PathBuf)> = Vec::new();
+        for (n, e) in rd.flatten().enumerate() {
+            if n >= MAX_EXTENSION_ENTRIES {
+                crate::scanners::telemetry::mark_truncated();
+                break;
+            }
+            let Ok(name) = e.file_name().into_string() else {
+                continue;
+            };
+            let Some((id, version)) = crate::scanners::extensions::parse_extension_dir_name(&name) else {
+                continue;
+            };
+            let id = id.to_ascii_lowercase();
+            if let Some((agent, vendor, _)) = EXTENSION_AGENTS.iter().find(|(_, _, x)| *x == id)
+                && e.file_type().is_ok_and(|t| t.is_dir())
+                && !crate::scanners::probe_exists(&e.path().join(".obsolete"))
+            {
+                found.push((agent.to_string(), vendor.to_string(), version, e.path()));
+            }
+        }
+        found.sort();
+        for (agent, vendor, version, path) in found {
+            out.push(AiTool {
+                name: format!("{agent} ({})", ide.name()),
+                vendor,
+                tool_type: AiToolType::Agent,
+                version: Some(crate::scanners::sanitize_display(&version, 64)),
+                binary_path: None,
+                config_dir: None,
+                install_path: Some(crate::scanners::sanitize_display(&path.to_string_lossy(), 512)),
+                is_running: false,
+            });
+        }
+    }
+    out
 }
 
 fn read_claude_desktop_version(app_path: &std::path::Path) -> Option<String> {

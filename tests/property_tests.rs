@@ -5989,7 +5989,8 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     std::fs::write(home.join(".claude.json"), "{}").unwrap();
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
                 transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,persistence,\
-                settings,aicreds,envfiles,vscodetasks,shell,jbplugins,lsp,liveness,playwright,vibe,statusline,listeners";
+                settings,aicreds,envfiles,vscodetasks,shell,jbplugins,lsp,liveness,playwright,vibe,statusline,listeners,\
+                agents";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
         .args(["--format", "json", "--skip", skip])
         .env("HOME", &home)
@@ -6015,10 +6016,10 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .filter_map(|d| d["scanner"].as_str())
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
-    // 31 --skip labels plus the two opt-in phases that were not requested.
+    // 32 --skip labels plus the two opt-in phases that were not requested.
     assert_eq!(
         skipped.len(),
-        33,
+        34,
         "every --skip label and opt-in phase is recorded: {skipped:?}"
     );
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));

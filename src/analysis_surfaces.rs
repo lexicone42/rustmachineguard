@@ -19,6 +19,7 @@ pub fn collect(report: &ScanReport, f: &mut Vec<Finding>) {
     browser_profile_findings(report, f);
     output_dir_findings(report, f);
     vibe_findings(report, f);
+    agent_posture_findings(report, f);
     settings_script_findings(report, f);
     listener_findings(report, f);
     transcript_content_findings(report, f);
@@ -277,6 +278,137 @@ fn vibe_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 category: "Secret exposure".into(),
                 title,
                 location: env.path.clone(),
+                evidence: None,
+            });
+        }
+    }
+}
+
+/// The display name of a round-4 agent label (closed: `AgentPosture::agent`).
+fn agent_name(agent: &str) -> &'static str {
+    match agent {
+        "cline" => "Cline",
+        "roo-code" => "Roo Code",
+        "continue" => "Continue",
+        "aider" => "Aider",
+        "goose" => "Goose",
+        "zed" => "Zed",
+        "junie" => "Junie",
+        "amp" => "Amp",
+        "warp" => "Warp",
+        _ => "agent",
+    }
+}
+
+/// Round-4 agents' settings (`scanners::agents_more`), on the permission-mode ladder:
+///
+/// - a setting that lets the agent run every action, or every shell command, without asking
+///   (`all-actions`, `shell-commands`): Medium in the user's own configuration (as Mistral
+///   Vibe's `auto_approve`), High in a repository file (the repository decides it for
+///   whoever opens it). A product default the configuration did not write (Goose's
+///   `GOOSE_MODE` unset, Amp's tool approval) is Low and says so;
+/// - Zed `session.trust_all_worktrees` (`untrusted-projects`: "MCP servers are downloaded
+///   and started automatically" for any folder): Medium;
+/// - MCP tools pre-approved by a repository file (Roo Code `.roo/mcp.json` `alwaysAllow`):
+///   Medium "MCP auto-approval"; in the user's own files, inventory;
+/// - commands a repository file makes the agent run after every edit (Aider `lint-cmd`,
+///   `test-cmd` with `auto-test`): Medium "Auto-run task";
+/// - hook executables a repository ships for Cline (`.clinerules/hooks/`, hooks enabled by
+///   default): Medium "Hook"; the user's own hooks are inventory;
+/// - an API-key file other users or the group can read: the Mistral Vibe `.env` rule.
+///
+/// File edits, browser use and per-tool lists are inventory.
+fn agent_posture_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    for p in &report.surfaces.agent_postures {
+        let name = agent_name(&p.agent);
+        let repo = p.scope == "project";
+        for a in &p.auto_approve {
+            let what = match a.reach.as_str() {
+                "all-actions" => "every action runs without asking",
+                "shell-commands" => "shell commands run without asking",
+                "untrusted-projects" => "every folder is trusted: project MCP servers and settings load without asking",
+                "mcp-tools" if repo => "MCP tools run without asking",
+                _ => continue,
+            };
+            let mcp = a.reach == "mcp-tools";
+            let (severity, note) = if mcp {
+                (Severity::Medium, " (set by the repository)")
+            } else if a.default {
+                (Severity::Low, " (product default)")
+            } else if repo {
+                (Severity::High, " (set by the repository)")
+            } else {
+                (Severity::Medium, "")
+            };
+            f.push(Finding {
+                severity,
+                category: if mcp { "MCP auto-approval" } else { "Permissions" }.into(),
+                title: format!("{name}: {what}{note} — {} = {}", a.setting, a.value),
+                location: p.path.clone(),
+                evidence: Some(format!("{} = {}", a.setting, a.value)),
+            });
+        }
+        if repo && p.mcp_auto_approved_tools > 0 {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "MCP auto-approval".into(),
+                title: format!(
+                    "{name}: the repository pre-approves {} MCP tool(s) (they run without asking)",
+                    p.mcp_auto_approved_tools
+                ),
+                location: p.path.clone(),
+                evidence: None,
+            });
+        }
+        if repo && !p.auto_run_commands.is_empty() {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Auto-run task".into(),
+                title: format!(
+                    "{name}: the repository's config runs a command after every edit ({})",
+                    p.auto_run_commands.join("; ")
+                ),
+                location: p.path.clone(),
+                evidence: Some(p.auto_run_commands.join("; ")),
+            });
+        }
+        if repo && p.agent == "cline" && !p.hook_files.is_empty() {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Hook".into(),
+                title: format!(
+                    "Cline: the repository ships {} hook executable(s) that run on agent events ({})",
+                    p.hook_files.len(),
+                    p.hook_files.join(", ")
+                ),
+                location: p.path.clone(),
+                evidence: None,
+            });
+        }
+        for k in p.key_files.iter().filter(|k| k.world_readable || k.group_readable) {
+            let who = if k.world_readable { "other users" } else { "its group" };
+            let (severity, title) = match &k.unreachable_via {
+                Some(why) => (
+                    Severity::Low,
+                    format!(
+                        "{name} key file is readable by {who} (mode {}) — not reachable: {why}",
+                        k.mode
+                    ),
+                ),
+                None if k.world_readable => (
+                    Severity::High,
+                    format!("{name} key file is readable by {who} (mode {})", k.mode),
+                ),
+                None => (
+                    Severity::Medium,
+                    format!("{name} key file is readable by {who} (mode {})", k.mode),
+                ),
+            };
+            f.push(Finding {
+                severity,
+                category: "Secret exposure".into(),
+                title,
+                location: k.path.clone(),
                 evidence: None,
             });
         }

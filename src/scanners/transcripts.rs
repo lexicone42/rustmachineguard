@@ -228,6 +228,21 @@ fn inspect_store(
     })
 }
 
+/// One store of an agent that another scanner finds (`scanners::agents_more`: Cline,
+/// Roo Code, Continue, Aider, Goose, Zed, Amp and Junie history), read exactly as this
+/// scanner reads its own closed list: counts and modes, bounded by the walk budget, and
+/// with `sample_home` (the scan pass's home) its secret-shaped content by NAME and LABEL
+/// only ([`crate::scanners::transcript_content`]). `framework` and `kind` are the
+/// caller's literals.
+pub(crate) fn inspect_agent_store(
+    framework: &str,
+    path: &Path,
+    kind: &str,
+    sample_home: Option<&Path>,
+) -> Option<AgentTranscriptStore> {
+    inspect_store(framework, path, kind, &mut Walk::default(), sample_home)
+}
+
 /// `kind` of `~/.claude/shell-snapshots` and `~/.claude/session-env`.
 pub const SHELL_SNAPSHOTS: &str = "shell snapshots";
 pub const SESSION_ENV: &str = "session environment";

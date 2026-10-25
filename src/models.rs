@@ -1534,6 +1534,10 @@ pub struct SurfaceInventory {
     /// Linux `/proc` only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_listeners: Vec<NetworkListener>,
+    /// Configuration sources of the round-4 agents (Cline, Roo Code, Continue, Aider,
+    /// Goose, Zed, Junie, Amp, Warp; `scanners::agents_more`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_postures: Vec<AgentPosture>,
 }
 
 /// One LSP server a Claude Code plugin declares (`.lsp.json`, `plugin.json` `lspServers`, or
@@ -1875,4 +1879,79 @@ impl TranscriptSecretShapes {
     pub fn any(&self) -> bool {
         !self.secret_key_names.is_empty() || !self.token_prefix_labels.is_empty()
     }
+}
+
+// ── Round-4 agents (`scanners::agents_more`) ───────────────────────────────────────────
+// Cline, Roo Code, Continue, Aider, Goose, Zed, JetBrains Junie, Amp and Warp. Their MCP
+// servers are `mcp_configs` rows, their history stores `transcripts` rows and their
+// rules files `rules_files` rows; what is left (approval settings, commands an agent runs
+// on its own, hook files, hot-load paths, API-key files by mode) is one `AgentPosture`
+// per configuration source. Graded in `crate::analysis_surfaces::agent_posture_findings`.
+
+/// One configuration source of a round-4 agent. Values that are not secrets are kept;
+/// key files by mode only.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AgentPosture {
+    /// Closed: `cline`, `roo-code`, `continue`, `aider`, `goose`, `zed`, `junie`, `amp`,
+    /// `warp`.
+    pub agent: String,
+    /// The file (or directory, for a hook directory) this row describes, sanitized.
+    pub path: String,
+    /// "user" (the user's own configuration) or "project" (repository content).
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub git_tracked: bool,
+    /// Settings that let the agent act without asking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_approve: Vec<AutoApproveSetting>,
+    /// Commands the agent runs on its own (Aider `lint-cmd` / `test-cmd` with automatic
+    /// linting or testing on), redacted and sanitized.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_run_commands: Vec<String>,
+    /// Hook executables in a hook directory (Cline `.clinerules/hooks/`): file names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hook_files: Vec<String>,
+    /// Files and directories the configuration makes the agent load (Aider `read`,
+    /// `load`), lexical: listed, not walked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hot_load_paths: Vec<String>,
+    /// MCP servers this source defines (rows of `mcp_configs`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub mcp_server_count: usize,
+    /// MCP tools this source approves ahead of time (Cline `autoApprove`, Roo Code
+    /// `alwaysAllow`), counted across its servers.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub mcp_auto_approved_tools: usize,
+    /// API-key and secret files next to this source, by mode only, never opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_files: Vec<AgentKeyFile>,
+    /// The configuration file is a symlink out of the repository: not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<EnvSymlink>,
+}
+
+/// A setting that removes a prompt. `reach` is closed: `all-actions`, `shell-commands`,
+/// `mcp-tools`, `file-edits`, `browser`, `listed-tools`, `untrusted-projects`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AutoApproveSetting {
+    /// The key as the agent's documentation names it (a fixed literal).
+    pub setting: String,
+    /// Its value as written, when not a secret (`true`, `"allow"`, `auto`), sanitized.
+    pub value: String,
+    pub reach: String,
+    /// The value is the product's documented default (the key is absent), not something
+    /// the configuration wrote.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+/// An agent's API-key or secret file by mode only (never opened).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AgentKeyFile {
+    pub path: String,
+    pub mode: String,
+    pub world_readable: bool,
+    pub group_readable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable_via: Option<String>,
 }

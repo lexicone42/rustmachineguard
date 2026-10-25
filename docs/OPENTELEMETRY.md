@@ -142,6 +142,7 @@ rmguard.scan                                   (root; one trace per run)
 │   ├── scanner.playwright
 │   │   └── exec.git_check_ignore              (`git check-ignore -q`, one per `.playwright-mcp/` with untracked files)
 │   ├── scanner.vibe
+│   ├── scanner.agents                         (Cline, Roo Code, Continue, Aider, Goose, Zed, Junie, Amp, Warp; nothing is run)
 │   ├── scanner.statusline
 │   └── scanner.gitconfig
 │       ├── gitconfig.repos                    (every project's own .git/config)
@@ -255,7 +256,7 @@ starts a thread.
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
-| `rmguard.scanner` | scanner.*, metrics | scanner label: a closed set, the `--skip` labels (`VALID_SKIP` in src/main.rs: `mcp`, `packages`, ..., `statusline`, `listeners`) plus `mcp-probe` and `registry` |
+| `rmguard.scanner` | scanner.*, metrics | scanner label: a closed set, the `--skip` labels (`VALID_SKIP` in src/main.rs: `mcp`, `packages`, ..., `statusline`, `listeners`, `agents`) plus `mcp-probe` and `registry` |
 | `rmguard.finding.severity` | `rmguard.findings` | `critical` \| `high` \| `medium` \| `low` |
 | `rmguard.finding.category` | `rmguard.findings` | one of the 38 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
 | `rmguard.inventory.kind` | `rmguard.inventory` | one of the 35 report summary counts, named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
@@ -263,7 +264,7 @@ starts a thread.
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` \| `git_check_ignore` |
-| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs, model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
+| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs (the round-4 names `cline`, `cn`, `amp`, `junie` and `warp-terminal` are listed so a trace names them, although `cn` and `amp` are versioned from `package.json` and `junie` and `warp-terminal` are never run), model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
 | `rmguard.skills.projects` | scanner.skills | number of project directories walked (no path, no index) |
