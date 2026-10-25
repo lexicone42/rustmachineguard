@@ -51,14 +51,55 @@ pub fn auth_word_hint(name: &str) -> bool {
     key_words(name).iter().any(|w| is_auth_word(w))
 }
 
-/// Words that may follow a secret hint in a `.env` NAME and still name the secret
-/// itself: its encoding (`_B64`, `_BASE64`, `_HEX`, `_JSON`, `_PEM`, `_DER`, `_RAW`,
-/// `_VALUE`, `_ENC`), Rails' `SECRET_KEY_BASE`, and a variant or environment
-/// (`GITHUB_TOKEN_PROD`, `DB_PASSWORD_OLD`). Anything else after the last hint makes
-/// the name describe the secret rather than hold it: `VIEW_TOKEN_IPS`, `JWT_SECRET_TTL`,
-/// `DB_PASS_FILE`, `PRIVATE_KEY_PATH`, `API_KEY_ID`, `TOKEN_EXPIRY`, `PASSWORD_LENGTH`,
-/// `AUTH_ENABLED`, `TOKENIZERS_PARALLELISM`. A connection string under `DATABASE_URL`
-/// is [`is_connection_string_key_name`]'s rule.
+/// A word of a `.env` NAME that is a secret hint: a long hint as a substring of the
+/// word (`GITHUBTOKEN`, `APIKEY`, `dbPassword`; `TOKEN` not in `TOKENIZER`), the
+/// [`is_auth_word`] rule, or a [`SECRET_LAST_WORDS`] word whole.
+fn is_env_hint_word(w: &str) -> bool {
+    let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
+    is_auth_word(w)
+        || SECRET_LAST_WORDS.contains(&w)
+        || SECRET_KEY_HINTS
+            .iter()
+            .any(|h| w.contains(h) && !(*h == "TOKEN" && w.contains("TOKENIZ")))
+}
+
+/// The `.env` secret-NAME rule: the name has a hint word ([`is_env_hint_word`]) and no
+/// word after its last hint word is in [`NON_SECRET_QUALIFIERS`]. `FULL_TOKEN`,
+/// `VIEW_PASS`, `SECRET_KEY_BASE`, `GITHUB_TOKEN_B64`, `GITHUB_TOKEN_READONLY` and
+/// `API_KEY_2` are secret names (an unknown trailing word fails safe); `VIEW_TOKEN_IPS`,
+/// `WEBAUTHN_RP_ID` (no hint: `ID` is not one and `WEBAUTHN` is not `AUTH`),
+/// `DB_PASS_FILE`, `API_KEY_ID` and `AWS_ACCESS_KEY_ID` are not.
+/// The MCP and command checks keep [`is_secret_key_name`]: there a missed name can
+/// show a value, while here the record is a NAME and the value is never read.
+pub fn is_secret_env_key_name(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("PWD") {
+        return false;
+    }
+    let words = key_words(name);
+    let Some(i) = words.iter().rposition(|w| is_env_hint_word(w)) else {
+        return false;
+    };
+    let after = &words[i + 1..];
+    // The short hints (PASS, PWD, PAT, JWT, SK) name a secret only as the last word, or
+    // before an encoding / environment / version qualifier (`DB_PASS_B64`, `DB_PWD_2`):
+    // `JWT_ISSUER`, `PAT_ROW` are not secrets.
+    let hint = words[i].trim_end_matches(|c: char| c.is_ascii_digit());
+    if SECRET_LAST_WORDS.contains(&hint) && !is_auth_word(hint) {
+        return after
+            .iter()
+            .all(|w| w.bytes().all(|b| b.is_ascii_digit()) || SECRET_VALUE_QUALIFIERS.contains(&w.as_str()));
+    }
+    // A long hint fails safe: only a word from the closed non-secret list unflags the
+    // name, and an unknown qualifier (`GITHUB_TOKEN_READONLY`, `API_KEY_ROTATED`) still
+    // names a secret.
+    !after
+        .iter()
+        .any(|w| NON_SECRET_QUALIFIERS.contains(&w.trim_end_matches(|c: char| c.is_ascii_digit())))
+}
+
+/// Words that may follow a SHORT secret hint ([`SECRET_LAST_WORDS`]) in a `.env` NAME and
+/// still name the secret: its encoding (`DB_PASS_B64`, `_HEX`, `_JSON`, `_PEM`, `_DER`,
+/// `_RAW`, `_VALUE`, `_ENC`) or a variant or environment (`DB_PWD_PROD`, `_OLD`).
 const SECRET_VALUE_QUALIFIERS: &[&str] = &[
     "B64",
     "BASE64",
@@ -94,37 +135,18 @@ const SECRET_VALUE_QUALIFIERS: &[&str] = &[
     "READONLY",
 ];
 
-/// A word of a `.env` NAME that is a secret hint: a long hint as a substring of the
-/// word (`GITHUBTOKEN`, `APIKEY`, `dbPassword`; `TOKEN` not in `TOKENIZER`), the
-/// [`is_auth_word`] rule, or a [`SECRET_LAST_WORDS`] word whole.
-fn is_env_hint_word(w: &str) -> bool {
-    let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
-    is_auth_word(w)
-        || SECRET_LAST_WORDS.contains(&w)
-        || SECRET_KEY_HINTS
-            .iter()
-            .any(|h| w.contains(h) && !(*h == "TOKEN" && w.contains("TOKENIZ")))
-}
-
-/// The `.env` secret-NAME rule: the last hint word of the name ([`is_env_hint_word`])
-/// is its last word, or is followed only by [`SECRET_VALUE_QUALIFIERS`] and version
-/// digits. `FULL_TOKEN`, `VIEW_PASS`, `SECRET_KEY_BASE`, `GITHUB_TOKEN_B64` and
-/// `API_KEY_2` are secret names; `VIEW_TOKEN_IPS`, `WEBAUTHN_RP_ID` (no hint: `ID` is
-/// not one and `WEBAUTHN` is not `AUTH`), `DB_PASS_FILE` and `API_KEY_ID` are not.
-/// The MCP and command checks keep [`is_secret_key_name`]: there a missed name can
-/// show a value, while here the record is a NAME and the value is never read.
-pub fn is_secret_env_key_name(name: &str) -> bool {
-    if name.eq_ignore_ascii_case("PWD") {
-        return false;
-    }
-    let words = key_words(name);
-    let Some(i) = words.iter().rposition(|w| is_env_hint_word(w)) else {
-        return false;
-    };
-    words[i + 1..]
-        .iter()
-        .all(|w| w.bytes().all(|b| b.is_ascii_digit()) || SECRET_VALUE_QUALIFIERS.contains(&w.as_str()))
-}
+/// Words that, after the last secret hint of a `.env` NAME, make it describe the secret
+/// rather than hold it: an identifier (`AWS_ACCESS_KEY_ID`, `API_KEY_ID`), a location
+/// (`DB_PASS_FILE`, `PRIVATE_KEY_PATH`, `SECRET_DIR`), a lifetime or size
+/// (`JWT_SECRET_TTL`, `TOKEN_EXPIRY`, `PASSWORD_LENGTH`, `TOKEN_COUNT`), a switch
+/// (`AUTH_ENABLED`), a label or format (`TOKEN_NAME`, `AUTH_HEADER`, `TOKEN_PREFIX`,
+/// `KEY_FORMAT`, `TOKEN_TYPE`), an allowlist (`VIEW_TOKEN_IPS`), or a URL (judged by
+/// [`is_connection_string_key_name`]). A closed list: any other trailing word keeps the
+/// name secret-named.
+const NON_SECRET_QUALIFIERS: &[&str] = &[
+    "ID", "IDS", "IPS", "FILE", "PATH", "DIR", "TTL", "EXPIRY", "LENGTH", "COUNT", "ENABLED", "NAME", "HEADER",
+    "PREFIX", "SUFFIX", "FORMAT", "TYPE", "URL",
+];
 
 /// Short secret words that are matched only as the LAST word of a name (or the whole
 /// name), never as a substring: `DB_PASS`, `SMTP_PASS`, `DB_PWD`, `GITHUB_PAT`,
@@ -242,6 +264,15 @@ const KEY_QUALIFIERS: &[&str] = &[
     "SESSION",
 ];
 
+/// Words that, right after `KEY`, make the name the key's own value or encoding
+/// (`keyValue`, `keyData`, `keyMaterial`, `keyPem`, `keyB64`, `encKeyHex`, `KEYTEXT`,
+/// `keyphrase`): the name holds the key, though `KEY` is not its last word.
+/// `StrictHostKeyChecking`, `HostKeyAlgorithms`, `KEYBOARD` and `KEYWORD` are not among them.
+const KEY_VALUE_WORDS: &[&str] = &[
+    "VALUE", "DATA", "MATERIAL", "PEM", "DER", "B64", "BASE64", "HEX", "STRING", "STR", "TEXT", "PHRASE", "BYTES",
+    "BLOB", "SECRET",
+];
+
 /// English words ending in `KEY` that are not key names (`MONKEY`, `TURKEY`, `HOTKEY`).
 const KEY_WORD_STEMS: &[&str] = &["MON", "TUR", "DON", "HOC", "JOC", "WHIS", "LAC", "HON", "FLUN", "HOT"];
 
@@ -258,13 +289,18 @@ const KEY_WORD_STEMS: &[&str] = &["MON", "TUR", "DON", "HOC", "JOC", "WHIS", "LA
 /// (`StrictHostKeyChecking`, `HostKeyAlgorithms`, and a glued `Pubkey` in
 /// `PubkeyAuthentication`) or at the start of a longer word (`KEYBOARD`, `KEYWORD`).
 pub fn key_word_hint(name: &str) -> bool {
+    let value_word = |w: &str| {
+        KEY_VALUE_WORDS.contains(&w) || KEY_VALUE_WORDS.contains(&w.trim_end_matches(|c: char| c.is_ascii_digit()))
+    };
     let glued = |w: &str| -> bool {
         let stem = w.strip_suffix("KEYS").or_else(|| w.strip_suffix("KEY"));
         if let Some(stem) = stem {
             return stem.is_empty() || !KEY_WORD_STEMS.contains(&stem);
         }
-        w.match_indices("KEY")
-            .any(|(i, _)| KEY_QUALIFIERS.iter().any(|q| w[..i].ends_with(q)))
+        w.match_indices("KEY").any(|(i, _)| {
+            KEY_QUALIFIERS.iter().any(|q| w[..i].ends_with(q))
+                || (value_word(&w[i + 3..]) && !KEY_WORD_STEMS.contains(&&w[..i]))
+        })
     };
     name.split(|c: char| !c.is_ascii_alphanumeric()).any(|seg| {
         let words = key_words(seg);
@@ -275,7 +311,9 @@ pub fn key_word_hint(name: &str) -> bool {
                 return false;
             }
             if w == "KEY" || w == "KEYS" {
-                return i + 1 == words.len() || (i > 0 && KEY_QUALIFIERS.contains(&words[i - 1].as_str()));
+                return i + 1 == words.len()
+                    || (i > 0 && KEY_QUALIFIERS.contains(&words[i - 1].as_str()))
+                    || value_word(&words[i + 1]);
             }
             // A glued `...KEY` word inside a longer camelCase name is part of an option
             // name (`PubkeyAuthentication=no`, ssh_config), not a key's name.
@@ -336,9 +374,15 @@ impl Scanner for EnvFilesScanner {
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Vec<EnvFile> {
         let home = platform.home_dir();
-        let dirs = platform
-            .pass_scope()
-            .with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default());
+        let dirs = {
+            // Another scan home, or an ancestor of one, is not this pass's project (its own
+            // pass reads it); this pass's own home stays when it is the cwd or registered.
+            let scope = platform.pass_scope();
+            scope.excluding_other_scan_homes(
+                scope.with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default()),
+                &home,
+            )
+        };
 
         let mut results = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -399,6 +443,8 @@ fn scan_env_file(path: &Path, project_dir: &Path, home: &Path) -> EnvFile {
         secret_keys,
         agent_overrides,
         symlink,
+        unreachable_via: crate::scanners::transcripts::untraversable_ancestor(path)
+            .map(|why| sanitize_display(&why, 512)),
     }
 }
 

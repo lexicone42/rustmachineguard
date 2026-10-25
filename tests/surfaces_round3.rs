@@ -57,6 +57,7 @@ const ALL_LABELS: &[&str] = &[
     "playwright",
     "vibe",
     "statusline",
+    "listeners",
 ];
 
 /// A fresh temp directory (mode 0755), canonicalized.

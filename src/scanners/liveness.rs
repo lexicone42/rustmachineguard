@@ -51,11 +51,12 @@ const MAX_CMDLINE_BYTES: u64 = 16 * 1024;
 /// The `liveness` job for one home.
 pub fn scan_home(platform: &dyn PlatformInfo) -> Vec<LivenessOut> {
     let home = platform.home_dir();
-    let mut out: Vec<LivenessOut> = plugin_versions_in_use(&home, &|pid| pid_is_live(pid))
+    let owner = crate::scanners::home_owner_uid(&home);
+    let mut out: Vec<LivenessOut> = plugin_versions_in_use(&home, &|pid, marked| pid_is_live(pid, owner, marked))
         .into_iter()
         .map(LivenessOut::InUse)
         .collect();
-    out.extend(npx_caches_running(&home).into_iter().map(LivenessOut::Npx));
+    out.extend(npx_caches_running(&home, owner).into_iter().map(LivenessOut::Npx));
     out
 }
 
@@ -70,20 +71,52 @@ fn proc_root() -> PathBuf {
     PathBuf::from("/proc")
 }
 
-/// A process of this user with this pid exists (Linux `/proc`). Always false elsewhere.
-pub fn pid_is_live(pid: u32) -> bool {
+/// Seconds of slack between a process's start (whole seconds from `/proc/stat` btime and
+/// clock ticks) and the mtime of the `.in_use` marker it wrote.
+const START_TOLERANCE_SECS: u64 = 2;
+
+/// A process of `owner` (the scanned home's owner, not the scanner's uid) with this pid
+/// exists (Linux `/proc`), and it was already running when its `.in_use` marker was
+/// written (`marked`, the marker's mtime): a pid the kernel handed to a later process
+/// after the session exited is not that session. When the start time cannot be read the
+/// pid counts, as before. Always false elsewhere.
+pub fn pid_is_live(pid: u32, owner: u32, marked: Option<std::time::SystemTime>) -> bool {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt;
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = unsafe { libc::geteuid() };
-        std::fs::metadata(proc_root().join(pid.to_string())).is_ok_and(|m| m.uid() == me)
+        let root = proc_root();
+        if !std::fs::metadata(root.join(pid.to_string())).is_ok_and(|m| m.uid() == owner) {
+            return false;
+        }
+        let (Some(marked), Some(start)) = (marked, process_start_epoch(&root, pid)) else {
+            return true;
+        };
+        let marked = marked.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        start <= marked.saturating_add(START_TOLERANCE_SECS)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = pid;
+        let _ = (pid, owner, marked);
         false
     }
+}
+
+/// A process's start time in seconds since the epoch: `/proc/stat` `btime` plus field 22
+/// (`starttime`, clock ticks after boot) of `/proc/<pid>/stat`, parsed as the listener
+/// scanner parses them ([`crate::scanners::listeners::parse_stat`], counting fields from
+/// the LAST `)` so a command name holding `)` or spaces cannot shift them).
+#[cfg(target_os = "linux")]
+pub fn process_start_epoch(root: &Path, pid: u32) -> Option<u64> {
+    use crate::scanners::listeners::{clock_ticks, parse_btime, parse_stat};
+    let head = |p: PathBuf, n: u64| -> Option<String> {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        std::fs::File::open(p).ok()?.take(n).read_to_end(&mut buf).ok()?;
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    };
+    let stat = parse_stat(&head(root.join(pid.to_string()).join("stat"), 4096)?)?;
+    let btime = u64::try_from(parse_btime(&head(root.join("stat"), 64 * 1024)?)?).ok()?;
+    Some(btime + stat.starttime / clock_ticks())
 }
 
 /// Directories directly under `dir`, sorted, that are real directories (not links).
@@ -102,7 +135,12 @@ fn subdirs(dir: &Path) -> Vec<(String, PathBuf)> {
 
 /// Every cache version of `home` with a live `.in_use` entry, sorted by (plugin, version).
 /// `live` answers whether a pid is a running session (injected for tests).
-pub fn plugin_versions_in_use(home: &Path, live: &dyn Fn(u32) -> bool) -> Vec<PluginVersionInUse> {
+/// `live(pid, marker_mtime)` answers whether a pid is a running session that wrote its
+/// marker (injected for tests).
+pub fn plugin_versions_in_use(
+    home: &Path,
+    live: &dyn Fn(u32, Option<std::time::SystemTime>) -> bool,
+) -> Vec<PluginVersionInUse> {
     let cache = home.join(".claude").join("plugins").join("cache");
     if !std::fs::symlink_metadata(&cache).is_ok_and(|m| m.is_dir()) {
         crate::scanners::telemetry::note_probe(&cache, false);
@@ -161,7 +199,7 @@ pub fn plugin_versions_in_use(home: &Path, live: &dyn Fn(u32) -> bool) -> Vec<Pl
 }
 
 /// The live pids among a `.in_use` directory's entry names (decimal names only), sorted.
-fn live_entries(dir: &Path, live: &dyn Fn(u32) -> bool) -> Vec<u32> {
+fn live_entries(dir: &Path, live: &dyn Fn(u32, Option<std::time::SystemTime>) -> bool) -> Vec<u32> {
     if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
         return Vec::new();
     }
@@ -177,7 +215,14 @@ fn live_entries(dir: &Path, live: &dyn Fn(u32) -> bool) -> Vec<u32> {
         .collect();
     pids.sort_unstable();
     pids.dedup();
-    pids.into_iter().filter(|p| *p > 0 && live(*p)).collect()
+    pids.into_iter()
+        .filter(|p| {
+            let marked = std::fs::symlink_metadata(dir.join(p.to_string()))
+                .ok()
+                .and_then(|m| m.modified().ok());
+            *p > 0 && live(*p, marked)
+        })
+        .collect()
 }
 
 /// A stale version's hooks and MCP servers, read with the installed-version containment
@@ -197,7 +242,8 @@ fn stale_inventory(home: &Path, cache: &Path, vdir: &Path, label: &str, row: &mu
 }
 
 /// npx caches of `home` that a running process of this user executes from, sorted.
-pub fn npx_caches_running(home: &Path) -> Vec<NpxCacheRunning> {
+/// `owner` is the scanned home's owner: only its processes count.
+pub fn npx_caches_running(home: &Path, owner: u32) -> Vec<NpxCacheRunning> {
     let root = home.join(".npm").join("_npx");
     if !std::fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir()) {
         crate::scanners::telemetry::note_probe(&root, false);
@@ -209,7 +255,7 @@ pub fn npx_caches_running(home: &Path) -> Vec<NpxCacheRunning> {
     {
         roots.push(real);
     }
-    let counts = running_under(&roots, &process_cmdlines);
+    let counts = running_under(&roots, &|f| process_cmdlines(owner, f));
     counts
         .into_iter()
         .map(|(hash, pids)| NpxCacheRunning {
@@ -257,7 +303,7 @@ pub fn running_under(roots: &[PathBuf], each: CmdlineSource<'_>) -> std::collect
 /// Call `f` with the command line of every process of this user (Linux `/proc`), at most
 /// the scaled [`BASE_PROCESSES`], each read to [`MAX_CMDLINE_BYTES`]. Nothing elsewhere.
 /// The one buffer is zeroed after each call, so no argv outlives its comparison.
-fn process_cmdlines(f: &mut dyn FnMut(&[u8])) {
+fn process_cmdlines(owner: u32, f: &mut dyn FnMut(&[u8])) {
     #[cfg(target_os = "linux")]
     {
         use std::io::Read;
@@ -266,8 +312,7 @@ fn process_cmdlines(f: &mut dyn FnMut(&[u8])) {
         let Ok(rd) = std::fs::read_dir(&root) else {
             return;
         };
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = unsafe { libc::geteuid() };
+        let me = owner;
         let cap = crate::scanners::telemetry::walk_cap(BASE_PROCESSES, crate::scanners::telemetry::walk_budget());
         let mut pids: Vec<u32> = rd
             .flatten()
@@ -296,7 +341,7 @@ fn process_cmdlines(f: &mut dyn FnMut(&[u8])) {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = f;
+        let _ = (owner, f);
     }
 }
 

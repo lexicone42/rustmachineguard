@@ -195,10 +195,15 @@ fn output_dir_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 ),
             )
         } else if d.ignored == Some(false) {
+            let unknown = if d.git_state_unknown > 0 {
+                format!(" (git state unknown for {} file(s))", d.git_state_unknown)
+            } else {
+                String::new()
+            };
             (
                 Severity::Low,
                 format!(
-                    "{} output directory ({} file(s)) is not ignored by git — it will be committed by `git add -A`",
+                    "{} output directory ({} file(s)) is not ignored by git — it will be committed by `git add -A`{unknown}",
                     d.framework, d.file_count
                 ),
             )
@@ -309,9 +314,21 @@ fn parent_of(path: &str) -> &str {
 }
 
 /// The `env_files` rows of this report that are world-readable, hold secret-named keys,
-/// and sit in the listener's working directory or its project directory. By reference:
+/// sit in the listener's working directory or its project directory, and are reachable
+/// by other users (no ancestor without o+x, `EnvFile::unreachable_via`). By reference:
 /// the files are not read again.
 pub fn readable_secret_env<'a>(
+    report: &'a ScanReport,
+    l: &crate::models::NetworkListener,
+) -> Vec<&'a crate::models::EnvFile> {
+    secret_env_by_mode(report, l)
+        .into_iter()
+        .filter(|e| e.unreachable_via.is_none())
+        .collect()
+}
+
+/// [`readable_secret_env`] by mode bits alone, reachable or not.
+fn secret_env_by_mode<'a>(
     report: &'a ScanReport,
     l: &crate::models::NetworkListener,
 ) -> Vec<&'a crate::models::EnvFile> {
@@ -364,9 +381,11 @@ fn bind_text(classes: &std::collections::BTreeSet<crate::models::BindClass>, add
 }
 
 /// A listener in one of the scan's projects, bound beyond loopback, owned by the user (the
-/// scanner keeps only the user's sockets): High when it hands out a shell or a terminal,
-/// Critical when its directory also holds a world-readable `.env` with secret-named keys,
-/// Low when it hands out nothing and is not a common development server. One finding per
+/// scanner keeps only the user's sockets): High when it hands out a shell or a terminal
+/// (a PTY master, a tmux/screen child, a known bridge name), Critical when its directory
+/// also holds a world-readable `.env` with secret-named keys that other users can reach
+/// (High, "not reachable", behind a 0700 directory); a shell child alone is Medium "may
+/// hand out a shell" (High with such an env file). Low when it hands out nothing and is not a common development server. One finding per
 /// process (its ports together). Loopback listeners and listeners outside every project
 /// are inventory.
 fn listener_findings(report: &ScanReport, f: &mut Vec<Finding>) {
@@ -414,8 +433,55 @@ fn listener_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             let base = format!(
                 "a network listener in project {project} hands out a shell/PTY (program {program}, {port_word} {ports_text}, bound to {bound}{age})"
             );
-            let (severity, title) = if envs.is_empty() {
+            // World-readable by mode but behind a directory other users cannot traverse:
+            // the credentials are not theirs to read, so the grade stays High.
+            let mut blocked: Vec<String> = Vec::new();
+            if envs.is_empty() {
+                for l in &ls {
+                    for e in secret_env_by_mode(report, l) {
+                        if let Some(why) = &e.unreachable_via
+                            && !blocked.contains(why)
+                        {
+                            blocked.push(why.clone());
+                        }
+                    }
+                }
+            }
+            let (severity, title) = if envs.is_empty() && !blocked.is_empty() {
+                (
+                    Severity::High,
+                    format!(
+                        "{base}; its directory holds an env file with secret-named keys, world-readable by mode (not reachable: {})",
+                        blocked.join(", ")
+                    ),
+                )
+            } else if envs.is_empty() && first.serves_shell == ServesShell::ShellChild {
+                // A shell child alone (a server that ran `bash` when the scan looked) may
+                // be a build step or a hook, not a terminal handed to the network.
+                (
+                    Severity::Medium,
+                    format!(
+                        "a network listener in project {project} may hand out a shell: it had a shell child when scanned (program {program}, {port_word} {ports_text}, bound to {bound}{age})"
+                    ),
+                )
+            } else if envs.is_empty() {
                 (Severity::High, base)
+            } else if first.serves_shell == ServesShell::ShellChild {
+                let mut names: Vec<&str> = Vec::new();
+                for e in &envs {
+                    for k in &e.secret_keys {
+                        if !names.contains(&k.as_str()) {
+                            names.push(k);
+                        }
+                    }
+                }
+                (
+                    Severity::High,
+                    format!(
+                        "a network listener in project {project} may hand out a shell: it had a shell child when scanned (program {program}, {port_word} {ports_text}, bound to {bound}{age}), and its directory holds a world-readable env file with secret-named keys (names only: {})",
+                        names.iter().take(8).copied().collect::<Vec<_>>().join(", ")
+                    ),
+                )
             } else {
                 let mut names: Vec<&str> = Vec::new();
                 for e in &envs {

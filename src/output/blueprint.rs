@@ -2120,6 +2120,18 @@ fn build_purl(ecosystem: Option<&str>, name: Option<&str>, version: Option<&str>
         "docker" => "docker",
         _ => return None,
     };
+    // Only a registry name makes a purl: a local script (`node /abs/server.js` ->
+    // `pkg:npm//abs/server.js`), a URL, or a git source named by its repository path
+    // (`github.com/o/r`) does not.
+    let scoped = name.starts_with('@') && name.matches('/').count() == 1;
+    let pathlike = name.starts_with(['/', '.', '~', '$'])
+        || name.contains("://")
+        || name.contains(['\\', ' ', '<', '>'])
+        || (eco != "docker" && name.contains('/') && !scoped);
+    if pathlike {
+        return None;
+    }
+    let version = version.filter(|v| !v.contains([' ', '/', '<', '>']));
     let (namespace, pkg_name) = if let Some(rest) = name.strip_prefix('@') {
         if let Some(slash_idx) = rest.find('/') {
             (

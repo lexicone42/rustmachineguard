@@ -329,6 +329,7 @@ fn render_inner(report: &ScanReport) -> String {
                     match server.enabled {
                         Some(true) => tags.push("enabled".to_string()),
                         Some(false) => tags.push("disabled (inactive)".to_string()),
+                        None if server.awaits_approval => tags.push("awaits approval (inactive)".to_string()),
                         None => {}
                     }
                     if server.ever_connected {
@@ -683,6 +684,12 @@ fn render_inner(report: &ScanReport) -> String {
                     mode.yellow().to_string()
                 };
                 out.push_str(&format!("    permission mode: {}\n", m));
+            }
+            if s.disable_bypass_mode {
+                out.push_str(&format!(
+                    "    {} disableBypassPermissionsMode (bypass mode is disabled by policy)\n",
+                    "✓".green()
+                ));
             }
             if s.auto_mode.as_ref().and_then(|a| a.classify_all_shell) == Some(true) {
                 out.push_str(&format!(
@@ -1296,9 +1303,10 @@ fn surfaces_section(report: &ScanReport) -> String {
         }
         for d in &v.agent_output_dirs {
             let ignored = match d.ignored {
-                Some(true) => "ignored",
-                Some(false) => "not ignored",
-                None => "ignore state unknown",
+                Some(true) => "ignored".to_string(),
+                Some(false) => "not ignored".to_string(),
+                None if d.git_state_unknown > 0 => format!("git state unknown for {} file(s)", d.git_state_unknown),
+                None => "ignore state unknown".to_string(),
             };
             out.push_str(&format!(
                 "  {} {} output — {} ({} files, {} tracked, {ignored})\n",

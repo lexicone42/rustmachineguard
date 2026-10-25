@@ -312,7 +312,9 @@ pub struct McpServerDetail {
     pub plugin: Option<String>,
     /// Plugin servers: whether the plugin is enabled (`enabledPlugins`, managed
     /// force-enables applied). Connectors: `Some(false)` under `disableClaudeAiConnectors`,
-    /// else unknown (`None`). Configured servers: `None` (loaded as configured).
+    /// else unknown (`None`). Project `.mcp.json` servers: `Some(false)` disabled,
+    /// `Some(true)` approved, `None` with `awaits_approval`. Other configured servers:
+    /// `None` (loaded as configured).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// claude.ai connectors: Claude Code lists it in `claudeAiMcpEverConnected`. This
@@ -334,13 +336,20 @@ pub struct McpServerDetail {
     /// `disabledMcpjsonServers` there is `enabled: false` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved: bool,
+    /// Project `.mcp.json` servers: neither approved (`enabledMcpjsonServers`,
+    /// `enableAllProjectMcpServers`) nor disabled in any settings file rmguard read, so an
+    /// interactive Claude Code shows it as "Pending approval" and does not connect it
+    /// (code.claude.com/docs/en/mcp.md). `enabled` stays `None`. Not active.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaits_approval: bool,
 }
 
 impl McpServerDetail {
     /// Nothing marks this server off: not a disabled plugin's, not under
-    /// `disableClaudeAiConnectors`.
+    /// `disableClaudeAiConnectors`, not a project server that is disabled or still awaits
+    /// approval.
     pub fn is_active(&self) -> bool {
-        self.enabled != Some(false)
+        self.enabled != Some(false) && !self.awaits_approval
     }
 }
 
@@ -656,6 +665,10 @@ pub struct AgentSettings {
     /// Claude Code `permissions.disableAutoMode: "disable"` (auto mode removed).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_auto_mode: bool,
+    /// Claude Code `permissions.disableBypassPermissionsMode: "disable"`: bypassPermissions
+    /// mode cannot be used ("works from any scope", code.claude.com/docs/en/permissions.md).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_bypass_mode: bool,
     /// Claude Code `autoMode` block (code.claude.com/docs/en/auto-mode-config.md), by
     /// shape: which lists are set, whether each keeps `"$defaults"`, and what the
     /// custom entries are (see [`AutoModeList`]).
@@ -998,6 +1011,12 @@ pub struct EnvFile {
     /// (key_count, secret_keys and agent_overrides stay empty).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symlink: Option<EnvSymlink>,
+    /// An ancestor directory other users cannot traverse (no o+x), as
+    /// `"/home/u/work is 0700"` ([`crate::scanners::transcripts::untraversable_ancestor`]):
+    /// a world-readable mode then exposes nothing to other users. Absent when every
+    /// ancestor is traversable, and in older reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable_via: Option<String>,
 }
 
 /// A symlinked `.env` or project settings file, recorded without opening it.
@@ -1136,6 +1155,11 @@ pub struct ExposureFinding {
     /// or `dependencies`), names only, sanitized.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_parent: Vec<String>,
+    /// The cache's `_npx.packages` specs as `name@version` (the bare name when the spec
+    /// floats: no version, `@latest`), from their redacted identity. The cache is active
+    /// only when an active server launches the same spec. Absent in older reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_specs: Vec<String>,
 }
 
 /// The kind of Python install root a distribution was found in. A closed set: the
@@ -1615,6 +1639,10 @@ pub struct AgentOutputDir {
     /// None when not asked or unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignored: Option<bool>,
+    /// Files whose git state could not be read (the `git ls-files` listing timed out or
+    /// failed): neither tracked nor untracked. Absent when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub git_state_unknown: usize,
 }
 
 /// `~/.vibe/config.toml` and its neighbours (Mistral Vibe; github.com/mistralai/mistral-vibe,

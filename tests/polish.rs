@@ -291,7 +291,7 @@ fn p2_env_secret_name_table() {
     }
 }
 
-/// The terminal-bridge `.env` of the machine this was written for, by NAME (values are
+/// A PTY-bridge project `.env`, by NAME (values are
 /// placeholders): four login secrets, an IP allowlist and a WebAuthn relying-party id.
 /// Fails on 71b57ef: `secret_keys` also lists VIEW_TOKEN_IPS (TOKEN substring) and
 /// WEBAUTHN_RP_ID (AUTH substring).
@@ -541,16 +541,23 @@ fn p7_mcpjson_toggles_mark_project_rows() {
             .cloned()
             .unwrap()
     };
-    for (n, approved, enabled) in [
-        ("a", Value::Bool(true), Value::Null),
-        ("b", Value::Null, Value::Bool(false)),
-        ("c", Value::Bool(true), Value::Null),
-        ("d", Value::Null, Value::Bool(false)),
-        ("e", Value::Null, Value::Null),
+    // Since the review fixes (R8) the lists decide activity: approved is `enabled: true`,
+    // and `e`, in neither list, awaits approval.
+    for (n, approved, enabled, awaits) in [
+        ("a", Value::Bool(true), Value::Bool(true), Value::Null),
+        ("b", Value::Null, Value::Bool(false), Value::Null),
+        ("c", Value::Bool(true), Value::Bool(true), Value::Null),
+        ("d", Value::Null, Value::Bool(false), Value::Null),
+        ("e", Value::Null, Value::Null, Value::Bool(true)),
     ] {
         let r = row(n);
         assert_eq!(r.get("approved").cloned().unwrap_or(Value::Null), approved, "{n}: {r}");
         assert_eq!(r.get("enabled").cloned().unwrap_or(Value::Null), enabled, "{n}: {r}");
+        assert_eq!(
+            r.get("awaits_approval").cloned().unwrap_or(Value::Null),
+            awaits,
+            "{n}: {r}"
+        );
     }
     let _ = fs::remove_dir_all(&home);
 }

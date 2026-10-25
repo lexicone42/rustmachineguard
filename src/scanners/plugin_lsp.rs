@@ -215,19 +215,54 @@ pub(crate) fn program_shape(command: &str) -> String {
     sanitize_display(&crate::scanners::redact_secrets_in_text(base), 128)
 }
 
+/// Single-dash words an LSP launch uses as option NAMES (Go and Java style): kept as
+/// written. Any other single-dash word longer than one letter is a short flag with its
+/// value attached (`-pHunter2`, `-HAuthorization: Bearer X`) and shows as `-p<value>`.
+const SINGLE_DASH_WORDS: &[&str] = &[
+    "stdio",
+    "lsp",
+    "mode",
+    "remote",
+    "rpc",
+    "debug",
+    "verbose",
+    "logfile",
+    "listen",
+    "serve",
+    "server",
+    "help",
+    "version",
+    "vv",
+    "vvv",
+    "trace",
+    "pipe",
+    "socket",
+    "node-ipc",
+    "jar",
+    "cp",
+    "classpath",
+    "server-mode",
+];
+
 /// One argument by shape: a flag as written (`--stdio`), a flag with an attached value as
-/// `--flag=<value>`, a plugin-relative path as written, anything else `<arg>`.
+/// `--flag=<value>`, a short flag with an attached value as `-p<value>`, a plugin-relative
+/// path as written (redacted with the MCP argument rule, [`crate::scanners::mcp::redact_arg`]),
+/// anything else `<arg>`. A value never appears.
 pub(crate) fn arg_shape(arg: &str) -> String {
     let a = arg.trim();
     if a.starts_with('-') && a.len() > 1 {
         let flag = match a.split_once('=') {
             Some((f, _)) => format!("{f}=<value>"),
+            None if !a.starts_with("--") && a.len() > 2 && !SINGLE_DASH_WORDS.contains(&&a[1..]) => {
+                let first = a[1..].chars().next().unwrap_or('?');
+                format!("-{first}<value>")
+            }
             None => a.to_string(),
         };
         return sanitize_display(&flag, 64);
     }
     if a.starts_with("${CLAUDE_PLUGIN_ROOT}") || a.starts_with("${CLAUDE_PLUGIN_DATA}") {
-        return sanitize_display(&crate::scanners::redact_secrets_in_text(a), 256);
+        return sanitize_display(&crate::scanners::mcp::redact_arg(a, None), 256);
     }
     "<arg>".to_string()
 }

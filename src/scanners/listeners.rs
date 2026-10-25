@@ -65,6 +65,9 @@ const MAX_SMALL_BYTES: u64 = 64 * 1024;
 /// - terminal-bridge: the PTY bridge this scanner was written against (a project-local
 ///   Rust server that runs `tmux new -A -s <name>` behind token/passkey auth); no
 ///   public upstream
+/// - generic names a self-written PTY or web-terminal bridge is given (`pty-bridge`,
+///   `pty-server`, `web-terminal`, `webterm`, `term-server`): a name that says what it
+///   does, matched whole
 pub const KNOWN_BRIDGES: &[&str] = &[
     "ttyd",
     "gotty",
@@ -75,6 +78,11 @@ pub const KNOWN_BRIDGES: &[&str] = &[
     "webssh",
     "sshwifty",
     "terminal-bridge",
+    "pty-bridge",
+    "pty-server",
+    "web-terminal",
+    "webterm",
+    "term-server",
 ];
 
 /// Child process names that are a shell.
@@ -397,15 +405,8 @@ pub fn serves_shell(
     if ptmx {
         return (ServesShell::PtyChild, Some("holds /dev/ptmx (a PTY master)".into()));
     }
-    if let Some(n) = names
-        .iter()
-        .find(|n| SHELLS.contains(&base(n.trim_start_matches('-')).as_str()))
-    {
-        return (
-            ServesShell::ShellChild,
-            Some(format!("child '{}'", sanitize_display(n, 64))),
-        );
-    }
+    // A known bridge by name outranks a shell child: a bridge with a shell under it is a
+    // bridge (High), a server that merely has a shell child is a weaker signal (Medium).
     let exe_base = exe.map(|e| base(e.trim_end_matches(" (deleted)")));
     for n in [program.map(str::to_string), exe_base].into_iter().flatten() {
         if KNOWN_BRIDGES.contains(&n.as_str()) {
@@ -414,6 +415,15 @@ pub fn serves_shell(
                 Some(format!("program {}", sanitize_display(&n, 64))),
             );
         }
+    }
+    if let Some(n) = names
+        .iter()
+        .find(|n| SHELLS.contains(&base(n.trim_start_matches('-')).as_str()))
+    {
+        return (
+            ServesShell::ShellChild,
+            Some(format!("child '{}'", sanitize_display(n, 64))),
+        );
     }
     (ServesShell::None, None)
 }
@@ -580,7 +590,7 @@ fn parent_map(root: &Path, pids: &[u32]) -> BTreeMap<u32, Vec<u32>> {
 }
 
 /// `sysconf(_SC_CLK_TCK)`, 100 when unknown.
-fn clock_ticks() -> u64 {
+pub(crate) fn clock_ticks() -> u64 {
     // SAFETY: sysconf has no preconditions.
     let t = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if t > 0 { t as u64 } else { 100 }
@@ -670,7 +680,7 @@ mod tests {
         for p in ["node", "python3", "python3.12", "next-server (v15", "vite", "bun"] {
             assert!(is_dev_server(p), "{p}");
         }
-        for p in ["terminal-bridge", "python3.x", "nodejs-bridge", "hearth", "ttyd"] {
+        for p in ["pty-bridge", "python3.x", "nodejs-bridge", "devhub", "ttyd"] {
             assert!(!is_dev_server(p), "{p}");
         }
     }

@@ -152,7 +152,9 @@ fn scan_directory_for_rules(dir: &Path, user: bool, results: &mut Vec<RulesFile>
             let findings = check_dangerous_patterns(&content);
 
             results.push(RulesFile {
-                path: path.to_string_lossy().to_string(),
+                // Shown sanitized: a project directory name is attacker-chosen, and an encoded
+                // synced-skill name carries account UUIDs (mask_identifiers).
+                path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
                 file_name: name.to_string(),
                 sha256: hash,
                 git_tracked,
@@ -287,7 +289,9 @@ fn scan_nested_rules(
             };
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
             results.push(RulesFile {
-                path: path.to_string_lossy().to_string(),
+                // Shown sanitized: a project directory name is attacker-chosen, and an encoded
+                // synced-skill name carries account UUIDs (mask_identifiers).
+                path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
                 file_name: crate::scanners::sanitize_display(&rel, 512),
                 sha256: sha256_hex(&content),
                 git_tracked: is_git_tracked(&path),
@@ -327,7 +331,9 @@ fn scan_serena_initial_prompt(dir: &Path, user: bool, results: &mut Vec<RulesFil
     let mut findings = check_dangerous_patterns(prompt);
     findings.extend(injection_findings(prompt, user));
     results.push(RulesFile {
-        path: path.to_string_lossy().to_string(),
+        // Shown sanitized: a project directory name is attacker-chosen, and an encoded
+        // synced-skill name carries account UUIDs (mask_identifiers).
+        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         file_name: ".serena/project.yml#initial_prompt".to_string(),
         sha256: sha256_hex(prompt),
         git_tracked: is_git_tracked(&path),
@@ -409,7 +415,9 @@ fn push_prompt_file(
     };
     findings.extend(injection_findings(&content, user));
     results.push(RulesFile {
-        path: path.to_string_lossy().to_string(),
+        // Shown sanitized: a project directory name is attacker-chosen, and an encoded
+        // synced-skill name carries account UUIDs (mask_identifiers).
+        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         file_name: crate::scanners::sanitize_display(name, 512),
         sha256: sha256_hex(&content),
         git_tracked: is_git_tracked(path),

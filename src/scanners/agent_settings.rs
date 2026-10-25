@@ -713,6 +713,11 @@ pub(crate) fn parse_settings_file_in(
                 .and_then(|p| p.get("disableAutoMode"))
                 .and_then(|v| v.as_str())
                 == Some("disable"),
+        disable_bypass_mode: framework == "claude-code"
+            && permissions
+                .and_then(|p| p.get("disableBypassPermissionsMode"))
+                .and_then(|v| v.as_str())
+                == Some("disable"),
         auto_mode: if framework == "claude-code" {
             auto_mode_settings(json.get("autoMode"))
         } else {
@@ -1007,6 +1012,10 @@ const DESTRUCTIVE_PREFIXES: &[&[&str]] = &[
     &["rm", "-fr"],
     &["rm", "-r"],
     &["rm", "-Rf"],
+    // A force push rewrites the remote's history (and `Bash(git push:*)` / `Bash(git:*)`
+    // allow it as well).
+    &["git", "push", "--force"],
+    &["git", "push", "-f"],
     &["gh", "repo", "delete"],
     &["gh", "api"],
     &["aws", "s3", "rm"],
@@ -1029,6 +1038,11 @@ fn is_destructive_prefix(tokens: &[&str]) -> bool {
     }
     DESTRUCTIVE_PREFIXES.iter().any(|p| {
         let n = p.len().min(tokens.len());
+        // `git` is everyday work: only the force push itself is the destructive rule, not
+        // `Bash(git:*)` or `Bash(git push:*)` (scoped rules, see the tests).
+        if p[0] == "git" && tokens.len() < p.len() {
+            return false;
+        }
         p[0] == prog && (1..n).all(|i| p[i] == tokens[i])
     })
 }

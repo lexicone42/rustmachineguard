@@ -112,9 +112,15 @@ pub(crate) fn python_roots(platform: &dyn PlatformInfo) -> Vec<PythonRoot> {
         push(&mut roots, p.join("site-packages"), PackageRootKind::User, None);
     }
     // Virtualenvs in registered project roots and (primary pass) the cwd.
-    let projects = platform
-        .pass_scope()
-        .with_cwd(project_dirs(&home.join(".claude.json")).unwrap_or_default());
+    let projects = {
+        // Like every other project walk: a scan home (this pass's own included)
+        // or an ancestor of one is not a project of any pass.
+        let scope = platform.pass_scope();
+        scope.excluding_other_scan_homes(
+            scope.with_cwd(project_dirs(&home.join(".claude.json")).unwrap_or_default()),
+            &home,
+        )
+    };
     for proj in projects {
         for venv in [".venv", "venv", "env", ".env"] {
             for p in sorted_dirs(&proj.join(venv).join("lib")) {

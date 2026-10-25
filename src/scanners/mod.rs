@@ -462,6 +462,14 @@ fn redact_secrets_once(text: &str) -> String {
     // The program of the current simple command takes an attached `-p<password>`
     // (mysql and its tools, sshpass): set by its name, cleared at a command separator.
     let mut attached_p: Option<&str> = None;
+    // The shell's quote state at the start of each word, read from the text as written.
+    // A value word that redacted something and leaves a quote open (`--api-key "a"' 'X`,
+    // `-u "user:a X"`) continues into the next words only when it started at top level:
+    // a word that started inside a quote (`bash -c "export TOKEN=X"`) closes one instead.
+    let mut qstate: Option<Close> = None;
+    // Inside a curl command: its short `-b` (cookies) and `-E` (certificate:passphrase)
+    // mean those things only there (`grep -E 'a:b'` is a regex).
+    let mut in_curl = false;
     for i in 0..spans.len() {
         let gap = &text[last..spans[i].0];
         // A header value owed to the end of its line (an unquoted `Cookie:`, as an
@@ -479,14 +487,24 @@ fn redact_secrets_once(text: &str) -> String {
         } else {
             None
         };
+        let was_pending = pending != Pending::None;
         let rendered = match attached {
             Some(shown) => shown,
             None => {
-                let (rendered, next_state) = redact_token(t, prev, prev2, next, pending);
+                let (rendered, next_state) = redact_token(t, prev, prev2, next, pending, in_curl);
                 pending = next_state;
                 rendered
             }
         };
+        if pending == Pending::None
+            && !was_pending
+            && qstate.is_none()
+            && rendered != t
+            && let Some(q) = quote_state_after(None, &rendered)
+        {
+            pending = Pending::Quote(q);
+        }
+        qstate = quote_state_after(qstate, t);
         let word = t.trim_matches(['"', '\'', '(', '`']);
         let base = word.rsplit('/').next().unwrap_or(word);
         if let Some(p) = ATTACHED_PASSWORD_PROGRAMS.iter().find(|p| **p == base) {
@@ -494,10 +512,21 @@ fn redact_secrets_once(text: &str) -> String {
         } else if t.ends_with([';', '&', '|']) {
             attached_p = None;
         }
+        if base == "curl" {
+            in_curl = true;
+        } else if separator_token(t) {
+            in_curl = false;
+        }
         out.push_str(&rendered);
         last = spans[i].1;
     }
     out.push_str(&text[last..]);
+    // The program-specific tables too (`redis-cli -a X`, `docker login -p X`,
+    // `echo X | gh auth login --with-token`, `--pass X`, `-passin pass:X`): hook, MCP and
+    // VS Code task text goes through this function, not only the command redactor.
+    let out = redact_config_set_values(&redact_generic_secret_flags(&redact_stdin_password_feeds(
+        &redact_program_secret_flags(&out),
+    )));
     redact_webhook_urls(&redact_token_shapes(&redact_code_authorization(&out)))
 }
 
@@ -510,14 +539,49 @@ fn redact_secrets_once(text: &str) -> String {
 /// `${TOKEN}`) names a value without holding one and is kept; a value that is already
 /// `<redacted>` is left alone (review of 4e3f8c3).
 fn redact_code_authorization(text: &str) -> String {
+    let mut cur = redact_code_header(text, "authorization");
+    // The other credential headers written as code (`{"X-API-Key":"X"}`,
+    // `headers: {'Private-Token': 'X'}`): the same rule, by name.
+    for name in CODE_SECRET_HEADERS {
+        if cur.to_ascii_lowercase().contains(name) {
+            cur = redact_code_header(&cur, name);
+        }
+    }
+    cur
+}
+
+/// Credential header names other than `Authorization` (which keeps its scheme word),
+/// matched as a whole name in code: a quote, `{`, `,`, whitespace or the start before it.
+const CODE_SECRET_HEADERS: &[&str] = &[
+    "x-api-key",
+    "x-auth-token",
+    "private-token",
+    "x-goog-api-key",
+    "x-access-token",
+    "api-key",
+    "apikey",
+];
+
+/// [`redact_code_authorization`] for one header name (lower case).
+fn redact_code_header(text: &str, header: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     let mut from = 0;
-    while let Some(off) = lower[from..].find("authorization") {
-        let name_end = from + off + "authorization".len();
+    while let Some(off) = lower[from..].find(header) {
+        let name_start = from + off;
+        let name_end = name_start + header.len();
         from = name_end;
+        if header != "authorization"
+            && name_start > 0
+            && !matches!(
+                b[name_start - 1],
+                b'"' | b'\'' | b'`' | b'{' | b',' | b' ' | b'\t' | b'\n'
+            )
+        {
+            continue;
+        }
         let mut k = name_end;
         if k < b.len() && matches!(b[k], b'"' | b'\'' | b'`') {
             k += 1;
@@ -910,6 +974,9 @@ fn redact_command_text_once(text: &str) -> String {
 /// Flags whose value is a credential whatever the program, though their names are not
 /// all secret-shaped (`--pass`, `--user-key`): the next word, or the `=` value.
 const GENERIC_SECRET_FLAGS: &[&str] = &[
+    "-pass",
+    "-passin",
+    "-passout",
     "--pass",
     "--passwd",
     "--pw",
@@ -973,7 +1040,7 @@ fn redact_generic_secret_flags(text: &str) -> String {
             } else if v.starts_with("<redacted>") {
                 t.to_string()
             } else {
-                format!("{flag}={}", redact_bare_value(v))
+                format!("{flag}={}", generic_secret_value(flag, v))
             }
         } else if let Some(p) = prev
             && !t.starts_with('-')
@@ -982,7 +1049,7 @@ fn redact_generic_secret_flags(text: &str) -> String {
             if WEBHOOK_FLAGS.contains(&p) {
                 redact_webhook_value(t)
             } else if GENERIC_SECRET_FLAGS.contains(&p) && !t.starts_with("<redacted>") {
-                redact_bare_value(t)
+                generic_secret_value(p, t)
             } else {
                 t.to_string()
             }
@@ -994,6 +1061,27 @@ fn redact_generic_secret_flags(text: &str) -> String {
     }
     out.push_str(&text[last..]);
     out
+}
+
+/// A [`GENERIC_SECRET_FLAGS`] value redacted. openssl's pass-phrase arguments
+/// (`-pass`, `-passin`, `-passout`; openssl-passphrase-options(1)) name where the
+/// phrase comes from: `pass:X` holds it (`pass:<redacted>`), while `env:NAME`,
+/// `file:PATH`, `fd:N` and `stdin` only point at it and are kept.
+fn generic_secret_value(flag: &str, v: &str) -> String {
+    if matches!(flag, "-pass" | "-passin" | "-passout") {
+        let core = v.trim_start_matches(['"', '\'']);
+        let lead = &v[..v.len() - core.len()];
+        if let Some(rest) = core.strip_prefix("pass:") {
+            if rest.is_empty() || rest.starts_with("<redacted>") {
+                return v.to_string();
+            }
+            return format!("{lead}pass:{}", redact_bare_value(rest));
+        }
+        if ["env:", "file:", "fd:"].iter().any(|p| core.starts_with(p)) || core == "stdin" {
+            return v.to_string();
+        }
+    }
+    redact_bare_value(v)
 }
 
 /// Key-shaped segments of a URL's path redacted one by one (see [`looks_high_entropy`]):
@@ -1144,13 +1232,10 @@ fn spans_of(text: &str) -> Vec<(usize, usize)> {
     let b = text.as_bytes();
     let mut spans = Vec::new();
     let mut i = 0;
-    let ws_at = |i: usize| {
-        text[i..]
-            .chars()
-            .next()
-            .filter(|c| c.is_whitespace())
-            .map(char::len_utf8)
-    };
+    // Only the shell's own separators split a word: NBSP (U+00A0) and the other Unicode
+    // spaces are ordinary characters to sh, so `--token a<NBSP>X` is ONE word whose tail
+    // used to show as the next argument.
+    let ws_at = |i: usize| b[i].is_ascii_whitespace().then_some(1);
     while i < b.len() {
         if let Some(n) = ws_at(i) {
             i += n;
@@ -1219,6 +1304,7 @@ fn redact_program_secret_flags(text: &str) -> String {
     let spans = spans_of(text);
     let toks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
     let mut redact = vec![false; toks.len()];
+    let mut glued: Vec<Option<String>> = vec![None; toks.len()];
     let mut prog: Option<&[&str]> = None;
     let mut at_start = true;
     for k in 0..toks.len() {
@@ -1236,13 +1322,40 @@ fn redact_program_secret_flags(text: &str) -> String {
             && !t.starts_with('-')
         {
             redact[k] = true;
+        } else if let Some(flags) = prog
+            && let Some(f) = flags
+                .iter()
+                .find(|f| f.len() == 2 && t.len() > 2 && t.starts_with(**f) && !t.starts_with("--"))
+            && !t[2..].starts_with("<redacted>")
+        {
+            // A short password flag with its value attached: `redis-cli -aX`.
+            glued[k] = Some(format!("{f}<redacted>"));
         }
         if separator_token(t) {
             at_start = true;
             prog = None;
         }
     }
-    replace_tokens(text, &spans, &redact)
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (k, &(s, e)) in spans.iter().enumerate() {
+        if let Some(g) = &glued[k] {
+            out.push_str(&text[last..s]);
+            let t = &text[s..e];
+            let keep = t.len() - t.trim_end_matches([';', '&', '|']).len();
+            out.push_str(g);
+            out.push_str(&t[t.len() - keep..]);
+            last = e;
+        }
+    }
+    out.push_str(&text[last..]);
+    if out == text {
+        return replace_tokens(text, &spans, &redact);
+    }
+    // Rebuild with both kinds of change: re-tokenize the glued result (one span per
+    // word is unchanged, since a glued value has no whitespace).
+    let spans2 = spans_of(&out);
+    replace_tokens(&out, &spans2, &redact)
 }
 
 /// `echo PW | docker login -u me --password-stdin`: the arguments of an echo/printf
@@ -1704,7 +1817,7 @@ fn redact_url(url: &str) -> String {
                 .map(|kv| match kv.split_once('=') {
                     // A quote or paren closing the surrounding word (`'https://x/?api_key=X'`)
                     // is the shell's, not the value's: it is kept.
-                    Some((k, v)) if !v.is_empty() && is_secret_key(k) => {
+                    Some((k, v)) if !v.is_empty() && (is_secret_key(k) || is_query_secret_name(k)) => {
                         let tail = &v[v.trim_end_matches(['\'', '"', ')', '`']).len()..];
                         format!("{k}=<redacted>{tail}")
                     }
@@ -1716,6 +1829,16 @@ fn redact_url(url: &str) -> String {
         None => rest.to_string(),
     };
     format!("{scheme}://{host}{rest}")
+}
+
+/// Query parameter names that carry a signature or token though they are not
+/// secret-shaped words: an Azure SAS `sig` (`?sv=...&sig=X`), `signature`, and the
+/// presigned-URL signatures of S3 and GCS.
+fn is_query_secret_name(k: &str) -> bool {
+    matches!(
+        k.to_ascii_lowercase().as_str(),
+        "sig" | "signature" | "x-amz-signature" | "x-goog-signature" | "x-amz-security-token" | "code_verifier"
+    )
 }
 
 /// Strip `user:pass@` from a value, with or without a URL scheme. The HOST is kept --
@@ -1783,6 +1906,17 @@ fn redact_value_keeping_quotes(v: &str, outer: Option<Close>) -> (String, Option
     match outer {
         // Inside the quote the token opened: the value is its content, up to the close.
         Some(o) => match find_close(v, o) {
+            // The close ends the quoted part, not the word: an unquoted run glued on
+            // after it (`"Authorization: Bearer"X`) is more of the same shell word.
+            Some(j)
+                if v[j + 1..]
+                    .bytes()
+                    .next()
+                    .is_some_and(|c| !word_terminator(c) && c != b'"' && c != b'\'') =>
+            {
+                let (tail, st) = redact_word_tail(&v[j + 1..], None);
+                (format!("<redacted>{}{tail}", o.quote_char()), st)
+            }
             Some(j) => (format!("<redacted>{}", &v[j..]), quote_state_after(outer, &v[j..])),
             None => ("<redacted>".to_string(), outer),
         },
@@ -1916,6 +2050,7 @@ fn redact_token(
     prev2: Option<&str>,
     next: Option<&str>,
     pending: Pending,
+    in_curl: bool,
 ) -> (String, Pending) {
     // A redirection between a secret flag and its value (`--with-token <<< TOKEN`,
     // `--password < file`) is the shell's operator, not the credential: it is kept and the
@@ -2021,6 +2156,74 @@ fn redact_token(
         };
         return (shown, q.map_or(Pending::None, Pending::Quote));
     }
+    // A cookie string after curl's `-b` / `--cookie` (`-b session=X`, `--cookie "sid=X;
+    // b=Y"`, `--cookie=sid=X`): every cookie value is a credential. A value with no `=`
+    // is a cookie FILE (`-b cookies.txt`) and is kept.
+    let cookie_value = match prev {
+        Some("--cookie") if tok.contains('=') => Some((0, tok)),
+        Some("-b") if in_curl && tok.contains('=') => Some((0, tok)),
+        _ => tok
+            .strip_prefix("--cookie=")
+            .filter(|v| v.contains('='))
+            .map(|v| (9, v)),
+    };
+    if let Some((at, value)) = cookie_value {
+        let q = opener(value.as_bytes()).map(|(c, _)| c);
+        let eq = value.find('=').unwrap_or(0);
+        let head = &tok[..at + eq + 1];
+        let rest = &value[eq + 1..];
+        if rest.is_empty() || rest.starts_with("<redacted>") {
+            return (tok.to_string(), Pending::None);
+        }
+        return match q {
+            Some(c) => match find_close(rest, c) {
+                Some(j) => (format!("{head}<redacted>{}", &rest[j..]), Pending::None),
+                None => (format!("{head}<redacted>"), Pending::Quote(c)),
+            },
+            None => (format!("{head}<redacted>"), Pending::None),
+        };
+    }
+    // curl's client certificate with its pass phrase: `-E cert.pem:X`, `--cert c:X`
+    // (curl: `<certificate[:password]>`). The certificate name stays; a drive letter
+    // (`C:\\c.pem`) is not the separator.
+    let cert_value = match prev {
+        Some("--cert" | "--proxy-cert") => Some((0, tok)),
+        Some("-E") if in_curl => Some((0, tok)),
+        _ => tok
+            .strip_prefix("--cert=")
+            .map(|v| (7, v))
+            .or_else(|| tok.strip_prefix("--proxy-cert=").map(|v| (13, v))),
+    };
+    if let Some((at, value)) = cert_value {
+        let core = value.trim_start_matches(['"', '\'']);
+        let lead = value.len() - core.len();
+        let skip = if core.len() > 2 && core.as_bytes()[1] == b':' && core.as_bytes()[0].is_ascii_alphabetic() {
+            2
+        } else {
+            0
+        };
+        if let Some(c) = core[skip..].find(':') {
+            let cut = at + lead + skip + c + 1;
+            let rest = &tok[cut..];
+            if !rest.is_empty() && !rest.starts_with("<redacted>") {
+                let (shown, st) = redact_bare_value_quoted(rest);
+                return (
+                    format!("{}{shown}", &tok[..cut]),
+                    st.map_or(Pending::None, Pending::Quote),
+                );
+            }
+        }
+    }
+    // curl's `-u` with the credentials attached: `-uuser:pw`, `-Uproxyuser:pw`.
+    if (tok.starts_with("-u") || tok.starts_with("-U"))
+        && !tok.starts_with("--")
+        && let Some((u, pw)) = tok[2..].split_once(':')
+        && !u.is_empty()
+        && !pw.is_empty()
+        && !pw.starts_with("<redacted>")
+    {
+        return (format!("{}{u}:<redacted>", &tok[..2]), Pending::None);
+    }
     // curl-style basic auth: `-u admin:pw`. Keep the user, drop the password. The flag
     // alone is not a marker (`python -u script.py`), the `user:pass` shape is.
     if prev.is_some_and(|p| USER_FLAGS.contains(&p))
@@ -2057,11 +2260,23 @@ fn redact_token(
     // a second pass absorb what the first had kept (redaction was not idempotent).
     // Each segment starts in the quote state the token reached before it (`'password=X'`
     // starts inside `'`).
+    // An ODBC / ADO.NET connection string (`Driver={x};Server=s;Uid=u;Pwd=X;`): `Pwd` is
+    // its password key, though alone `PWD` is the working directory and not a secret name.
+    let conn = tok.contains(';') && tok.matches('=').count() >= 2;
+    let conn_pwd = |k: &str| conn && bare_key(k).eq_ignore_ascii_case("pwd");
     let rendered: Vec<(String, Option<Close>)> = segs
         .iter()
         .map(|(sg, _)| {
             let at = sg.as_ptr() as usize - tok.as_ptr() as usize;
-            redact_segment(sg, quote_state_after(None, &tok[..at]))
+            let outer = quote_state_after(None, &tok[..at]);
+            match sg.split_once('=') {
+                Some((k, v)) if conn_pwd(k) && !v.is_empty() && !v.starts_with("<redacted>") => {
+                    let o = quote_state_after(outer, &sg[..k.len() + 1]);
+                    let (shown, st) = redact_value_keeping_quotes(v, o);
+                    (format!("{k}={shown}"), st)
+                }
+                _ => redact_segment(sg, outer),
+            }
         })
         .collect();
     let pairs = rendered
@@ -2082,7 +2297,7 @@ fn redact_token(
         } else {
             out.push_str(&shown);
             opened = q;
-            absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && is_secret_key(k));
+            absorb = pair.is_some_and(|(k, _, v)| !v.is_empty() && (is_secret_key(k) || conn_pwd(k)));
         }
         if let Some(c) = sep_after {
             out.push(c);
@@ -2185,6 +2400,24 @@ pub(crate) fn is_client_loopback_host(host: &str) -> bool {
     is_loopback_host(host)
         || h.parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.to_canonical().is_unspecified())
+}
+
+/// The account a scan is FOR: the owner of the scanned home directory, so "owned by
+/// you" and "a process of yours" mean the scanned user's under `--search-dirs` or
+/// `sudo`, not the scanner's. The scanner's effective uid when the home cannot be read
+/// (and 0 off Unix, where nothing compares it).
+pub fn home_owner_uid(home: &std::path::Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        std::fs::metadata(home).map_or_else(|_| unsafe { libc::geteuid() }, |m| m.uid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = home;
+        0
+    }
 }
 
 /// Unix permission bits of a file as (octal_string, world_readable, group_readable).
@@ -3754,6 +3987,58 @@ pub fn mask_identifiers(s: &str) -> std::borrow::Cow<'_, str> {
     if !s.contains(MARK) {
         return std::borrow::Cow::Borrowed(s);
     }
+    match mask_encoded_identifiers(s) {
+        std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(mask_path_identifiers(&o).into_owned()),
+        std::borrow::Cow::Borrowed(_) => mask_path_identifiers(s),
+    }
+}
+
+/// The ENCODED spelling of a synced-skill directory, as Claude Code names a project
+/// directory under `~/.claude/projects/` (every `/`, `.` and `_` becomes `-`):
+/// `...-skills-synced-<uuid>-<uuid>...` becomes `...-skills-synced-<org>-<account>...`
+/// and `...-synced-<uuid>...` becomes `...-synced-<account>...`. `synced` must start
+/// the text or follow a `-` or a path separator, and the UUID run must end the text or
+/// be followed by a byte that is not a hex digit or letter.
+fn mask_encoded_identifiers(s: &str) -> std::borrow::Cow<'_, str> {
+    const MARK: &str = "synced-";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut from = 0;
+    while let Some(off) = s[from..].find(MARK) {
+        let at = from + off;
+        from = at + MARK.len();
+        if at > 0 && !matches!(b[at - 1], b'-' | b'/' | b'\\') {
+            continue;
+        }
+        let start = from;
+        let uuid_at = |i: usize| s.get(i..i + 36).is_some_and(is_uuid);
+        if !uuid_at(start) {
+            continue;
+        }
+        let mut end = start + 36;
+        let pair = b.get(end) == Some(&b'-') && uuid_at(end + 1);
+        if pair {
+            end += 37;
+        }
+        if b.get(end).is_some_and(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        out.push_str(&s[copied..start]);
+        out.push_str(if pair { "<org>-<account>" } else { "<account>" });
+        copied = end;
+        from = end;
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    out.push_str(&s[copied..]);
+    std::borrow::Cow::Owned(out)
+}
+
+/// [`mask_identifiers`] for the path spelling (`skills/synced/<uuid>_<uuid>/`).
+fn mask_path_identifiers(s: &str) -> std::borrow::Cow<'_, str> {
+    const MARK: &str = "synced";
     let b = s.as_bytes();
     let sep = |c: u8| c == b'/' || c == b'\\';
     let mut out = String::with_capacity(s.len());

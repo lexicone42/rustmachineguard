@@ -227,12 +227,15 @@ pub fn output_dir(dir: &Path) -> Option<AgentOutputDir> {
     files.sort();
     let in_repo = crate::scanners::git_work_tree_of(dir).is_some();
     let mut tracked = 0usize;
+    let mut unknown = 0usize;
     let mut first_untracked: Option<&PathBuf> = None;
     for f in &files {
-        if in_repo && crate::scanners::git_tracked_state(f) == Some(true) {
-            tracked += 1;
-        } else if first_untracked.is_none() {
-            first_untracked = Some(f);
+        match in_repo.then(|| crate::scanners::git_tracked_state(f)) {
+            Some(Some(true)) => tracked += 1,
+            // The listing timed out or failed: say so, never "untracked".
+            Some(None) => unknown += 1,
+            _ if first_untracked.is_none() => first_untracked = Some(f),
+            _ => {}
         }
     }
     let ignored = match first_untracked {
@@ -246,5 +249,6 @@ pub fn output_dir(dir: &Path) -> Option<AgentOutputDir> {
         tracked_files: tracked,
         in_repo,
         ignored,
+        git_state_unknown: unknown,
     })
 }

@@ -646,6 +646,17 @@ fn settings_project_dir(path: &str) -> Option<&str> {
         .or_else(|| path.strip_suffix("/.claude/settings.json"))
 }
 
+/// A user or managed Claude Code settings file sets
+/// `permissions.disableBypassPermissionsMode: "disable"` ("To prevent `bypassPermissions`
+/// ... mode from being used ... in any settings file", code.claude.com/docs/en/permissions.md):
+/// bypass mode is off in every project. A project or local file's value applies to that
+/// project only and is not counted here.
+pub fn bypass_disabled_by_policy(report: &ScanReport) -> bool {
+    report.agent_settings.iter().any(|s| {
+        s.framework == "claude-code" && matches!(s.source.as_str(), "user-global" | "managed") && s.disable_bypass_mode
+    })
+}
+
 /// Whether sessions that read settings file `s` start in auto mode, from the settings
 /// files this scan read, as code.claude.com/docs/en/permission-modes.md (fetched
 /// 2026-10-24) describes it: "When more than one settings file sets
@@ -809,6 +820,8 @@ fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         matches!(s.source.as_str(), "user-global" | "managed")
             && s.permission_mode.as_deref() == Some("bypassPermissions")
     });
+    let bypass_disabled = bypass_disabled_by_policy(report);
+    let bypass_default = bypass_default.filter(|_| !bypass_disabled);
     let known_servers = known_mcp_segments(report);
     // Servers marked off: a disabled plugin's, or a connector under
     // disableClaudeAiConnectors (by folded tool segment).
@@ -855,7 +868,8 @@ fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 evidence: Some("permissions.defaultMode: auto".into()),
             });
         }
-        if s.skip_dangerous_mode_prompt && user_scoped && !s.git_tracked {
+        // Under disableBypassPermissionsMode there is no bypass mode to confirm: inventory.
+        if s.skip_dangerous_mode_prompt && user_scoped && !s.git_tracked && !bypass_disabled {
             let (severity, title) = match bypass_default {
                 Some(b) => (
                     Severity::Critical,
@@ -1810,16 +1824,36 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         // The same "act without asking" setting under two names: Claude Code calls it
         // permissions.defaultMode = bypassPermissions, Cursor calls it
         // approvalMode = unrestricted.
+        //
+        // Claude Code: `bypassPermissions` "doesn't take effect from project or local
+        // settings" (code.claude.com/docs/en/settings.md, from v2.1.257), so there it is a
+        // Low note; from user or managed settings it is High, unless any user or managed
+        // file sets `permissions.disableBypassPermissionsMode: "disable"`, which removes
+        // the mode: inventory (the terminal shows "bypass mode is disabled by policy").
         if let Some(mode) = s.permission_mode.as_deref()
             && matches!(mode, "bypassPermissions" | "unrestricted")
         {
-            f.push(Finding {
-                severity: Severity::High,
-                category: "Permissions".into(),
-                title: format!("{} runs without approval prompts ({})", s.framework, mode),
-                location: s.path.clone(),
-                evidence: None,
-            });
+            let claude_scope = s.framework == "claude-code" && mode == "bypassPermissions";
+            if claude_scope && matches!(s.source.as_str(), "project" | "local" | "user-local") {
+                f.push(Finding {
+                    severity: Severity::Low,
+                    category: "Permissions".into(),
+                    title: format!(
+                        "{} defaultMode bypassPermissions is ignored by Claude Code in this scope ({} settings start sessions in Manual mode); set it in user or managed settings only if you mean it",
+                        s.framework, s.source
+                    ),
+                    location: s.path.clone(),
+                    evidence: Some("permissions.defaultMode: bypassPermissions".into()),
+                });
+            } else if !(claude_scope && bypass_disabled_by_policy(report)) {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "Permissions".into(),
+                    title: format!("{} runs without approval prompts ({})", s.framework, mode),
+                    location: s.path.clone(),
+                    evidence: None,
+                });
+            }
         }
         // Credentials hardcoded inline in the settings `env` block (names only).
         // A git-tracked settings file makes this a committed secret.
@@ -2159,6 +2193,21 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Secret hygiene".into(),
                 title: format!(
                     ".env is world-readable ({} keys, no secret-named keys) — check that no credential is stored under another name",
+                    e.key_count
+                ),
+                location: e.path.clone(),
+                evidence: None,
+            });
+        } else if e.world_readable
+            && let Some(why) = &e.unreachable_via
+        {
+            // Mode bits alone: a directory between it and `/` stops other users (a 0700
+            // HOME or project parent), as for transcript stores.
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Secret exposure".into(),
+                title: format!(
+                    ".env is world-readable by mode ({} keys) — not reachable: {why}; tighten it to 0600 before that directory opens up",
                     e.key_count
                 ),
                 location: e.path.clone(),
@@ -4207,12 +4256,44 @@ fn advisory_ids(advisory: &str) -> Vec<String> {
 /// The npx cache a finding is in runs again only when the same `npx` line does: it is
 /// active when an active configured or plugin MCP server launches one of the packages
 /// the cache was created for.
+///
+/// npx keys its cache by the spec it was given, so the server must launch that spec: the
+/// same name at the same exact version, or (an unpinned launch: no version, `@latest`, a
+/// range or a dist-tag) a cache whose spec is unpinned too. A server launching
+/// `foo-mcp@2.0.0` does not re-run a `foo-mcp@1.0.0` cache. A cache whose specs were not
+/// recorded (only `dependencies`, or an older report) falls back to the name.
 fn npx_cache_is_active(report: &ScanReport, e: &crate::models::ExposureFinding) -> bool {
+    let floats = |v: Option<&str>| match v {
+        None => true,
+        Some(v) => crate::scanners::mcp::npm_version_floats(v),
+    };
+    let cache: Vec<(&str, Option<&str>)> = e
+        .cache_specs
+        .iter()
+        .map(|spec| match crate::scanners::mcp::split_npm_package_version(spec) {
+            (_, None) => (spec.as_str(), None),
+            (n, Some(_)) => (&spec[..n.len()], Some(&spec[n.len() + 1..])),
+        })
+        .collect();
     report.mcp_configs.iter().flat_map(|c| &c.servers).any(|s| {
-        s.is_active()
-            && !s.ever_connected
-            && s.package_ecosystem.as_deref() == Some("npm")
-            && s.package_name.as_ref().is_some_and(|n| e.cache_parent.contains(n))
+        if !(s.is_active() && !s.ever_connected && s.package_ecosystem.as_deref() == Some("npm")) {
+            return false;
+        }
+        let Some(name) = s.package_name.as_deref() else {
+            return false;
+        };
+        if cache.is_empty() {
+            return e.cache_parent.iter().any(|n| n == name);
+        }
+        let sv = s.package_version.as_deref();
+        cache.iter().any(|(cn, cv)| {
+            *cn == name
+                && match (floats(sv), floats(*cv)) {
+                    (true, true) => true,
+                    (false, false) => sv == *cv,
+                    _ => false,
+                }
+        })
     })
 }
 

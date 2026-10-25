@@ -1582,16 +1582,20 @@ mod enabled {
             *want.entry(key).or_default() += 1;
         }
         // Positive controls: the fixture produced what it was built to.
-        for (sev, cat) in [
-            ("critical", "Rules file"),
-            ("low", "Secret hygiene"),
-            ("high", "Secret exposure"),
+        // The world-readable .env is High when other users can reach it and Low "not
+        // reachable" under a 0700 TMPDIR parent: either is the fixture working.
+        for (sevs, cat) in [
+            (&["critical"][..], "Rules file"),
+            (&["low"][..], "Secret hygiene"),
+            (&["high", "low"][..], "Secret exposure"),
         ] {
-            let key = vec![
-                ("rmguard.finding.category".to_string(), cat.to_string()),
-                ("rmguard.finding.severity".to_string(), sev.to_string()),
-            ];
-            assert!(want.contains_key(&key), "fixture gave no {sev} {cat}: {want:?}");
+            let found = sevs.iter().any(|sev| {
+                want.contains_key(&vec![
+                    ("rmguard.finding.category".to_string(), cat.to_string()),
+                    ("rmguard.finding.severity".to_string(), sev.to_string()),
+                ])
+            });
+            assert!(found, "fixture gave no {sevs:?} {cat}: {want:?}");
         }
 
         let mr = metrics(&bodies);

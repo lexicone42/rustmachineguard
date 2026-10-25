@@ -169,9 +169,17 @@ impl Scanner for PersistenceScanner {
         }
 
         // Project-rooted shapes.
-        let projects = platform
-            .pass_scope()
-            .with_cwd(crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default());
+        let projects = {
+            // Another scan home, or an ancestor of one, is not this pass's project (its own
+            // pass reads it); this pass's own home stays when it is the cwd or registered.
+            let scope = platform.pass_scope();
+            scope.excluding_other_scan_homes(
+                scope.with_cwd(
+                    crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default(),
+                ),
+                &home,
+            )
+        };
         let mut seen_projects = std::collections::HashSet::new();
         let path_searches_cwd = path_searches_cwd(std::env::var_os("PATH").as_deref());
         for proj in projects {
@@ -348,7 +356,7 @@ fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
         if !meta.is_file() || !is_executable(&meta) {
             continue;
         }
-        let info = agent_bin_info(&path, &meta);
+        let info = agent_bin_info(&path, &meta, crate::scanners::home_owner_uid(home));
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -368,7 +376,8 @@ fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
 /// four bytes, mode, owner, mtime, size and a SHA-256 (files up to the hashing bound), both
 /// read without following a link. Shared by `~/.claude/bin` and the scripts settings
 /// commands run (`scanners::settings_scripts`).
-pub(crate) fn agent_bin_info(path: &Path, meta: &std::fs::Metadata) -> crate::models::AgentBinInfo {
+/// `owner` is the uid that counts as "you": the scanned home's owner.
+pub(crate) fn agent_bin_info(path: &Path, meta: &std::fs::Metadata, owner: u32) -> crate::models::AgentBinInfo {
     let magic = crate::scanners::read_head_bytes_nofollow(path, 4).unwrap_or_default();
     let format = match magic.as_slice() {
         [0x7f, b'E', b'L', b'F', ..] => "elf",
@@ -387,7 +396,7 @@ pub(crate) fn agent_bin_info(path: &Path, meta: &std::fs::Metadata) -> crate::mo
     } else {
         None
     };
-    let (mode, owned_by_user, world_writable) = owner_and_mode(meta);
+    let (mode, owned_by_user, world_writable) = owner_and_mode(meta, owner);
     let mtime = meta
         .modified()
         .ok()
@@ -406,15 +415,13 @@ pub(crate) fn agent_bin_info(path: &Path, meta: &std::fs::Metadata) -> crate::mo
 }
 
 #[cfg(unix)]
-fn owner_and_mode(meta: &std::fs::Metadata) -> (String, bool, bool) {
+fn owner_and_mode(meta: &std::fs::Metadata, owner: u32) -> (String, bool, bool) {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let m = meta.permissions().mode() & 0o7777;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    (format!("{m:04o}"), meta.uid() == me, m & 0o022 != 0)
+    (format!("{m:04o}"), meta.uid() == owner, m & 0o022 != 0)
 }
 #[cfg(not(unix))]
-fn owner_and_mode(_meta: &std::fs::Metadata) -> (String, bool, bool) {
+fn owner_and_mode(_meta: &std::fs::Metadata, _owner: u32) -> (String, bool, bool) {
     (String::new(), true, false)
 }
 

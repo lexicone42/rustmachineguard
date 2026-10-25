@@ -725,16 +725,17 @@ impl WalkCache {
     }
 }
 
+/// `p` is owned by the owner of the scanned home ([`crate::scanners::home_owner_uid`]),
+/// not by whoever runs the scanner (`sudo`, `--search-dirs`).
 #[cfg(unix)]
-fn owned_by_current_user(p: &Path) -> bool {
+fn owned_by_home_owner(p: &Path, home: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    std::fs::metadata(p).is_ok_and(|m| m.uid() == me)
+    let owner = crate::scanners::home_owner_uid(home);
+    std::fs::metadata(p).is_ok_and(|m| m.uid() == owner)
 }
 
 #[cfg(not(unix))]
-fn owned_by_current_user(_p: &Path) -> bool {
+fn owned_by_home_owner(_p: &Path, _home: &Path) -> bool {
     true
 }
 
@@ -936,7 +937,7 @@ fn read_skill_file(
     let store = real.starts_with("/nix/store");
     let users_own = repo_root.is_none()
         && real.starts_with(real_home)
-        && owned_by_current_user(&real)
+        && owned_by_home_owner(&real, real_home)
         && user_link_target_ok(&real, real_home);
     let followed = has_skill_ext(&real) && (within || in_skill_area(&real) || in_repo || users_own || store);
     Some(SkillRead {
@@ -1500,7 +1501,7 @@ fn skill_dir_link(link: &Path, root: &Path, scope: &str, project_root: Option<&P
         None => {
             in_skill_area(&real)
                 || real.starts_with("/nix/store")
-                || (real.starts_with(real_home) && owned_by_current_user(&real))
+                || (real.starts_with(real_home) && owned_by_home_owner(&real, real_home))
         }
     };
     if follow {

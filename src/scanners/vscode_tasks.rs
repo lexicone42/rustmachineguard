@@ -21,9 +21,15 @@ impl Scanner for VsCodeTasksScanner {
 
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
         let home = platform.home_dir();
-        let dirs = platform
-            .pass_scope()
-            .with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default());
+        let dirs = {
+            // Another scan home, or an ancestor of one, is not this pass's project (its own
+            // pass reads it); this pass's own home stays when it is the cwd or registered.
+            let scope = platform.pass_scope();
+            scope.excluding_other_scan_homes(
+                scope.with_cwd(extract_project_dirs(&home.join(".claude.json")).unwrap_or_default()),
+                &home,
+            )
+        };
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for dir in dirs {

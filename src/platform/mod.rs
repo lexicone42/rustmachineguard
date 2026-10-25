@@ -32,6 +32,9 @@ pub struct Recovered {
     pub dirs: Vec<PathBuf>,
     /// More encoded names than the cap: some were not looked at.
     pub truncated: bool,
+    /// Encoded names that decode to more than one existing directory: none of them is
+    /// kept (the encoding cannot say which one Claude Code ran in).
+    pub ambiguous: Vec<String>,
 }
 
 impl PassScope {
@@ -107,6 +110,12 @@ impl PassScope {
             let home = &self.scan_homes[0].0;
             let rec = recover_projects(home, self);
             if crate::scanners::telemetry::trace_enabled() {
+                for n in &rec.ambiguous {
+                    eprintln!(
+                        "trace: ambiguous encoded project name, skipped: {}",
+                        crate::scanners::sanitize_display(n, 512)
+                    );
+                }
                 for d in &rec.dirs {
                     eprintln!(
                         "trace: project {} <- source claude-projects-dir (not in ~/.claude.json)",
@@ -126,6 +135,17 @@ impl PassScope {
         self.scan_homes
             .iter()
             .any(|(given, real_home)| given.starts_with(dir) || real_home.starts_with(&real))
+    }
+
+    /// `dirs` without another scan home or an ancestor of one, keeping `own_home` itself
+    /// when it is listed (the working directory or a registered project: an agent run in
+    /// `~` reads `~/.env`, `~/.vscode/tasks.json`, `~/.mcp.json`). The rule the MCP
+    /// scanner's project list follows, for the scanners that check fixed files per project.
+    pub fn excluding_other_scan_homes(&self, dirs: Vec<PathBuf>, own_home: &Path) -> Vec<PathBuf> {
+        let own = canon_or_lexical(own_home);
+        dirs.into_iter()
+            .filter(|d| canon_or_lexical(d) == own || !self.is_scan_home_or_ancestor(d))
+            .collect()
     }
 
     /// `dirs` without any scan home or ancestor of one ([`Self::is_scan_home_or_ancestor`]).
@@ -217,6 +237,7 @@ pub fn recover_projects(home: &Path, scope: &PassScope) -> Recovered {
     }
 
     let registered = registry_projects(home);
+    let owner = crate::scanners::home_owner_uid(home);
     let mut anchors: Vec<PathBuf> = Vec::new();
     let mut add = |p: &Path| {
         if p.is_absolute() && !anchors.iter().any(|a| a == p) {
@@ -278,8 +299,16 @@ pub fn recover_projects(home: &Path, scope: &PassScope) -> Recovered {
                 }
             }
         }
+        // A lossy name that two existing directories both encode to (`shared/a-b` and
+        // `shared/a/b`) names neither for certain: keep none rather than scan a
+        // directory someone else may have made to match.
+        if hits.len() > 1 {
+            rec.ambiguous.push(name.clone());
+            continue;
+        }
         for h in hits {
             if registered.contains(&h)
+                || under_shared_sticky_dir(&h, owner)
                 || scope.cwd_project() == Some(h.as_path())
                 || scope.is_scan_home_or_ancestor(&h)
                 || !h.is_dir()
@@ -333,8 +362,37 @@ fn decode_under(
     }
 }
 
-/// `dir`'s child directories (following symlinks, as Claude Code's own cwd would) with
-/// both encodings of each name, sorted by name, at most [`DECODE_ENTRIES_PER_DIR`].
+/// A directory below a sticky, world-writable one (`/tmp`, `/var/tmp`, any `o+wt`
+/// directory) that is not wholly the scanned user's: anyone can create a name there, so
+/// a decoded name landing in it counts only when the candidate and every directory
+/// between it and the sticky one are owned by the owner of the scanned home
+/// ([`crate::scanners::home_owner_uid`]). A directory another account made to match a
+/// lossy name is skipped.
+#[cfg(unix)]
+fn under_shared_sticky_dir(p: &Path, owner: u32) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mut below: Vec<&Path> = Vec::new();
+    for a in p.ancestors() {
+        let Ok(m) = std::fs::symlink_metadata(a) else {
+            return false;
+        };
+        if !below.is_empty() && m.is_dir() && m.permissions().mode() & 0o1002 == 0o1002 {
+            return below
+                .iter()
+                .any(|d| std::fs::symlink_metadata(d).map_or(true, |m| m.uid() != owner));
+        }
+        below.push(a);
+    }
+    false
+}
+#[cfg(not(unix))]
+fn under_shared_sticky_dir(_p: &Path, _owner: u32) -> bool {
+    false
+}
+
+/// `dir`'s child directories with both encodings of each name, sorted by name, at most
+/// [`DECODE_ENTRIES_PER_DIR`]. A symbolic link is never followed while decoding: a link
+/// planted under a decoded prefix would otherwise make any name decode to its target.
 fn list_child_dirs(dir: &Path) -> Vec<DecodeEntry> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -342,10 +400,7 @@ fn list_child_dirs(dir: &Path) -> Vec<DecodeEntry> {
     let mut out: Vec<DecodeEntry> = rd
         .flatten()
         .take(DECODE_ENTRIES_PER_DIR)
-        .filter(|e| {
-            e.file_type()
-                .is_ok_and(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir()))
-        })
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| {
             let name = PathBuf::from(e.file_name());
             (e.path(), encode_project_path(&name), encode_project_path_legacy(&name))

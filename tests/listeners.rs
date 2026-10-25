@@ -357,10 +357,10 @@ mod e2e {
         p.listen(true, ANY6, 5173, me, 5003); // vite (node) on ::, in a project
         p.listen(false, ANY4, 8091, me, 5004); // a non-dev program on 0.0.0.0, in a project
         p.finish();
-        let exe = server.join("target/release/terminal-bridge");
+        let exe = server.join("target/release/pty-bridge");
         p.pid(Pid {
             pid: 2875651,
-            comm: "terminal-bridge",
+            comm: "pty-bridge",
             exe: exe.to_str().unwrap(),
             cwd: &server,
             ppid: 1,
@@ -415,8 +415,8 @@ mod e2e {
         });
         p.pid(Pid {
             pid: 5000,
-            comm: "hearth",
-            exe: "/opt/hearth/hearth",
+            comm: "devhub",
+            exe: "/opt/devhub/devhub",
             cwd: &web,
             ppid: 1,
             age_days: 2,
@@ -427,25 +427,46 @@ mod e2e {
         let text = run(&home, &proc_root, "json");
         let v: Value = serde_json::from_str(&text).unwrap();
         let report: ScanReport = serde_json::from_str(&text).unwrap();
+        // The .env is world-readable by mode; other users reach it only when every
+        // directory above it is traversable (a CI TMPDIR under a 0700 parent is not), and
+        // then the grade is High "not reachable" instead of Critical.
+        let blocked = rustmachineguard::scanners::transcripts::untraversable_ancestor(&env);
         let rows = v["network_listeners"].as_array().expect("network_listeners rows");
         assert_eq!(rows.len(), 6, "{rows:#?}");
         let bridge: Vec<&Value> = rows.iter().filter(|r| r["pid"] == 2875651).collect();
         assert_eq!(bridge.len(), 2);
         for r in &bridge {
             assert_eq!(r["bind"], "all-interfaces");
-            assert_eq!(r["program"], "terminal-bridge");
+            assert_eq!(r["program"], "pty-bridge");
             assert_eq!(r["serves_shell"], "known-bridge-name");
             assert_eq!(r["age_days"], 30);
             assert_eq!(r["project"], server.to_str().unwrap(), "the most specific project");
-            assert_eq!(r["readable_secret_files"], 1);
+            if blocked.is_none() {
+                assert_eq!(r["readable_secret_files"], 1);
+            } else {
+                assert!(r.get("readable_secret_files").is_none(), "{r}");
+            }
         }
         let ttyd = rows.iter().find(|r| r["port"] == 7681).unwrap();
-        assert_eq!(ttyd["serves_shell"], "shell-child");
+        // A known bridge with a shell under it is graded as the bridge.
+        assert_eq!(ttyd["serves_shell"], "known-bridge-name");
         assert!(ttyd.get("project").is_none());
 
         let findings = collect_findings(&report);
         let ours: Vec<&Finding> = findings.iter().filter(|f| f.category == "Network listener").collect();
         assert_eq!(ours.len(), 2, "{}", dump(&findings));
+        if let Some(why) = &blocked {
+            let high = ours.iter().find(|f| f.severity == Severity::High).expect("High");
+            assert!(
+                high.title.ends_with(&format!(
+                    "env file with secret-named keys, world-readable by mode (not reachable: {why})"
+                )),
+                "{}",
+                high.title
+            );
+            fs::remove_dir_all(&home).unwrap();
+            return;
+        }
         let crit = ours
             .iter()
             .find(|f| f.severity == Severity::Critical)
@@ -453,7 +474,7 @@ mod e2e {
         assert_eq!(
             crit.title,
             format!(
-                "a network listener in project {} hands out a shell/PTY (program terminal-bridge, ports 8080, 8443, bound to all interfaces, running 30 days) and its directory holds a world-readable env file with secret-named keys (names only: FULL_PASS, FULL_TOKEN, VIEW_TOKEN)",
+                "a network listener in project {} hands out a shell/PTY (program pty-bridge, ports 8080, 8443, bound to all interfaces, running 30 days) and its directory holds a world-readable env file with secret-named keys (names only: FULL_PASS, FULL_TOKEN, VIEW_TOKEN)",
                 server.display()
             )
         );
@@ -461,10 +482,10 @@ mod e2e {
         let low = ours
             .iter()
             .find(|f| f.severity == Severity::Low)
-            .expect("Low for hearth");
+            .expect("Low for devhub");
         assert!(
             low.title
-                .starts_with("project process listening on all interfaces: hearth on port 8091")
+                .starts_with("project process listening on all interfaces: devhub on port 8091")
         );
         // Controls: the loopback listener, ttyd outside every project and the node dev server
         // produce no finding.
@@ -481,7 +502,7 @@ mod e2e {
         }
         let terminal = &outputs[1];
         assert!(terminal.contains("Network Listeners (6)"), "{terminal}");
-        assert!(terminal.contains("0.0.0.0:8443 all-interfaces — terminal-bridge (pid 2875651), 30 days [serves shell: known-bridge-name] [1 world-readable .env with secret-named keys]"), "{terminal}");
+        assert!(terminal.contains("0.0.0.0:8443 all-interfaces — pty-bridge (pid 2875651), 30 days [serves shell: known-bridge-name] [1 world-readable .env with secret-named keys]"), "{terminal}");
         for out in &outputs {
             for canary in ENV_VALUES.iter().copied().chain([
                 "CMDLINECANARY",
@@ -492,6 +513,134 @@ mod e2e {
                 assert!(!out.contains(canary), "{canary} leaked");
             }
         }
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Review fix R3: the bridge's `.env` is 0644 with secret-named keys, but `work/` above
+    /// it is 0700, so no other user can reach it: High with "not reachable: <dir> is 0700",
+    /// never Critical, and the listener row counts no readable secret file. The `.env`
+    /// row records why (`unreachable_via`) and its own exposure grade is Low. Fails on
+    /// 8e58777: Critical ("its directory holds a world-readable env file") and High
+    /// "Secret exposure" from mode bits alone.
+    #[test]
+    fn a_world_readable_env_behind_a_0700_directory_is_not_critical() {
+        let home = temp_dir("e2e-0700");
+        let proc_root = home.join("fixture-proc");
+        let work = home.join("work");
+        let server = work.join("server");
+        fs::create_dir_all(&server).unwrap();
+        fs::create_dir_all(&proc_root).unwrap();
+        write(
+            &home.join(".claude.json"),
+            &serde_json::json!({"projects": {server.to_str().unwrap(): {}}}).to_string(),
+        );
+        let env = server.join(".env");
+        write(&env, &format!("FULL_TOKEN={}\n", ENV_VALUES[1]));
+        fs::set_permissions(&env, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+        let me = my_uid(&home);
+        let mut p = Proc::new(proc_root.clone());
+        p.listen(false, "0501A8C0", 8443, me, 77);
+        p.finish();
+        p.pid(Pid {
+            pid: 900,
+            comm: "my-term",
+            exe: "/opt/x/my-term",
+            cwd: &server,
+            ppid: 1,
+            age_days: 1,
+            fds: &["socket:[77]", "/dev/ptmx"],
+            children: Some(&[]),
+        });
+        let text = run(&home, &proc_root, "json");
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o755)).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let report: ScanReport = serde_json::from_str(&text).unwrap();
+        let findings = collect_findings(&report);
+        assert!(
+            !findings.iter().any(|f| f.severity == Severity::Critical),
+            "{}",
+            dump(&findings)
+        );
+        let ours: Vec<&Finding> = findings.iter().filter(|f| f.category == "Network listener").collect();
+        assert_eq!(ours.len(), 1, "{}", dump(&findings));
+        assert_eq!(ours[0].severity, Severity::High);
+        let why = format!("{} is 0700", work.display());
+        assert!(
+            ours[0]
+                .title
+                .ends_with(&format!("world-readable by mode (not reachable: {why})")),
+            "{}",
+            ours[0].title
+        );
+        assert!(
+            v["network_listeners"][0].get("readable_secret_files").is_none(),
+            "{text}"
+        );
+        let e = v["env_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"].as_str().unwrap().ends_with("server/.env"))
+            .unwrap();
+        assert_eq!(e["unreachable_via"], why.as_str(), "{e}");
+        let env_f: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.location.ends_with("server/.env"))
+            .collect();
+        assert_eq!(env_f.len(), 1, "{}", dump(&findings));
+        assert_eq!(env_f[0].severity, Severity::Low, "{}", dump(&findings));
+        assert!(env_f[0].title.contains("not reachable"), "{}", env_f[0].title);
+        assert!(!text.contains(ENV_VALUES[1]));
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Review R16: a server whose only shell signal is a shell child when the scan looked
+    /// (no PTY master, no tmux/screen child, no known bridge name) may be running a build
+    /// step: Medium "may hand out a shell", not High. Fails on 8e58777: High "hands out a
+    /// shell/PTY".
+    #[test]
+    fn a_shell_child_alone_is_medium() {
+        let home = temp_dir("e2e-shellchild");
+        let proc_root = home.join("fixture-proc");
+        let server = home.join("work/server");
+        fs::create_dir_all(&server).unwrap();
+        fs::create_dir_all(&proc_root).unwrap();
+        write(
+            &home.join(".claude.json"),
+            &serde_json::json!({"projects": {server.to_str().unwrap(): {}}}).to_string(),
+        );
+        let me = my_uid(&home);
+        let mut p = Proc::new(proc_root.clone());
+        p.listen(false, "0501A8C0", 9000, me, 78);
+        p.finish();
+        p.pid(Pid {
+            pid: 910,
+            comm: "buildsrv",
+            exe: "/opt/x/buildsrv",
+            cwd: &server,
+            ppid: 1,
+            age_days: 1,
+            fds: &["socket:[78]"],
+            children: Some(&[911]),
+        });
+        p.pid(Pid {
+            pid: 911,
+            comm: "bash",
+            exe: "/bin/bash",
+            cwd: &server,
+            ppid: 910,
+            age_days: 1,
+            fds: &[],
+            children: Some(&[]),
+        });
+        let text = run(&home, &proc_root, "json");
+        let report: ScanReport = serde_json::from_str(&text).unwrap();
+        let findings = collect_findings(&report);
+        let ours: Vec<&Finding> = findings.iter().filter(|f| f.category == "Network listener").collect();
+        assert_eq!(ours.len(), 1, "{}", dump(&findings));
+        assert_eq!(ours[0].severity, Severity::Medium, "{}", dump(&findings));
+        assert!(ours[0].title.contains("may hand out a shell"), "{}", ours[0].title);
         fs::remove_dir_all(&home).unwrap();
     }
 

@@ -414,11 +414,17 @@ fn probe_stdio_server(
         );
     }
 
+    // Shown redacted: the argv the child gets is the config's own, credentials included.
+    let shown: Vec<String> = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| crate::scanners::mcp::redact_arg(a, i.checked_sub(1).map(|j| args[j].as_str())))
+        .collect();
     eprintln!(
         "warning: probing MCP server '{}' — this executes: {} {}",
-        name,
-        command,
-        args.join(" ")
+        crate::scanners::sanitize_display(name, 128),
+        crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(command), 256),
+        crate::scanners::sanitize_display(&shown.join(" "), 1024)
     );
 
     let mut cmd = crate::scanners::child_command(command);

@@ -9652,6 +9652,11 @@ fn env_case(
     fs::set_permissions(&env, fs::Permissions::from_mode(mode)).unwrap();
     register_projects(&home, &[&proj]);
     let (_, mut report) = scan(&home, &["envfiles"]);
+    // These cases grade by mode bits; reachability through the temp directory's
+    // ancestors (a 0700 TMPDIR parent in CI) is `review_fixes`' own test.
+    for e in &mut report.env_files {
+        e.unreachable_via = None;
+    }
     let _ = fs::set_permissions(&env, fs::Permissions::from_mode(0o600));
     let _ = fs::remove_dir_all(&home);
     let findings: Vec<Finding> = collect_findings(&report)

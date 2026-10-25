@@ -72,7 +72,7 @@ pub fn settings_command_scripts(home: &Path, claude_dir: &Path) -> Vec<SettingsC
             setting: (*key).to_string(),
             settings_path: sanitize_display(&settings.to_string_lossy(), 512),
             path: sanitize_display(&script.to_string_lossy(), 512),
-            bin: crate::scanners::persistence::agent_bin_info(&script, &meta),
+            bin: crate::scanners::persistence::agent_bin_info(&script, &meta, crate::scanners::home_owner_uid(home)),
         });
     }
     out

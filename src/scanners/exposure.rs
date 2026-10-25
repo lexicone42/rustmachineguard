@@ -212,17 +212,32 @@ pub fn annotate_cache(f: &mut ExposureFinding) {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return;
     };
-    let mut names: Vec<String> = json
+    // Each `_npx.packages` spec by its identity (a git spec with a token in its URL is
+    // named by its repository path, never copied), and kept as `name@version` (or the
+    // bare name when it floats) so the activity check can match the exact launch.
+    let ids: Vec<(String, Option<String>)> = json
         .get("_npx")
         .and_then(|n| n.get("packages"))
         .and_then(|p| p.as_array())
         .map(|a| {
             a.iter()
                 .filter_map(|v| v.as_str())
-                .map(|spec| crate::scanners::mcp::split_npm_package_version(spec).0)
+                .filter_map(|spec| crate::scanners::mcp::package_identity_of("npm", spec))
+                .take(16)
                 .collect()
         })
         .unwrap_or_default();
+    let mut specs: Vec<String> = ids
+        .iter()
+        .map(|(n, v)| match v {
+            Some(v) => format!("{n}@{v}"),
+            None => n.clone(),
+        })
+        .collect();
+    specs.sort();
+    specs.dedup();
+    f.cache_specs = specs;
+    let mut names: Vec<String> = ids.into_iter().map(|(n, _)| n).collect();
     if names.is_empty()
         && let Some(deps) = json.get("dependencies").and_then(|d| d.as_object())
     {

@@ -1541,7 +1541,8 @@ fn short_flag_clusters_are_not_secret_names() {
         "tool -pat a",
         "tool -pwd a",
         "tool -jwt a",
-        "tool -pass a",
+        // (`-pass a` is openssl's pass-phrase flag, an explicit table entry since the
+        // review fixes: see `review_fixes::openssl_pass_flags_redact`.)
         "tool -SK a",
     ] {
         assert_eq!(
@@ -1842,4 +1843,209 @@ fn key_hint_matches_whole_words_only() {
             assert!(!out.contains(gone), "{raw:?} -> {out:?}");
         }
     }
+}
+
+/// Review fixes R1, R2, R4 and R6: an MCP or plugin LSP launch whose package spec, flag
+/// or argv element carries a credential. Package identity was built from the RAW
+/// arguments (`split_npm_package_version` splits at the LAST `@`, so URL userinfo became
+/// the npm name, `git+https://TOKEN`), a `-`-prefixed element was taken as a package
+/// (`node --api-key=TOKEN server.js` -> `npm:--api-key=TOKEN`), an image's userinfo
+/// became its version, and each argv element was tokenized as shell text (the tail after
+/// the first space of `--password=a b X` showed). LSP arguments kept `-pVALUE` and
+/// `-HAuthorization: Bearer X` verbatim. One canary per shape, in every format (the SBOM
+/// purl included) and the `--trace` stream; positive controls name the repository paths
+/// the identities now carry. Fails on 8e58777: RVCPKGA..RVCPKGF reach the JSON
+/// `package_name`/`package_version`, the SBOM purl and the terminal; RVCARGA..RVCARGD
+/// reach `args`; RVCLSPA/RVCLSPB reach `agent_lsp_servers[].args`.
+#[test]
+fn package_identity_and_argv_canaries_reach_no_format() {
+    use std::collections::BTreeSet;
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-pkgid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let w = |p: std::path::PathBuf, t: &str| {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, t).unwrap();
+    };
+    w(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{
+          "a":{"command":"npx","args":["-y","git+https://RVCPKGA@github.com/org/mcp.git"]},
+          "b":{"command":"uvx","args":["--from","git+https://x-access-token:RVCPKGB@github.com/o/r","mcp-server"]},
+          "c":{"command":"pipx","args":["run","--spec","git+https://u:RVCPKGC@github.com/o/rtwo","app"]},
+          "d":{"command":"node","args":["--api-key=RVCPKGD","server.js"]},
+          "e":{"command":"docker","args":["run","-i","user:RVCPKGE@registry.example/img:1"]},
+          "f":{"command":"python3","args":["-m","--password=RVCPKGF"]},
+          "g":{"command":"npx","args":["some-mcp@1.0.0","--header=Authorization:Bearer RVCARGA","--password=a b RVCARGB","-e","API_KEY=a RVCARGC","--token","-RVCARGD"]}
+        }}"#,
+    );
+    // A plugin LSP server with attached short-flag values and a git spec with a token.
+    let ip = home.join(".claude/plugins/cache/mk/lp/1.0.0");
+    w(
+        ip.join(".lsp.json"),
+        r#"{"lsp":{"command":"npx","args":["git+https://RVCLSPC@github.com/o/lsp","-pRVCLSPA","-HAuthorization: Bearer RVCLSPB","--stdio"],"extensionToLanguage":{".x":"x"}}}"#,
+    );
+    w(
+        home.join(".claude/plugins/installed_plugins.json"),
+        &format!(
+            r#"{{"version":2,"plugins":{{"lp@mk":[{{"scope":"user","installPath":"{}","version":"1.0.0"}}]}}}}"#,
+            ip.display()
+        ),
+    );
+    let skip = "ai,frameworks,ide,extensions,node,shell,ssh,cloud,containers,notebooks,browser,packages,rules,skills,\
+                settings,aicreds,envfiles,transcripts,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,\
+                persistence,liveness,playwright,vibe,statusline,listeners";
+    let canaries = |text: &str| -> BTreeSet<String> {
+        text.match_indices("RVC")
+            .map(|(i, _)| {
+                let end = text[i + 3..]
+                    .find(|c: char| !c.is_ascii_uppercase())
+                    .map_or(text.len(), |o| i + 3 + o);
+                text[i..end].to_string()
+            })
+            .filter(|c| c.len() > 3)
+            .collect()
+    };
+    assert_eq!(canaries("x RVCFOO y").len(), 1, "the detector sees a canary");
+    for args in [
+        &["--format", "json"][..],
+        &["--format", "terminal", "--verbose"],
+        &["--format", "html"],
+        &["--format", "sbom"],
+        &["--format", "blueprint"],
+        &["--format", "compliance"],
+        &["--format", "json", "--trace"],
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(args)
+            .args(["--skip", skip])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let leaked = canaries(&text);
+        assert!(
+            leaked.is_empty(),
+            "{args:?}: secret values reached the output: {leaked:?}"
+        );
+        if args == ["--format", "json"] {
+            for shown in [
+                "\"package_name\": \"github.com/org/mcp\"",
+                "\"package_name\": \"github.com/o/r\"",
+                "\"package_name\": \"github.com/o/rtwo\"",
+                "\"package_name\": \"registry.example/img\"",
+                "\"package_name\": \"server.js\"",
+                "--header=Authorization:Bearer <redacted>",
+                "--password=<redacted>",
+                "API_KEY=<redacted>",
+                "\"-p<value>\"",
+                "\"-H<value>\"",
+                "\"package\": \"github.com/o/lsp@git HEAD\"",
+            ] {
+                assert!(text.contains(shown), "positive control {shown} missing: {text}");
+            }
+        }
+        if args == ["--format", "sbom"] {
+            assert!(
+                !text.contains("pkg:npm//")
+                    && !text.contains("pkg:npm/server.js")
+                    && !text.contains("pkg:npm/github.com"),
+                "a path or git source became a purl: {text}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// Review fix R4: the account UUIDs of a synced-skill directory in its ENCODED spelling,
+/// as Claude Code names a project directory under `~/.claude/projects/`
+/// (`...-skills-synced-<org>-<account>`: the `_` encodes to `-`), never reach a report or
+/// the `--trace` stream; the path spelling stays masked too. Fails on 8e58777: the
+/// memory file's path under the encoded name shows both UUIDs in JSON, terminal and trace.
+#[test]
+fn encoded_synced_identifiers_reach_no_output_or_trace() {
+    use std::fs;
+    const ORG: &str = "3E2E0A1B-2C3D-4E5F-8A9B-0C1D2E3F4A5B";
+    const ACCT: &str = "4e2e0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5c";
+    let home = std::env::temp_dir().join(format!("rmg-e2e-encuuid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    let synced = home.join(format!(".claude/skills/synced/{ORG}_{ACCT}/x"));
+    let enc = rustmachineguard::platform::encode_project_path(&synced);
+    assert!(enc.contains(&format!("synced-{ORG}-{ACCT}")), "{enc}");
+    let mem = home.join(".claude/projects").join(&enc).join("memory/MEMORY.md");
+    fs::create_dir_all(mem.parent().unwrap()).unwrap();
+    fs::write(&mem, "# memory\nRun the deploy.\n").unwrap();
+    fs::write(mem.with_file_name("notes.jsonl"), "{}\n").unwrap();
+    fs::write(home.join(".claude.json"), "{}").unwrap();
+    let leaked = |text: &str| -> Vec<&str> {
+        let lower = text.to_ascii_lowercase();
+        [ORG, ACCT]
+            .into_iter()
+            .filter(|u| lower.contains(&u.to_ascii_lowercase()))
+            .collect()
+    };
+    let mut seen_masked = false;
+    for args in [
+        &["--format", "json"][..],
+        &["--format", "terminal", "--verbose"],
+        &["--format", "html"],
+        &["--format", "sbom"],
+        &["--format", "blueprint"],
+        &["--format", "json", "--trace"],
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(args)
+            .args(["--skip", "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,aicreds,envfiles,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence,liveness,playwright,vibe,statusline,listeners"])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            leaked(&text).is_empty(),
+            "{args:?}: account identifiers reached the output: {text}"
+        );
+        seen_masked |= text.contains("synced-<org>-<account>");
+    }
+    assert!(
+        seen_masked,
+        "positive control: the encoded directory was reported under its masked name"
+    );
+    // The trace stream specifically: every line goes through sanitize_display.
+    use rustmachineguard::scanners::{mask_identifiers, sanitize_display};
+    let line = format!(
+        "trace: read {}/.claude/projects/-h-u--claude-skills-synced-{ORG}-{ACCT}-x/memory/MEMORY.md -> ok",
+        home.display()
+    );
+    assert!(leaked(&sanitize_display(&line, 4096)).is_empty());
+    assert_eq!(
+        mask_identifiers(&format!("-h--claude-skills-synced-{ACCT}-y")),
+        "-h--claude-skills-synced-<account>-y"
+    );
+    let _ = fs::remove_dir_all(&home);
 }

@@ -208,7 +208,8 @@ const MAX_NAMES: usize = 100;
 
 /// The names a store's files export ([`ExportedNames`](crate::models::ExportedNames)):
 /// the first [`NAME_SAMPLE_BYTES`] of the first [`NAME_SAMPLE_FILES`] files other users
-/// can read, in path order. Each line yields at most one NAME (see [`exported_name`]);
+/// can read, in path order. Each top-level line yields at most one NAME (see
+/// [`exported_names_in`]);
 /// nothing to the right of its `=` is kept, so no value leaves this function.
 fn exported_names(dir: &Path, bare_assignments: bool, root_traversable: bool) -> crate::models::ExportedNames {
     let files = readable_files_sorted(dir, root_traversable);
@@ -219,16 +220,14 @@ fn exported_names(dir: &Path, bare_assignments: bool, root_traversable: bool) ->
             continue;
         };
         sampled += 1;
-        for line in head.split(|b| *b == b'\n') {
-            if let Some(n) = exported_name(line, bare_assignments) {
-                // A NAME is an identifier, but one shaped like a key is not shown.
-                let shown = if crate::scanners::redact_command_text(&n) == n {
-                    n
-                } else {
-                    "<key-shaped name>".to_string()
-                };
-                names.insert(shown);
-            }
+        for n in exported_names_in(&head, bare_assignments) {
+            // A NAME is an identifier, but one shaped like a key is not shown.
+            let shown = if crate::scanners::redact_command_text(&n) == n {
+                n
+            } else {
+                "<key-shaped name>".to_string()
+            };
+            names.insert(shown);
         }
     }
     let truncated = names.len() > MAX_NAMES;
@@ -295,6 +294,123 @@ pub fn exported_name(line: &[u8], bare: bool) -> Option<String> {
         return ident(rest).map(|(name, _)| name);
     }
     None
+}
+
+/// Shell lexing state carried from one line to the next.
+#[derive(Clone, Copy, PartialEq)]
+enum LineState {
+    Top,
+    Single,
+    Double,
+    AnsiC,
+}
+
+/// The NAMES [`exported_name`] finds in `content`, judged only on lines that start at
+/// shell top level: a line inside a quoted value that spans lines (`export DB_URL="a` ...
+/// `sslpassword=b"`) or inside a here-document (`<<EOF` ... `EOF`, `<<-EOF` with leading
+/// tabs, quoted delimiters) is part of a value, and an `IDENT=` at its start is not an
+/// assignment. Quote state follows POSIX: `'...'` has no escapes, `"..."` and `$'...'`
+/// honour a backslash, and a `#` that starts a word comments out the rest of the line.
+pub fn exported_names_in(content: &[u8], bare: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut state = LineState::Top;
+    let mut heredocs: std::collections::VecDeque<(Vec<u8>, bool)> = std::collections::VecDeque::new();
+    let mut in_heredoc: Option<(Vec<u8>, bool)> = None;
+    for line in content.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some((delim, strip_tabs)) = &in_heredoc {
+            let l = if *strip_tabs {
+                let t = line.iter().take_while(|c| **c == b'\t').count();
+                &line[t..]
+            } else {
+                line
+            };
+            if l == delim.as_slice() {
+                in_heredoc = heredocs.pop_front();
+            }
+            continue;
+        }
+        if state == LineState::Top
+            && let Some(n) = exported_name(line, bare)
+        {
+            out.push(n);
+        }
+        state = scan_line(line, state, &mut heredocs);
+        if state == LineState::Top && in_heredoc.is_none() {
+            in_heredoc = heredocs.pop_front();
+        }
+    }
+    out
+}
+
+/// The quote state after one line, queueing the here-documents it opens.
+fn scan_line(
+    line: &[u8],
+    mut state: LineState,
+    heredocs: &mut std::collections::VecDeque<(Vec<u8>, bool)>,
+) -> LineState {
+    let mut i = 0;
+    let word_start = |i: usize| i == 0 || matches!(line[i - 1], b' ' | b'\t' | b';' | b'&' | b'|' | b'(');
+    while i < line.len() {
+        let c = line[i];
+        match state {
+            LineState::Top => match c {
+                b'\\' => i += 1,
+                b'\'' => state = LineState::Single,
+                b'"' => state = LineState::Double,
+                b'$' if line.get(i + 1) == Some(&b'\'') => {
+                    state = LineState::AnsiC;
+                    i += 1;
+                }
+                b'#' if word_start(i) => return state,
+                b'<' if line.get(i + 1) == Some(&b'<') && line.get(i + 2) != Some(&b'<') => {
+                    let mut j = i + 2;
+                    let strip_tabs = line.get(j) == Some(&b'-');
+                    if strip_tabs {
+                        j += 1;
+                    }
+                    while line.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+                        j += 1;
+                    }
+                    let quote = line.get(j).copied().filter(|q| *q == b'\'' || *q == b'"');
+                    if quote.is_some() {
+                        j += 1;
+                    }
+                    let start = j;
+                    while line.get(j).is_some_and(|b| {
+                        Some(*b) != quote
+                            && !b.is_ascii_whitespace()
+                            && !matches!(b, b';' | b'&' | b'|' | b'<' | b'>' | b')')
+                    }) {
+                        j += 1;
+                    }
+                    if j > start {
+                        heredocs.push_back((line[start..j].to_vec(), strip_tabs));
+                    }
+                    if quote.is_some() && line.get(j) == quote.as_ref() {
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+                _ => {}
+            },
+            LineState::Single => {
+                if c == b'\'' {
+                    state = LineState::Top;
+                }
+            }
+            LineState::Double | LineState::AnsiC => {
+                if c == b'\\' {
+                    i += 1;
+                } else if (state == LineState::Double && c == b'"') || (state == LineState::AnsiC && c == b'\'') {
+                    state = LineState::Top;
+                }
+            }
+        }
+        i += 1;
+    }
+    state
 }
 
 /// Files under `dir` other users can read (o+r, every directory down to it o+x), sorted

@@ -97,7 +97,7 @@ impl Scanner for McpScanner {
                 continue;
             }
             let mut servers = extract_mcp_server_details(&pv);
-            apply_mcpjson_toggles(&proj, &mut servers);
+            apply_mcpjson_toggles(&proj, &home, claude_value.as_ref(), &mut servers);
             let server_count = server_names.len();
             results.push(McpConfig {
                 config_source: format!("Project MCP ({})", proj.display()),
@@ -116,43 +116,105 @@ impl Scanner for McpScanner {
     }
 }
 
-/// A project's `.mcp.json` approvals from its own `.claude/settings.json` and
-/// `.claude/settings.local.json` (lists merge across files, code.claude.com/docs/en/settings.md
-/// "Lists merge instead of overriding"): a server in `disabledMcpjsonServers` is
-/// `enabled: false` ("blocks it in every permission mode", code.claude.com/docs/en/mcp.md),
-/// and one in `enabledMcpjsonServers` and not disabled is `approved: true`. Inventory
-/// only. An approval committed to `.claude/settings.json` takes effect only once the
-/// folder is trusted (mcp.md, "Project server approvals and workspace trust"), which
-/// this scanner cannot see; user and managed settings are not read here.
-fn apply_mcpjson_toggles(proj: &Path, servers: &mut [McpServerDetail]) {
-    let mut disabled = std::collections::BTreeSet::new();
-    let mut approved = std::collections::BTreeSet::new();
-    for file in ["settings.json", "settings.local.json"] {
-        let p = proj.join(".claude").join(file);
-        if !crate::scanners::probe_file(&p) {
-            continue;
-        }
-        let Some(v) =
-            crate::scanners::read_bounded(&p).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        else {
-            continue;
-        };
+/// Approval lists for project `.mcp.json` servers from one settings source.
+#[derive(Default)]
+pub(crate) struct McpjsonApprovals {
+    disabled: std::collections::BTreeSet<String>,
+    approved: std::collections::BTreeSet<String>,
+    all: bool,
+}
+
+impl McpjsonApprovals {
+    /// Merge `disabledMcpjsonServers`, `enabledMcpjsonServers` and
+    /// `enableAllProjectMcpServers` from one settings object (lists merge across files,
+    /// code.claude.com/docs/en/settings.md "Lists merge instead of overriding").
+    pub(crate) fn add(&mut self, v: &serde_json::Value) {
         for (key, set) in [
-            ("disabledMcpjsonServers", &mut disabled),
-            ("enabledMcpjsonServers", &mut approved),
+            ("disabledMcpjsonServers", &mut self.disabled),
+            ("enabledMcpjsonServers", &mut self.approved),
         ] {
             if let Some(a) = v.get(key).and_then(|x| x.as_array()) {
-                set.extend(a.iter().filter_map(|x| x.as_str()).map(|s| sanitize_display(s, 128)));
+                set.extend(
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .take(1000)
+                        .map(|s| sanitize_display(s, 128)),
+                );
+            }
+        }
+        self.all |= v.get("enableAllProjectMcpServers").and_then(|b| b.as_bool()) == Some(true);
+    }
+
+    /// Mark each server: disabled (`enabled: false`; "Takes precedence and is not
+    /// overridden by `enabledMcpjsonServers`"), approved (`enabled: true`), or awaiting
+    /// approval (`enabled` unknown and not active). A server already decided stays so
+    /// unless this source disables it.
+    pub(crate) fn apply(&self, servers: &mut [McpServerDetail]) {
+        for s in servers {
+            if self.disabled.contains(&s.name) {
+                s.enabled = Some(false);
+                s.approved = false;
+                s.awaits_approval = false;
+            } else if s.enabled == Some(false) {
+                // Disabled by an earlier source: an approval here does not undo it.
+            } else if self.all || self.approved.contains(&s.name) {
+                s.enabled = Some(true);
+                s.approved = true;
+                s.awaits_approval = false;
+            } else if s.enabled.is_none() && !s.approved {
+                s.awaits_approval = true;
             }
         }
     }
-    for s in servers {
-        if disabled.contains(&s.name) {
-            s.enabled = Some(false);
-        } else if approved.contains(&s.name) {
-            s.approved = true;
+}
+
+/// A project's `.mcp.json` approvals: its own `.claude/settings.json` and
+/// `.claude/settings.local.json`, the user's `~/.claude/settings.json`, and the project's
+/// entry in `~/.claude.json` (where Claude Code records the approval dialog's answers:
+/// `projects.<path>.enabledMcpjsonServers` / `disabledMcpjsonServers`). Per
+/// code.claude.com/docs/en/mcp.md, project-scoped servers "require approval before
+/// Claude Code connects to them in interactive sessions" and an unapproved one stays
+/// "⏸ Pending approval": such a server awaits approval and is not active (no toxic-flow
+/// or launcher grade rests on it). A server in `disabledMcpjsonServers` is
+/// `enabled: false` ("blocks it"); one approved by name or by
+/// `enableAllProjectMcpServers` is `enabled: true`. Managed settings are applied after
+/// every pass ([`post_scan`]). An approval committed to `.claude/settings.json` takes
+/// effect only once the folder is trusted (mcp.md, "Workspace Trust Interaction"), which
+/// this scanner does not model: it counts as approved, the side that does not hide a
+/// server. `claude -p` and SDK sessions load project servers without asking; the
+/// interactive rule is the one graded.
+fn apply_mcpjson_toggles(
+    proj: &Path,
+    home: &Path,
+    claude_json: Option<&serde_json::Value>,
+    servers: &mut [McpServerDetail],
+) {
+    let mut lists = McpjsonApprovals::default();
+    let files = [
+        proj.join(".claude").join("settings.json"),
+        proj.join(".claude").join("settings.local.json"),
+        home.join(".claude").join("settings.json"),
+    ];
+    for p in &files {
+        if !crate::scanners::probe_file(p) {
+            continue;
+        }
+        if let Some(v) =
+            crate::scanners::read_bounded(p).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        {
+            lists.add(&v);
         }
     }
+    if let Some(projects) = claude_json.and_then(|v| v.get("projects")).and_then(|p| p.as_object()) {
+        let real = std::fs::canonicalize(proj).ok();
+        for (k, v) in projects {
+            let kp = Path::new(k);
+            if kp == proj || real.as_deref() == Some(kp) {
+                lists.add(v);
+            }
+        }
+    }
+    lists.apply(servers);
 }
 
 /// The projects whose `.mcp.json` this pass reads ([`crate::platform::PassScope::with_cwd`]),
@@ -528,6 +590,18 @@ pub fn post_scan(report: &mut ScanReport) {
         .collect();
     let managed_paths: Vec<String> = managed().map(|s| s.path.clone()).collect();
     let connectors_off = managed_paths.iter().any(|p| managed_disables_connectors(Path::new(p)));
+    // Managed `.mcp.json` approvals and blocks apply in every project.
+    let mut managed_lists = McpjsonApprovals::default();
+    for p in &managed_paths {
+        if let Some(v) =
+            crate::scanners::read_bounded(Path::new(p)).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        {
+            managed_lists.add(&v);
+        }
+    }
+    for cfg in report.mcp_configs.iter_mut().filter(|c| c.vendor == "Project") {
+        managed_lists.apply(&mut cfg.servers);
+    }
     for cfg in &mut report.mcp_configs {
         for s in &mut cfg.servers {
             if cfg.config_source == MCP_SOURCE_PLUGIN
@@ -661,21 +735,63 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
 /// `prev` is the preceding argument, so `--password secret` can be caught as well as
 /// `--password=secret`.
 pub fn redact_arg(arg: &str, prev: Option<&str>) -> String {
-    // A bare value whose FLAG was secret-looking: `--token`, `-p`, `--api-key`. The MCP
-    // flag table is wider than the shared helper's (single-letter flags included) because
-    // an MCP launch line is a program invocation, not a shell script.
+    // A value whose FLAG was secret-looking: `--token`, `-p`, `--api-key`. The MCP flag
+    // table is wider than the shared helper's (single-letter flags included) because an
+    // MCP launch line is a program invocation, not a shell script. The value is the
+    // whole next element, even when it starts with `-` (`["--token", "-X"]`); a flag
+    // that carried its own value (`--token=abc`) owes nothing to the next element.
     if let Some(prev) = prev
-        && !arg.starts_with('-')
+        && !prev.contains('=')
         && flag_names_a_secret(prev)
     {
         return "<redacted>".to_string();
     }
-    // Everything else -- `--flag=value`, URLs, `Authorization: Bearer x` inside a single
-    // `--header` argument, `Server=db;Password=x;` connection strings -- is the shared
-    // helper's job. This used to handle only URL userinfo itself and return anything else
-    // untouched, which let header and connection-string credentials into JSON and
-    // Blueprint while the canary suite tested a function this path never called.
+    // One argv element is ONE word: no shell splits it, so a credential after `=` or
+    // after a header's scheme runs to the end of the element, spaces included
+    // (`--password=a b X`, `API_KEY=a X`, `--header=Authorization:Bearer X`). Tokenizing
+    // the element as shell text showed the tail after the first space.
+    if let Some(shown) = redact_element(arg) {
+        return shown;
+    }
+    // Everything else -- URLs, connection strings (`Server=db;Password=x;`), code -- is
+    // the shared helper's job.
     crate::scanners::redact_secrets_in_text(arg)
+}
+
+/// [`redact_arg`]'s whole-element rules: a credential header (`Authorization: Bearer X`,
+/// `X-Api-Key:X`, also after `--header=` / `-H`) keeps its name and scheme word and
+/// shows the rest by shape ([`value_shape`]); a `--flag=value` or `NAME=value` whose
+/// flag or name is secret-shaped keeps the key and shows the value by shape. None when
+/// neither applies.
+fn redact_element(arg: &str) -> Option<String> {
+    let (head, body) = match arg.split_once('=') {
+        Some((f, v)) if f.starts_with('-') && !v.is_empty() && v.contains(':') => (&arg[..f.len() + 1], v),
+        _ => ("", arg),
+    };
+    if let Some((name, val)) = body.split_once(':')
+        && !name.is_empty()
+        && !name.contains(['/', ' ', '='])
+        && header_names_a_secret(name.trim_start_matches('-'))
+        && !val.trim().is_empty()
+    {
+        let v = val.trim_start();
+        let lead = &val[..val.len() - v.len()];
+        // The shape never holds a literal; a pure reference (`Bearer ${TOKEN}`) is kept.
+        return Some(format!("{head}{name}:{lead}{}", value_shape(v)));
+    }
+    let (k, v) = arg.split_once('=')?;
+    if v.is_empty() || k.contains("://") || k.is_empty() {
+        return None;
+    }
+    let named = if k.starts_with('-') {
+        flag_names_a_secret(k)
+    } else {
+        k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && crate::scanners::env_files::is_secret_key_name(k)
+    };
+    if !named {
+        return None;
+    }
+    Some(format!("{k}={}", value_shape(v)))
 }
 
 /// True if a CLI flag name suggests its value is a secret. Reuses the shared key-name
@@ -1067,6 +1183,12 @@ fn npm_git_reason(spec: &str) -> Option<Option<String>> {
     })
 }
 
+/// An npm launch version that does not name one release (`latest`, another dist-tag, a
+/// range): the cache npx made for it is the one an unpinned launch re-uses.
+pub fn npm_version_floats(version: &str) -> bool {
+    npm_version_reason(Some(version)).is_some()
+}
+
 fn npm_version_reason(version: Option<&str>) -> Option<String> {
     match version {
         None | Some("") => Some("no version".to_string()),
@@ -1160,55 +1282,249 @@ fn is_inline_literal(value: &str) -> bool {
 }
 
 /// Infer package ecosystem, name, and version from a launcher command and its args.
+///
+/// The identity ships in every format (terminal, JSON, SBOM purl, Blueprint, HTML), so it
+/// is built from the spec's SHAPE, never copied from the raw argument: a `-`-prefixed
+/// element is never a package (`node --api-key=X server.js`, `python3 -m --password=X`),
+/// URL userinfo is dropped before any split (`git+https://TOKEN@github.com/o/r` used to
+/// become the npm name `git+https://TOKEN`, split at its LAST `@`), a git source is named
+/// by its repository path (`github.com/o/r`, version its ref or `git HEAD`), an npm spec
+/// splits at `@` only when what follows reads as a version or dist-tag, and a name that
+/// is not a registry name of its ecosystem is no identity at all. Whatever is kept is
+/// redacted and sanitized once more.
 pub fn infer_package_from_command(command: &str, args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
     let cmd_base = std::path::Path::new(command)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(command);
 
+    let none = (None, None, None);
     match cmd_base {
-        "python" | "python3" if args.first().is_some_and(|a| a == "-m") => {
-            if let Some(module) = args.get(1) {
-                (Some("pypi".to_string()), Some(module.clone()), None)
-            } else {
-                (None, None, None)
+        "python" | "python3" if args.first().is_some_and(|a| a == "-m") => match args.get(1) {
+            Some(module) if is_python_name(module) => (Some("pypi".to_string()), Some(clean_identity(module)), None),
+            _ => none,
+        },
+        "node" => match args.iter().find(|a| !a.starts_with('-')) {
+            // A local script, by its redacted shape (`node /abs/server.js`): not a registry
+            // package, so its ecosystem is `local` (no purl, no catalog or registry lookup).
+            Some(script) if !script.contains("://") && !strip_spec_userinfo(script).1 => {
+                (Some("local".to_string()), Some(clean_identity(script)), None)
             }
-        }
-        "node" => {
-            if let Some(script) = args.first() {
-                (Some("npm".to_string()), Some(script.clone()), None)
-            } else {
-                (None, None, None)
-            }
-        }
+            _ => none,
+        },
         _ => match launch_spec(command, args) {
-            Some(LaunchSpec {
-                kind: LaunchKind::Npm,
-                spec,
-                ..
-            }) => {
-                let (name, version) = split_npm_package_version(spec);
-                (Some("npm".to_string()), Some(name), version)
-            }
-            Some(LaunchSpec {
-                kind: LaunchKind::Python,
-                spec,
-                ..
-            }) => {
-                let (name, version) = split_python_spec(spec);
-                (Some("pypi".to_string()), Some(name), version)
-            }
-            Some(LaunchSpec {
-                kind: LaunchKind::Docker,
-                spec,
-                ..
-            }) => {
-                let (name, version) = split_image(spec);
-                (Some("docker".to_string()), Some(name), version)
-            }
-            None => (None, None, None),
+            Some(LaunchSpec { kind, spec, .. }) => match package_identity(kind, spec) {
+                Some((name, version)) => {
+                    let eco = match kind {
+                        LaunchKind::Npm => "npm",
+                        LaunchKind::Python => "pypi",
+                        LaunchKind::Docker => "docker",
+                    };
+                    (Some(eco.to_string()), Some(name), version)
+                }
+                None => none,
+            },
+            None => none,
         },
     }
+}
+
+/// Redacted and display-safe: the last step of every identity field.
+fn clean_identity(s: &str) -> String {
+    crate::scanners::sanitize_display(&crate::scanners::redact_secrets_in_text(s), 256)
+}
+
+/// `spec` without scheme-less userinfo (`user:pw@registry/img:1`): the `@` must come
+/// before the first `/`, a `:` before it, and a `/` after it, so a digest
+/// (`img:1@sha256:..`), a scoped npm name and uv's `pkg@1.0` keep theirs. The flag says
+/// whether userinfo was removed.
+fn strip_spec_userinfo(spec: &str) -> (&str, bool) {
+    let slash = spec.find('/');
+    if let Some(slash) = slash
+        && let Some(at) = spec[..slash].rfind('@')
+        && at > 0
+        && spec[..at].contains(':')
+    {
+        return (&spec[at + 1..], true);
+    }
+    (spec, false)
+}
+
+/// A git or URL source's identity: (`host/path` without `.git`, ref or `git HEAD`), with
+/// userinfo, query and fragment parameters dropped. npm's hosted shorthands
+/// (`github:o/r`, `gitlab:`, `bitbucket:`, `gist:`) and the `o/r` GitHub shorthand name
+/// their host. None when `spec` is not a URL or git source.
+fn source_identity(kind: LaunchKind, spec: &str) -> Option<(String, Option<String>)> {
+    let hosted = [
+        ("github:", "github.com"),
+        ("gitlab:", "gitlab.com"),
+        ("bitbucket:", "bitbucket.org"),
+        ("gist:", "gist.github.com"),
+    ];
+    let git = spec.starts_with("git+") || spec.starts_with("git://") || spec.starts_with("git@");
+    let (host, path, frag): (String, String, Option<String>) =
+        if let Some((prefix, host)) = hosted.iter().find(|(p, _)| spec.starts_with(p)) {
+            let rest = &spec[prefix.len()..];
+            let (path, frag) = rest
+                .split_once('#')
+                .map_or((rest, None), |(p, f)| (p, Some(f.to_string())));
+            (host.to_string(), path.to_string(), frag)
+        } else if let Some(sc) = spec.find("://") {
+            let after = &spec[sc + 3..];
+            let (authority, rest) = after.split_at(after.find(['/', '?', '#', '\\']).unwrap_or(after.len()));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_string();
+            let (rest, frag) = rest
+                .split_once('#')
+                .map_or((rest, None), |(p, f)| (p, Some(f.to_string())));
+            let path = rest.split('?').next().unwrap_or("").to_string();
+            (host, path, frag)
+        } else if let Some(rest) = spec.strip_prefix("git@") {
+            // scp-like `git@github.com:o/r.git`
+            let (host, path) = rest.split_once(':')?;
+            let (path, frag) = path
+                .split_once('#')
+                .map_or((path, None), |(p, f)| (p, Some(f.to_string())));
+            (host.to_string(), path.to_string(), frag)
+        } else if kind == LaunchKind::Npm
+            && !spec.starts_with('@')
+            && !spec.contains(':')
+            && spec.contains('/')
+            && !is_local_path(spec)
+        {
+            let (path, frag) = spec
+                .split_once('#')
+                .map_or((spec, None), |(p, f)| (p, Some(f.to_string())));
+            ("github.com".to_string(), path.to_string(), frag)
+        } else {
+            return None;
+        };
+    let git = git || spec.find("://").is_none() || path.ends_with(".git") || frag.is_some();
+    // A pip/uv git URL carries its ref after the LAST `@` of the path; npm after `#`.
+    let (path, at_ref) = match path.rsplit_once('@') {
+        Some((p, r)) if kind == LaunchKind::Python && git => (p.to_string(), Some(r.to_string())),
+        _ => (path, None),
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let name = if path.is_empty() {
+        host
+    } else {
+        format!("{host}/{path}")
+    };
+    // `#egg=name` / `#subdirectory=x` are pip parameters, not a ref.
+    let frag_ref = frag.filter(|f| !f.contains('=') && !f.is_empty());
+    let version = at_ref
+        .or(frag_ref)
+        .map(|r| clean_identity(&r))
+        .or_else(|| git.then(|| "git HEAD".to_string()));
+    Some((clean_identity(&name), version))
+}
+
+/// The (name, version) a launch spec fetches, from its shape; see
+/// [`infer_package_from_command`]. None for a flag, or for a name that is not a registry
+/// name of its ecosystem.
+pub fn package_identity_of(kind: &str, spec: &str) -> Option<(String, Option<String>)> {
+    let kind = match kind {
+        "npm" => LaunchKind::Npm,
+        "pypi" => LaunchKind::Python,
+        "docker" => LaunchKind::Docker,
+        _ => return None,
+    };
+    package_identity(kind, spec)
+}
+
+fn package_identity(kind: LaunchKind, spec: &str) -> Option<(String, Option<String>)> {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.starts_with('-') {
+        return None;
+    }
+    // PEP 508 direct reference: `name @ git+https://...`.
+    if kind == LaunchKind::Python
+        && let Some((n, url)) = spec.split_once('@')
+        && url.contains("://")
+        && is_python_name(n.trim())
+    {
+        let version = source_identity(kind, url.trim()).and_then(|(_, v)| v);
+        return Some((clean_identity(n.trim()), version));
+    }
+    if kind != LaunchKind::Docker && is_local_path(spec) {
+        return Some((clean_identity(spec), None));
+    }
+    if let Some(id) = source_identity(kind, spec) {
+        return Some(id);
+    }
+    let (spec, _) = strip_spec_userinfo(spec);
+    let (name, version) = match kind {
+        LaunchKind::Npm => {
+            let (name, version) = split_npm_package_version(spec);
+            (name, version.filter(|v| is_version_or_tag(v)))
+        }
+        LaunchKind::Python => {
+            let (name, version) = split_python_spec(spec);
+            (name, version.filter(|v| is_version_or_tag(v)))
+        }
+        LaunchKind::Docker => split_image(spec),
+    };
+    let valid = match kind {
+        LaunchKind::Npm => is_npm_name(&name),
+        LaunchKind::Python => is_python_name(&name),
+        LaunchKind::Docker => {
+            !name.is_empty()
+                && name.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-' | b':' | b'$' | b'{' | b'}')
+                })
+        }
+    };
+    if !valid {
+        return None;
+    }
+    Some((clean_identity(&name), version.map(|v| clean_identity(&v))))
+}
+
+/// An npm package name: an optional `@scope/`, then name characters.
+fn is_npm_name(n: &str) -> bool {
+    let body = match n.strip_prefix('@') {
+        Some(rest) => match rest.split_once('/') {
+            Some((scope, name)) if !scope.is_empty() && !name.contains('/') => {
+                if !scope.bytes().all(npm_name_byte) {
+                    return false;
+                }
+                name
+            }
+            _ => return false,
+        },
+        None => n,
+    };
+    !body.is_empty() && body.bytes().all(npm_name_byte)
+}
+
+fn npm_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
+}
+
+/// A Python distribution or module name, extras allowed (`mcp[cli]`).
+fn is_python_name(n: &str) -> bool {
+    let base = n.split('[').next().unwrap_or(n);
+    !base.is_empty()
+        && !base.starts_with('-')
+        && base
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && (base.len() == n.len() || n.ends_with(']'))
+}
+
+/// What follows a package name's `@`/`==` reads as a version, range or dist-tag, not a
+/// URL, path or credential.
+fn is_version_or_tag(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 128
+        && v.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'.' | b'+' | b'-' | b'_' | b'^' | b'~' | b'<' | b'>' | b'=' | b'*' | b'|' | b' ' | b',' | b'!'
+                )
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1878,14 +2194,14 @@ mod coverage_tests {
                 Some("some-mcp"),
             ),
             ("npx", &["-y", "./local-server"], None, Some("./local-server")),
-            ("npx", &["-y", "github:o/r"], Some("git HEAD"), Some("github:o/r")),
+            ("npx", &["-y", "github:o/r"], Some("git HEAD"), Some("github.com/o/r")),
             (
                 "npx",
                 &["-y", "o/r#main"],
                 Some("a git branch or tag (not a commit)"),
-                Some("o/r#main"),
+                Some("github.com/o/r"),
             ),
-            ("npx", &["-y", &npm_sha], None, Some(&npm_sha)),
+            ("npx", &["-y", &npm_sha], None, Some("github.com/o/r")),
             ("npx", &["-c", "echo hi"], None, None),
             // pipx run: --spec is the spec, --python skipped.
             ("pipx", &["run", "--spec", "mcp-x==1.0", "mcp-x"], None, Some("mcp-x")),
