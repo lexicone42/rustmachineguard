@@ -394,6 +394,27 @@ fn world_readable_stores_and_account_file_are_graded_by_what_others_can_open() {
     let (_, findings, _) = scan(&home, &["transcripts"]);
     let d = dump(&findings);
     let t = of(&findings, "Transcript exposure");
+    // The grade counts what OTHER users can open, so every ancestor must be traversable.
+    // macOS keeps `$TMPDIR` under a user-private `/private/var/folders/...` directory, and
+    // there the same fixture is honestly downgraded to Low "not reachable" (the path the
+    // 0700 test below exercises on purpose). Assert that path instead of faking a High.
+    let blocked_above = home.ancestors().skip(1).any(|a| {
+        std::fs::metadata(a)
+            .map(|m| m.permissions().mode() & 0o001 == 0)
+            .unwrap_or(false)
+    });
+    if blocked_above {
+        assert_eq!(t.len(), 5, "{d}");
+        for f in &t {
+            assert_eq!(
+                f.severity,
+                Severity::Low,
+                "ancestor above the fixture is not traversable: {d}"
+            );
+            assert!(f.title.contains("not reachable:"), "{d}");
+        }
+        return;
+    }
     let at = |suffix: &str| {
         t.iter()
             .find(|f| f.location.ends_with(suffix))
