@@ -197,74 +197,80 @@ pub fn plugin_servers(home: &Path) -> Vec<McpConfig> {
         let key = format!("{plugin}@{market}");
         let label = sanitize_display(&key, 256);
         let enabled = !ctx.is_disabled(&key);
-        // (source file, server map), in load order.
-        let mut sources: Vec<(PathBuf, serde_json::Map<String, serde_json::Value>)> = Vec::new();
-        let dot_mcp = ip.join(".mcp.json");
-        if let Some(v) = read_plugin_json(&real_root, &dot_mcp) {
-            sources.push((dot_mcp, server_map(&v)));
-        }
-        let manifest = ip.join(".claude-plugin").join("plugin.json");
-        if let Some(m) = read_plugin_json(&real_root, &manifest) {
-            let declared: Vec<&serde_json::Value> = match m.get("mcpServers") {
-                Some(serde_json::Value::Array(a)) => a.iter().take(MAX_MANIFEST_ENTRIES).collect(),
-                Some(v) => vec![v],
-                None => Vec::new(),
-            };
-            let mut inline = serde_json::Map::new();
-            for d in declared {
-                match d {
-                    serde_json::Value::String(rel) => {
-                        if let Some(p) = manifest_json_path(ip, rel)
-                            && let Some(v) = read_plugin_json(&real_root, &p)
-                        {
-                            sources.push((p, server_map(&v)));
-                        }
-                    }
-                    serde_json::Value::Object(map) => inline.extend(map.clone()),
-                    _ => {}
-                }
-            }
-            if !inline.is_empty() {
-                sources.push((manifest, inline));
-            }
-        }
-        // Later declarations replace earlier ones of the same name.
-        let mut taken = std::collections::HashSet::new();
-        let mut rows: Vec<McpConfig> = Vec::new();
-        for (path, map) in sources.into_iter().rev() {
-            let mut kept = serde_json::Map::new();
-            for (name, cfg) in map {
-                if cfg.is_object() && taken.len() < MAX_PLUGIN_SERVERS && taken.insert(name.clone()) {
-                    kept.insert(name, cfg);
-                }
-            }
-            if kept.is_empty() {
-                continue;
-            }
-            let wrapped = serde_json::json!({ "mcpServers": kept });
-            let server_names: Vec<String> = extract_mcp_servers(&wrapped)
-                .iter()
-                .map(|n| sanitize_display(n, 128))
-                .collect();
-            let mut servers = extract_mcp_server_details(&wrapped);
-            for s in &mut servers {
-                s.plugin = Some(label.clone());
-                s.enabled = Some(enabled);
-            }
-            rows.push(McpConfig {
-                config_source: MCP_SOURCE_PLUGIN.to_string(),
-                config_path: sanitize_display(&path.to_string_lossy(), 512),
-                vendor: format!("Claude Code plugin {label}"),
-                server_count: server_names.len(),
-                server_names,
-                git_tracked: false,
-                servers,
-            });
-        }
-        rows.reverse();
-        out.extend(rows);
+        out.extend(plugin_root_configs(ip, &real_root, &label, enabled));
     }
     out
+}
+
+/// The config rows of one plugin version directory `ip` (real path `real_root`, already
+/// checked to lie inside the real plugin cache), in load order (see [`plugin_servers`]).
+pub(crate) fn plugin_root_configs(ip: &Path, real_root: &Path, label: &str, enabled: bool) -> Vec<McpConfig> {
+    // (source file, server map), in load order.
+    let mut sources: Vec<(PathBuf, serde_json::Map<String, serde_json::Value>)> = Vec::new();
+    let dot_mcp = ip.join(".mcp.json");
+    if let Some(v) = read_plugin_json(real_root, &dot_mcp) {
+        sources.push((dot_mcp, server_map(&v)));
+    }
+    let manifest = ip.join(".claude-plugin").join("plugin.json");
+    if let Some(m) = read_plugin_json(real_root, &manifest) {
+        let declared: Vec<&serde_json::Value> = match m.get("mcpServers") {
+            Some(serde_json::Value::Array(a)) => a.iter().take(MAX_MANIFEST_ENTRIES).collect(),
+            Some(v) => vec![v],
+            None => Vec::new(),
+        };
+        let mut inline = serde_json::Map::new();
+        for d in declared {
+            match d {
+                serde_json::Value::String(rel) => {
+                    if let Some(p) = manifest_json_path(ip, rel)
+                        && let Some(v) = read_plugin_json(real_root, &p)
+                    {
+                        sources.push((p, server_map(&v)));
+                    }
+                }
+                serde_json::Value::Object(map) => inline.extend(map.clone()),
+                _ => {}
+            }
+        }
+        if !inline.is_empty() {
+            sources.push((manifest, inline));
+        }
+    }
+    // Later declarations replace earlier ones of the same name.
+    let mut taken = std::collections::HashSet::new();
+    let mut rows: Vec<McpConfig> = Vec::new();
+    for (path, map) in sources.into_iter().rev() {
+        let mut kept = serde_json::Map::new();
+        for (name, cfg) in map {
+            if cfg.is_object() && taken.len() < MAX_PLUGIN_SERVERS && taken.insert(name.clone()) {
+                kept.insert(name, cfg);
+            }
+        }
+        if kept.is_empty() {
+            continue;
+        }
+        let wrapped = serde_json::json!({ "mcpServers": kept });
+        let server_names: Vec<String> = extract_mcp_servers(&wrapped)
+            .iter()
+            .map(|n| sanitize_display(n, 128))
+            .collect();
+        let mut servers = extract_mcp_server_details(&wrapped);
+        for s in &mut servers {
+            s.plugin = Some(label.to_string());
+            s.enabled = Some(enabled);
+        }
+        rows.push(McpConfig {
+            config_source: MCP_SOURCE_PLUGIN.to_string(),
+            config_path: sanitize_display(&path.to_string_lossy(), 512),
+            vendor: format!("Claude Code plugin {label}"),
+            server_count: server_names.len(),
+            server_names,
+            git_tracked: false,
+            servers,
+        });
+    }
+    rows.reverse();
+    rows
 }
 
 /// A plugin `.mcp.json` (or a file `mcpServers` names) holds either the documented
@@ -286,7 +292,7 @@ fn server_map(v: &serde_json::Value) -> serde_json::Map<String, serde_json::Valu
 
 /// A manifest `mcpServers` path: starts with `./`, ends in `.json`, stays lexically
 /// inside `root`. Bundles (`.mcpb`, `.dxt`) and URLs are not followed.
-fn manifest_json_path(root: &Path, rel: &str) -> Option<PathBuf> {
+pub(crate) fn manifest_json_path(root: &Path, rel: &str) -> Option<PathBuf> {
     if !rel.starts_with("./") || !rel.ends_with(".json") {
         return None;
     }
@@ -296,7 +302,7 @@ fn manifest_json_path(root: &Path, rel: &str) -> Option<PathBuf> {
 
 /// Read and parse a JSON file of a plugin whose real path lies inside the plugin's real
 /// root, its final component not a symlink.
-fn read_plugin_json(real_root: &Path, path: &Path) -> Option<serde_json::Value> {
+pub(crate) fn read_plugin_json(real_root: &Path, path: &Path) -> Option<serde_json::Value> {
     let present = std::fs::symlink_metadata(path).is_ok();
     crate::scanners::telemetry::note_probe(path, present);
     if !present {

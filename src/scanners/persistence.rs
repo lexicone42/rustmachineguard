@@ -348,31 +348,7 @@ fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
         if !meta.is_file() || !is_executable(&meta) {
             continue;
         }
-        let magic = crate::scanners::read_head_bytes_nofollow(&path, 4).unwrap_or_default();
-        let format = match magic.as_slice() {
-            [0x7f, b'E', b'L', b'F', ..] => "elf",
-            [0xcf, 0xfa, 0xed, 0xfe, ..] | [0xfe, 0xed, 0xfa, 0xcf, ..] | [0xca, 0xfe, 0xba, 0xbe, ..] => "mach-o",
-            [b'#', b'!', ..] => "script",
-            _ => "other",
-        };
-        let sha256 = if meta.len() as usize <= MAX_HASH_BYTES {
-            crate::scanners::read_head_bytes_nofollow(&path, MAX_HASH_BYTES).map(|b| {
-                use sha2::Digest;
-                sha2::Sha256::digest(&b)
-                    .iter()
-                    .map(|x| format!("{x:02x}"))
-                    .collect::<String>()
-            })
-        } else {
-            None
-        };
-        let (mode, owned_by_user, world_writable) = owner_and_mode(&meta);
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let info = agent_bin_info(&path, &meta);
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -381,18 +357,51 @@ fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
             kind: "agent-bin".into(),
             path: show(&path),
             scope: show(home),
-            detail: format!("{} ({format}, {mode})", sanitize_display(&name, 128)),
-            bin: Some(crate::models::AgentBinInfo {
-                format: format.into(),
-                mode,
-                mtime,
-                size: meta.len(),
-                sha256,
-                owned_by_user,
-                world_writable,
-            }),
+            detail: format!("{} ({}, {})", sanitize_display(&name, 128), info.format, info.mode),
+            bin: Some(info),
             ..Default::default()
         });
+    }
+}
+
+/// The identity of one regular file (`meta` from `symlink_metadata`): format from its first
+/// four bytes, mode, owner, mtime, size and a SHA-256 (files up to the hashing bound), both
+/// read without following a link. Shared by `~/.claude/bin` and the scripts settings
+/// commands run (`scanners::settings_scripts`).
+pub(crate) fn agent_bin_info(path: &Path, meta: &std::fs::Metadata) -> crate::models::AgentBinInfo {
+    let magic = crate::scanners::read_head_bytes_nofollow(path, 4).unwrap_or_default();
+    let format = match magic.as_slice() {
+        [0x7f, b'E', b'L', b'F', ..] => "elf",
+        [0xcf, 0xfa, 0xed, 0xfe, ..] | [0xfe, 0xed, 0xfa, 0xcf, ..] | [0xca, 0xfe, 0xba, 0xbe, ..] => "mach-o",
+        [b'#', b'!', ..] => "script",
+        _ => "other",
+    };
+    let sha256 = if meta.len() as usize <= MAX_HASH_BYTES {
+        crate::scanners::read_head_bytes_nofollow(path, MAX_HASH_BYTES).map(|b| {
+            use sha2::Digest;
+            sha2::Sha256::digest(&b)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        })
+    } else {
+        None
+    };
+    let (mode, owned_by_user, world_writable) = owner_and_mode(meta);
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    crate::models::AgentBinInfo {
+        format: format.into(),
+        mode,
+        mtime,
+        size: meta.len(),
+        sha256,
+        owned_by_user,
+        world_writable,
     }
 }
 

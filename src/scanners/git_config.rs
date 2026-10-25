@@ -276,6 +276,25 @@ fn config_needs_git(cfg: &Path) -> bool {
     NEEDLES.iter().any(|n| lower.contains(n))
 }
 
+/// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
+/// a project's directories live, and that no sane repo ships as tracked content.
+/// Deliberately NOT here: `env`, `venv`, `target`, `build`, `dist` -- those are
+/// plausible names for tracked directories, and an attacker chooses the layout, so
+/// skipping them by name would be a deterministic way to hide a gitdir. Those are
+/// recognised by marker instead (see GENERATED_MARKERS).
+pub(crate) const PRUNE_BY_NAME: &[&str] = &[
+    "node_modules",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "__pycache__",
+    ".cache",
+    ".npm",
+    ".cargo",
+    "site-packages",
+    "dist-packages",
+];
+
 /// Walk for git directories BURIED inside the project — the CVE-2026-45033 shape. A
 /// directory shipped inside a repo can itself be a git dir (HEAD/config/objects/refs are
 /// all legal tracked filenames), and git auto-discovers it from the cwd. Its config is
@@ -291,24 +310,6 @@ fn scan_nested_repos(
     stats: &mut WalkStats,
     max_dirs: usize,
 ) {
-    /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
-    /// a project's directories live, and that no sane repo ships as tracked content.
-    /// Deliberately NOT here: `env`, `venv`, `target`, `build`, `dist` -- those are
-    /// plausible names for tracked directories, and an attacker chooses the layout, so
-    /// skipping them by name would be a deterministic way to hide a gitdir. Those are
-    /// recognised by marker instead (see GENERATED_MARKERS).
-    const PRUNE_BY_NAME: &[&str] = &[
-        "node_modules",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        "__pycache__",
-        ".cache",
-        ".npm",
-        ".cargo",
-        "site-packages",
-        "dist-packages",
-    ];
     /// A directory holding one of these, VALID, was produced by a tool, not committed:
     /// `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's `venv`,
     /// https://docs.python.org/3/library/venv.html), `CACHEDIR.TAG` marks cargo's target/
@@ -442,7 +443,7 @@ const CACHEDIR_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55"
 /// bounded: a `CACHEDIR.TAG` that begins with the spec's signature (64 bytes read), or a
 /// non-empty `pyvenv.cfg` with a `home = ...` line (4 KiB read; the key as Python's
 /// `site` module parses it: the text before `=`, stripped, case-insensitive).
-fn is_generated_marker(path: &Path) -> bool {
+pub(crate) fn is_generated_marker(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
         Some("CACHEDIR.TAG") => {
             crate::scanners::read_head_bytes_nofollow(path, 64).is_some_and(|b| b.starts_with(CACHEDIR_SIGNATURE))

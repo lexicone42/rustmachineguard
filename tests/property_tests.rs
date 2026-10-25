@@ -372,6 +372,7 @@ fn summary_counts_match_vector_lengths() {
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -408,6 +409,7 @@ fn summary_counts_match_vector_lengths() {
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
 
@@ -473,6 +475,7 @@ fn json_output_is_valid_json() {
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -509,6 +512,7 @@ fn json_output_is_valid_json() {
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
     report.compute_summary();
@@ -568,6 +572,7 @@ fn html_output_no_script_injection() {
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -604,6 +609,7 @@ fn html_output_no_script_injection() {
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
     report.compute_summary();
@@ -3999,6 +4005,7 @@ fn make_test_report(
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -4035,6 +4042,7 @@ fn make_test_report(
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
     customize(&mut report);
@@ -5959,7 +5967,7 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     std::fs::write(home.join(".claude.json"), "{}").unwrap();
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
                 transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,persistence,\
-                settings,aicreds,envfiles,vscodetasks,shell,jbplugins";
+                settings,aicreds,envfiles,vscodetasks,shell,jbplugins,lsp,liveness,playwright,vibe,statusline";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
         .args(["--format", "json", "--skip", skip])
         .env("HOME", &home)
@@ -5985,10 +5993,10 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .filter_map(|d| d["scanner"].as_str())
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
-    // 24 --skip labels plus the two opt-in phases that were not requested.
+    // 30 --skip labels plus the two opt-in phases that were not requested.
     assert_eq!(
         skipped.len(),
-        27,
+        32,
         "every --skip label and opt-in phase is recorded: {skipped:?}"
     );
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));

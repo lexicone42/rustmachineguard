@@ -200,6 +200,17 @@ const TOOLS: &[ToolDef] = &[
         config_dir_check: None,
         verify_binary: false,
     },
+    // Mistral Vibe (github.com/mistralai/mistral-vibe): `vibe` is the CLI; `vibe-acp`, the
+    // Agent Client Protocol server editors launch, is reported beside it (see `scan`).
+    ToolDef {
+        name: "Mistral Vibe",
+        vendor: "Mistral AI",
+        tool_type: AiToolType::CliTool,
+        binary_names: &["vibe"],
+        process_name: None,
+        config_dir_check: Some(|p| p.home_dir().join(".vibe")),
+        verify_binary: false,
+    },
     ToolDef {
         name: "Tabby",
         vendor: "TabbyML",
@@ -316,6 +327,27 @@ impl Scanner for AiToolsScanner {
                     is_running,
                 });
             }
+        }
+
+        // `vibe-acp`: "Mistral Vibe includes the `vibe-acp` tool" that editors run as an ACP
+        // agent server (mistral-vibe docs/acp-setup.md, fetched 2026-10-24). It ships in the
+        // same distribution as `vibe` (one `entry_points.txt`), so it is not run again for
+        // a version: the CLI row's version is its version.
+        if let Ok(acp) = which::which("vibe-acp") {
+            let version = results
+                .iter()
+                .find(|t| t.name == "Mistral Vibe")
+                .and_then(|t| t.version.clone());
+            results.push(AiTool {
+                name: "Mistral Vibe ACP server".to_string(),
+                vendor: "Mistral AI".to_string(),
+                tool_type: AiToolType::Agent,
+                version,
+                binary_path: Some(acp.display().to_string()),
+                config_dir: None,
+                install_path: None,
+                is_running: false,
+            });
         }
 
         if let Some(app_path) = platform.claude_desktop_app()

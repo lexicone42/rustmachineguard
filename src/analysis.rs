@@ -2278,6 +2278,7 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     }
 
     collect_agent_surface_findings(report, &mut f);
+    crate::analysis_surfaces::collect(report, &mut f);
 
     debug_assert!(
         f.iter().all(|x| FINDING_CATEGORIES.contains(&x.category.as_str())),

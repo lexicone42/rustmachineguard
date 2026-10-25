@@ -184,6 +184,11 @@ const VALID_SKIP: &[&str] = &[
     "npmpkgs",
     "jbplugins",
     "persistence",
+    "lsp",
+    "liveness",
+    "playwright",
+    "vibe",
+    "statusline",
 ];
 
 /// One scanner of a phase, ready to run on any thread: it returns its diagnostics row
@@ -538,6 +543,70 @@ fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
             |r, v| r.git_autorun_configs.extend(v),
         ));
     }
+    if !skip.contains(&"lsp") {
+        list.push(job(
+            "lsp",
+            Some(plat.home_dir()),
+            move || scanners::plugin_lsp::PluginLspScanner.scan(plat),
+            |r, v| r.surfaces.agent_lsp_servers.extend(v),
+        ));
+    }
+    if !skip.contains(&"liveness") {
+        list.push(job(
+            "liveness",
+            Some(plat.home_dir()),
+            move || scanners::liveness::scan_home(plat),
+            |r, v| {
+                for o in v {
+                    match o {
+                        scanners::liveness::LivenessOut::InUse(x) => r.surfaces.plugin_versions_in_use.push(x),
+                        scanners::liveness::LivenessOut::Npx(x) => r.surfaces.npx_caches_running.push(x),
+                    }
+                }
+            },
+        ));
+    }
+    if !skip.contains(&"playwright") {
+        list.push(job(
+            "playwright",
+            Some(plat.home_dir()),
+            move || scanners::playwright_mcp::scan_home(plat),
+            |r, v| {
+                for o in v {
+                    match o {
+                        scanners::playwright_mcp::PlaywrightOut::Profiles(x) => {
+                            r.surfaces.agent_browser_profiles.push(x)
+                        }
+                        scanners::playwright_mcp::PlaywrightOut::OutputDir(x) => r.surfaces.agent_output_dirs.push(x),
+                    }
+                }
+            },
+        ));
+    }
+    if !skip.contains(&"vibe") {
+        list.push(job(
+            "vibe",
+            Some(plat.home_dir()),
+            move || scanners::vibe::scan_home(plat),
+            |r, v| {
+                for o in v {
+                    match o {
+                        scanners::vibe::VibeOut::Config(x) => r.surfaces.vibe_configs.push(x),
+                        scanners::vibe::VibeOut::Mcp(x) => r.mcp_configs.push(x),
+                        scanners::vibe::VibeOut::Store(x) => r.transcripts.push(x),
+                    }
+                }
+            },
+        ));
+    }
+    if !skip.contains(&"statusline") {
+        list.push(job(
+            "statusline",
+            Some(plat.home_dir()),
+            move || scanners::settings_scripts::scan_home(plat),
+            |r, v| r.surfaces.settings_command_scripts.extend(v),
+        ));
+    }
     list
 }
 
@@ -796,6 +865,7 @@ fn main() {
         warnings: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: models::Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -832,6 +902,7 @@ fn main() {
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
 

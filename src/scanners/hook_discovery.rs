@@ -288,6 +288,24 @@ fn claude(home: &Path, projects: &[Project], out: &mut Vec<AgentSettings>) {
     }
 }
 
+/// The hooks of one plugin cache version directory read the way an installed version's
+/// are ([`claude_plugin_dir`], contained in `root`), for a version that is not the installed
+/// one but that a running session still has loaded (`scanners::liveness`). Inventory only:
+/// the entries carry no provenance and are never stored as settings rows.
+pub(crate) fn plugin_version_hooks(home: &Path, root: &Path) -> Vec<AgentHook> {
+    let src = Src {
+        source: "plugin",
+        framework: "claude-code",
+        project_dir: None,
+        containment: Some(root),
+        provenance: None,
+        home: Some(home),
+    };
+    let mut out = Vec::new();
+    claude_plugin_dir(root, &src, &mut out);
+    out.into_iter().flat_map(|s| s.hooks).collect()
+}
+
 /// One Claude Code plugin root: `hooks/hooks.json` (event map and `modules`), the
 /// manifest's `hooks` (a `./path.json`, an inline event map, or an array of either) and
 /// the root `settings.json` `subagentStatusLine`. Each source file is its own entry

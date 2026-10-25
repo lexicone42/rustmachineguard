@@ -467,6 +467,7 @@ fn make_report(
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
         catalog: Default::default(),
+        surfaces: Default::default(),
         summary: Summary {
             ai_agents_and_tools_count: 0,
             ai_frameworks_count: 0,
@@ -503,6 +504,7 @@ fn make_report(
             agent_hooks_by_framework: Default::default(),
             agent_hooks_inactive_count: 0,
             agent_settings_commands_count: 0,
+            agent_lsp_servers_count: 0,
         },
     };
     customize(&mut report);

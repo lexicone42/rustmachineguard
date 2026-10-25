@@ -101,7 +101,7 @@ fn hex12(s: &str) -> String {
 }
 
 /// True when `path` lexically lies under `prefix` (no filesystem access).
-fn lexically_under(path: &Path, prefix: &Path) -> bool {
+pub(crate) fn lexically_under(path: &Path, prefix: &Path) -> bool {
     let p = crate::scanners::persistence::lexical_join(Path::new("/"), path);
     let q = crate::scanners::persistence::lexical_join(Path::new("/"), prefix);
     p.starts_with(&q) && p != q
@@ -109,7 +109,7 @@ fn lexically_under(path: &Path, prefix: &Path) -> bool {
 
 /// The canonical path of `file` when it is a regular file, not itself a symlink, whose
 /// real location lies inside the real location of `root`.
-fn contained_real_path(file: &Path, root: &Path) -> Option<PathBuf> {
+pub(crate) fn contained_real_path(file: &Path, root: &Path) -> Option<PathBuf> {
     if !std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file()) {
         return None;
     }

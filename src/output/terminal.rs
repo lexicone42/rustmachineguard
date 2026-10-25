@@ -159,6 +159,7 @@ fn render_inner(report: &ScanReport) -> String {
     summary_line(&mut out, ".env Files", s.env_files_count);
     summary_line(&mut out, "Transcript Stores", s.transcript_stores_count);
     summary_line(&mut out, "Plugin Marketplaces", s.marketplaces_count);
+    summary_line(&mut out, "Plugin LSP Servers", s.agent_lsp_servers_count);
     summary_line(&mut out, "MCP Servers (total)", s.mcp_servers_count);
     for (label, n) in [
         ("of which plugin servers ·", s.mcp_plugin_servers_count),
@@ -881,6 +882,8 @@ fn render_inner(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    out.push_str(&surfaces_section(report));
+
     // Agent Identity posture
     if let Some(id) = &report.agent_identity {
         use crate::identity::SpiffeStatus;
@@ -1209,4 +1212,134 @@ fn root_label(f: &crate::models::ExposureFinding) -> String {
         (Some(k), None) => format!(" ({})", k.label()),
         _ => String::new(),
     }
+}
+
+/// The round-3b sections: plugin LSP servers, plugin versions and npx caches in use,
+/// agent browser profiles and output directories, Mistral Vibe settings and settings
+/// scripts. Fields are sanitized at capture.
+fn surfaces_section(report: &ScanReport) -> String {
+    let mut out = String::new();
+    let v = &report.surfaces;
+    if !v.agent_lsp_servers.is_empty() {
+        section_header(&mut out, &format!("Plugin LSP Servers ({})", v.agent_lsp_servers.len()));
+        for l in &v.agent_lsp_servers {
+            let state = if l.enabled {
+                "enabled".green().to_string()
+            } else {
+                "disabled".dimmed().to_string()
+            };
+            let unpinned = l
+                .unpinned
+                .as_deref()
+                .map(|r| format!(" [unpinned: {r}]").yellow().to_string())
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  {} {} — {} {} [{state}]{unpinned}\n",
+                "→".bold(),
+                l.plugin,
+                l.name,
+                format!("({} {})", l.program, l.args.join(" ")).trim_end().dimmed(),
+            ));
+        }
+        out.push('\n');
+    }
+    if !v.plugin_versions_in_use.is_empty() || !v.npx_caches_running.is_empty() {
+        section_header(&mut out, "Loaded By Running Sessions");
+        for p in &v.plugin_versions_in_use {
+            let stale = if p.stale_version {
+                format!(
+                    " [older than installed {}]",
+                    p.installed_version.as_deref().unwrap_or("?")
+                )
+                .yellow()
+                .to_string()
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  {} {} {} — {} session(s){stale}\n",
+                "→".bold(),
+                p.plugin,
+                p.version.dimmed(),
+                p.in_use_by_sessions
+            ));
+        }
+        for c in &v.npx_caches_running {
+            out.push_str(&format!(
+                "  {} npx cache {} — running ({} process(es))\n",
+                "→".bold(),
+                c.path.dimmed(),
+                c.pids
+            ));
+        }
+        out.push('\n');
+    }
+    if !v.agent_browser_profiles.is_empty() || !v.agent_output_dirs.is_empty() {
+        section_header(&mut out, "Agent Browser State");
+        for b in &v.agent_browser_profiles {
+            out.push_str(&format!(
+                "  {} {} profiles — {} ({} with cookies/logins, {} login file(s) readable by others)\n",
+                "→".bold(),
+                b.framework,
+                b.path.dimmed(),
+                b.login_profiles,
+                b.readable_login_files
+            ));
+        }
+        for d in &v.agent_output_dirs {
+            let ignored = match d.ignored {
+                Some(true) => "ignored",
+                Some(false) => "not ignored",
+                None => "ignore state unknown",
+            };
+            out.push_str(&format!(
+                "  {} {} output — {} ({} files, {} tracked, {ignored})\n",
+                "→".bold(),
+                d.framework,
+                d.path.dimmed(),
+                d.file_count,
+                d.tracked_files
+            ));
+        }
+        out.push('\n');
+    }
+    for c in &v.vibe_configs {
+        section_header(&mut out, "Mistral Vibe");
+        let flag = |b: Option<bool>| b.map_or("unset".to_string(), |b| b.to_string());
+        out.push_str(&format!(
+            "  {} {}\n    auto_approve {} · enable_auto_update {} · enable_telemetry {} · {} MCP server(s) · {} trusted folder(s)\n",
+            "→".bold(),
+            c.path.dimmed(),
+            flag(c.auto_approve),
+            flag(c.enable_auto_update),
+            flag(c.enable_telemetry),
+            c.mcp_server_count,
+            c.trusted_folders.len()
+        ));
+        let always: Vec<&str> = c
+            .tool_permissions
+            .iter()
+            .filter(|(_, p)| p.as_str() == "always")
+            .map(|(t, _)| t.as_str())
+            .collect();
+        if !always.is_empty() {
+            out.push_str(&format!("    tools that run without asking: {}\n", always.join(", ")));
+        }
+        out.push('\n');
+    }
+    if !v.settings_command_scripts.is_empty() {
+        section_header(&mut out, "Settings Command Scripts");
+        for s in &v.settings_command_scripts {
+            out.push_str(&format!(
+                "  {} {} — {} ({}, {})\n",
+                "→".bold(),
+                s.setting,
+                s.path.dimmed(),
+                s.bin.format,
+                s.bin.mode
+            ));
+        }
+        out.push('\n');
+    }
+    out
 }

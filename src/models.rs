@@ -69,6 +69,9 @@ pub struct ScanReport {
     /// reports from older versions (read back as the default: no version, 0 entries).
     #[serde(default)]
     pub catalog: CatalogInfo,
+    /// Round-3b sections (LSP servers, liveness, browser profiles, ...), flattened.
+    #[serde(flatten, default)]
+    pub surfaces: SurfaceInventory,
     pub summary: Summary,
 }
 
@@ -1216,6 +1219,9 @@ pub struct Summary {
     /// inventoried and graded with the hooks, counted apart.
     #[serde(default)]
     pub agent_settings_commands_count: usize,
+    /// LSP servers declared by installed Claude Code plugins (`agent_lsp_servers`).
+    #[serde(default)]
+    pub agent_lsp_servers_count: usize,
 }
 
 impl Summary {
@@ -1224,7 +1230,7 @@ impl Summary {
     /// number the summary's own; `agent_hooks_by_framework` (keyed by framework names)
     /// is the one summary field not here. `summary_inventory_tests::inventory_is_every_summary_count`
     /// fails when a `_count` field is added without a row.
-    pub fn inventory(&self) -> [(&'static str, usize); 34] {
+    pub fn inventory(&self) -> [(&'static str, usize); 35] {
         [
             ("ai_agents_and_tools", self.ai_agents_and_tools_count),
             ("ai_frameworks", self.ai_frameworks_count),
@@ -1260,6 +1266,7 @@ impl Summary {
             ("persistence_artifacts", self.persistence_artifacts_count),
             ("agent_hooks_inactive", self.agent_hooks_inactive_count),
             ("agent_settings_commands", self.agent_settings_commands_count),
+            ("agent_lsp_servers", self.agent_lsp_servers_count),
         ]
     }
 }
@@ -1308,6 +1315,7 @@ impl ScanReport {
                 .flat_map(|s| &s.hooks)
                 .filter(|h| h.kind == crate::scanners::hook_sources::SETTINGS_COMMAND_KIND)
                 .count(),
+            agent_lsp_servers_count: self.surfaces.agent_lsp_servers.len(),
         };
     }
 
@@ -1438,4 +1446,221 @@ mod summary_inventory_tests {
             );
         }
     }
+}
+
+// ── Round-3b coverage surfaces ─────────────────────────────────────────────────────────
+// New report sections, kept together at the end of the file: plugin LSP servers, plugin
+// and npx-cache liveness, agent-driven browser profiles and output directories, Mistral
+// Vibe settings and settings-command scripts. `ScanReport::surfaces` flattens them into
+// the report's top level. Graded in `crate::analysis_surfaces`.
+
+/// The round-3b report sections, flattened into [`ScanReport`]'s top-level JSON keys.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SurfaceInventory {
+    /// LSP servers Claude Code plugins declare (see `scanners::plugin_lsp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_lsp_servers: Vec<AgentLspServer>,
+    /// Plugin cache versions that live Claude Code sessions mark as loaded
+    /// (`scanners::liveness`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_versions_in_use: Vec<PluginVersionInUse>,
+    /// npx caches a running process executes from (`scanners::liveness`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub npx_caches_running: Vec<NpxCacheRunning>,
+    /// Persistent browser profiles kept by an agent-driven browser (`scanners::playwright_mcp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_browser_profiles: Vec<AgentBrowserProfiles>,
+    /// Agent tool output directories inside projects (`scanners::playwright_mcp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_output_dirs: Vec<AgentOutputDir>,
+    /// Mistral Vibe configuration (`scanners::vibe`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vibe_configs: Vec<VibeConfig>,
+    /// Scripts the user's settings commands (`statusLine`, ...) run (`scanners::settings_scripts`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_command_scripts: Vec<SettingsCommandScript>,
+}
+
+/// One LSP server a Claude Code plugin declares (`.lsp.json`, `plugin.json` `lspServers`, or
+/// the marketplace entry of a plugin with no `plugin.json`;
+/// code.claude.com/docs/en/plugins-reference#lsp-servers). Claude Code starts it as a
+/// process, like a stdio MCP server.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AgentLspServer {
+    /// `plugin@marketplace`, sanitized.
+    pub plugin: String,
+    /// The server name (the config map key), sanitized.
+    pub name: String,
+    /// The file the declaration came from: `<root>/.lsp.json`, `<root>/.claude-plugin/plugin.json`,
+    /// a manifest-named `.json`, or the marketplace's `marketplace.json`.
+    pub source: String,
+    /// The program's basename (`rust-analyzer`, `npx`), or `${CLAUDE_PLUGIN_ROOT}/...` for a
+    /// program the plugin bundles. Sanitized.
+    pub program: String,
+    /// The arguments by SHAPE: flags kept (`--stdio`, `--log=<value>`), every other
+    /// argument as `<arg>`; the launched package is in `package`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// The package a package-runner launch fetches (`npx`, `uvx`, ...), when one is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Why the launch runs whatever version is current (`scanners::mcp::unpinned_reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpinned: Option<String>,
+    /// The `env` block by shape (`NAME=${REF}` / `NAME=<redacted>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    /// File extensions the server is registered for (`extensionToLanguage` keys), sanitized.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    /// The plugin is enabled (`enabledPlugins`); a disabled plugin's servers are inventory.
+    pub enabled: bool,
+}
+
+/// A plugin cache version (`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`) that
+/// running Claude Code sessions mark as loaded: `.in_use/<pid>` entries whose process exists.
+/// An observed, undocumented signal (Claude Code's docs describe only `.orphaned_at`,
+/// code.claude.com/docs/en/plugins/loading); entry NAMES only.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PluginVersionInUse {
+    /// `plugin@marketplace`, sanitized.
+    pub plugin: String,
+    /// The cache directory name (a version or a commit prefix), sanitized.
+    pub version: String,
+    pub path: String,
+    /// Live processes among the `.in_use` entries (Linux `/proc/<pid>`, owned by this user).
+    pub in_use_by_sessions: usize,
+    /// Their pids, sorted (which sessions to restart).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pids: Vec<u32>,
+    /// The version `installed_plugins.json` records, when it is not this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    /// Not the installed version: its hooks and MCP servers are the old version's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale_version: bool,
+    /// A stale version's hooks (`hooks/hooks.json` and manifest hooks): inventory only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<AgentHook>,
+    /// A stale version's MCP servers (`.mcp.json` and manifest `mcpServers`): inventory only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServerDetail>,
+}
+
+/// An npx cache (`~/.npm/_npx/<hash>/`) that a running process executes from: some argument
+/// of its command line is a path inside the cache. Linux only (`/proc/<pid>/cmdline`, this
+/// user's processes); the command line is matched and dropped, never stored.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct NpxCacheRunning {
+    pub path: String,
+    /// Processes running from it.
+    pub pids: usize,
+}
+
+/// The persistent browser profiles one agent-driven browser keeps
+/// (`~/.cache/ms-playwright-mcp/mcp-<channel>-<hash>/`): their cookie and saved-login stores
+/// by existence, mode, size and modification time only. Nothing in a profile is opened.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AgentBrowserProfiles {
+    /// "playwright-mcp".
+    pub framework: String,
+    /// The directory holding the profiles.
+    pub path: String,
+    pub profile_count: usize,
+    /// Profiles holding a `Cookies` or `Login Data` file.
+    pub login_profiles: usize,
+    /// Cookie and login-data files found (each counted once).
+    pub login_files: usize,
+    /// Of `login_files`, those other users can read: o+r on the file and o+x on every
+    /// directory from `path` down to it.
+    pub readable_login_files: usize,
+    /// Newest modification time of a login file (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_login_mtime: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// An ancestor other users cannot traverse (`"/home/u is 0700"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable_via: Option<String>,
+}
+
+/// An agent tool's output directory inside a project (Playwright MCP's `.playwright-mcp/`:
+/// page snapshots, console logs, screenshots).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AgentOutputDir {
+    /// "playwright-mcp".
+    pub framework: String,
+    pub path: String,
+    pub file_count: usize,
+    /// Files git tracks (the scan's once-per-repository listing).
+    pub tracked_files: usize,
+    /// The project is a git work tree.
+    pub in_repo: bool,
+    /// An untracked file of the directory is ignored by git (`git check-ignore`, hardened);
+    /// None when not asked or unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignored: Option<bool>,
+}
+
+/// `~/.vibe/config.toml` and its neighbours (Mistral Vibe; github.com/mistralai/mistral-vibe,
+/// docs.mistral.ai/vibe). Values that are not secrets are kept; `.env` by mode only.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct VibeConfig {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_approve: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_auto_update: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_update_checks: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_telemetry: Option<bool>,
+    /// Inventoried, not graded (current docs name it; its effect is not confirmed here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypass_tool_permissions: Option<bool>,
+    /// `tools.<name>.permission` ("always" | "ask" | "never"), by tool name, sanitized.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tool_permissions: std::collections::BTreeMap<String, String>,
+    /// `[[mcp_servers]]` entries (rows of `mcp_configs`).
+    pub mcp_server_count: usize,
+    /// Hot-load lists, lexical (not walked).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_paths: Vec<String>,
+    /// `trusted_folders.toml` `trusted` / `untrusted`, sanitized.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_folders: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub untrusted_folders: Vec<String>,
+    /// `session_logging.save_dir` (default `~/.vibe/logs/session`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_dir: Option<String>,
+    /// `~/.vibe/.env` (API keys): mode only, never opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<VibeEnvFile>,
+}
+
+/// `~/.vibe/.env` by mode only.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct VibeEnvFile {
+    pub path: String,
+    pub mode: String,
+    pub world_readable: bool,
+    pub group_readable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable_via: Option<String>,
+}
+
+/// A script under the agent's own directory that a user settings command runs
+/// (`statusLine: ~/.claude/statusline.sh`): identity only, as for `~/.claude/bin`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct SettingsCommandScript {
+    /// "statusLine" | "subagentStatusLine" | "fileSuggestion".
+    pub setting: String,
+    pub settings_path: String,
+    pub path: String,
+    pub bin: AgentBinInfo,
 }

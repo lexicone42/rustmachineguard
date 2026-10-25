@@ -14,6 +14,7 @@ pub(crate) mod hook_discovery;
 pub mod hook_sources;
 pub mod ide;
 pub mod jetbrains_plugins;
+pub mod liveness;
 pub mod marketplaces;
 pub mod mcp;
 pub mod mcp_probe;
@@ -22,12 +23,16 @@ pub mod notebook_servers;
 pub mod npm_packages;
 pub mod package_configs;
 pub mod persistence;
+pub mod playwright_mcp;
+pub mod plugin_lsp;
 pub mod python_packages;
 pub mod rules_files;
+pub mod settings_scripts;
 pub mod shell_configs;
 pub mod skills;
 pub mod ssh_keys;
 pub mod transcripts;
+pub mod vibe;
 pub mod vscode_tasks;
 
 use crate::platform::PlatformInfo;
@@ -2265,6 +2270,33 @@ pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
 /// [`git_tracked_state`], with "unknown" answered as not tracked.
 pub fn is_git_tracked(path: &std::path::Path) -> bool {
     git_tracked_state(path).unwrap_or(false)
+}
+
+/// The root of the git work tree governing `path` (the nearest ancestor of its directory
+/// holding a `.git` entry), or None outside any repository. Lexical: nothing is spawned.
+pub(crate) fn git_work_tree_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    repo_root_of(path)
+}
+
+/// Whether git ignores `path` (a file inside a work tree): `git check-ignore -q -- <path>`
+/// through [`hardened_git`] in the work tree root, stdin closed, output capped, killed after
+/// [`GIT_TRACKED_TIMEOUT`]. Exit 0 is ignored, 1 is not; anything else (a timeout, a
+/// repository whose git directory is unsafe to spawn in, an error) is None. git answers
+/// for every ignore source (`.gitignore` files, `.git/info/exclude`, `core.excludesFile`).
+pub(crate) fn git_check_ignored(path: &std::path::Path) -> Option<bool> {
+    let root = repo_root_of(path)?;
+    if git_dir_unsafe_to_spawn(&root.join(".git")) {
+        return None;
+    }
+    let rel = path.strip_prefix(&root).ok()?;
+    let mut cmd = hardened_git();
+    cmd.args(["check-ignore", "-q", "--"]).arg(rel).current_dir(&root);
+    let out = output_with_timeout_capped(&mut cmd, GIT_TRACKED_TIMEOUT, "git_check_ignore", 4096)?;
+    match out.status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Compute SHA-256 hash of content, returning hex string.

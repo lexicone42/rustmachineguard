@@ -1101,8 +1101,8 @@ mod enabled {
     /// documented shape: every `scanner.*` span is a child of its own `phase.*` span,
     /// and every `exec.*` span is under a scanner span with nothing but that scanner's
     /// sub-spans in between. The scanner spans of a phase overlap in time (they ran
-    /// side by side); at `--jobs 1` no two scanner spans overlap. The gitconfig span
-    /// carries `rmguard.scanner.truncated = true` (its nested walk hit the directory
+    /// side by side); at `--jobs 1` no two scanner spans overlap. The gitconfig and rules
+    /// spans carry `rmguard.scanner.truncated = true` (their nested walks hit the directory
     /// budget) and every other scanner span `false`.
     ///
     /// `phase.global_scanners` and the primary `phase.home_pass` are both children of
@@ -1199,7 +1199,14 @@ mod enabled {
                     Some(any_value::Value::BoolValue(b)) => *b,
                     other => panic!("--jobs {jobs}: {} truncated = {other:?}", s.name),
                 };
-                assert_eq!(truncated, label == "gitconfig", "--jobs {jobs}: {} truncated", s.name);
+                // The project's 4,200 directories are past both walks' budgets: the
+                // nested-git walk's and the nested instruction-file walk's.
+                assert_eq!(
+                    truncated,
+                    matches!(label, "gitconfig" | "rules"),
+                    "--jobs {jobs}: {} truncated",
+                    s.name
+                );
             }
             let gc_row = report["diagnostics"]
                 .as_array()

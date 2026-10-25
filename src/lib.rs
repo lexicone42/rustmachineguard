@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod analysis_surfaces;
 pub mod catalogs;
 pub mod compliance;
 pub mod diff;

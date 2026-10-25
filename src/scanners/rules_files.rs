@@ -14,6 +14,9 @@ const RULES_FILE_NAMES: &[&str] = &[
     "CLAUDE.local.md",
     ".claude/CLAUDE.md",
     "AGENTS.md",
+    // Gemini CLI's workspace context file (github.com/google-gemini/gemini-cli
+    // docs/cli/gemini-md.md, fetched 2026-10-24).
+    "GEMINI.md",
     ".windsurfrules",
     ".clinerules",
     ".aiderignore",
@@ -92,12 +95,40 @@ impl Scanner for RulesFilesScanner {
         // scan home (read below as the home) or an ancestor of one.
         let scope = platform.pass_scope();
         let registered = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
-        for dir in scope.excluding_scan_homes(scope.with_cwd(registered)) {
-            scan_directory_for_rules(&dir, false, &mut results);
+        let all = scope.with_cwd(registered);
+        let projects = scope.excluding_scan_homes(all.clone());
+        for dir in &projects {
+            scan_directory_for_rules(dir, false, &mut results);
         }
 
         // The home directory itself (its memory directories are user scope).
         scan_directory_for_rules(&home, true, &mut results);
+
+        // Instruction files in subdirectories, which Claude Code loads when it works there.
+        // The home is walked too when Claude Code is run there (it is a registered or
+        // recovered project, or the working directory), its own dot-directories excepted.
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let own_home = real(&home);
+        let home_is_project = all.iter().any(|d| real(d) == own_home);
+        let roots: std::collections::HashSet<PathBuf> = projects.iter().cloned().collect();
+        let mut walked = std::collections::HashSet::new();
+        let mut walks: Vec<(PathBuf, bool)> = projects
+            .iter()
+            .filter(|d| walked.insert(real(d)))
+            .map(|d| (d.clone(), false))
+            .collect();
+        if home_is_project && walked.insert(own_home) {
+            walks.push((home.clone(), true));
+        }
+        // One project per task on the scan's helper threads; results kept in project order.
+        let jobs = crate::scanners::telemetry::helper_jobs();
+        for rows in crate::scanners::telemetry::par_map(walks, jobs, |(dir, skip_dot)| {
+            let mut rows = Vec::new();
+            scan_nested_rules(&dir, skip_dot, &roots, &mut rows);
+            rows
+        }) {
+            results.extend(rows);
+        }
 
         // Claude Code auto memory of every project this home has run Claude Code in.
         scan_auto_memory(&platform.claude_config_dir(), &mut results);
@@ -144,6 +175,129 @@ fn scan_directory_for_rules(dir: &Path, user: bool, results: &mut Vec<RulesFile>
         }
     }
     scan_serena_initial_prompt(dir, user, results);
+}
+
+/// Instruction files read from a project's SUBDIRECTORIES. Claude Code: "Claude also
+/// discovers `CLAUDE.md` and `CLAUDE.local.md` files in subdirectories under your current
+/// working directory. Instead of loading them at launch, Claude Code loads each one once
+/// Claude reads, writes, or edits another file in that subdirectory", and reads "a
+/// subdirectory's `AGENTS.md`, when Claude opens a file there with the Read tool and that
+/// subdirectory has none of the three `CLAUDE.md` files of its own"
+/// (code.claude.com/docs/en/memory.md, fetched 2026-10-24). Gemini CLI: "When a tool
+/// accesses a file or directory, the CLI automatically scans for `GEMINI.md` files in that
+/// directory and its ancestors up to a trusted root" (github.com/google-gemini/gemini-cli
+/// `docs/cli/gemini-md.md`, fetched 2026-10-24). A project's own `GEMINI.md` ("workspace
+/// directories and their parent directories", same page) is a [`RULES_FILE_NAMES`] row.
+const NESTED_RULES_NAMES: &[&str] = &["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "GEMINI.md"];
+/// Subdirectory levels below a project walked for [`NESTED_RULES_NAMES`].
+const NESTED_DEPTH: usize = 4;
+/// Directories listed per project, at the base walk budget (scaled by `--walk-budget`).
+const BASE_NESTED_DIRS: usize = 2_000;
+/// Directory entries read per project, at the base walk budget, and per directory: a
+/// directory of 350,000 image tiles cost half a second to list in full (the walk is marked
+/// truncated past either).
+const BASE_NESTED_ENTRIES: usize = 200_000;
+const MAX_NESTED_DIR_ENTRIES: usize = 20_000;
+
+/// Read the [`NESTED_RULES_NAMES`] files of `root`'s subdirectories (not of `root` itself,
+/// read by [`scan_directory_for_rules`]), breadth-first so shallow directories come first,
+/// at most [`NESTED_DEPTH`] levels down, at most the scaled [`BASE_NESTED_DIRS`]
+/// directories and [`BASE_NESTED_ENTRIES`] entries listed, and [`MAX_NESTED_DIR_ENTRIES`]
+/// entries of one directory (the scanner is marked truncated past any of them). Pruned as the gitconfig
+/// project walk prunes: `.git`, the dependency and tool trees of
+/// [`crate::scanners::git_config::PRUNE_BY_NAME`], a directory holding a valid
+/// `CACHEDIR.TAG` or `pyvenv.cfg` (cargo's `target/`, a virtualenv), every symlinked
+/// directory, and another project of this pass (`others`, walked as its own root). With
+/// `skip_dot_dirs` (the home), dot-directories are not entered either: they are the user's
+/// own tool state, each read by its own scanner. Each file is a regular file opened without
+/// following a link; the row has the same hash, tracked state and pattern checks as the
+/// project's own instruction files, with scope "project".
+fn scan_nested_rules(
+    root: &Path,
+    skip_dot_dirs: bool,
+    others: &std::collections::HashSet<PathBuf>,
+    results: &mut Vec<RulesFile>,
+) {
+    use std::collections::VecDeque;
+    let cap = crate::scanners::telemetry::walk_cap(BASE_NESTED_DIRS, crate::scanners::telemetry::walk_budget());
+    let entry_cap =
+        crate::scanners::telemetry::walk_cap(BASE_NESTED_ENTRIES, crate::scanners::telemetry::walk_budget());
+    let mut listed = 0usize;
+    let mut entries_seen = 0usize;
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
+    while let Some((dir, depth)) = queue.pop_front() {
+        if listed >= cap || entries_seen >= entry_cap {
+            crate::scanners::telemetry::mark_truncated();
+            return;
+        }
+        listed += 1;
+        let Ok(rd) = crate::scanners::probe_read_dir(&dir) else {
+            continue;
+        };
+        // Only subdirectories and the looked-for names are kept from a listing: a directory
+        // of 350,000 image tiles is read through once, not collected and sorted.
+        let mut subdirs: Vec<String> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        for (n, e) in rd.flatten().enumerate() {
+            if n >= MAX_NESTED_DIR_ENTRIES {
+                crate::scanners::telemetry::mark_truncated();
+                break;
+            }
+            entries_seen += 1;
+            let Ok(ft) = e.file_type() else { continue };
+            let Ok(name) = e.file_name().into_string() else {
+                continue;
+            };
+            if ft.is_dir() {
+                subdirs.push(name);
+            } else if ft.is_file() {
+                if name == "CACHEDIR.TAG" || name == "pyvenv.cfg" {
+                    markers.push(name);
+                } else if depth > 0 && NESTED_RULES_NAMES.contains(&name.as_str()) {
+                    found.push(name);
+                }
+            }
+        }
+        if depth > 0
+            && markers
+                .iter()
+                .any(|n| crate::scanners::git_config::is_generated_marker(&dir.join(n)))
+        {
+            continue;
+        }
+        subdirs.sort();
+        found.sort();
+        if depth < NESTED_DEPTH {
+            for name in subdirs {
+                let child = dir.join(&name);
+                let pruned = name == ".git"
+                    || crate::scanners::git_config::PRUNE_BY_NAME.contains(&name.as_str())
+                    || (skip_dot_dirs && name.starts_with('.'))
+                    || others.contains(&child);
+                if !pruned {
+                    queue.push_back((child, depth + 1));
+                }
+            }
+        }
+        for name in found {
+            let path = dir.join(&name);
+            let Some(content) = read_bounded_nofollow(&path, None) else {
+                continue;
+            };
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+            results.push(RulesFile {
+                path: path.to_string_lossy().to_string(),
+                file_name: crate::scanners::sanitize_display(&rel, 512),
+                sha256: sha256_hex(&content),
+                git_tracked: is_git_tracked(&path),
+                size_bytes: content.len(),
+                findings: check_dangerous_patterns(&content),
+                scope: Some("project".into()),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// Serena's project prompt: "the project prompt, i.e. `initial_prompt` in `project.yml`,
