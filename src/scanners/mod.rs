@@ -14,6 +14,7 @@ pub(crate) mod hook_discovery;
 pub mod hook_sources;
 pub mod ide;
 pub mod jetbrains_plugins;
+pub mod listeners;
 pub mod liveness;
 pub mod marketplaces;
 pub mod mcp;

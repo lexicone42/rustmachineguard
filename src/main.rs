@@ -189,6 +189,7 @@ const VALID_SKIP: &[&str] = &[
     "playwright",
     "vibe",
     "statusline",
+    "listeners",
 ];
 
 /// One scanner of a phase, ready to run on any thread: it returns its diagnostics row
@@ -343,8 +344,8 @@ fn run_jobs(list: Vec<Job<'_>>, jobs: usize, report: &mut ScanReport) {
 /// `phase.home_pass`, run side by side in one pool of `jobs` threads ([`run_pool`]).
 ///
 /// They are independent: the global scanners store only `ai_agents_and_tools`,
-/// `ai_frameworks`, `ide_installations`, `node_package_managers`, `container_tools` and
-/// `notebook_servers`; the home scanners only `ide_extensions`, `mcp_configs`,
+/// `ai_frameworks`, `ide_installations`, `node_package_managers`, `container_tools`,
+/// `notebook_servers` and `surfaces.network_listeners`; the home scanners only `ide_extensions`, `mcp_configs`,
 /// `shell_configs`, `ssh_keys`, `cloud_credentials`, `browser_extensions`,
 /// `package_config_audits`, `rules_files`, `agent_skills`, `agent_settings`,
 /// `ai_credentials`, `env_files`, `persistence_artifacts`, `transcripts`, `marketplaces`,
@@ -661,6 +662,16 @@ fn global_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
             |r, v| r.notebook_servers = v,
         ));
     }
+    // Listening sockets from /proc (Linux only; elsewhere a skipped row with its floor).
+    #[cfg(target_os = "linux")]
+    if !skip.contains(&"listeners") {
+        list.push(job(
+            "listeners",
+            None,
+            move || scanners::listeners::scan(plat),
+            |r, v| r.surfaces.network_listeners = v,
+        ));
+    }
     list
 }
 
@@ -930,6 +941,8 @@ fn main() {
     }
     rustmachineguard::analysis::apply_managed_hook_policy(&mut report);
     scanners::mcp::post_scan(&mut report);
+    // Listeners (global) meet the env files (per home pass): see correlate_listeners.
+    rustmachineguard::analysis_surfaces::correlate_listeners(&mut report);
 
     // Exposure catalog matching — built-in catalog + optional user catalog
     let catalog_phase = otel::span("phase.catalog_load", || vec![Attr::str(Key::Phase, "catalog_load")]);
@@ -1182,6 +1195,14 @@ fn main() {
     }
     if !cli.verify_registry {
         skipped.insert("registry");
+    }
+    // No /proc: the listener inventory is a documented floor off Linux.
+    #[cfg(not(target_os = "linux"))]
+    if skipped.insert("listeners") {
+        report.warnings.push(rustmachineguard::models::ScanWarning {
+            scanner: "listeners".into(),
+            message: scanners::listeners::FLOOR_REASON.into(),
+        });
     }
     for label in skipped {
         report

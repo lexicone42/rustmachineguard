@@ -88,8 +88,8 @@ pub const CONTROLS: &[Control] = &[
         id: "TRUST-BOUNDARIES",
         title: "Define trust boundaries between components",
         coverage: Coverage::Covered,
-        how: "Blueprint output models local/remote zones, boundaries, and agent→tool→resource flows.",
-        finding_categories: &[],
+        how: "Blueprint output models local/remote zones, boundaries, and agent→tool→resource flows; flags a network listener in a project that hands a shell or terminal beyond loopback into the agents' environment (Linux /proc).",
+        finding_categories: &["Network listener"],
     },
     Control {
         framework: "NSA/CISA MCP Security CSI (2026-06)",

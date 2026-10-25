@@ -1153,7 +1153,15 @@ mod enabled {
         std::fs::create_dir_all(&fake_bin).unwrap();
         std::os::unix::fs::symlink("../lib/node_modules/pnpm/bin/pnpm.cjs", fake_bin.join("pnpm")).unwrap();
 
-        const GLOBAL: &[&str] = &["ai", "frameworks", "ide", "node", "containers", "notebooks"];
+        const GLOBAL: &[&str] = &[
+            "ai",
+            "frameworks",
+            "ide",
+            "node",
+            "containers",
+            "notebooks",
+            "listeners",
+        ];
         const EXPOSURE: &[&str] = &["pypkgs", "npmpkgs", "jbplugins"];
         let mut overlapped = BTreeMap::new();
         let mut phases_overlapped = BTreeMap::new();

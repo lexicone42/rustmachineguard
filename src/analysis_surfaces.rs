@@ -1,6 +1,7 @@
 //! Grading of the round-3b surfaces ([`crate::models::SurfaceInventory`]), called once from
 //! [`crate::analysis::collect_findings`] after every other finding is collected. Every
-//! category used here is already in [`crate::analysis::FINDING_CATEGORIES`]; none is added.
+//! category used here is in [`crate::analysis::FINDING_CATEGORIES`]; "Network listener"
+//! was added for [`listener_findings`].
 //!
 //! Value-gated throughout: an inventory row with nothing risky in it yields no finding. A
 //! disabled plugin's LSP server, an ignored output directory, a browser profile with no
@@ -19,6 +20,7 @@ pub fn collect(report: &ScanReport, f: &mut Vec<Finding>) {
     output_dir_findings(report, f);
     vibe_findings(report, f);
     settings_script_findings(report, f);
+    listener_findings(report, f);
 }
 
 /// An enabled plugin's LSP server launched through a package runner with no fixed version
@@ -296,5 +298,176 @@ fn settings_script_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             location: s.path.clone(),
             evidence: Some(format!("set in {}", s.settings_path)),
         });
+    }
+}
+
+/// The directory part of a report path (`/a/b/.env` -> `/a/b`).
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/')
+        .map(|(d, _)| if d.is_empty() { "/" } else { d })
+        .unwrap_or("")
+}
+
+/// The `env_files` rows of this report that are world-readable, hold secret-named keys,
+/// and sit in the listener's working directory or its project directory. By reference:
+/// the files are not read again.
+pub fn readable_secret_env<'a>(
+    report: &'a ScanReport,
+    l: &crate::models::NetworkListener,
+) -> Vec<&'a crate::models::EnvFile> {
+    let dirs: Vec<&str> = [l.cwd.as_deref(), l.project.as_deref()].into_iter().flatten().collect();
+    if dirs.is_empty() {
+        return Vec::new();
+    }
+    report
+        .env_files
+        .iter()
+        .filter(|e| e.world_readable && !e.secret_keys.is_empty())
+        .filter(|e| dirs.contains(&parent_of(&e.path)))
+        .collect()
+}
+
+/// Fill each listener's `readable_secret_files` from the report's `env_files` rows. Run
+/// once by `main` after every scanner (the listeners job is global, the env-file job runs
+/// per home pass).
+pub fn correlate_listeners(report: &mut ScanReport) {
+    let counts: Vec<usize> = report
+        .surfaces
+        .network_listeners
+        .iter()
+        .map(|l| {
+            if l.bind.is_network_reachable() && l.project.is_some() {
+                readable_secret_env(report, l).len()
+            } else {
+                0
+            }
+        })
+        .collect();
+    for (l, n) in report.surfaces.network_listeners.iter_mut().zip(counts) {
+        l.readable_secret_files = n;
+    }
+}
+
+/// How a set of bind classes reads in a title.
+fn bind_text(classes: &std::collections::BTreeSet<crate::models::BindClass>, addrs: &[&str]) -> String {
+    use crate::models::BindClass;
+    let mut parts: Vec<String> = Vec::new();
+    for c in classes {
+        parts.push(match c {
+            BindClass::AllInterfaces => "all interfaces".to_string(),
+            BindClass::Ipv6Any => "all IPv6 interfaces (::)".to_string(),
+            BindClass::SpecificAddress => format!("address {}", addrs.join(", ")),
+            BindClass::Loopback => "loopback".to_string(),
+        });
+    }
+    parts.join(" and ")
+}
+
+/// A listener in one of the scan's projects, bound beyond loopback, owned by the user (the
+/// scanner keeps only the user's sockets): High when it hands out a shell or a terminal,
+/// Critical when its directory also holds a world-readable `.env` with secret-named keys,
+/// Low when it hands out nothing and is not a common development server. One finding per
+/// process (its ports together). Loopback listeners and listeners outside every project
+/// are inventory.
+fn listener_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    use crate::models::{NetworkListener, ServesShell};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut by_pid: BTreeMap<u32, Vec<&NetworkListener>> = BTreeMap::new();
+    for l in &report.surfaces.network_listeners {
+        if let (Some(pid), true, true) = (l.pid, l.bind.is_network_reachable(), l.project.is_some()) {
+            by_pid.entry(pid).or_default().push(l);
+        }
+    }
+    for (pid, ls) in by_pid {
+        let first = ls[0];
+        let program = first.program.as_deref().unwrap_or("unknown");
+        let project = first.project.as_deref().unwrap_or("");
+        let mut ports: Vec<u16> = ls.iter().map(|l| l.port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let ports_text = ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
+        let port_word = if ports.len() == 1 { "port" } else { "ports" };
+        let classes: BTreeSet<_> = ls.iter().map(|l| l.bind).collect();
+        let specific: Vec<&str> = ls
+            .iter()
+            .filter(|l| l.bind == crate::models::BindClass::SpecificAddress)
+            .map(|l| l.address.as_str())
+            .collect();
+        let bound = bind_text(&classes, &specific);
+        let age = first
+            .age_days
+            .map(|d| format!(", running {d} day{}", if d == 1 { "" } else { "s" }))
+            .unwrap_or_default();
+        let location = first.cwd.clone().unwrap_or_else(|| project.to_string());
+        if first.serves_shell != ServesShell::None {
+            let envs: Vec<&crate::models::EnvFile> = {
+                let mut v = Vec::new();
+                for l in &ls {
+                    for e in readable_secret_env(report, l) {
+                        if !v.iter().any(|x: &&crate::models::EnvFile| x.path == e.path) {
+                            v.push(e);
+                        }
+                    }
+                }
+                v
+            };
+            let base = format!(
+                "a network listener in project {project} hands out a shell/PTY (program {program}, {port_word} {ports_text}, bound to {bound}{age})"
+            );
+            let (severity, title) = if envs.is_empty() {
+                (Severity::High, base)
+            } else {
+                let mut names: Vec<&str> = Vec::new();
+                for e in &envs {
+                    for k in &e.secret_keys {
+                        if !names.contains(&k.as_str()) {
+                            names.push(k);
+                        }
+                    }
+                }
+                let shown = if names.len() > 8 {
+                    format!("{}, ...", names[..8].join(", "))
+                } else {
+                    names.join(", ")
+                };
+                (
+                    Severity::Critical,
+                    format!(
+                        "{base} and its directory holds a world-readable env file with secret-named keys (names only: {shown})"
+                    ),
+                )
+            };
+            let signal = first.shell_signal.as_deref().unwrap_or(first.serves_shell.label());
+            let env_note = if envs.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " · world-readable: {}",
+                    envs.iter().map(|e| e.path.as_str()).collect::<Vec<_>>().join(", ")
+                )
+            };
+            f.push(Finding {
+                severity,
+                category: "Network listener".into(),
+                title,
+                location,
+                evidence: Some(format!(
+                    "pid {pid} · shell signal {} ({signal}){env_note} · bind to 127.0.0.1 or a VPN interface, move the credentials out of the world-readable file, run it on its own tmux server (`tmux -L`)",
+                    first.serves_shell.label()
+                )),
+            });
+        } else if !crate::scanners::listeners::is_dev_server_listener(first) {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Network listener".into(),
+                title: format!(
+                    "project process listening on {bound}: {program} on {port_word} {ports_text} in project {project}{age}"
+                ),
+                location,
+                evidence: Some(format!(
+                    "pid {pid} · no shell or terminal signal · bind to 127.0.0.1 unless other machines must reach it"
+                )),
+            });
+        }
     }
 }

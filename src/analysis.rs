@@ -94,6 +94,7 @@ pub const FINDING_CATEGORIES: &[&str] = &[
     "Ollama exposure",
     "Secret hygiene",
     "MCP inventory",
+    "Network listener",
 ];
 
 /// `category` as its [`FINDING_CATEGORIES`] entry, or `other` for a string outside the
@@ -330,6 +331,12 @@ pub fn guidance(category: &str) -> Guidance {
             why: "Ollama's API has no authentication. Bound beyond 127.0.0.1, anyone who can reach the port can run, pull, push and delete models.",
             fix: "Bind to 127.0.0.1 (the default) and reach it remotely through an authenticating reverse proxy or an SSH tunnel. Inside a container, publish the port on 127.0.0.1 only.",
             reference: "Ollama FAQ (OLLAMA_HOST) · unauthenticated local API",
+        },
+        "Network listener" => Guidance {
+            what: "A process started from one of your projects listens on a non-loopback address (every interface, `::`, or one LAN/VPN address). High when it hands out a shell or a terminal: a tmux or screen child, a shell child, a PTY master it holds, or a known web-terminal program (ttyd, gotty, wetty, shellinabox, webssh, sshwifty). Critical when the same directory also holds a world-readable .env with secret-named keys, which is where such a bridge keeps its logins. Low for any other program but a common development server. Listeners on loopback, and listeners outside your projects, are inventory only.",
+            why: "Anyone on the network who gets past the listener's login gets a shell as you: your files, your keys, and the tmux server your coding agents run in (a client of the default tmux server can attach to every agent session, read it and type into it). A token in a world-readable file can be read by every local user and process, so the login is only as strong as that file's mode.",
+            fix: "Bind the listener to 127.0.0.1 or a VPN interface (Tailscale, WireGuard) and reach it through SSH or the VPN. Move its credentials out of the world-readable file (chmod 600, or a secret store) and rotate them. Run the bridge on its own tmux server (`tmux -L bridge new -A -s <name>`) so it cannot attach to the agents' sessions, and stop it when you are not using it.",
+            reference: "rmguard listeners scanner (Linux /proc) · docs/THREAT-CATALOG.md",
         },
         "Toxic Flow" => Guidance {
             what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time. High when an active MCP server, a successful probe or a claude.ai connector supplies at least one of the two; Medium (\"based on skill-file mentions only\") when both rest on keywords in loading skill files, each mentioned by at least 3 skills; below that, no finding.",
@@ -4687,10 +4694,18 @@ mod finding_category_tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// The production part of this file (everything before the first `#[cfg(test)]`).
+    /// The production part of this file (everything before the first `#[cfg(test)]`), then
+    /// that of `analysis_surfaces.rs`.
     fn source() -> &'static str {
-        let src = include_str!("analysis.rs");
-        &src[..src.find("#[cfg(test)]").expect("test module")]
+        // The round-3b grading module emits findings too; its categories are this table's.
+        static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SRC.get_or_init(|| {
+            let src = include_str!("analysis.rs");
+            let mut s = src[..src.find("#[cfg(test)]").expect("test module")].to_string();
+            let surfaces = include_str!("analysis_surfaces.rs");
+            s.push_str(&surfaces[..surfaces.find("#[cfg(test)]").unwrap_or(surfaces.len())]);
+            s
+        })
     }
 
     /// Every category literal in the source is in [`FINDING_CATEGORIES`], and every

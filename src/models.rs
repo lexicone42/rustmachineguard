@@ -1479,6 +1479,10 @@ pub struct SurfaceInventory {
     /// Scripts the user's settings commands (`statusLine`, ...) run (`scanners::settings_scripts`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings_command_scripts: Vec<SettingsCommandScript>,
+    /// TCP sockets in LISTEN state owned by the scanning user (`scanners::listeners`,
+    /// Linux `/proc` only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_listeners: Vec<NetworkListener>,
 }
 
 /// One LSP server a Claude Code plugin declares (`.lsp.json`, `plugin.json` `lspServers`, or
@@ -1663,4 +1667,106 @@ pub struct SettingsCommandScript {
     pub settings_path: String,
     pub path: String,
     pub bin: AgentBinInfo,
+}
+
+// ── Network listeners (`scanners::listeners`) ──────────────────────────────────────────
+
+/// Where a listening socket accepts connections from. A closed set.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum BindClass {
+    /// 127.0.0.0/8, `::1`, or an IPv4-mapped loopback address: this machine only.
+    #[default]
+    Loopback,
+    /// `0.0.0.0` (or `::ffff:0.0.0.0`): every IPv4 interface.
+    AllInterfaces,
+    /// One non-loopback address (a LAN, VPN or link-local address).
+    SpecificAddress,
+    /// `::`: every IPv6 interface, and every IPv4 one too unless the socket is v6-only.
+    Ipv6Any,
+}
+
+impl BindClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            BindClass::Loopback => "loopback",
+            BindClass::AllInterfaces => "all-interfaces",
+            BindClass::SpecificAddress => "specific-address",
+            BindClass::Ipv6Any => "ipv6-any",
+        }
+    }
+
+    /// Reachable from another machine (anything but loopback).
+    pub fn is_network_reachable(self) -> bool {
+        self != BindClass::Loopback
+    }
+}
+
+/// Why rmguard thinks a listener hands out a shell or a terminal. A closed set, checked
+/// in this order; the first that holds is recorded.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServesShell {
+    /// A child process is tmux or screen.
+    TmuxChild,
+    /// The process holds a PTY master (`/dev/ptmx`): it allocates terminals.
+    PtyChild,
+    /// A child process is a shell (bash, zsh, sh, fish, dash).
+    ShellChild,
+    /// The program is a known web-terminal bridge (ttyd, gotty, ...).
+    KnownBridgeName,
+    #[default]
+    None,
+}
+
+impl ServesShell {
+    pub fn label(self) -> &'static str {
+        match self {
+            ServesShell::TmuxChild => "tmux-child",
+            ServesShell::PtyChild => "pty-child",
+            ServesShell::ShellChild => "shell-child",
+            ServesShell::KnownBridgeName => "known-bridge-name",
+            ServesShell::None => "none",
+        }
+    }
+}
+
+/// One TCP socket in LISTEN state that the scanning user owns, from `/proc/net/tcp{,6}`,
+/// mapped to its process through `/proc/<pid>/fd` (the user's own processes only). The
+/// process is identified by `comm` and the `exe` link; its command line and environment
+/// are never read.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct NetworkListener {
+    pub bind: BindClass,
+    /// The bound address as text (`0.0.0.0`, `127.0.0.1`, `::`, `192.168.1.5`).
+    pub address: String,
+    pub port: u16,
+    /// The lowest pid holding the socket; None when no process of the user's holds it
+    /// (another pid namespace, or the fd walk stopped at its cap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// `/proc/<pid>/comm` (at most 15 bytes, set by the program), sanitized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// The `/proc/<pid>/exe` link, sanitized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
+    /// The `/proc/<pid>/cwd` link, sanitized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Whole days since the process started (`/proc/<pid>/stat` starttime and `btime`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u64>,
+    /// The scanned project the working directory is in (the most specific one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub serves_shell: ServesShell,
+    /// What showed it (`child 'tmux: client'`, `holds /dev/ptmx`, `program terminal-bridge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_signal: Option<String>,
+    /// World-readable `.env` files with secret-named keys in the working directory or its
+    /// project, counted from this report's `env_files` rows after the scan
+    /// (`analysis_surfaces::correlate_listeners`); the files are not read again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub readable_secret_files: usize,
 }

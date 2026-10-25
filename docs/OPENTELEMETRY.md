@@ -121,9 +121,11 @@ rmguard.scan                                   (root; one trace per run)
 │   │   ├── exec.version_probe                 (`<tool> --version`)
 │   │   ├── exec.verify_binary
 │   │   └── exec.process_list                  (`ps -A -o ucomm=`, once per scan)
-│   └── scanner.node
-│       ├── version.read                       (npm, yarn, pnpm: version from package.json)
-│       └── exec.version_probe                 (node, bun; a JS tool whose package.json did not answer)
+│   ├── scanner.node
+│   │   ├── version.read                       (npm, yarn, pnpm: version from package.json)
+│   │   └── exec.version_probe                 (node, bun; a JS tool whose package.json did not answer)
+│   └── scanner.listeners                      (Linux: /proc/net/tcp{,6} and the user's own /proc/<pid>; nothing is run;
+│                                               macOS: a `skipped` row, no span)
 ├── phase.home_pass                            (rmguard.root.index=0, root.kind=home)
 │   ├── scanner.mcp
 │   ├── scanner.envfiles
@@ -253,9 +255,9 @@ starts a thread.
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
-| `rmguard.scanner` | scanner.*, metrics | scanner label (`mcp`, `packages`, ...) |
+| `rmguard.scanner` | scanner.*, metrics | scanner label: a closed set, the `--skip` labels (`VALID_SKIP` in src/main.rs: `mcp`, `packages`, ..., `statusline`, `listeners`) plus `mcp-probe` and `registry` |
 | `rmguard.finding.severity` | `rmguard.findings` | `critical` \| `high` \| `medium` \| `low` |
-| `rmguard.finding.category` | `rmguard.findings` | one of the 37 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
+| `rmguard.finding.category` | `rmguard.findings` | one of the 38 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
 | `rmguard.inventory.kind` | `rmguard.inventory` | one of the 35 report summary counts, named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
@@ -390,7 +392,7 @@ The severity totals are also on the root span as ints (`rmguard.findings.critica
 
 The labels are closed sets defined in code, each pinned by a test:
 `rmguard.finding.severity` is the `Severity` enum's lowercase label;
-`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (37 entries), the
+`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (38 entries), the
 category strings exactly as the terminal, HTML and compliance reports show them. A unit test walks `src/analysis.rs`
 for every `category: "..."` literal and every `(severity, "...", title)` tuple and fails
 if one is not in the table (or a table entry is never emitted), a second checks the

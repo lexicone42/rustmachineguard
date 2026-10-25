@@ -1341,5 +1341,52 @@ fn surfaces_section(report: &ScanReport) -> String {
         }
         out.push('\n');
     }
+    if !v.network_listeners.is_empty() {
+        section_header(&mut out, &format!("Network Listeners ({})", v.network_listeners.len()));
+        for l in &v.network_listeners {
+            let addr = if l.address.contains(':') {
+                format!("[{}]:{}", l.address, l.port)
+            } else {
+                format!("{}:{}", l.address, l.port)
+            };
+            let bind = if l.bind.is_network_reachable() {
+                l.bind.label().yellow().to_string()
+            } else {
+                l.bind.label().dimmed().to_string()
+            };
+            let who = match (&l.program, l.pid) {
+                (Some(p), Some(pid)) => format!("{p} (pid {pid})"),
+                (None, Some(pid)) => format!("pid {pid}"),
+                _ => "no process of yours holds it".to_string(),
+            };
+            let age = l
+                .age_days
+                .map(|d| format!(", {d} day{}", if d == 1 { "" } else { "s" }))
+                .unwrap_or_default();
+            let shell = if l.serves_shell == crate::models::ServesShell::None {
+                String::new()
+            } else {
+                format!(" [serves shell: {}]", l.serves_shell.label()).red().to_string()
+            };
+            let secrets = if l.readable_secret_files > 0 {
+                format!(
+                    " [{} world-readable .env with secret-named keys]",
+                    l.readable_secret_files
+                )
+                .red()
+                .to_string()
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  {} {addr} {bind} — {who}{age}{shell}{secrets}\n",
+                "→".bold()
+            ));
+            if let Some(p) = &l.project {
+                out.push_str(&format!("      project {}\n", p.dimmed()));
+            }
+        }
+        out.push('\n');
+    }
     out
 }
