@@ -117,6 +117,7 @@ rmguard.scan                                   (root; one trace per run)
 │   └── exec.output_with_timeout               (macOS only: `sw_vers -productVersion`; Linux uses libc uname, no spawn)
 ├── phase.global_scanners
 │   ├── scanner.ai
+│   │   ├── version.read                       (Mistral Vibe: version from its venv's dist-info METADATA)
 │   │   ├── exec.version_probe                 (`<tool> --version`)
 │   │   ├── exec.verify_binary
 │   │   └── exec.process_list                  (`ps -A -o ucomm=`, once per scan)
@@ -205,6 +206,15 @@ not, in which case the `exec.version_probe` that follows, a sibling under
 `scanner.node`, is the answer. node and bun are native binaries and only get the
 `exec.version_probe`.
 
+`scanner.ai` does the same for Mistral Vibe, a Python console script (`vibe --version`
+starts an interpreter: about 1.2 s of a 1.3 s scan on the machine this was measured on).
+When the resolved `vibe` sits in `<venv>/bin/` of a virtual environment with a
+`pyvenv.cfg` (a uv tool under `~/.local/share/uv/tools/<name>/`, a pipx venv), the
+version is the `Version:` header of that environment's single `mistral_vibe-*.dist-info/METADATA`
+(64 KiB head, no-follow; `Name:` must be `mistral-vibe` and the version must match the
+directory name). Its `version.read` span carries `rmguard.version.source` = `dist_info`
+or `spawn`.
+
 `gitconfig` runs in two passes so the trace can tell its two costs apart: every
 project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
 buried inside each project (`gitconfig.nested_walk`). The findings are joined back in
@@ -266,7 +276,7 @@ starts a thread.
 | `rmguard.items` | skills.walk | inventory entries the walk produced (before the scanner's dedupe) |
 | `rmguard.walk.dirs` | gitconfig.nested_walk | directories listed, summed over projects |
 | `rmguard.walk.pruned` | gitconfig.nested_walk | directories not descended into as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |
-| `rmguard.version.source` | version.read | `package_json` (the version came from the tool's own package.json) \| `spawn` (it did not; `<tool> --version` is run) |
+| `rmguard.version.source` | version.read | `package_json` (the version came from the tool's own package.json) \| `dist_info` (from the `METADATA` of the tool's Python distribution in its venv) \| `spawn` (it did not; `<tool> --version` is run) |
 | `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |
 | `rmguard.repos` | gitconfig.repos, gitconfig.nested_walk | projects whose own config was checked; nested git directories found |
 | `rmguard.transcripts.framework` | transcripts.store | `claude-code` \| `codex` \| `gemini-cli` |

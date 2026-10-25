@@ -2411,7 +2411,21 @@ fn findings_sort_by_severity_not_insertion_order() {
             }],
             ..Default::default()
         }];
-        // filesystem (source) + network (sink) → toxic-flow HIGH, collected last
+        // filesystem (source, from a successful probe) + network (sink) → toxic-flow
+        // HIGH, collected last. (A High needs a server-backed leg; a lone skill that
+        // mentions both is no finding.)
+        r.mcp_probes = vec![McpProbeResult {
+            server_name: "fs".into(),
+            config_source: "p".into(),
+            success: true,
+            server_info: None,
+            tools: vec![],
+            resources: vec![],
+            error: None,
+            observed_capabilities: vec!["filesystem".into()],
+            instructions: None,
+            protocol_era: None,
+        }];
         r.agent_skills = vec![AgentSkill {
             name: "s".into(),
             path: "/s".into(),

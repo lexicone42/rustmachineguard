@@ -1301,7 +1301,10 @@ mod enabled {
             );
             for r in &reads {
                 let src = attr_str(&r.attributes, "rmguard.version.source");
-                assert!(matches!(src.as_deref(), Some("package_json" | "spawn")), "{src:?}");
+                assert!(
+                    matches!(src.as_deref(), Some("package_json" | "dist_info" | "spawn")),
+                    "{src:?}"
+                );
             }
             let row = report["node_package_managers"]
                 .as_array()

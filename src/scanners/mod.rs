@@ -1441,7 +1441,7 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
 /// single-dash name are the same thing, so such a word is judged by the long secret-name
 /// hints only (see [`is_secret_value_position`]). `--sk` and `-db-pass` have word
 /// structure, and `-pass=` / `-sk:` carry their own value: they keep the full rule.
-fn is_short_flag_cluster(p: &str) -> bool {
+pub(crate) fn is_short_flag_cluster(p: &str) -> bool {
     let b = bare_key(p);
     p.starts_with('-')
         && !p.starts_with("--")

@@ -236,7 +236,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "EAA-009 (remote plugin hot-load)",
         },
         "SSH key" => Guidance {
-            what: "A private SSH key on disk has no passphrase.",
+            what: "Private SSH keys on disk have no passphrase (one finding per home, listing every such key; each key is still its own row in ssh_keys).",
             why: "If the key file is copied or the machine is compromised, the key is immediately usable — there's no second factor protecting it.",
             fix: "Add a passphrase (ssh-keygen -p -f <key>) and use an agent to cache it. Prefer hardware-backed keys where possible.",
             reference: "defense in depth",
@@ -332,7 +332,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "Ollama FAQ (OLLAMA_HOST) · unauthenticated local API",
         },
         "Toxic Flow" => Guidance {
-            what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time.",
+            what: "The connected agent surface holds BOTH a sensitive-data source (filesystem/database/environment/source-control) and an exfiltration sink (network/communication) at the same time. High when an active MCP server, a successful probe or a claude.ai connector supplies at least one of the two; Medium (\"based on skill-file mentions only\") when both rest on keywords in loading skill files, each mentioned by at least 3 skills; below that, no finding.",
             why: "Each capability is individually authorized and benign, but together they complete the \"lethal trifecta\": one prompt injection can read private data and send it out. No single MCP client sees this composition.",
             fix: "Separate the source and sink so no single agent context has both, or add human approval on the sink. Review why this agent needs both at once.",
             reference: "lethal trifecta / toxic flow",
@@ -553,6 +553,77 @@ fn known_mcp_segments(report: &ScanReport) -> Option<BTreeSet<String>> {
 }
 
 /// Rules listed in a title or evidence: the first `cap`, then a count.
+/// The directory an SSH key finding is grouped under: the `.ssh` directory of the home
+/// the key lives in (`<home>/.ssh`, the directory above the last `/.ssh/` component of
+/// the path), else the key's own directory. Keys under `~/.ssh/work/` group with `~/.ssh`.
+fn ssh_key_group(path: &str) -> &str {
+    match path.rfind("/.ssh/") {
+        Some(i) => &path[..i + "/.ssh".len()],
+        None => path
+            .rsplit_once('/')
+            .map(|(d, _)| d)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(path),
+    }
+}
+
+/// The SSH-key findings: one per (class, home), so N keys without a passphrase in one
+/// home are one High that names them all, never N Highs. A single key keeps the old
+/// shape (title names its type, location is the key). Keys are listed in path order,
+/// relative to the group's directory, at most 20 (`(+N more)` after), so the finding is
+/// independent of the order the scanner found the keys in. No-passphrase is the only
+/// per-key SSH class today; another class (a key other users can read, say) would be
+/// one more entry in `classes` and merge the same way.
+fn ssh_key_findings(keys: &[crate::models::SshKey]) -> Vec<Finding> {
+    type Pick = fn(&crate::models::SshKey) -> bool;
+    let classes: [(Pick, Severity, &str, &str); 1] = [(
+        |k| k.has_passphrase == PassphraseStatus::NoPassphrase,
+        Severity::High,
+        "key has no passphrase",
+        "SSH private keys without a passphrase",
+    )];
+    let mut out = Vec::new();
+    for (pick, severity, one, many) in classes {
+        let mut groups: std::collections::BTreeMap<&str, Vec<&crate::models::SshKey>> = Default::default();
+        for k in keys.iter().filter(|k| pick(k)) {
+            groups.entry(ssh_key_group(&k.path)).or_default().push(k);
+        }
+        for (dir, mut ks) in groups {
+            ks.sort_by(|a, b| a.path.cmp(&b.path));
+            ks.dedup_by(|a, b| a.path == b.path);
+            if let [k] = ks.as_slice() {
+                out.push(Finding {
+                    severity,
+                    category: "SSH key".into(),
+                    title: format!("{} {one}", k.key_type),
+                    location: k.path.clone(),
+                    evidence: None,
+                });
+                continue;
+            }
+            let listed: Vec<String> = ks
+                .iter()
+                .map(|k| {
+                    let rel = k
+                        .path
+                        .strip_prefix(dir)
+                        .and_then(|r| r.strip_prefix('/'))
+                        .unwrap_or(&k.path);
+                    format!("{rel} ({})", k.key_type)
+                })
+                .collect();
+            out.push(Finding {
+                severity,
+                category: "SSH key".into(),
+                title: format!("{} {many}", ks.len()),
+                location: dir.to_string(),
+                evidence: Some(list_rules(&listed.iter().map(String::as_str).collect::<Vec<_>>(), 20)),
+            });
+        }
+    }
+    out
+}
+
 fn list_rules(rules: &[&str], cap: usize) -> String {
     let mut s = rules.iter().take(cap).copied().collect::<Vec<_>>().join(", ");
     if rules.len() > cap {
@@ -2163,18 +2234,10 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
-    // Unprotected SSH keys.
-    for k in &report.ssh_keys {
-        if k.has_passphrase == PassphraseStatus::NoPassphrase {
-            f.push(Finding {
-                severity: Severity::High,
-                category: "SSH key".into(),
-                title: format!("{} key has no passphrase", k.key_type),
-                location: k.path.clone(),
-                evidence: None,
-            });
-        }
-    }
+    // Unprotected SSH keys: one finding per home, not one per key (nine identical Highs
+    // on one machine said the same thing nine times). Every key stays its own row in
+    // `ssh_keys[]`; the finding lists them.
+    f.extend(ssh_key_findings(&report.ssh_keys));
 
     // Dangerous patterns in agent rules/instruction files.
     for rf in &report.rules_files {
@@ -2262,19 +2325,35 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         });
     }
 
-    // Composition-level toxic-flow surface.
+    // Composition-level toxic-flow surface. High needs a leg that something connected
+    // supplies (an active MCP server, a successful probe, a claude.ai connector); a
+    // surface built only from keywords in skill files is Medium, and only when each leg
+    // is mentioned by at least TOXIC_FLOW_MIN_MENTIONS skills (one skill that says
+    // "curl" and "read_file" is not a flow).
     if let Some(tf) = analyze_toxic_flow(report) {
-        f.push(Finding {
-            severity: Severity::High,
-            category: "Toxic Flow".into(),
-            title: format!(
-                "sensitive source ({}) + exfil sink ({}) on the agent surface",
-                tf.leg_title(&tf.sources),
-                tf.leg_title(&tf.sinks)
-            ),
-            location: report.device.hostname.clone(),
-            evidence: Some(tf.evidence()),
-        });
+        let legs = format!(
+            "sensitive source ({}) + exfil sink ({}) on the agent surface",
+            tf.leg_title(&tf.sources),
+            tf.leg_title(&tf.sinks)
+        );
+        let graded = if tf.server_backed() {
+            Some((Severity::High, legs))
+        } else if tf.leg_mentions(&tf.sources) >= TOXIC_FLOW_MIN_MENTIONS
+            && tf.leg_mentions(&tf.sinks) >= TOXIC_FLOW_MIN_MENTIONS
+        {
+            Some((Severity::Medium, format!("{legs}, based on skill-file mentions only")))
+        } else {
+            None
+        };
+        if let Some((severity, title)) = graded {
+            f.push(Finding {
+                severity,
+                category: "Toxic Flow".into(),
+                title,
+                location: report.device.hostname.clone(),
+                evidence: Some(tf.evidence()),
+            });
+        }
     }
 
     collect_agent_surface_findings(report, &mut f);
@@ -3833,6 +3912,13 @@ pub struct ToxicFlowSurface {
     pub servers: Vec<(String, String)>,
 }
 
+/// Loading skills that must mention a capability of EACH leg (source and sink) before a
+/// toxic-flow surface built from skill-file mentions alone, with no connected server
+/// behind either leg, becomes a finding (Medium). Below it the surface is still
+/// computed (terminal, blueprint) but is not a finding: a keyword in one or two skill
+/// files is too weak a signal to grade.
+pub const TOXIC_FLOW_MIN_MENTIONS: usize = 3;
+
 /// The contributor label of skill files ([`analyze_toxic_flow`]).
 const SKILL_COUNT_SUFFIX: &str = " loading skill(s) mention it";
 
@@ -3841,6 +3927,25 @@ fn is_skill_count(who: &str) -> bool {
 }
 
 impl ToxicFlowSurface {
+    /// Whether a source or sink capability is supplied by something connected (an active
+    /// MCP server or connector, a successful probe), not only by skill-file mentions.
+    /// The untrusted-content leg does not count.
+    pub fn server_backed(&self) -> bool {
+        self.contributors
+            .iter()
+            .any(|(c, w)| !is_skill_count(w) && (self.sources.contains(c) || self.sinks.contains(c)))
+    }
+
+    /// The most loading skills that mention any one capability of the leg `caps`.
+    pub fn leg_mentions(&self, caps: &[String]) -> usize {
+        self.contributors
+            .iter()
+            .filter(|(c, w)| is_skill_count(w) && caps.contains(c))
+            .filter_map(|(_, w)| w.trim_end_matches(SKILL_COUNT_SUFFIX).parse::<usize>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// One leg for a title: the servers that supply it first, with their capabilities,
     /// then the capabilities only skill files mention: `claude.ai Gmail, claude.ai Google
     /// Drive: private_data; skills mention filesystem/environment`.

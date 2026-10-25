@@ -1,6 +1,8 @@
 use crate::models::{AiTool, AiToolType};
+use crate::otel::{Attr, Key};
 use crate::platform::PlatformInfo;
 use crate::scanners::{Scanner, get_binary_version, is_process_running};
+use std::path::{Path, PathBuf};
 
 pub struct AiToolsScanner;
 
@@ -222,6 +224,124 @@ const TOOLS: &[ToolDef] = &[
     },
 ];
 
+/// (tool, Python distribution) for the CLIs that are Python console scripts. Their version
+/// is read from the distribution's `METADATA` in the virtual environment the PATH entry
+/// lives in ([`venv_dist_version`]) instead of starting an interpreter for `--version`
+/// (`vibe --version` took about 1.2 s of a 1.3 s scan on the machine this was measured on).
+const PYTHON_DISTS: &[(&str, &str)] = &[("Mistral Vibe", "mistral-vibe")];
+
+/// The version of tool `name` found at `path`: from its Python distribution on disk when
+/// that answers, else `<binary> --version` as before.
+///
+/// For a Python tool this is traced as a `version.read` span, the shape the Node tools use
+/// (`rmguard.exec.program` = the binary, a closed value; `rmguard.version.source` =
+/// `dist_info` when `METADATA` answered, `spawn` when it did not and the
+/// `exec.version_probe` that follows does).
+fn tool_version(name: &str, path: &Path) -> Option<String> {
+    let Some((_, dist)) = PYTHON_DISTS.iter().find(|(t, _)| *t == name) else {
+        return get_binary_version(path.to_str().unwrap_or(""));
+    };
+    let program = path.file_name().unwrap_or_default().to_os_string();
+    let mut span = crate::otel::span("version.read", || {
+        vec![Attr::str(Key::ExecProgram, crate::otel::exec_program(&program))]
+    });
+    let read = venv_dist_version(path, dist);
+    span.set(|| {
+        vec![Attr::str(
+            Key::VersionSource,
+            if read.is_some() { "dist_info" } else { "spawn" },
+        )]
+    });
+    drop(span);
+    read.or_else(|| get_binary_version(path.to_str().unwrap_or("")))
+}
+
+/// Most `lib/python3.*` directories and `site-packages` entries looked at per venv.
+const MAX_VENV_ENTRIES: usize = 4096;
+
+/// `Version:` of the Python distribution `dist` (PEP 503 normalised, e.g. `mistral-vibe`)
+/// installed in the virtual environment whose console script `bin` (a PATH entry) is,
+/// after following its symlink chain.
+///
+/// The resolved file must sit in `<venv>/bin/` (`Scripts\` on Windows) and `<venv>` must
+/// carry a `pyvenv.cfg`: the layout of a uv tool (`~/.local/share/uv/tools/<name>/`, see
+/// <https://docs.astral.sh/uv/concepts/tools/>) and of a pipx venv
+/// (`~/.local/share/pipx/venvs/<name>/`). uv's `uv-receipt.toml` records the requested
+/// requirement and entry points but not the installed version, so it is not used. The
+/// distribution is the `<name>-<version>.dist-info` directory in
+/// `<venv>/lib/python3.*/site-packages/` (`Lib\site-packages\` on Windows) whose name
+/// normalises to `dist`; its `METADATA` is read through the bounded no-follow reader
+/// (64 KiB head, header block only), its `Name:` must normalise to `dist`, and its
+/// `Version:` must agree with the directory name and be plain version text that
+/// [`crate::scanners::extract_version`] (the sanitisation a spawned `--version` gets)
+/// returns unchanged. Anything else is None, and the caller spawns.
+pub fn venv_dist_version(bin: &Path, dist: &str) -> Option<String> {
+    use crate::scanners::exposure::pep503_normalize;
+    let real = std::fs::canonicalize(bin).ok()?;
+    let bin_dir = real.parent()?;
+    let bin_name = bin_dir.file_name()?.to_str()?;
+    if bin_name != "bin" && bin_name != "Scripts" {
+        return None;
+    }
+    let venv = bin_dir.parent()?;
+    if !std::fs::symlink_metadata(venv.join("pyvenv.cfg")).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let mut site_dirs: Vec<PathBuf> = vec![venv.join("Lib").join("site-packages")];
+    if let Ok(entries) = crate::scanners::probe_read_dir(venv.join("lib")) {
+        let mut libs: Vec<PathBuf> = entries
+            .flatten()
+            .take(MAX_VENV_ENTRIES)
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("python")))
+            .map(|e| e.path().join("site-packages"))
+            .collect();
+        libs.sort();
+        site_dirs.extend(libs);
+    }
+    for site in site_dirs {
+        let Ok(entries) = crate::scanners::probe_read_dir(&site) else {
+            continue;
+        };
+        let mut hits: Vec<(String, PathBuf)> = entries
+            .flatten()
+            .take(MAX_VENV_ENTRIES)
+            .filter_map(|e| {
+                let n = e.file_name().to_str()?.to_string();
+                let stem = n.strip_suffix(".dist-info")?;
+                let (name, ver) = stem.split_once('-')?;
+                (pep503_normalize(name) == dist).then(|| (ver.to_string(), e.path()))
+            })
+            .collect();
+        hits.sort();
+        // Two dist-info directories for one project is a broken environment: no answer.
+        if hits.len() != 1 {
+            continue;
+        }
+        let (dir_ver, dir) = hits.pop()?;
+        let meta = dir.join("METADATA");
+        let head = crate::scanners::read_head_bytes_nofollow(&meta, 64 * 1024)?;
+        let text = String::from_utf8_lossy(&head);
+        let (mut name, mut version) = (None, None);
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                break; // end of headers; the long description follows
+            }
+            if let Some(v) = line.strip_prefix("Name:") {
+                name.get_or_insert_with(|| v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("Version:") {
+                version.get_or_insert_with(|| v.trim().to_string());
+            }
+        }
+        let (name, v) = (name?, version?);
+        let ok = pep503_normalize(&name) == dist
+            && v == dir_ver
+            && crate::scanners::npm_packages::is_valid_version(&v)
+            && crate::scanners::extract_version(&v).as_deref() == Some(v.as_str());
+        return ok.then_some(v);
+    }
+    None
+}
+
 /// Verify a binary is real (not a shim that says "not installed").
 fn verify_binary_works(path: &std::path::Path) -> bool {
     let mut x = crate::otel::exec_span("verify_binary", path.as_os_str());
@@ -300,9 +420,7 @@ impl Scanner for AiToolsScanner {
                 .unwrap_or(false);
 
             if found_binary.is_some() || has_config {
-                let version = found_binary
-                    .as_ref()
-                    .and_then(|p| get_binary_version(p.to_str().unwrap_or("")));
+                let version = found_binary.as_ref().and_then(|p| tool_version(def.name, p));
 
                 let is_running = def.process_name.map(is_process_running).unwrap_or(false);
 

@@ -649,7 +649,19 @@ fn flag_names_a_secret(flag: &str) -> bool {
         return false;
     }
     let f = flag.trim_start_matches('-').replace('-', "_");
-    crate::scanners::env_files::is_secret_key_name(&f)
+    // A single-dash flag with one alphanumeric run (`-sk`, `-fsSL`, `-token`) is a
+    // short-option cluster as often as a Go style name, so only the long hint words
+    // (TOKEN, SECRET, KEY, PASSWORD, ...) mark it, as in the command redactor
+    // ([`crate::scanners::is_short_flag_cluster`], f2572b2): the short last-word hints
+    // (PASS, PWD, PAT, JWT, SK) read curl's silent + insecure `-sk` as a secret key and
+    // blanked the URL after it. Word-structured flags (`--api-key`, `--db-pass`) keep
+    // the full rule; the explicit short flags below are unchanged.
+    let named = if crate::scanners::is_short_flag_cluster(flag) {
+        crate::scanners::env_files::has_secret_key_hint(&f)
+    } else {
+        crate::scanners::env_files::is_secret_key_name(&f)
+    };
+    named
         || matches!(
             f.to_ascii_lowercase().as_str(),
             "dsn" | "conn" | "connection" | "u" | "p" | "pw"
