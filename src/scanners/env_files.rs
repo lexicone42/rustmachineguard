@@ -86,6 +86,96 @@ pub fn has_secret_key_hint(name: &str) -> bool {
     SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
 }
 
+/// [`is_secret_key_name`] for the command redactor, with the `KEY` hint matched as a
+/// word ([`key_word_hint`]) instead of as a substring: `ssh -o StrictHostKeyChecking=no`
+/// is an ssh option, not a secret, and `KEYBOARD=us`, `MONKEY=1`, `TURKEY=1` are not
+/// secret names. The other hints and the last-word rule are unchanged. The .env and MCP
+/// checks keep the broader substring rule: they record a NAME, and over-flagging one
+/// costs nothing there, while here it hides the command a reviewer needs to read.
+pub fn is_secret_command_key_name(name: &str) -> bool {
+    if has_secret_command_key_hint(name) {
+        return true;
+    }
+    let upper = name.to_ascii_uppercase();
+    if upper == "PWD" {
+        return false;
+    }
+    key_words(name)
+        .last()
+        .is_some_and(|w| SECRET_LAST_WORDS.contains(&w.as_str()))
+}
+
+/// [`has_secret_key_hint`] with `KEY` matched by [`key_word_hint`].
+pub fn has_secret_command_key_hint(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_KEY_HINTS.iter().any(|h| *h != "KEY" && upper.contains(h)) || key_word_hint(name)
+}
+
+/// Words that put a following `KEY` in a secret's name though more words come after it
+/// (`apiKeyId`, `sshKeyFile`), or that glue onto it (`APIKEYVALUE`).
+const KEY_QUALIFIERS: &[&str] = &[
+    "API",
+    "SECRET",
+    "PRIVATE",
+    "PRIV",
+    "ACCESS",
+    "SSH",
+    "SIGNING",
+    "ENCRYPTION",
+    "MASTER",
+    "LICENSE",
+    "CLIENT",
+    "APP",
+    "SERVICE",
+    "AUTH",
+    "ADMIN",
+    "DEPLOY",
+    "GPG",
+    "PGP",
+    "HMAC",
+    "SESSION",
+];
+
+/// English words ending in `KEY` that are not key names (`MONKEY`, `TURKEY`, `HOTKEY`).
+const KEY_WORD_STEMS: &[&str] = &["MON", "TUR", "DON", "HOC", "JOC", "WHIS", "LAC", "HON", "FLUN", "HOT"];
+
+/// `KEY` as a word of a NAME. A name splits into segments at every non-alphanumeric
+/// (`API_KEY`, `key=`, `--api-key`) and a segment into camelCase words (`apiKey`). It
+/// matches when a segment or word, trailing digits ignored (`API_KEY2`):
+/// - is `KEY`/`KEYS` and is the last camelCase word of its segment (`API_KEY`,
+///   `KEY_ID`, `apiKey`, `key`), or follows a [`KEY_QUALIFIERS`] word (`apiKeyId`);
+/// - ends in `KEY`/`KEYS` glued to a stem that is not an English word
+///   (`APIKEY`, `sshkey`, `PRIVKEY`; not `MONKEY`, `TURKEY`, `HOTKEY`);
+/// - holds `KEY` mid-word right after a qualifier (`APIKEYVALUE`).
+///
+/// It does not match `KEY` inside a camelCase name between other words
+/// (`StrictHostKeyChecking`, `HostKeyAlgorithms`) or at the start of a longer word
+/// (`KEYBOARD`, `KEYWORD`).
+pub fn key_word_hint(name: &str) -> bool {
+    let glued = |w: &str| -> bool {
+        let stem = w.strip_suffix("KEYS").or_else(|| w.strip_suffix("KEY"));
+        if let Some(stem) = stem {
+            return stem.is_empty() || !KEY_WORD_STEMS.contains(&stem);
+        }
+        w.match_indices("KEY")
+            .any(|(i, _)| KEY_QUALIFIERS.iter().any(|q| w[..i].ends_with(q)))
+    };
+    name.split(|c: char| !c.is_ascii_alphanumeric()).any(|seg| {
+        let words = key_words(seg);
+        words.iter().enumerate().any(|(i, w)| {
+            // A version or index suffix is not part of the word (`API_KEY2`, `apiKey2`).
+            let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
+            if !w.contains("KEY") {
+                return false;
+            }
+            if w == "KEY" || w == "KEYS" {
+                return i + 1 == words.len() || (i > 0 && KEY_QUALIFIERS.contains(&words[i - 1].as_str()));
+            }
+            glued(w)
+        })
+    })
+}
+
 /// A .env key NAME with `WEBHOOK` as one of its words (`SLACK_WEBHOOK_URL`,
 /// `DISCORD_WEBHOOK`): a webhook URL is its own credential. Kept out of
 /// [`is_secret_key_name`], like [`is_connection_string_key_name`]: in a command the

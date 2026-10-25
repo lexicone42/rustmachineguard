@@ -129,6 +129,39 @@ fn surfaces() -> Vec<(&'static str, String)> {
             "GOOGBARE",
             "gemini --key AIzaGOOGBARE0123456789abcdefghijklmnopq".into(),
         ),
+        // --- backslash escapes keep a secret's tail inside its shell word (fail on f2572b2) ---
+        (
+            "ESCHDR",
+            r"wget --header=Authorization:Bearer\ ESCHDR https://api.internal".into(),
+        ),
+        (
+            "ESCHDR2",
+            r"curl -H Authorization:\ Bearer\ ESCHDR2 https://api.internal".into(),
+        ),
+        (
+            "ESCAPIKEY",
+            r"curl -H X-Api-Key:a\ ESCAPIKEY https://api.internal".into(),
+        ),
+        (
+            "ESCCOOKIE",
+            r"curl -H Cookie:\ sid=ESCCOOKIE https://app.internal".into(),
+        ),
+        (
+            "ESCDATA",
+            r"curl --data password=a\ ESCDATA https://api.internal".into(),
+        ),
+        ("ESCUSER", r"curl -u admin:a\ ESCUSER https://api.internal".into()),
+        ("ESCKV", r"API_KEY=va\ ESCKV ./run.sh".into()),
+        ("ESCFLAG", r"tool --password a\ ESCFLAG".into()),
+        ("ESCURL", r"git clone https://u:a\ ESCURL@git.internal/r".into()),
+        ("ESCANSIC", r"TOKEN=$'a ESCANSIC' ./run.sh".into()),
+        ("ESCDQ", r#"tool --password "a\" ESCDQ""#.into()),
+        ("ESCGLUE", r"TOKEN='a'\ ESCGLUE ./run.sh".into()),
+        (
+            "ESCQHDR",
+            r#"curl -H "Authorization: Bearer \"a ESCQHDR\"" https://api.internal"#.into(),
+        ),
+        ("ESCCONT", "tool --token \\\n  ESCCONT https://api.internal".into()),
     ]
 }
 
@@ -555,6 +588,34 @@ mod redaction_properties {
             ] {
                 let out = redact(&input);
                 prop_assert!(!out.contains(&s), "{input:?} -> {out:?}");
+            }
+        }
+
+        /// A secret whose word continues past a backslash-escaped space (`KEY=a\ S`,
+        /// `--flag a\ S`, `Authorization:Bearer\ S`, `-u u:a\ S`, `https://u:a\ S@h`):
+        /// the whole word is the secret, in both redactors, and redaction is idempotent.
+        #[test]
+        fn escaped_space_secret_never_survives(
+            k in key(), f in flag(), s in SECRET, pre in "[a-z]{1,6}", post in FILLER,
+            esc in prop::sample::select(vec!["\\ ", "\\\t", "\\ \\ "]),
+        ) {
+            use rustmachineguard::scanners::redact_command_text;
+            for input in [
+                format!("{k}={pre}{esc}{s} {post}"),
+                format!("tool {f} {pre}{esc}{s} {post}"),
+                format!("curl -H Authorization:Bearer{esc}{s} {post}"),
+                format!("wget --header=Authorization:{esc}token{esc}{s} {post}"),
+                format!("curl -u {pre}:{pre}{esc}{s} {post}"),
+                format!("git clone https://{pre}:{pre}{esc}{s}@host.example/r {post}"),
+                format!("{k}='{pre}'{esc}{s} {post}"),
+            ] {
+                for out in [redact(&input), redact_command_text(&input)] {
+                    prop_assert!(!out.contains(&s), "{input:?} -> {out:?}");
+                }
+                let once = redact_command_text(&input);
+                prop_assert_eq!(redact_command_text(&once), once.clone());
+                let once = redact(&input);
+                prop_assert_eq!(redact(&once), once.clone());
             }
         }
 
@@ -1529,5 +1590,256 @@ fn secret_names_and_program_short_flags_still_redact() {
     ] {
         let out = redact_command_text(input);
         assert!(!out.contains(gone), "{input:?} -> {out:?}");
+    }
+}
+
+/// A backslash escapes the next character in POSIX sh, so `\ ` (and `\"`, `\'`, `\\`)
+/// is part of the current word: `wget --header=Authorization:Bearer\ X` hands wget ONE
+/// argument, `Authorization:Bearer X`. Both redactors split words on whitespace alone,
+/// redacted the `Bearer\` half and showed `X` as the next argument; the same for every
+/// secret-bearing word (header values, `--data` bodies, `-u user:pw`, `KEY=va\ lue`, URL
+/// userinfo, a value after a secret flag). ANSI-C `$'...'`, an escaped `\"` inside a
+/// double-quoted value, a part glued on after a closing quote (`'a'\ X`, `'a'X`), a
+/// space inside a quoted Authorization header after its scheme word, and a line
+/// continuation between a flag and its value leaked the same way. Every row fails on
+/// f2572b2 in both redactors (the redis/docker/npm rows exist only in
+/// redact_command_text, by design). The output keeps the shape: the header name (and an
+/// Authorization scheme word) stay, the value is `<redacted>`, and a second pass changes
+/// nothing.
+#[test]
+fn escaped_spaces_and_quote_mixes_stay_inside_the_secret_word() {
+    use rustmachineguard::scanners::redact_command_text;
+    let both: &[(&str, &str)] = &[
+        (
+            r"wget --header=Authorization:Bearer\ HX1 u",
+            r"wget --header=Authorization:Bearer\ <redacted> u",
+        ),
+        (
+            r"wget --header=Authorization:\ Bearer\ HX2 u",
+            r"wget --header=Authorization:\ Bearer\ <redacted> u",
+        ),
+        (
+            r"curl -H Authorization:\ Bearer\ HX3 u",
+            r"curl -H Authorization:\ Bearer\ <redacted> u",
+        ),
+        (
+            r"curl -H Authorization:\ token\ HX4 u",
+            r"curl -H Authorization:\ token\ <redacted> u",
+        ),
+        (r"Authorization: Bearer\ HX5", r"Authorization: Bearer\ <redacted>"),
+        (r"Bearer\ HX6 u", r"Bearer\ <redacted> u"),
+        (r"curl -H X-Api-Key:\ HX7 u", "curl -H X-Api-Key:<redacted> u"),
+        (r"curl -H X-Api-Key:a\ HX8 u", "curl -H X-Api-Key:<redacted> u"),
+        (r"curl -H Private-Token:\ HX9 u", "curl -H Private-Token:<redacted> u"),
+        (r"curl -H Cookie:\ s=HX10 u", "curl -H Cookie:<redacted> u"),
+        (r"curl -H Cookie:s=a;\ t=HX11 u", "curl -H Cookie:<redacted> u"),
+        (r"curl --data password=a\ HX12 u", "curl --data password=<redacted> u"),
+        (r"curl -d token=a\ HX13 u", "curl -d token=<redacted> u"),
+        (r"curl -u admin:a\ HX14 u", "curl -u admin:<redacted> u"),
+        (r"curl --user=admin:a\ HX15 u", "curl --user=admin:<redacted> u"),
+        (r"API_KEY=va\ HX16 ./run", "API_KEY=<redacted> ./run"),
+        (r"export GITHUB_TOKEN=a\ HX17", "export GITHUB_TOKEN=<redacted>"),
+        (r"TOKEN=a\ b\ HX18 ./run", "TOKEN=<redacted> ./run"),
+        (r"tool --password a\ HX19", "tool --password <redacted>"),
+        (r"tool --password=a\ HX20", "tool --password=<redacted>"),
+        (r"password:\ HX21", "password:<redacted>"),
+        (
+            r"git clone https://u:a\ HX22@host/r",
+            "git clone https://<redacted>@host/r",
+        ),
+        (
+            r"pip install -i https://u:a\ b\ HX23@host/simple x",
+            "pip install -i https://<redacted>@host/simple x",
+        ),
+        (r"mysql -pa\ HX24 db", "mysql -p<redacted> db"),
+        (r"sshpass -p a\ HX25 ssh h", "sshpass -p <redacted> ssh h"),
+        (
+            r"!f() { echo password=a\ HX26; }; f",
+            "!f() { echo password=<redacted>; }; f",
+        ),
+        // ANSI-C quoting: `$'...'` is a quote, and `\'` inside it does not close it.
+        (r"TOKEN=$'a HX27' ./run", r"TOKEN=$'<redacted> <redacted>' ./run"),
+        (r"TOKEN=$'a\' HX28' ./run", r"TOKEN=$'<redacted> <redacted>' ./run"),
+        // `\"` does not close a double quote.
+        (
+            r#"tool --password "a\" HX29""#,
+            r#"tool --password "<redacted> <redacted>""#,
+        ),
+        (r#"TOKEN="a\" HX30" ./run"#, r#"TOKEN="<redacted> <redacted>" ./run"#),
+        (
+            r#"curl -H "X-Api-Key: a\" HX31" u"#,
+            r#"curl -H "X-Api-Key: <redacted> <redacted>" u"#,
+        ),
+        // A quoted Authorization header: everything after the scheme word, to the close.
+        (
+            r#"curl -H "Authorization: Bearer \"a HX32\"" u"#,
+            r#"curl -H "Authorization: Bearer <redacted> <redacted>" u"#,
+        ),
+        (
+            r#"curl -H "Authorization: Bearer a HX33" u"#,
+            r#"curl -H "Authorization: Bearer <redacted> <redacted>" u"#,
+        ),
+        (
+            r"curl -H 'Authorization: Bearer '\ HX34 u",
+            r"curl -H 'Authorization: Bearer <redacted>'<redacted> u",
+        ),
+        // A part glued on after the closing quote is more of the same word.
+        (r"TOKEN='a'\ HX35 ./run", "TOKEN='<redacted>'<redacted> ./run"),
+        (r"TOKEN='a'HX36 ./run", "TOKEN='<redacted>'<redacted> ./run"),
+        (
+            r"TOKEN='a b'\ HX37 ./run",
+            "TOKEN='<redacted> <redacted>'<redacted> ./run",
+        ),
+        (
+            r#"TOKEN="a"'b HX38' ./run"#,
+            r#"TOKEN="<redacted>"'<redacted> <redacted>' ./run"#,
+        ),
+        // Escaped JSON inside a double-quoted body.
+        (
+            r#"curl -d "{\"token\":\"a HX39\"}" u"#,
+            r#"curl -d "{\"token\":\"<redacted> <redacted>" u"#,
+        ),
+        // A line continuation between a flag and its value.
+        (
+            "tool --token \\\n  HX40 https://h",
+            "tool --token \\\n  <redacted> https://h",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (raw, want) in both {
+        for (name, f) in [
+            ("redact_secrets_in_text", redact as fn(&str) -> String),
+            ("redact_command_text", redact_command_text),
+        ] {
+            let out = f(raw);
+            if out != *want || f(&out) != out {
+                failures.push(format!("  {name}: {raw:?}\n    -> {out:?}\n    want {want:?}"));
+            }
+        }
+    }
+    // Command-text-only rules (program password flags, config set, stdin feeds).
+    for (raw, want) in [
+        (r"redis-cli -a a\ HX41 ping", "redis-cli -a <redacted> ping"),
+        (r"docker login -p a\ HX42 r", "docker login -p <redacted> r"),
+        (
+            r"npm config set //r/:_authToken a\ HX43",
+            "npm config set //r/:_authToken <redacted>",
+        ),
+        (
+            r"echo a\ HX44 | docker login --password-stdin",
+            "echo <redacted> | docker login --password-stdin",
+        ),
+    ] {
+        let out = redact_command_text(raw);
+        if out != want || redact_command_text(&out) != out {
+            failures.push(format!(
+                "  redact_command_text: {raw:?}\n    -> {out:?}\n    want {want:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "escaped-word shapes:\n{}", failures.join("\n"));
+}
+
+/// The other side: an escaped space or quote outside a secret's word is ordinary shell
+/// and passes through both redactors untouched, and `\\` followed by a space is an
+/// escaped BACKSLASH (the space then ends the word), so the next word is not the secret.
+/// Existing JSON-in-quotes shapes keep their structure, and a quote at the end of a
+/// secret word closes the quote an earlier word opened instead of swallowing the rest of
+/// the command (f2572b2 redacted `&& echo hi https://h/x` after `sh -c 'TOKEN=X'`).
+#[test]
+fn escaped_spaces_outside_secrets_pass_through() {
+    use rustmachineguard::scanners::redact_command_text;
+    for benign in [
+        r"cp a\ b c",
+        r"curl --output=my\ file https://api.internal/x",
+        r"mv my\ notes.txt archive/",
+        r#"echo \"quoted\" \'single\' back\\slash"#,
+        r"grep -r foo\ bar src/",
+        "make build \\\n  && make test",
+        r"find . -name \*.rs -exec rustfmt {} \;",
+    ] {
+        assert_eq!(
+            redact(benign),
+            benign,
+            "redact_secrets_in_text changed a benign command"
+        );
+        assert_eq!(
+            redact_command_text(benign),
+            benign,
+            "redact_command_text changed a benign command"
+        );
+    }
+    for (raw, want) in [
+        (r"TOKEN=a\\ NEXTWORD ./run", r"TOKEN=<redacted> NEXTWORD ./run"),
+        (
+            "sh -c 'TOKEN=X' && echo hi https://h/x",
+            "sh -c 'TOKEN=<redacted>' && echo hi https://h/x",
+        ),
+        (
+            "bash -c \"export TOKEN=X\" && echo hi",
+            "bash -c \"export TOKEN=<redacted>\" && echo hi",
+        ),
+        (
+            r#"curl -d '{"token":"X"}' https://h"#,
+            r#"curl -d '{"token":"<redacted>"}' https://h"#,
+        ),
+        (
+            r#"-d '{"token" : "X"}' https://h"#,
+            r#"-d '{"token" : "<redacted>"}' https://h"#,
+        ),
+        (
+            r#"curl -d "{\"token\":\"X\"}" https://h"#,
+            r#"curl -d "{\"token\":\"<redacted>\"}" https://h"#,
+        ),
+    ] {
+        assert_eq!(redact(raw), want, "redact_secrets_in_text on {raw:?}");
+        assert_eq!(redact_command_text(raw), want, "redact_command_text on {raw:?}");
+    }
+}
+
+/// The `KEY` hint matches a WORD of a name, not a substring: `ssh -o
+/// StrictHostKeyChecking=no` showed `StrictHostKeyChecking=<redacted>` on f2572b2, and
+/// `KEYBOARD`, `MONKEY`, `TURKEY`, `HOTKEY` were secret names. `KEY` as a separated or
+/// trailing camelCase word, after a qualifier (`apiKeyId`), or glued onto a stem that is
+/// not an English word (`APIKEY`, `sshkey`) still is. The benign rows fail on f2572b2.
+#[test]
+fn key_hint_matches_whole_words_only() {
+    use rustmachineguard::scanners::redact_command_text;
+    for benign in [
+        "ssh -o StrictHostKeyChecking=no host",
+        "ssh -o StrictHostKeyChecking=accept-new -o HostKeyAlgorithms=+ssh-rsa host",
+        "KEYBOARD=us ./setup.sh",
+        "MONKEY=1 ./chaos.sh",
+        "TURKEY=1 ./x",
+        "HOTKEY=ctrl+k ./x",
+        "tool --keyboard-layout=us",
+        "KEYWORD=foo ./search",
+    ] {
+        assert_eq!(redact(benign), benign, "redact_secrets_in_text over-redacted");
+        assert_eq!(redact_command_text(benign), benign, "redact_command_text over-redacted");
+    }
+    for (raw, gone) in [
+        ("API_KEY=KW1 ./run", "KW1"),
+        ("apiKey=KW2 ./run", "KW2"),
+        ("SECRET_KEY=KW3 ./run", "KW3"),
+        ("sshkey=KW4 ./run", "KW4"),
+        ("APIKEY=KW5 ./run", "KW5"),
+        ("key=KW6 ./run", "KW6"),
+        ("KEY_ID=KW7 ./run", "KW7"),
+        ("API_KEY2=KW8 ./run", "KW8"),
+        ("apiKeyValue=KW9 ./run", "KW9"),
+        ("tool --api-key KW10", "KW10"),
+        ("tool --key=KW11", "KW11"),
+        ("tool -apiKey KW12", "KW12"),
+        ("PRIVKEY=KW13 ./run", "KW13"),
+        ("OPENAI_API_KEYS=KW14 ./run", "KW14"),
+        ("AWS_ACCESS_KEY_ID=KW15 ./run", "KW15"),
+        ("curl -H X-Api-Key:KW16 u", "KW16"),
+        ("APIKEYVALUE=KW17 ./run", "KW17"),
+        ("tool -key KW18", "KW18"),
+    ] {
+        for out in [redact(raw), redact_command_text(raw)] {
+            assert!(!out.contains(gone), "{raw:?} -> {out:?}");
+        }
     }
 }

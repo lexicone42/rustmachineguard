@@ -451,23 +451,9 @@ pub fn redact_secrets_in_text(text: &str) -> String {
 }
 
 fn redact_secrets_once(text: &str) -> String {
-    // Tokenise on whitespace, keeping the spans so the original whitespace is copied
+    // Tokenise into shell words, keeping the spans so the original whitespace is copied
     // back verbatim (splitting on ' ' alone once let a tab-separated secret through).
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut idx = 0;
-    while idx < text.len() {
-        let start = text[idx..]
-            .find(|c: char| !c.is_whitespace())
-            .map_or(text.len(), |o| idx + o);
-        if start == text.len() {
-            break;
-        }
-        let end = text[start..]
-            .find(char::is_whitespace)
-            .map_or(text.len(), |o| start + o);
-        spans.push((start, end));
-        idx = end;
-    }
+    let spans = spans_of(text);
     let tok = |i: usize| -> &str { &text[spans[i].0..spans[i].1] };
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
@@ -479,7 +465,7 @@ fn redact_secrets_once(text: &str) -> String {
         let gap = &text[last..spans[i].0];
         // A header value owed to the end of its line (an unquoted `Cookie:`, as an
         // exec-form argv element) ends at the line break.
-        if pending == Pending::Line && gap.contains('\n') {
+        if pending == Pending::Line && has_unescaped_newline(gap) {
             pending = Pending::None;
         }
         out.push_str(gap);
@@ -535,15 +521,21 @@ fn redact_code_authorization(text: &str) -> String {
         if k < b.len() && matches!(b[k], b'"' | b'\'' | b'`') {
             k += 1;
         }
-        while k < b.len() && b[k] == b' ' {
-            k += 1;
+        // A space, or a backslash-escaped one (`Authorization:\ Bearer\ X` is one word).
+        let space_at = |k: usize| match b.get(k) {
+            Some(b' ') => 1,
+            Some(b'\\') if matches!(b.get(k + 1), Some(b' ' | b'\t')) => 2,
+            _ => 0,
+        };
+        while space_at(k) > 0 {
+            k += space_at(k);
         }
         if k >= b.len() || b[k] != b':' {
             continue;
         }
         k += 1;
-        while k < b.len() && b[k] == b' ' {
-            k += 1;
+        while space_at(k) > 0 {
+            k += space_at(k);
         }
         let quote = (k < b.len() && matches!(b[k], b'"' | b'\'' | b'`')).then(|| b[k]);
         if quote.is_some() {
@@ -554,17 +546,35 @@ fn redact_code_authorization(text: &str) -> String {
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
             .map_or(text.len(), |o| k + o);
         let mut v = k;
-        if word_end < b.len() && b[word_end] == b' ' && is_scheme_word(&text[k..word_end]) {
-            v = word_end + 1;
-            while v < b.len() && b[v] == b' ' {
-                v += 1;
+        if space_at(word_end) > 0 && is_scheme_word(&text[k..word_end]) {
+            v = word_end;
+            while space_at(v) > 0 {
+                v += space_at(v);
             }
         }
         let end = match quote {
             Some(q) => text[v..].find(q as char).map_or(text.len(), |o| v + o),
-            None => text[v..]
-                .find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '}' | ')' | '"' | '\'' | '`'))
-                .map_or(text.len(), |o| v + o),
+            None => {
+                // An unquoted value ends at whitespace the shell splits on: not at an
+                // escaped space, which is more of the same word.
+                let mut e = v;
+                while e < b.len() {
+                    if b[e] == b'\\' && e + 1 < b.len() {
+                        e += 2;
+                        continue;
+                    }
+                    if b[e].is_ascii_whitespace() || matches!(b[e], b',' | b';' | b'}' | b')' | b'"' | b'\'' | b'`') {
+                        break;
+                    }
+                    e += 1;
+                }
+                // A multi-byte character can follow a backslash; land on a boundary.
+                let mut e = e.min(b.len());
+                while !text.is_char_boundary(e) {
+                    e += 1;
+                }
+                e
+            }
         };
         let value = &text[v..end];
         let var_ref = value.strip_prefix('$').is_some_and(|n| {
@@ -887,13 +897,10 @@ fn redact_command_text_once(text: &str) -> String {
     )));
     let mut out = String::with_capacity(base.len());
     let mut last = 0;
-    for (s, tok) in base
-        .split_whitespace()
-        .map(|t| (t.as_ptr() as usize - base.as_ptr() as usize, t))
-    {
+    for (s, e) in spans_of(&base) {
         out.push_str(&base[last..s]);
-        out.push_str(&redact_entropy_runs_in_token(&redact_url_path_keys(tok)));
-        last = s + tok.len();
+        out.push_str(&redact_entropy_runs_in_token(&redact_url_path_keys(&base[s..e])));
+        last = e;
     }
     out.push_str(&base[last..]);
     out
@@ -1123,14 +1130,62 @@ fn redact_config_set_values(text: &str) -> String {
     out
 }
 
-/// Whitespace tokens of `text` with their byte spans.
+/// The words of `text` with their byte spans, split as a POSIX shell splits them on
+/// whitespace: a backslash escapes the character after it, so `\ ` (an escaped space or
+/// tab) and the `\"`, `\'`, `\\` pairs stay inside the current word. A header value,
+/// `--data` body or `NAME=value` written `Authorization:Bearer\ X`, `password=a\ X` or
+/// `-u admin:a\ X` is ONE shell word, and splitting at the escaped space showed the
+/// credential's tail as the next argument. A backslash-newline that starts a word is a
+/// line continuation and belongs to the gap, so the word after it still follows the
+/// flag before it (`--token \<newline>  X`). Quoted whitespace still splits, as it
+/// always has: the quote-tracking rules carry a quoted value across words.
 fn spans_of(text: &str) -> Vec<(usize, usize)> {
-    text.split_whitespace()
-        .map(|t| {
-            let s = t.as_ptr() as usize - text.as_ptr() as usize;
-            (s, s + t.len())
-        })
-        .collect()
+    let b = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    let ws_at = |i: usize| {
+        text[i..]
+            .chars()
+            .next()
+            .filter(|c| c.is_whitespace())
+            .map(char::len_utf8)
+    };
+    while i < b.len() {
+        if let Some(n) = ws_at(i) {
+            i += n;
+            continue;
+        }
+        if b[i] == b'\\' && matches!(b.get(i + 1), Some(b'\n')) {
+            i += 2;
+            continue;
+        }
+        if b[i] == b'\\' && b.get(i + 1) == Some(&b'\r') && b.get(i + 2) == Some(&b'\n') {
+            i += 3;
+            continue;
+        }
+        let start = i;
+        while i < b.len() {
+            if b[i] == b'\\' && i + 1 < b.len() {
+                // The escaped character, whole (it may be multi-byte).
+                i += 1 + text[i + 1..].chars().next().map_or(1, char::len_utf8);
+                continue;
+            }
+            match ws_at(i) {
+                Some(_) => break,
+                None => i += text[i..].chars().next().map_or(1, char::len_utf8),
+            }
+        }
+        spans.push((start, i));
+    }
+    spans
+}
+
+/// A line break in a gap between words that is not a backslash line continuation.
+fn has_unescaped_newline(gap: &str) -> bool {
+    gap.match_indices('\n').any(|(i, _)| {
+        let before = gap[..i].strip_suffix('\r').unwrap_or(&gap[..i]);
+        !before.ends_with('\\')
+    })
 }
 
 fn separator_token(t: &str) -> bool {
@@ -1270,7 +1325,7 @@ fn redact_stdin_password_feeds(text: &str) -> String {
 enum Pending {
     None,
     One,
-    Quote(char),
+    Quote(Close),
     /// Every token up to the next line break (an unquoted `Cookie:` header value).
     Line,
 }
@@ -1278,7 +1333,7 @@ enum Pending {
 /// A `Cookie:` / `Set-Cookie:` header in a token (`'Cookie:`, `-H"Cookie:`,
 /// `--header=Set-Cookie:a=1`): the byte index just past its colon and the quote that
 /// opened the header word, if any. Every cookie in the value is a credential.
-fn cookie_header(tok: &str) -> Option<(usize, Option<char>)> {
+fn cookie_header(tok: &str) -> Option<(usize, Option<Close>)> {
     let lower = tok.to_ascii_lowercase();
     let at = lower.find("cookie:")?;
     let name_start = if lower[..at].ends_with("set-") { at - 4 } else { at };
@@ -1286,13 +1341,167 @@ fn cookie_header(tok: &str) -> Option<(usize, Option<char>)> {
     if !(prefix.is_empty() || prefix.ends_with(['"', '\'', '='])) {
         return None;
     }
-    Some((at + "cookie:".len(), prefix.chars().find(|c| *c == '"' || *c == '\'')))
+    Some((at + "cookie:".len(), quote_state_after(None, prefix)))
 }
 
-/// If `v` opens a quote it does not close, that quote character.
-fn unclosed_quote(v: &str) -> Option<char> {
-    let q = v.chars().next().filter(|c| *c == '"' || *c == '\'')?;
-    (v.len() == 1 || !v[1..].contains(q)).then_some(q)
+/// A shell quote that is open: `'...'` (no escapes inside), `"..."` and `$"..."` (a
+/// backslash escapes the next character, so `\"` does not close), `$'...'` (ANSI-C: a
+/// backslash escapes too, so `\'` does not close).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Close {
+    Single,
+    Double,
+    AnsiC,
+}
+
+impl Close {
+    fn quote(self) -> u8 {
+        match self {
+            Close::Double => b'"',
+            Close::Single | Close::AnsiC => b'\'',
+        }
+    }
+    fn quote_char(self) -> char {
+        self.quote() as char
+    }
+    fn escapes(self) -> bool {
+        self != Close::Single
+    }
+}
+
+/// The quote `b` opens at its start, and the opener's length (`$'` and `$"` are two).
+fn opener(b: &[u8]) -> Option<(Close, usize)> {
+    match b {
+        [b'$', b'\'', ..] => Some((Close::AnsiC, 2)),
+        [b'$', b'"', ..] => Some((Close::Double, 2)),
+        [b'"', ..] => Some((Close::Double, 1)),
+        [b'\'', ..] => Some((Close::Single, 1)),
+        _ => None,
+    }
+}
+
+/// The byte index of the quote that closes `c` in `s`, which starts inside the quoted
+/// text.
+fn find_close(s: &str, c: Close) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if c.escapes() && b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b[i] == c.quote() {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The quote state after reading `s` in the shell's quoting rules, starting in `state`.
+fn quote_state_after(mut state: Option<Close>, s: &str) -> Option<Close> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match state {
+            None => {
+                if b[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if let Some((c, n)) = opener(&b[i..]) {
+                    state = Some(c);
+                    i += n;
+                    continue;
+                }
+            }
+            Some(c) => {
+                if c.escapes() && b[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b[i] == c.quote() {
+                    state = None;
+                }
+            }
+        }
+        i += 1;
+    }
+    state
+}
+
+/// Characters that end a secret's word after a closed quoted part: JSON and
+/// connection-string structure (`"X"}`, `"X",`) and shell operators.
+fn word_terminator(b: u8) -> bool {
+    matches!(b, b'}' | b']' | b')' | b',' | b';' | b'&' | b'|' | b'<' | b'>')
+}
+
+/// If `v` opens a quote that the rest of its word does not close, that quote: `"a`,
+/// `"a\"`, `$'a`, and `"a"'b` (a closed part, then an open one glued on).
+fn unclosed_quote(v: &str) -> Option<Close> {
+    opener(v.as_bytes())?;
+    redact_value_keeping_quotes(v, None).1
+}
+
+/// The rest of a secret's shell word after a closed quoted part (`'a'\ X`, `'a'X`,
+/// `"a"'b c'`): the shell glues it onto the same word, so it is more of the secret.
+/// Quoted parts keep their quotes and lose their content; an unquoted run becomes one
+/// `<redacted>`. The word ends at a [`word_terminator`] or at a quote that closes
+/// `outer` (the quote the token opened before the value), which are kept with
+/// everything after them. A quote that opens and is not closed before the token ends,
+/// with nothing but terminators after it, is read as the closer of a quote opened in an
+/// earlier word (`bash -c "export TOKEN=X"`), not as a new one. Returns the rendering
+/// and the quote state at the end of the token.
+///
+/// The kept remainder changes the state only through `outer` (`'{"token":"X"}'` closes
+/// the `'` it opened). With no known outer quote, a quote in it is taken to close one
+/// opened in an earlier word (`-d '{"token" : "X"}'` arrives as three words), never to
+/// open a new one: reading it as an opener redacted every word after the body.
+fn redact_word_tail(rest: &str, outer: Option<Close>) -> (String, Option<Close>) {
+    let b = rest.as_bytes();
+    let mut out = String::with_capacity(rest.len());
+    let mut i = 0;
+    let verbatim = |out: &mut String, i: usize| {
+        out.push_str(&rest[i..]);
+        outer.and_then(|_| quote_state_after(outer, &rest[i..]))
+    };
+    while i < b.len() {
+        if word_terminator(b[i]) {
+            let st = verbatim(&mut out, i);
+            return (out, st);
+        }
+        if let Some((c, n)) = opener(&b[i..]) {
+            if outer.is_some_and(|o| o.quote() == b[i]) {
+                let st = verbatim(&mut out, i);
+                return (out, st);
+            }
+            match find_close(&rest[i + n..], c) {
+                Some(j) => {
+                    out.push_str(&rest[i..i + n]);
+                    out.push_str("<redacted>");
+                    out.push(c.quote_char());
+                    i += n + j + 1;
+                }
+                None if rest[i + n..].bytes().all(word_terminator) => {
+                    let st = verbatim(&mut out, i);
+                    return (out, st);
+                }
+                None => {
+                    out.push_str(&rest[i..i + n]);
+                    out.push_str("<redacted>");
+                    return (out, Some(c));
+                }
+            }
+            continue;
+        }
+        // An unquoted run, escapes included.
+        while i < b.len() && !word_terminator(b[i]) && opener(&b[i..]).is_none() {
+            i += if b[i] == b'\\' { 2 } else { 1 };
+        }
+        i = i.min(b.len());
+        out.push_str("<redacted>");
+    }
+    (out, outer)
 }
 
 /// Flags whose value is `user:password` (curl, wget, httpie). The user half is kept.
@@ -1359,7 +1568,7 @@ fn bare_key(k: &str) -> &str {
 
 fn is_secret_key(k: &str) -> bool {
     let b = bare_key(k);
-    !b.is_empty() && crate::scanners::env_files::is_secret_key_name(b)
+    !b.is_empty() && crate::scanners::env_files::is_secret_command_key_name(b)
 }
 
 /// A key with its separator but no value yet: `password:`, `"X-Api-Key:`, `--token=`.
@@ -1430,7 +1639,7 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
         // hint word marks one (`-token X`, `-password X`, `-apiKey X`, Go and openssl
         // style); the short last-word hints (PASS, PWD, PAT, JWT, SK) are word-structured
         // names' rule and here read curl's silent + insecure as a secret key.
-        return crate::scanners::env_files::has_secret_key_hint(bare_key(p));
+        return crate::scanners::env_files::has_secret_command_key_hint(bare_key(p));
     }
     flag_shaped && is_secret_key(p)
 }
@@ -1466,7 +1675,18 @@ fn redact_url(url: &str) -> String {
         return url.to_string();
     };
     let (scheme, after) = (&url[..scheme_end], &url[scheme_end + 3..]);
-    let (authority, rest) = split_authority(after);
+    // For REDACTION the authority runs on through a backslash-escaped space: in
+    // `https://u:a\ X@host/` the shell hands git one word whose password is `a X`, and
+    // ending the authority at the backslash (the WHATWG rule split_authority applies, for
+    // host decisions) left the userinfo whole.
+    let ab = after.as_bytes();
+    let end = (0..ab.len())
+        .find(|&i| {
+            matches!(ab[i], b'/' | b'?' | b'#')
+                || (ab[i] == b'\\' && !ab.get(i + 1).is_some_and(|c| c.is_ascii_whitespace()))
+        })
+        .unwrap_or(ab.len());
+    let (authority, rest) = after.split_at(end);
     let host = match authority.rfind('@') {
         Some(at) => format!("<redacted>@{}", &authority[at + 1..]),
         None => authority.to_string(),
@@ -1530,33 +1750,116 @@ fn redact_userinfo(value: &str) -> String {
     value.to_string()
 }
 
-/// Redact a quoted value while keeping the quotes and whatever follows the close, so
+/// Redact a secret value while keeping its quotes and whatever follows the close, so
 /// `'{"token":"X"}'` becomes `'{"token":"<redacted>"}'` rather than losing its tail.
-fn redact_value_keeping_quotes(v: &str) -> String {
-    let q = v.chars().next().filter(|c| *c == '"' || *c == '\'');
-    match q {
-        Some(q) if v.len() > 1 => match v[1..].find(q) {
-            Some(close) => format!("{q}<redacted>{}", &v[1 + close..]),
-            None => format!("{q}<redacted>"),
+/// The value is read as the shell reads a word: `\"` inside `"..."` and `\'` inside
+/// `$'...'` do not close it, and a part glued on after the close (`'a'\ X`, `'a'X`,
+/// `"a"'b c'`) is more of the secret (see [`redact_word_tail`]). An escaped-JSON value
+/// (`\"X\"`, inside a double-quoted body) closes at the next `\"`.
+///
+/// `outer` is the quote state at the value's start (`'password=X'` starts inside `'`):
+/// an unquoted value then runs to that quote's close, which is kept. Returns the
+/// rendering and the quote state at the end of the token.
+fn redact_value_keeping_quotes(v: &str, outer: Option<Close>) -> (String, Option<Close>) {
+    if let Some(body) = v.strip_prefix("\\\"") {
+        return match body.find("\\\"") {
+            Some(j) => {
+                let rest = &body[j + 2..];
+                (format!("\\\"<redacted>\\\"{rest}"), quote_state_after(outer, rest))
+            }
+            None => ("\\\"<redacted>".to_string(), outer),
+        };
+    }
+    if let Some((c, n)) = opener(v.as_bytes()) {
+        return match find_close(&v[n..], c) {
+            Some(j) => {
+                let (tail, st) = redact_word_tail(&v[n + j + 1..], outer);
+                (format!("{}<redacted>{}{tail}", &v[..n], c.quote_char()), st)
+            }
+            None => (format!("{}<redacted>", &v[..n]), Some(c)),
+        };
+    }
+    match outer {
+        // Inside the quote the token opened: the value is its content, up to the close.
+        Some(o) => match find_close(v, o) {
+            Some(j) => (format!("<redacted>{}", &v[j..]), quote_state_after(outer, &v[j..])),
+            None => ("<redacted>".to_string(), outer),
         },
-        _ => "<redacted>".to_string(),
+        None => {
+            let b = v.as_bytes();
+            let mut i = 0;
+            while i < b.len() && opener(&b[i..]).is_none() {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            if i >= b.len() {
+                return ("<redacted>".to_string(), None);
+            }
+            let (tail, st) = redact_word_tail(&v[i..], None);
+            (format!("<redacted>{tail}"), st)
+        }
     }
 }
 
 /// Redact a whole token that sits in value position, keeping a leading quote pair or
 /// trailing closers (`X"`, `X"),`) so the surrounding syntax still reads.
 fn redact_bare_value(tok: &str) -> String {
-    if tok.starts_with(['"', '\'']) {
-        return redact_value_keeping_quotes(tok);
+    redact_bare_value_quoted(tok).0
+}
+
+/// [`redact_bare_value`] and the quote state at the end of the token (`"a b"` opens
+/// at `"a`; `X"` closes a quote opened earlier).
+fn redact_bare_value_quoted(tok: &str) -> (String, Option<Close>) {
+    if opener(tok.as_bytes()).is_some() || tok.starts_with("\\\"") {
+        return redact_value_keeping_quotes(tok, None);
+    }
+    let b = tok.as_bytes();
+    let mut i = 0;
+    while i < b.len() && opener(&b[i..]).is_none() {
+        i += if b[i] == b'\\' { 2 } else { 1 };
+    }
+    if i < b.len() {
+        // `a"b c"` opens a quote; `X")` keeps the closers of an earlier word.
+        let (tail, st) = redact_word_tail(&tok[i..], None);
+        return (format!("<redacted>{tail}"), st);
     }
     let core = tok.trim_end_matches(['"', '\'', ')', ']', '}', ',', ';']);
-    format!("<redacted>{}", &tok[core.len()..])
+    (format!("<redacted>{}", &tok[core.len()..]), None)
+}
+
+/// The header name of an Authorization header pair's key, also as the tail of a
+/// `--header=` / quoted word (`--header=Authorization`, `-H"Authorization`).
+fn is_authorization_pair_key(k: &str) -> bool {
+    is_authorization_key(k) || k.rsplit(['=', '"', '\'']).next().is_some_and(is_authorization_key)
+}
+
+/// `Bearer\ X`, `\ token\ X`: an Authorization scheme word joined to its credential by
+/// escaped whitespace (one shell word). The byte length of the part to keep (leading
+/// escaped spaces, the scheme word, the escaped spaces after it) and the scheme word.
+fn escaped_scheme_head(v: &str) -> Option<(usize, &str)> {
+    let b = v.as_bytes();
+    let esc_ws = |i: usize| b.get(i) == Some(&b'\\') && b.get(i + 1).is_some_and(|c| matches!(c, b' ' | b'\t'));
+    let mut i = 0;
+    while esc_ws(i) {
+        i += 2;
+    }
+    let w = i;
+    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'-') {
+        i += 1;
+    }
+    let scheme = &v[w..i];
+    if !is_scheme_word(scheme) || !esc_ws(i) {
+        return None;
+    }
+    while esc_ws(i) {
+        i += 2;
+    }
+    Some((i, scheme))
 }
 
 /// One separator-free segment: a URL, a `user:pass@host`, or a `key=value` pair.
 /// Returns the rendering and, if a secret value opened a quote it did not close, that
 /// quote (the tokens up to the closing quote are the rest of the secret).
-fn redact_segment(seg: &str) -> (String, Option<char>) {
+fn redact_segment(seg: &str, outer: Option<Close>) -> (String, Option<Close>) {
     if let Some(sc) = seg.find("://")
         && !seg[..sc].contains(['=', ':'])
     {
@@ -1581,7 +1884,20 @@ fn redact_segment(seg: &str) -> (String, Option<char>) {
         if is_authorization_key(k) && is_scheme_word(v.trim_start_matches(['"', '\''])) {
             return (seg.to_string(), None);
         }
-        return (format!("{k}{sep}{}", redact_value_keeping_quotes(v)), unclosed_quote(v));
+        let outer = quote_state_after(outer, &seg[..k.len() + 1]);
+        // `Authorization:Bearer\ X` (one shell word): the scheme stays, the credential goes.
+        if is_authorization_pair_key(k)
+            && let Some((head, _)) = escaped_scheme_head(v)
+        {
+            let rest = &v[head..];
+            if rest.is_empty() || rest.starts_with("<redacted>") {
+                return (seg.to_string(), None);
+            }
+            let (shown, st) = redact_value_keeping_quotes(rest, outer);
+            return (format!("{k}{sep}{}{shown}", &v[..head]), st);
+        }
+        let (shown, st) = redact_value_keeping_quotes(v, outer);
+        return (format!("{k}{sep}{shown}"), st);
     }
     // `--user=admin:pw`: keep the user, drop the password.
     if USER_FLAGS.iter().any(|f| f.trim_start_matches('-') == bare_key(k))
@@ -1606,11 +1922,22 @@ fn redact_token(
     let redirection = matches!(tok, "<<<" | "<" | "<<" | "<<-");
     match pending {
         Pending::One if redirection => return (tok.to_string(), Pending::One),
-        Pending::One => return (redact_bare_value(tok), Pending::None),
-        // Inside a quoted secret: this token is more of it, until the quote closes.
+        Pending::One => {
+            let (shown, st) = redact_bare_value_quoted(tok);
+            return (shown, st.map_or(Pending::None, Pending::Quote));
+        }
+        // Inside a quoted secret: this token is more of it, until the quote closes (an
+        // escaped `\"` does not close a double quote), and a part glued on after the
+        // close (`b'\ X`) is more of it too.
         Pending::Quote(q) => {
-            return match tok.find(q) {
-                Some(close) => (format!("<redacted>{}", &tok[close..]), Pending::None),
+            return match find_close(tok, q) {
+                Some(close) => {
+                    let (tail, st) = redact_word_tail(&tok[close + 1..], None);
+                    (
+                        format!("<redacted>{}{tail}", q.quote_char()),
+                        st.map_or(Pending::None, Pending::Quote),
+                    )
+                }
                 None => ("<redacted>".to_string(), Pending::Quote(q)),
             };
         }
@@ -1623,7 +1950,7 @@ fn redact_token(
         let (head, value) = tok.split_at(end);
         let done = value.is_empty() || value == "<redacted>";
         return match quote {
-            Some(q) => match value.find(q) {
+            Some(q) => match find_close(value, q) {
                 Some(0) => (tok.to_string(), Pending::None),
                 Some(close) => (format!("{head}<redacted>{}", &value[close..]), Pending::None),
                 None if done => (tok.to_string(), Pending::Quote(q)),
@@ -1638,17 +1965,36 @@ fn redact_token(
     }
     // `Authorization: token X`: the scheme word stays visible, the credential goes.
     // Only when a real Authorization header precedes it and a value follows; the word
-    // `token` in `gh auth token` is just a word.
+    // `token` in `gh auth token` is just a word. When the header word opened a quote
+    // (`-H "Authorization: Bearer a b"`, `"Authorization: Bearer \"a b\""`), the
+    // credential is every word up to that quote's close, not just the next one.
     if is_scheme_word(tok) {
         let after_auth = prev.is_some_and(is_authorization_marker);
         let has_value = next.is_some_and(|n| !n.starts_with('-') && !n.contains("://"));
+        let owed = match prev.and_then(|p| quote_state_after(None, p)) {
+            Some(q) => Pending::Quote(q),
+            None => Pending::One,
+        };
         return (
             tok.to_string(),
-            if after_auth && has_value {
-                Pending::One
-            } else {
-                Pending::None
-            },
+            if after_auth && has_value { owed } else { Pending::None },
+        );
+    }
+    // `Authorization: Bearer\ X` / a bare `Bearer\ X`: one shell word holding the scheme
+    // and the credential. The scheme stays, the rest goes.
+    if let Some((head, scheme)) = escaped_scheme_head(tok)
+        && (prev.is_some_and(is_authorization_marker)
+            || scheme.eq_ignore_ascii_case("bearer")
+            || scheme.eq_ignore_ascii_case("basic"))
+    {
+        let rest = &tok[head..];
+        if rest.is_empty() || rest.starts_with("<redacted>") {
+            return (tok.to_string(), Pending::None);
+        }
+        let (shown, st) = redact_bare_value_quoted(rest);
+        return (
+            format!("{}{shown}", &tok[..head]),
+            st.map_or(Pending::None, Pending::Quote),
         );
     }
     // HTTPie / compact JSON: `Authorization:"Bearer X"`, `{"Authorization":"Bearer X"}` --
@@ -1663,8 +2009,16 @@ fn redact_token(
         if redirection {
             return (tok.to_string(), Pending::One);
         }
-        let q = unclosed_quote(tok);
-        return (redact_bare_value(tok), q.map_or(Pending::None, Pending::Quote));
+        // A marker word that opened a quote (`-H "X-Api-Key: a\" b"`) puts this value
+        // inside it: the value runs to that quote's close, and `\"` does not close it.
+        let outer = prev.and_then(|p| quote_state_after(None, p));
+        let (shown, q) = match outer {
+            Some(_) if opener(tok.as_bytes()).is_none() && !tok.starts_with("\\\"") => {
+                redact_value_keeping_quotes(tok, outer)
+            }
+            _ => redact_bare_value_quoted(tok),
+        };
+        return (shown, q.map_or(Pending::None, Pending::Quote));
     }
     // curl-style basic auth: `-u admin:pw`. Keep the user, drop the password. The flag
     // alone is not a marker (`python -u script.py`), the `user:pass` shape is.
@@ -1700,7 +2054,15 @@ fn redact_token(
     // Pairs are counted and recognised on the RENDERED segments: the userinfo rule turns
     // the pair `x:y@h` into the non-pair `<redacted>@h`, and judging the raw segment let
     // a second pass absorb what the first had kept (redaction was not idempotent).
-    let rendered: Vec<(String, Option<char>)> = segs.iter().map(|(sg, _)| redact_segment(sg)).collect();
+    // Each segment starts in the quote state the token reached before it (`'password=X'`
+    // starts inside `'`).
+    let rendered: Vec<(String, Option<Close>)> = segs
+        .iter()
+        .map(|(sg, _)| {
+            let at = sg.as_ptr() as usize - tok.as_ptr() as usize;
+            redact_segment(sg, quote_state_after(None, &tok[..at]))
+        })
+        .collect();
     let pairs = rendered
         .iter()
         .filter(|(sg, _)| split_pair(sg).is_some_and(|(_, _, v)| !v.is_empty()))
@@ -1708,7 +2070,7 @@ fn redact_token(
     let mut out = String::with_capacity(tok.len());
     let mut absorb = false;
     let mut prev_sep: Option<char> = None;
-    let mut opened: Option<char> = None;
+    let mut opened: Option<Close> = None;
     for ((seg, sep_after), (shown, q)) in segs.into_iter().zip(rendered) {
         let pair = split_pair(&shown);
         // After ';' in a single-pair token, a path-like or command-like segment is the

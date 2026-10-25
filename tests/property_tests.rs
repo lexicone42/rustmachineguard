@@ -7983,6 +7983,16 @@ fn redaction_piece() -> impl Strategy<Value = String> {
             "  ",
             "\t",
             "\n",
+            // Backslash escapes: `\ ` keeps a word together, `\"`/`\'` do not close a
+            // quote, `\<newline>` continues a line, `\\` is an escaped backslash.
+            "\\",
+            "\\ ",
+            "\\\t",
+            "\\\"",
+            "\\'",
+            "\\\n",
+            "\\\\",
+            "\\\"<redacted>\\\"",
         ])
         .prop_map(str::to_string),
         "[A-Za-z0-9]{1,12}",
