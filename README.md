@@ -477,6 +477,19 @@ every mapped category is a real finding category; both directions are tested. It
 artifact you bring to a compliance program to demonstrate agent/MCP inventory and
 detection coverage, with each finding tied to the control it evidences.
 
+## Running it on a schedule
+
+[docs/OPERATIONS.md](docs/OPERATIONS.md) covers running rmguard daily and acting on drift:
+a reviewed baseline, then on each run a `--fail-on` gate and a `--diff` against that
+baseline (two invocations: with `--diff`, `-o` gets the diff text and `--fail-on` is not
+applied), with
+[`scripts/rmguard-baseline.sh`](scripts/rmguard-baseline.sh) to create or rotate the
+baseline and [`scripts/rmguard-notify.sh`](scripts/rmguard-notify.sh) to log and notify
+(desktop by default; a webhook only if you set one, and then counts only). It also has
+systemd user units, a launchd agent and a cron line under [`contrib/`](contrib/), the
+hardening directives that do and do not suit a scanner, fleet export through an
+OpenTelemetry Collector, a Grafana dashboard and Prometheus alert rules.
+
 ## Team / fleet reporting
 
 Run per-machine scans, collect the JSON however your team already moves files (MDM,

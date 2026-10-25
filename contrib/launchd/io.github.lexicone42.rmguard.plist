@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent: a daily rmguard scan, severity gate and drift check.
+  launchd expands neither ~ nor $HOME: replace every /Users/YOU with your home directory,
+  and set PATH to your login shell's PATH (`echo $PATH`), the one the baseline was made
+  with, or tools found only on that PATH show up as drift. Install: docs/OPERATIONS.md#launchd-macos.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.lexicone42.rmguard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/rmguard-notify.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RMGUARD</key>
+    <string>/Users/YOU/.local/bin/rmguard</string>
+    <key>RMGUARD_FAIL_ON</key>
+    <string>high</string>
+    <key>PATH</key>
+    <string>/Users/YOU/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <!-- The working directory is scanned as a project unless it is a scanned home: run from the home. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/YOU</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>17</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.local/state/rmguard/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.local/state/rmguard/launchd.err</string>
+</dict>
+</plist>

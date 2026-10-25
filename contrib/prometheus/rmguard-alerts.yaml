@@ -1,0 +1,63 @@
+# Prometheus alerting rules for rmguard posture gauges (docs/OPERATIONS.md#alert-rules).
+#
+# Assumes the OpenTelemetry Collector's `prometheus` exporter with its default
+# translation (names in docs/OPENTELEMETRY.md#posture-metrics), scraped with
+# `honor_labels: true` so `instance` is the machine's --otel-instance and `job` is
+# `rmguard`, and machines that scan daily. Each scan is one sample per series (the
+# exporter serves it until its metric_expiration, default 5m), so every expression
+# reads "the latest scan" with last_over_time over a window, never rate().
+#
+# Checked with `promtool check rules` and `promtool test rules`
+# (contrib/prometheus/rmguard-alerts.test.yaml).
+groups:
+  - name: rmguard
+    rules:
+      # A machine's latest scan has more critical findings than its previous one,
+      # including a first critical (a severity/category pair with no findings is not
+      # exported, so "no previous series" counts as 0) and a machine seen for the first
+      # time. `2h` must be longer than a scan plus one scrape and shorter than the scan
+      # interval: the alert fires for up to 2h after the scan that raised the count,
+      # then resolves; the finding itself is in that machine's own report.
+      - alert: RmguardNewCriticalFinding
+        expr: |
+          sum by (instance) (
+            last_over_time(rmguard_findings{job="rmguard", rmguard_finding_severity="critical"}[2h])
+          )
+          > on (instance)
+          (
+            sum by (instance) (
+              last_over_time(rmguard_findings{job="rmguard", rmguard_finding_severity="critical"}[1d] offset 2h)
+            )
+            or on (instance)
+            0 * sum by (instance) (last_over_time(rmguard_inventory{job="rmguard"}[2h]))
+          )
+        labels:
+          severity: critical
+        annotations:
+          summary: "rmguard: new critical finding on {{ $labels.instance }}"
+          description: >-
+            The latest rmguard scan of {{ $labels.instance }} reports {{ $value }} critical
+            finding(s), more than its previous scan. The metric carries counts only: run
+            rmguard on that machine (or read its JSON report) for what and where.
+
+      # More than one threat-catalog version among the machines that scanned in the
+      # last day. Exposure findings follow the catalog, so a fleet on mixed versions is
+      # not comparable; it is expected for a while after a release, hence the `for`.
+      # The version is a resource attribute: the exporter puts it on target_info.
+      - alert: RmguardCatalogVersionSkew
+        expr: |
+          count(
+            count by (rmguard_catalog_version) (
+              last_over_time(target_info{job="rmguard"}[1d])
+            )
+          ) > 1
+        for: 2d
+        labels:
+          severity: warning
+        annotations:
+          summary: "rmguard: {{ $value }} threat-catalog versions in the fleet"
+          description: >-
+            Machines that scanned in the last day report {{ $value }} different
+            rmguard.catalog.version values. Update rmguard on the machines still on an
+            older catalog; until then their Exposure findings are graded against older
+            data.

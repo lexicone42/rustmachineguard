@@ -463,6 +463,19 @@ sum by ("rmguard.finding.severity") (last_over_time({"rmguard.findings"}[1d]))
 of one scan are disjoint label sets, so summing them is a count of that scan's
 findings, and summing across `instance` adds machines.
 
+### Consuming the metrics
+
+[docs/OPERATIONS.md](OPERATIONS.md#fleet) has a collector and Prometheus configuration
+for these gauges (scrape with `honor_labels: true`, so `instance` stays the machine's
+id), a Grafana dashboard built on the queries above
+([`contrib/grafana/rmguard-posture.json`](../contrib/grafana/rmguard-posture.json)) and
+two alert rules, a new critical finding on any machine and a threat-catalog version skew
+across the fleet
+([`contrib/prometheus/rmguard-alerts.yaml`](../contrib/prometheus/rmguard-alerts.yaml),
+with a `promtool test rules` file). The collector's `prometheus` exporter puts resource
+attributes on `target_info`, so `rmguard.catalog.version` is queried there as
+`target_info{rmguard_catalog_version=...}`.
+
 ## What is never exported, and why
 
 The collector may be remote, shared, or run by someone else, and OTLP backends keep

@@ -1,0 +1,63 @@
+# promtool test rules contrib/prometheus/rmguard-alerts.test.yaml
+# Synthetic daily scans, one sample per scan (1h steps, `_` = no sample).
+rule_files:
+  - rmguard-alerts.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1h
+    input_series:
+      # box-a: no critical at its first scan (0h), one at its second (24h), still one at 48h.
+      - series: 'rmguard_findings{job="rmguard",instance="box-a",rmguard_finding_severity="critical",rmguard_finding_category="Exposure"}'
+        values: '_x24 1 _x23 1'
+      - series: 'rmguard_inventory{job="rmguard",instance="box-a",rmguard_inventory_kind="mcp_servers"}'
+        values: '3 _x23 3 _x23 3'
+      # box-b: two critical findings at every scan (no increase).
+      - series: 'rmguard_findings{job="rmguard",instance="box-b",rmguard_finding_severity="critical",rmguard_finding_category="Exposure"}'
+        values: '2 _x23 2 _x23 2'
+      - series: 'rmguard_inventory{job="rmguard",instance="box-b",rmguard_inventory_kind="mcp_servers"}'
+        values: '1 _x23 1 _x23 1'
+      # box-c: first seen at 24h, with one critical finding.
+      - series: 'rmguard_findings{job="rmguard",instance="box-c",rmguard_finding_severity="critical",rmguard_finding_category="Permissions"}'
+        values: '_x24 1'
+      - series: 'rmguard_inventory{job="rmguard",instance="box-c",rmguard_inventory_kind="mcp_servers"}'
+        values: '_x24 0'
+    alert_rule_test:
+      - eval_time: 24h30m
+        alertname: RmguardNewCriticalFinding
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: box-a }
+            exp_annotations:
+              summary: "rmguard: new critical finding on box-a"
+              description: "The latest rmguard scan of box-a reports 1 critical finding(s), more than its previous scan. The metric carries counts only: run rmguard on that machine (or read its JSON report) for what and where."
+          - exp_labels: { severity: critical, instance: box-c }
+            exp_annotations:
+              summary: "rmguard: new critical finding on box-c"
+              description: "The latest rmguard scan of box-c reports 1 critical finding(s), more than its previous scan. The metric carries counts only: run rmguard on that machine (or read its JSON report) for what and where."
+      # More than 2h after the scan: resolved.
+      - eval_time: 27h
+        alertname: RmguardNewCriticalFinding
+        exp_alerts: []
+      # box-a's third scan has the same one critical: not new.
+      - eval_time: 48h30m
+        alertname: RmguardNewCriticalFinding
+        exp_alerts: []
+
+  - interval: 1h
+    input_series:
+      - series: 'target_info{job="rmguard",instance="box-a",rmguard_catalog_version="2026-10-22"}'
+        values: '1+0x60'
+      - series: 'target_info{job="rmguard",instance="box-b",rmguard_catalog_version="2026-10-25.2"}'
+        values: '1+0x60'
+      - series: 'target_info{job="rmguard",instance="box-c",rmguard_catalog_version="2026-10-25.2"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: RmguardCatalogVersionSkew
+        exp_alerts: []
+      - eval_time: 49h
+        alertname: RmguardCatalogVersionSkew
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "rmguard: 2 threat-catalog versions in the fleet"
+              description: "Machines that scanned in the last day report 2 different rmguard.catalog.version values. Update rmguard on the machines still on an older catalog; until then their Exposure findings are graded against older data."

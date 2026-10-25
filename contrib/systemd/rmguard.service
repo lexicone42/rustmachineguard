@@ -1,0 +1,47 @@
+# systemd user service: one rmguard scan, severity gate and drift check.
+# Install: docs/OPERATIONS.md#systemd-linux. Pair with rmguard.timer.
+[Unit]
+Description=rmguard AI-agent posture scan and drift check
+Documentation=https://github.com/lexicone42/rustmachineguard/blob/main/docs/OPERATIONS.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/rmguard-notify.sh
+Environment=RMGUARD=%h/.local/bin/rmguard
+Environment=RMGUARD_FAIL_ON=high
+# rmguard finds AI tools on PATH, and the user manager's PATH is shorter than a login
+# shell's: set this to the PATH the baseline was made with (`echo $PATH`), or tools
+# found only on your shell's PATH show up as removed in every diff.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The working directory is scanned as a project unless it is a scanned home (or an
+# ancestor of one): run from the home so the timer adds no project.
+WorkingDirectory=%h
+# Exit 2 (gate tripped or drift) leaves the unit "failed" until the next clean run, so
+# `systemctl --user --failed` lists it. Uncomment to treat it as success instead.
+#SuccessExitStatus=2
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+
+# Hardening that does not change what the scan sees (seccomp/personality; no user
+# namespace needed in a user unit):
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+# Optional, stronger (needs unprivileged user namespaces, because in a user unit these
+# imply PrivateUsers=yes): the whole file system read-only except the state directory.
+# Read-only is fine for a scanner; it still reads all of $HOME.
+#ProtectSystem=strict
+#ReadWritePaths=%S/rmguard
+
+# Do NOT add (see docs/OPERATIONS.md#hardening):
+#   ProtectHome=yes|tmpfs, InaccessiblePaths= on $HOME  -> the scan sees an empty home
+#                                                          and looks clean
+#   MemoryDenyWriteExecute=yes  -> breaks JIT runtimes rmguard starts (node for
+#                                  --version probes, MCP servers under --probe-mcp)
+#   PrivateNetwork=yes          -> breaks --otel, --verify-registry and the webhook
+#   ProcSubset=pid              -> hides /proc/stat, which the listeners scanner reads

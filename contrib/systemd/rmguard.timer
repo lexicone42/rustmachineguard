@@ -1,0 +1,12 @@
+# systemd user timer for rmguard.service: daily, catching up after a powered-off night.
+[Unit]
+Description=Daily rmguard posture scan
+Documentation=https://github.com/lexicone42/rustmachineguard/blob/main/docs/OPERATIONS.md
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
