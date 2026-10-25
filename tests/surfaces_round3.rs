@@ -404,7 +404,17 @@ fn a_vulnerable_npx_cache_a_process_runs_from_is_critical() {
     assert_eq!(hits.len(), 2, "{d}");
     let hot = hits.iter().find(|f| f.location.contains("abc123def4567890")).unwrap();
     assert_eq!(hot.severity, Severity::Critical, "{d}");
-    assert!(hot.title.contains("in npx cache, running (pid count 1)"), "{d}");
+    // The fixture script forks a child shell each iteration; between fork and exec that
+    // child carries the same argv, so the count is 1 or briefly 2. At least one is the claim.
+    let marker = "in npx cache, running (pid count ";
+    let count: usize = hot
+        .title
+        .split(marker)
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no running pid count in title: {d}"));
+    assert!(count >= 1, "{d}");
     let cold = hits.iter().find(|f| f.location.contains("fedcba0987654321")).unwrap();
     // The row's advisory_severity is high (catalog 2026-10-25.3): dormant is one below.
     assert_eq!(cold.severity, Severity::Medium, "{d}");
