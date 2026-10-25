@@ -606,12 +606,16 @@ fn test_knobs_are_absent_from_release_builds() {
     let bytes = fs::read(bin()).expect("read the binary");
     for knob in ["RMGUARD_TEST_PROC_ROOT", "RMGUARD_TEST_SYSTEM_ROOT"] {
         let found = bytes.windows(knob.len()).any(|w| w == knob.as_bytes());
-        if cfg!(debug_assertions) {
+        // The /proc knob is only compiled on Linux (the listener scanner is skipped
+        // elsewhere), so its presence is asserted there alone; absence from a release
+        // build is asserted on every platform.
+        let compiled_in = knob != "RMGUARD_TEST_PROC_ROOT" || cfg!(target_os = "linux");
+        if cfg!(debug_assertions) && compiled_in {
             assert!(
                 found,
                 "{knob} missing from a debug build: is the check still finding it?"
             );
-        } else {
+        } else if !cfg!(debug_assertions) {
             assert!(!found, "{knob} is in a release build");
         }
     }
