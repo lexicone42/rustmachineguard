@@ -386,7 +386,16 @@ mod tests {
         assert_eq!(s.file_count, 4);
         assert_eq!(s.readable_files, Some(2), "a.sh and open/c.sh");
         assert_eq!(s.mode.as_deref(), Some("0755"));
-        assert!(s.unreachable_via.is_none());
+        // Every ancestor is checked, so a 0700 directory ABOVE the fixture (macOS keeps
+        // `$TMPDIR` under a user-private `/private/var/folders/...`) may legitimately make
+        // the store unreachable; nothing inside the fixture may.
+        let fixture = d.path().to_string_lossy().into_owned();
+        if let Some(via) = s.unreachable_via.as_deref() {
+            assert!(
+                !via.starts_with(&fixture),
+                "unreachable through the fixture itself: {via}"
+            );
+        }
         set(&d.path().join("home"), 0o700);
         let s = inspect_store("claude-code", &store, "session environment", &mut Walk::default()).unwrap();
         let via = s.unreachable_via.unwrap();
