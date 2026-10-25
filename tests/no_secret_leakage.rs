@@ -497,6 +497,29 @@ mod redaction_properties {
         prop::sample::select(vec!["--token", "--password", "--api-key", "--secret", "--auth-token"])
     }
 
+    /// A generated flag word that names a secret (an independent, deliberately broad
+    /// over-approximation of the redactor's rule): a long hint word anywhere in a flag,
+    /// or a short hint word in a flag with word structure (`--sk`, `-a-pat`). A bare
+    /// single-dash cluster (`-sk`, `-pat`, `-sk_`) is never one by a short hint.
+    fn names_a_secret_flag(t: &str) -> bool {
+        let Some(name) = t.strip_prefix('-') else { return false };
+        let name = name.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+        let long = [
+            "token",
+            "secret",
+            "key",
+            "password",
+            "passwd",
+            "passphrase",
+            "credential",
+            "auth",
+            "private",
+        ];
+        let short = ["pass", "pwd", "pat", "jwt", "sk"];
+        let cluster = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric());
+        long.iter().any(|h| name.contains(h)) || (!cluster && short.iter().any(|h| name.contains(h)))
+    }
+
     proptest! {
         /// KEY=value with a secret-named key: the value never survives, whatever the
         /// separator, and the key and surrounding tokens do.
@@ -543,10 +566,28 @@ mod redaction_properties {
             prop_assert_eq!(redact(&once), once.clone());
         }
 
-        /// Text with no secret shapes passes through byte-for-byte.
+        /// Text with no secret shapes passes through byte-for-byte. Short-flag clusters
+        /// (`-sk`, `-pat`) are NOT secret shapes: this shrank to `-sk a` -> `-sk
+        /// <redacted>` when the last-word hints (SK, PAT, ...) applied to them. A flag
+        /// that does name a secret (`--sk a`, `-db-pass a`, `-key a`) can be generated
+        /// too, rarely, and redacting its value is correct, so such inputs are skipped.
         #[test]
         fn plain_command_lines_are_untouched(cmd in "[a-z0-9 ./_-]{0,80}") {
+            prop_assume!(!cmd.split_whitespace().any(names_a_secret_flag));
             prop_assert_eq!(redact(&cmd), cmd.clone());
+        }
+
+        /// Any single-dash letter cluster in front of a path and a URL is left alone by
+        /// both redactors, unless it spells a long hint word (`-key`, `-token`).
+        #[test]
+        fn short_flag_clusters_never_redact_the_next_word(
+            prog in prop::sample::select(vec!["curl", "wget", "git", "ssh", "gh", "kubectl", "tool"]),
+            cluster in "-[a-zA-Z]{1,6}",
+        ) {
+            prop_assume!(!names_a_secret_flag(&cluster.to_ascii_lowercase()));
+            let cmd = format!("{prog} {cluster} out/a.txt https://api.internal/v1/run");
+            prop_assert_eq!(redact(&cmd), cmd.clone());
+            prop_assert_eq!(rustmachineguard::scanners::redact_command_text(&cmd), cmd.clone());
         }
     }
 }
@@ -1398,4 +1439,95 @@ fn synced_skill_account_identifiers_reach_no_output() {
         }
     }
     let _ = fs::remove_dir_all(&home);
+}
+
+/// Single-dash short-flag clusters are modes, not secret names. The secret-name hints that
+/// match only as a name's LAST word (PASS, PWD, PAT, JWT, SK; review of b21286f, 6af8a1e)
+/// read curl's `-sk` (silent + insecure), `-sSk`, `-fsSk` as a key ending in `SK` and
+/// redacted the URL after them: the property test `plain_command_lines_are_untouched`
+/// shrank to `-sk a` -> `-sk <redacted>`. Those hints now apply only to names with word
+/// structure (`DB_PASS=x`, `--db-pass x`, `-db-pass x`, `--sk x`, `-pass=x`), never to a
+/// bare single-dash cluster. Fails on 75c3188 (the `-sk`, `-sSk`, `-fsSk`, `-pat`, `-pwd`,
+/// `-jwt`, `-pass`, `-SK` rows).
+#[test]
+fn short_flag_clusters_are_not_secret_names() {
+    use rustmachineguard::scanners::redact_command_text;
+    for benign in [
+        "-sk a",
+        "-sk_ 0xe._",
+        "curl -sk https://api.internal/v1/health",
+        "curl -sSk https://api.internal/v1/health",
+        "curl -fsSk https://get.example.com/install.sh",
+        "curl -fsSL -o f https://get.example.com/install.sh",
+        "curl -sS https://api.internal",
+        "curl -k https://self-signed.internal",
+        "curl -skL -X POST https://api.internal/v1/run",
+        "curl -sSfLk --retry 3 https://x.internal",
+        "wget -qO- https://get.example.com/install.sh",
+        "wget -q -O - https://get.example.com",
+        "git log -n 5 --oneline",
+        "git commit -sm msg",
+        // ssh's `-p` is a port and `-i` a key PATH: neither is a value to hide.
+        "ssh -i ~/.ssh/id_ed25519 -p 2222 host",
+        "ssh -tt -o BatchMode=yes host uptime",
+        "scp -P 2222 f host:/tmp/f",
+        "gh pr view -w 12",
+        "kubectl get pods -n kube-system -o wide",
+        "kubectl logs -f deploy/api -c app",
+        "tar -xzf a.tgz -C out",
+        "rsync -avz src/ host:dst/",
+        // Clusters that spell a short hint word whole.
+        "tool -pat a",
+        "tool -pwd a",
+        "tool -jwt a",
+        "tool -pass a",
+        "tool -SK a",
+    ] {
+        assert_eq!(
+            redact(benign),
+            benign,
+            "redact_secrets_in_text over-redacted a short-flag cluster"
+        );
+        assert_eq!(
+            redact_command_text(benign),
+            benign,
+            "redact_command_text over-redacted a short-flag cluster"
+        );
+    }
+}
+
+/// The other side of the short-flag rule: secret names with word structure, Go/openssl
+/// style single-dash long names carrying a full hint word (`-token`, `-password`,
+/// `-apiKey`), glued `-name=value` forms, and the explicit per-program short flags are all
+/// still redacted.
+#[test]
+fn secret_names_and_program_short_flags_still_redact() {
+    use rustmachineguard::scanners::redact_command_text;
+    for (input, gone) in [
+        ("DB_PASS=SFPW1 ./run.sh", "SFPW1"),
+        ("STRIPE_SK=SFPW2 ./run.sh", "SFPW2"),
+        ("tool --sk SFPW3", "SFPW3"),
+        ("tool --db-pass SFPW4", "SFPW4"),
+        ("tool -db-pass SFPW5", "SFPW5"),
+        ("tool --github-pat SFPW6", "SFPW6"),
+        ("tool -pass=SFPW7", "SFPW7"),
+        ("tool -sk=SFPW8", "SFPW8"),
+        ("tool -token SFPW9", "SFPW9"),
+        ("tool -password SFPW10", "SFPW10"),
+        ("openssl rsa -in k.pem -passin pass:SFPW11", "SFPW11"),
+        ("tool -apiKey SFPW12", "SFPW12"),
+        ("redis-cli -a SFPW13 ping", "SFPW13"),
+        ("docker login -u me -p SFPW14 registry.example.com", "SFPW14"),
+        ("curl -sk -u admin:SFPW15 https://x.internal", "SFPW15"),
+        (
+            "curl -sk -H 'Authorization: Bearer SFPW16' https://x.internal",
+            "SFPW16",
+        ),
+        ("mysql -uroot -pSFPW17 db", "SFPW17"),
+        ("sshpass -p SFPW18 ssh host", "SFPW18"),
+        ("tool -key SFPW19", "SFPW19"),
+    ] {
+        let out = redact_command_text(input);
+        assert!(!out.contains(gone), "{input:?} -> {out:?}");
+    }
 }

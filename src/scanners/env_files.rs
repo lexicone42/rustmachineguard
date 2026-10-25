@@ -65,16 +65,25 @@ fn key_words(name: &str) -> Vec<String> {
 /// the command redactor. `PWD` on its own is the POSIX working-directory variable, not
 /// a password, and is not flagged (`DB_PWD` is).
 pub fn is_secret_key_name(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    if SECRET_KEY_HINTS.iter().any(|h| upper.contains(h)) {
+    if has_secret_key_hint(name) {
         return true;
     }
+    let upper = name.to_ascii_uppercase();
     if upper == "PWD" {
         return false;
     }
     key_words(name)
         .last()
         .is_some_and(|w| SECRET_LAST_WORDS.contains(&w.as_str()))
+}
+
+/// The substring half of [`is_secret_key_name`] alone: a NAME containing one of the long
+/// hint words (`TOKEN`, `SECRET`, `KEY`, `PASSWORD`, ...), without the short last-word
+/// rule. The command redactor uses only this for a bare single-dash flag (`-token X`):
+/// `-sk` / `-sSk` is curl's silent + insecure cluster, not a name ending in `SK`.
+pub fn has_secret_key_hint(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
 }
 
 /// A .env key NAME with `WEBHOOK` as one of its words (`SLACK_WEBHOOK_URL`,

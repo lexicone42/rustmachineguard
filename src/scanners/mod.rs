@@ -1386,6 +1386,9 @@ fn split_pair(tok: &str) -> Option<(&str, char, &str)> {
 /// (`password:`), a scheme word, or a bare key followed by a lone `=`/`:` token (INI
 /// style). Bare words are not markers -- `gh auth login` must not redact `login`.
 ///
+/// Short-flag clusters (`-sk`, `-sSk`) are markers only by a long hint word; see
+/// [`is_short_flag_cluster`].
+///
 /// Single-letter flags are deliberately NOT markers. `-p` is a port (`ssh -p 22`,
 /// `-p 3000`) or `mkdir -p /path` at least as often as it is a password, and redacting
 /// the argument after it would erase exactly the path or port a finding is about.
@@ -1417,7 +1420,29 @@ fn is_secret_value_position(prev: Option<&str>, prev2: Option<&str>) -> bool {
         }
     }
     let flag_shaped = p.starts_with('-') || p.ends_with(':') || p.ends_with('=');
+    if is_short_flag_cluster(p) {
+        // `-sk`, `-sSk`, `-fsSk`: letters that are each their own option. Only a long
+        // hint word marks one (`-token X`, `-password X`, `-apiKey X`, Go and openssl
+        // style); the short last-word hints (PASS, PWD, PAT, JWT, SK) are word-structured
+        // names' rule and here read curl's silent + insecure as a secret key.
+        return crate::scanners::env_files::has_secret_key_hint(bare_key(p));
+    }
     flag_shaped && is_secret_key(p)
+}
+
+/// A single-dash flag word with no word structure: one dash, then one run of ASCII
+/// letters and digits (`-k`, `-sk`, `-fsSL`, `-token`; trailing punctuation as in `-sk_`
+/// or `-sk;` is not structure). Lexically a short-option cluster and a Go style
+/// single-dash name are the same thing, so such a word is judged by the long secret-name
+/// hints only (see [`is_secret_value_position`]). `--sk` and `-db-pass` have word
+/// structure, and `-pass=` / `-sk:` carry their own value: they keep the full rule.
+fn is_short_flag_cluster(p: &str) -> bool {
+    let b = bare_key(p);
+    p.starts_with('-')
+        && !p.starts_with("--")
+        && !p.ends_with([':', '='])
+        && !b.is_empty()
+        && b.bytes().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// The authority of `after_scheme` (everything up to the path) and the remainder.
