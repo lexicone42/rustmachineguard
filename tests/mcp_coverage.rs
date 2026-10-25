@@ -343,8 +343,14 @@ fn connectors_and_observed_servers() {
     assert_eq!(unknown.len(), 1, "{findings:#?}");
     assert_eq!(unknown[0].severity, Severity::Low);
     assert!(unknown[0].title.contains("'mystery'") && unknown[0].title.contains("not in any known config"));
-    // Connectors are inventory only: no finding names them.
-    assert!(!findings.iter().any(|f| f.title.contains("Gmail")), "{findings:#?}");
+    // Connectors are inventory only: no finding but the toxic-flow surface (which names
+    // its sources) names them.
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.category != "Toxic Flow" && f.title.contains("Gmail")),
+        "{findings:#?}"
+    );
 
     let terminal = scan_format(&home, &["mcp"], "terminal");
     assert!(terminal.contains("servers that have run per logs: 3"), "{terminal}");

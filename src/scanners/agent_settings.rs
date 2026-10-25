@@ -708,7 +708,122 @@ pub(crate) fn parse_settings_file_in(
         } else {
             Vec::new()
         },
+        disable_auto_mode: framework == "claude-code"
+            && permissions
+                .and_then(|p| p.get("disableAutoMode"))
+                .and_then(|v| v.as_str())
+                == Some("disable"),
+        auto_mode: if framework == "claude-code" {
+            auto_mode_settings(json.get("autoMode"))
+        } else {
+            None
+        },
     })
+}
+
+/// The documented `environment` slot names (code.claude.com/docs/en/auto-mode-config.md,
+/// fetched 2026-10-24: context, trust and sensitivity slots), lowercase. An entry is
+/// shown by the slot label before its first `:` when it is one of these.
+const AUTO_MODE_SLOTS: &[&str] = &[
+    "organization",
+    "primary use of claude code",
+    "primary use",
+    "cloud provider(s)",
+    "cloud providers",
+    "cloud providers and trusted buckets",
+    "repository visibility",
+    "internal sharing / snippet hosting",
+    "org-specific clis",
+    "secrets management",
+    "ci/cd deploy targets",
+    "network posture",
+    "host containment",
+    "protected deployment namespaces / environments",
+    "data retention / declassification",
+    "trusted repo",
+    "source control",
+    "trusted internal domains",
+    "trusted cloud buckets",
+    "key internal services",
+    "internal package registry",
+    "sensitive data locations & audiences",
+    "sensitive remote targets",
+    "protected iac scopes",
+    "additional context",
+];
+
+/// The trust slots: "name what the classifier treats as inside your boundary. The slots
+/// are Trusted repo, Source control, Trusted internal domains, Trusted cloud buckets, Key
+/// internal services, and Internal package registry" (auto-mode-config.md).
+pub const AUTO_MODE_TRUST_SLOTS: &[&str] = &[
+    "Trusted repo",
+    "Source control",
+    "Trusted internal domains",
+    "Trusted cloud buckets",
+    "Cloud providers and trusted buckets",
+    "Key internal services",
+    "Internal package registry",
+];
+
+/// The slot label of one `environment` entry: the documented slot name before its first
+/// `:` (markdown emphasis stripped), as the docs capitalize it, else `custom entry`. The
+/// entry's own text is never returned.
+fn auto_mode_slot(entry: &str) -> String {
+    let Some((label, _)) = entry.split_once(':') else {
+        return "custom entry".into();
+    };
+    let label = label.trim().trim_matches('*').trim().to_ascii_lowercase();
+    if !AUTO_MODE_SLOTS.contains(&label.as_str()) {
+        return "custom entry".into();
+    }
+    AUTO_MODE_TRUST_SLOTS
+        .iter()
+        .find(|t| t.to_ascii_lowercase() == label)
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| {
+            let mut c = label.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default()
+        })
+}
+
+/// The `autoMode` block by shape. Only documented keys are read (auto-mode-config.md:
+/// `environment`, `allow`, `soft_deny`, `hard_deny`, `classifyAllShell`); a list that is
+/// not an array of strings is skipped. None when the block is absent or carries none of
+/// them.
+fn auto_mode_settings(v: Option<&serde_json::Value>) -> Option<crate::models::AutoModeSettings> {
+    let obj = v?.as_object()?;
+    let list = |key: &str| -> Option<crate::models::AutoModeList> {
+        let arr = obj.get(key)?.as_array()?;
+        let strs: Vec<&str> = arr.iter().filter_map(|e| e.as_str()).collect();
+        let has_defaults = strs.contains(&"$defaults");
+        let custom: Vec<&str> = strs.iter().copied().filter(|e| *e != "$defaults").collect();
+        let shown = match key {
+            "allow" => custom
+                .iter()
+                .take(20)
+                .map(|e| {
+                    crate::scanners::sanitize_display(&crate::scanners::redact_command_text(e), MAX_RULE_CHARS - 1)
+                })
+                .collect(),
+            "environment" => custom.iter().take(50).map(|e| auto_mode_slot(e)).collect(),
+            _ => Vec::new(),
+        };
+        Some(crate::models::AutoModeList {
+            has_defaults,
+            entries: custom.len(),
+            shown,
+        })
+    };
+    let out = crate::models::AutoModeSettings {
+        environment: list("environment"),
+        allow: list("allow"),
+        soft_deny: list("soft_deny"),
+        hard_deny: list("hard_deny"),
+        classify_all_shell: obj.get("classifyAllShell").and_then(|v| v.as_bool()),
+    };
+    (out != crate::models::AutoModeSettings::default()).then_some(out)
 }
 
 /// Rules kept per list (`allow`, `ask`, `deny`) and characters kept per rule.
@@ -721,6 +836,17 @@ pub const RULE_CODE_EXEC: &str = "code-execution";
 pub const RULE_CREDENTIAL_READ: &str = "credential-read";
 pub const RULE_CREDENTIAL_EDIT: &str = "credential-edit";
 pub const RULE_INERT_PATH: &str = "inert-path";
+pub const RULE_DESTRUCTIVE: &str = "destructive";
+pub const RULE_WRAPPER: &str = "wrapper-wildcard";
+
+/// A rule's class and detail, as [`classify_allow_rule`] returns them.
+type RuleClass = (&'static str, Option<String>);
+
+/// `detail` of a [`RULE_CODE_EXEC`] rule: a blanket rule, shell, interpreter or package
+/// runner (the rules auto mode drops), or a network-transfer program (`curl`, `wget`),
+/// which auto mode leaves in effect.
+pub const CODE_EXEC_INTERPRETER: &str = "interpreter";
+pub const CODE_EXEC_NETWORK: &str = "network";
 
 /// The home a rule's `~/` and `/` anchors resolve against: the scan home, or for a user
 /// settings file read on its own, the directory above its `.claude/`.
@@ -737,9 +863,11 @@ fn rule_home(path: &Path, source: &str, scan_home: Option<&Path>) -> PathBuf {
 }
 
 /// `permissions.allow` / `ask` / `deny` as [`PermissionRule`]s: non-string entries
-/// skipped, each rule classified from its raw text and stored redacted
-/// ([`crate::scanners::redact_command_text`]) and sanitized, at most
-/// [`MAX_RULES_PER_LIST`] per list.
+/// skipped, each rule stored redacted ([`crate::scanners::redact_command_text`]) and
+/// sanitized. EVERY allow rule is classified from its raw text, whatever its index; the
+/// stored list is capped at [`MAX_RULES_PER_LIST`] per list, and the classified (graded)
+/// rules always take their places first, the rest filled with unclassified rules in
+/// file order. The output keeps file order.
 fn permission_rules(
     permissions: Option<&serde_json::Value>,
     source: &str,
@@ -752,20 +880,54 @@ fn permission_rules(
         let Some(arr) = p.get(list).and_then(|v| v.as_array()) else {
             continue;
         };
-        for raw in arr.iter().filter_map(|v| v.as_str()).take(MAX_RULES_PER_LIST) {
-            let (class, detail) = if list == "allow" {
-                match classify_allow_rule(raw, source, settings_path, home) {
-                    Some((c, d)) => (Some(c.to_string()), d),
-                    None => (None, None),
+        let classified: Vec<(&str, Option<RuleClass>)> = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|raw| {
+                let c = if list == "allow" {
+                    classify_allow_rule(raw, source, settings_path, home)
+                } else {
+                    None
+                };
+                (raw, c)
+            })
+            .collect();
+        let graded = classified.iter().filter(|(_, c)| c.is_some()).count();
+        let mut room_for_plain = MAX_RULES_PER_LIST.saturating_sub(graded);
+        let mut room_for_graded = MAX_RULES_PER_LIST;
+        for (raw, c) in classified {
+            let keep = match &c {
+                Some(_) if room_for_graded > 0 => {
+                    room_for_graded -= 1;
+                    true
                 }
-            } else {
-                (None, None)
+                None if room_for_plain > 0 => {
+                    room_for_plain -= 1;
+                    true
+                }
+                _ => false,
             };
+            if !keep {
+                continue;
+            }
+            let (class, detail) = match c {
+                Some((cl, d)) => (Some(cl.to_string()), d),
+                None => (None, None),
+            };
+            // An MCP server name and an inert rule's resolved path come from the rule's
+            // text and are shown like it; every other detail is rmguard's own closed text.
+            let raw_detail = matches!(class.as_deref(), Some(RULE_MCP_SERVER | RULE_INERT_PATH));
             out.push(crate::models::PermissionRule {
                 list: list.to_string(),
                 rule: show_rule(raw),
+                detail: detail.map(|d| {
+                    if raw_detail {
+                        show_rule(&d)
+                    } else {
+                        crate::scanners::sanitize_display(&d, 400)
+                    }
+                }),
                 class,
-                detail: detail.map(|d| show_rule(&d)),
             });
         }
     }
@@ -806,20 +968,96 @@ const CODE_EXEC_PROGRAMS: &[&str] = &[
 /// Interpreter flags that take the program text itself (`python3 -c`, `node -e`).
 const INLINE_CODE_FLAGS: &[&str] = &["-c", "-e", "--eval", "-"];
 
-/// True when `tokens` (a Bash rule's prefix before its trailing wildcard) names only a
-/// code-running program, optionally with an inline-code flag; `uv run` is looked
-/// through (`uv run:*`, `uv run python:*`).
-fn is_code_exec_prefix(tokens: &[&str]) -> bool {
+/// Network-transfer programs among [`CODE_EXEC_PROGRAMS`]: not interpreters, so auto
+/// mode does not drop their rules.
+const NETWORK_PROGRAMS: &[&str] = &["curl", "wget"];
+
+/// When `tokens` (a Bash rule's prefix before its trailing wildcard) names only a
+/// code-running program, optionally with an inline-code flag: the program's kind
+/// ([`CODE_EXEC_INTERPRETER`] or [`CODE_EXEC_NETWORK`]). `uv run` is looked through
+/// (`uv run:*`, `uv run python:*`); `uv run:*` itself is a package-manager run command.
+fn code_exec_kind(tokens: &[&str]) -> Option<&'static str> {
     let Some(first) = tokens.first() else {
-        return true; // `Bash(*)`
+        return Some(CODE_EXEC_INTERPRETER); // `Bash(*)`
     };
     let prog = first.rsplit('/').next().unwrap_or(first);
     if prog == "uv" && tokens.get(1) == Some(&"run") {
-        return is_code_exec_prefix(&tokens[2..]);
+        return code_exec_kind(&tokens[2..]);
     }
     let runs_code = CODE_EXEC_PROGRAMS.contains(&prog)
         || (prog.starts_with("python") && prog[6..].chars().all(|c| c.is_ascii_digit() || c == '.'));
-    runs_code && (tokens.len() == 1 || (tokens.len() == 2 && INLINE_CODE_FLAGS.contains(&tokens[1])))
+    let shape = tokens.len() == 1 || (tokens.len() == 2 && INLINE_CODE_FLAGS.contains(&tokens[1]));
+    (runs_code && shape).then(|| {
+        if NETWORK_PROGRAMS.contains(&prog) {
+            CODE_EXEC_NETWORK
+        } else {
+            CODE_EXEC_INTERPRETER
+        }
+    })
+}
+
+/// Command prefixes that change remote or privileged state. A closed list. A wildcard
+/// rule is in this class when its prefix and one of these agree token by token for the
+/// shorter of the two: `Bash(ssh:*)`, `Bash(sudo chown:*)`, and also `Bash(aws:*)` or
+/// `Bash(rm:*)`, which cover `aws iam` and `rm -rf`.
+const DESTRUCTIVE_PREFIXES: &[&[&str]] = &[
+    &["ssh"],
+    &["sudo"],
+    &["rm", "-rf"],
+    &["rm", "-fr"],
+    &["rm", "-r"],
+    &["rm", "-Rf"],
+    &["gh", "repo", "delete"],
+    &["gh", "api"],
+    &["aws", "s3", "rm"],
+    &["aws", "iam"],
+    &["kubectl", "delete"],
+    &["terraform", "apply"],
+    &["terraform", "destroy"],
+];
+
+fn is_destructive_prefix(tokens: &[&str]) -> bool {
+    let Some(first) = tokens.first() else { return false };
+    let prog = first.rsplit('/').next().unwrap_or(first);
+    // `aws <service> list-* / get-* / describe-*` only reads.
+    if prog == "aws"
+        && tokens
+            .get(2)
+            .is_some_and(|op| ["list-", "get-", "describe-"].iter().any(|r| op.starts_with(r)))
+    {
+        return false;
+    }
+    DESTRUCTIVE_PREFIXES.iter().any(|p| {
+        let n = p.len().min(tokens.len());
+        p[0] == prog && (1..n).all(|i| p[i] == tokens[i])
+    })
+}
+
+/// A wildcard rule whose program runs another command it is handed, with what the
+/// permissions page says about it (code.claude.com/docs/en/permissions.md, fetched
+/// 2026-10-24). `timeout`, `time`, `nice`, `nohup`, `stdbuf` and bare `xargs` are
+/// stripped before matching ("Before matching Bash rules, Claude Code strips a fixed set
+/// of wrappers"), and a `find` rule "can't auto-approve" `-exec` / `-delete`, so neither
+/// widens a rule and neither is listed.
+fn wrapper_detail(tokens: &[&str]) -> Option<&'static str> {
+    const XARGS_NOTE: &str = "matches xargs with flags (xargs -n1 <command>), which runs any command: \"Stripping applies only when xargs has no flags\"";
+    let first = *tokens.first()?;
+    let prog = first.rsplit('/').next().unwrap_or(first);
+    let second = tokens.get(1).copied();
+    match (prog, second) {
+        // `xargs <cmd>:*` is stripped to `<cmd>` before matching, so only a rule whose
+        // prefix is xargs alone or with a flag matches `xargs -n1 <any command>`.
+        ("xargs", None) => Some(XARGS_NOTE),
+        ("xargs", Some(flag)) if flag.starts_with('-') => Some(XARGS_NOTE),
+        ("env", _) => Some(
+            "env runs the command it is given; env is not in the documented list of stripped wrappers, and whether a rule matches through it is not documented",
+        ),
+        ("make", None) => Some("runs whatever the Makefile in the working directory defines"),
+        ("direnv", Some("exec")) | ("devbox", Some("run")) | ("mise", Some("exec")) | ("docker", Some("exec")) => {
+            Some("an environment runner: \"a rule like Bash(devbox run *) matches whatever comes after run\"")
+        }
+        _ => None,
+    }
 }
 
 /// Classify one Claude Code allow rule (grammar: code.claude.com/docs/en/permissions.md,
@@ -828,12 +1066,17 @@ fn is_code_exec_prefix(tokens: &[&str]) -> bool {
 /// - `mcp__<server>` or `mcp__<server>__*`: every tool of that server. An allow glob in
 ///   the server segment is skipped by Claude Code and is not classified.
 /// - `Bash`, `Bash(*)`, or a trailing-wildcard rule whose prefix is only a code-running
-///   program ([`CODE_EXEC_PROGRAMS`], `python*`): arbitrary code execution.
+///   program ([`CODE_EXEC_PROGRAMS`], `python*`): arbitrary code execution, with the
+///   detail [`CODE_EXEC_INTERPRETER`] or [`CODE_EXEC_NETWORK`] (`curl`, `wget`).
+/// - A trailing-wildcard Bash rule over [`DESTRUCTIVE_PREFIXES`]: [`RULE_DESTRUCTIVE`].
+/// - A trailing-wildcard Bash rule over a wrapper or environment runner
+///   ([`wrapper_detail`]): [`RULE_WRAPPER`], the detail saying what is known about it.
 /// - `Read` / `Edit` (and bare `Write`) whose path, resolved by the documented anchors
 ///   (`//` filesystem root, `~/` home, `/` the settings source: `~/.claude/` for user
 ///   settings, the project for project and local settings), covers a credential path,
 ///   agent state (`~/.claude/`, Read only: edits there are protected-path writes allow
-///   rules never pre-approve) or a `.env` file.
+///   rules never pre-approve) or a `.env` file; the detail names what it reaches
+///   ([`reached_detail`]).
 /// - A path rule that does not match what it names: a single-slash path spelled as an
 ///   absolute home path (`/home/u/...` anchors at the settings source), or a
 ///   `Write(path)` / `NotebookEdit(path)` / `Glob(path)` rule, which never matches.
@@ -865,14 +1108,20 @@ pub fn classify_allow_rule(
     match tool {
         "Bash" => {
             let Some(spec) = spec else {
-                return Some((RULE_CODE_EXEC, None));
+                return Some((RULE_CODE_EXEC, Some(CODE_EXEC_INTERPRETER.to_string())));
             };
             let prefix = spec
                 .strip_suffix(":*")
                 .or_else(|| spec.strip_suffix(" *"))
                 .or_else(|| spec.strip_suffix('*'))?;
             let tokens: Vec<&str> = prefix.split_whitespace().collect();
-            is_code_exec_prefix(&tokens).then_some((RULE_CODE_EXEC, None))
+            if let Some(kind) = code_exec_kind(&tokens) {
+                return Some((RULE_CODE_EXEC, Some(kind.to_string())));
+            }
+            if is_destructive_prefix(&tokens) {
+                return Some((RULE_DESTRUCTIVE, None));
+            }
+            wrapper_detail(&tokens).map(|d| (RULE_WRAPPER, Some(d.to_string())))
         }
         "Read" | "Edit" | "Write" => {
             let edit = tool != "Read";
@@ -882,14 +1131,14 @@ pub fn classify_allow_rule(
                 RULE_CREDENTIAL_READ
             };
             let pattern = match spec {
-                None => return Some((class, None)),
+                None => return Some((class, reached_detail("/**", home, edit))),
                 Some(_) if tool == "Write" => {
                     return Some((
                         RULE_INERT_PATH,
                         Some("Write(path) rules never match; use Edit(path)".into()),
                     ));
                 }
-                Some("" | "*" | "**") => return Some((class, None)),
+                Some("" | "*" | "**") => return Some((class, reached_detail("/**", home, edit))),
                 Some(p) => p,
             };
             let anchor = match source {
@@ -926,7 +1175,7 @@ pub fn classify_allow_rule(
                 }
                 format!("{}/{rel}", anchor.display())
             };
-            covers_sensitive(&resolved, home, edit).then_some((class, None))
+            reached_detail(&resolved, home, edit).map(|d| (class, Some(d)))
         }
         "NotebookEdit" | "Glob" | "MultiEdit" if spec.is_some_and(|s| !s.is_empty()) => Some((
             RULE_INERT_PATH,
@@ -936,42 +1185,66 @@ pub fn classify_allow_rule(
     }
 }
 
-/// True when the absolute glob `pattern` (gitignore semantics: a bare directory also
-/// covers what is under it) matches a credential path or a `.env` file under HOME, or
-/// for reads Claude Code's own state (`~/.claude/.credentials.json`, `~/.claude.json`).
-fn covers_sensitive(pattern: &str, home: &Path, edit: bool) -> bool {
+/// Credential and agent-state paths under HOME a path rule is checked against, with how
+/// each is named in a finding. Closed. The last two are checked for reads only: edits
+/// under `~/.claude/` are protected-path writes no allow rule pre-approves.
+const CREDENTIAL_TARGETS: &[(&str, &str)] = &[
+    (".ssh/id_ed25519", "~/.ssh"),
+    (".aws/credentials", "~/.aws/credentials"),
+    (".config/gh/hosts.yml", "~/.config/gh/hosts.yml"),
+    (".gnupg/private-keys-v1.d/key", "~/.gnupg"),
+    (".netrc", "~/.netrc"),
+    (".git-credentials", "~/.git-credentials"),
+    (".docker/config.json", "~/.docker/config.json"),
+    (".kube/config", "~/.kube/config"),
+    ("project/.env", ".env files"),
+];
+const AGENT_STATE_TARGETS: &[(&str, &str)] = &[
+    (".claude/.credentials.json", "~/.claude/.credentials.json"),
+    (".claude.json", "~/.claude.json"),
+];
+/// Checked for edits only: an `authorized_keys` entry grants login, reading it does not.
+const EDIT_ONLY_TARGETS: &[(&str, &str)] = &[(".ssh/authorized_keys", "~/.ssh/authorized_keys")];
+
+/// The order labels are listed in: the keys and tokens most often present first.
+const LABEL_ORDER: &[&str] = &[
+    "~/.ssh",
+    "~/.ssh/authorized_keys",
+    "~/.aws/credentials",
+    "~/.claude/.credentials.json",
+    "~/.config/gh/hosts.yml",
+];
+
+/// What the absolute glob `pattern` (gitignore semantics: a bare directory also covers
+/// what is under it) reaches among [`CREDENTIAL_TARGETS`] (and for reads
+/// [`AGENT_STATE_TARGETS`]): their labels joined with `, `, or None when it reaches none.
+fn reached_detail(pattern: &str, home: &Path, edit: bool) -> Option<String> {
     let h = home.display().to_string();
     let h = h.trim_end_matches('/');
-    let mut targets: Vec<String> = [
-        ".ssh/id_ed25519",
-        ".ssh/authorized_keys",
-        ".aws/credentials",
-        ".config/gh/hosts.yml",
-        ".gnupg/private-keys-v1.d/key",
-        ".netrc",
-        ".git-credentials",
-        ".docker/config.json",
-        ".kube/config",
-        "project/.env",
-    ]
-    .iter()
-    .map(|t| format!("{h}/{t}"))
-    .collect();
-    if !edit {
-        targets.push(format!("{h}/.claude/.credentials.json"));
-        targets.push(format!("{h}/.claude.json"));
-    }
     let opts = glob::MatchOptions {
         case_sensitive: true,
         require_literal_separator: true,
         require_literal_leading_dot: false,
     };
     let trimmed = pattern.trim_end_matches('/');
-    let candidates = [trimmed.to_string(), format!("{trimmed}/**")];
-    candidates
+    let candidates: Vec<glob::Pattern> = [trimmed.to_string(), format!("{trimmed}/**")]
         .iter()
         .filter_map(|c| glob::Pattern::new(c).ok())
-        .any(|p| targets.iter().any(|t| p.matches_with(t, opts)))
+        .collect();
+    let mut labels: Vec<&str> = Vec::new();
+    let targets = CREDENTIAL_TARGETS.iter().chain(if edit {
+        EDIT_ONLY_TARGETS.iter()
+    } else {
+        AGENT_STATE_TARGETS.iter()
+    });
+    for (rel, label) in targets {
+        let t = format!("{h}/{rel}");
+        if candidates.iter().any(|p| p.matches_with(&t, opts)) && !labels.contains(label) {
+            labels.push(label);
+        }
+    }
+    labels.sort_by_key(|l| LABEL_ORDER.iter().position(|o| o == l).unwrap_or(LABEL_ORDER.len()));
+    (!labels.is_empty()).then(|| labels.join(", "))
 }
 
 /// A managed file's `enabledPlugins` keys set to true (`plugin@marketplace`): Claude Code
@@ -2032,6 +2305,153 @@ mod tests {
         ] {
             assert_eq!(u(r), None, "{r}");
         }
+    }
+
+    /// Code-execution rules carry their kind, destructive and wrapper rules their class,
+    /// and credential reads name what they reach (permissions.md, permission-modes.md,
+    /// fetched 2026-10-24).
+    #[test]
+    fn classify_allow_rule_kinds_destructive_wrappers_and_reach() {
+        let home = Path::new("/home/u");
+        let user = Path::new("/home/u/.claude/settings.json");
+        let c = |r: &str| classify_allow_rule(r, "user-global", user, home);
+        for r in [
+            "Bash",
+            "Bash(*)",
+            "Bash(python3:*)",
+            "Bash(uv run:*)",
+            "Bash(npx:*)",
+            "Bash(bash:*)",
+        ] {
+            assert_eq!(c(r), Some((RULE_CODE_EXEC, Some(CODE_EXEC_INTERPRETER.into()))), "{r}");
+        }
+        for r in ["Bash(curl:*)", "Bash(wget *)", "Bash(uv run curl:*)"] {
+            assert_eq!(c(r), Some((RULE_CODE_EXEC, Some(CODE_EXEC_NETWORK.into()))), "{r}");
+        }
+        for r in [
+            "Bash(ssh:*)",
+            "Bash(ssh host:*)",
+            "Bash(sudo:*)",
+            "Bash(sudo chown:*)",
+            "Bash(rm -rf:*)",
+            "Bash(rm:*)",
+            "Bash(gh:*)",
+            "Bash(gh repo delete:*)",
+            "Bash(gh api:*)",
+            "Bash(aws:*)",
+            "Bash(aws s3 rm:*)",
+            "Bash(aws iam:*)",
+            "Bash(aws iam put-role-policy:*)",
+            "Bash(kubectl delete:*)",
+            "Bash(terraform apply:*)",
+            "Bash(/usr/bin/ssh:*)",
+        ] {
+            assert_eq!(c(r), Some((RULE_DESTRUCTIVE, None)), "{r}");
+        }
+        for r in [
+            "Bash(git push:*)",
+            "Bash(gh pr view:*)",
+            "Bash(aws iam list-roles:*)",
+            "Bash(aws s3 ls:*)",
+            "Bash(rm foo:*)",
+            "Bash(ssh-keygen:*)",
+            "Bash(rm -rf node_modules)",
+            "Bash(kubectl get:*)",
+        ] {
+            assert_eq!(c(r), None, "{r}");
+        }
+        for r in [
+            "Bash(xargs:*)",
+            "Bash(xargs -n1:*)",
+            "Bash(env:*)",
+            "Bash(make:*)",
+            "Bash(devbox run:*)",
+            "Bash(docker exec:*)",
+        ] {
+            assert_eq!(c(r).map(|(k, _)| k), Some(RULE_WRAPPER), "{r}");
+        }
+        assert!(c("Bash(env:*)").unwrap().1.unwrap().contains("not documented"));
+        // Stripped wrappers and find actions do not widen a rule.
+        for r in [
+            "Bash(xargs grep:*)",
+            "Bash(timeout:*)",
+            "Bash(find:*)",
+            "Bash(make test:*)",
+            "Bash(nohup:*)",
+        ] {
+            assert_eq!(c(r), None, "{r}");
+        }
+        // What a read reaches, most-used paths first.
+        let (_, d) = c("Read(//home/u/**)").unwrap();
+        let d = d.unwrap();
+        assert!(
+            d.starts_with("~/.ssh, ~/.aws/credentials, ~/.claude/.credentials.json, ~/.config/gh/hosts.yml"),
+            "{d}"
+        );
+        assert!(
+            !d.contains("authorized_keys"),
+            "reading authorized_keys grants nothing: {d}"
+        );
+        assert_eq!(
+            c("Read(~/.claude/**)"),
+            Some((RULE_CREDENTIAL_READ, Some("~/.claude/.credentials.json".into())))
+        );
+        assert_eq!(
+            c("Read(~/.aws/**)"),
+            Some((RULE_CREDENTIAL_READ, Some("~/.aws/credentials".into())))
+        );
+        let (_, d) = c("Edit(~/.ssh/**)").unwrap();
+        assert_eq!(d.as_deref(), Some("~/.ssh, ~/.ssh/authorized_keys"));
+    }
+
+    /// Every allow rule is classified; the stored list keeps the graded ones within its
+    /// cap, in file order.
+    #[test]
+    fn permission_rules_classify_every_rule_and_keep_the_graded_ones() {
+        let mut allow: Vec<serde_json::Value> = (0..300)
+            .map(|i| serde_json::json!(format!("Bash(tool{i} x:*)")))
+            .collect();
+        allow[201] = serde_json::json!("Bash(python3:*)");
+        allow[299] = serde_json::json!("Read(~/.ssh/**)");
+        let perms = serde_json::json!({ "allow": allow });
+        let rules = permission_rules(
+            Some(&perms),
+            "user-global",
+            Path::new("/h/.claude/settings.json"),
+            Path::new("/h"),
+        );
+        assert_eq!(rules.len(), MAX_RULES_PER_LIST);
+        let graded: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.class.is_some())
+            .map(|r| r.rule.as_str())
+            .collect();
+        assert_eq!(graded, ["Bash(python3:*)", "Read(~/.ssh/**)"]);
+        assert_eq!(rules[0].rule, "Bash(tool0 x:*)", "file order kept");
+        assert_eq!(rules.last().unwrap().rule, "Read(~/.ssh/**)");
+    }
+
+    /// The autoMode block by shape: documented keys only, `$defaults` noted, allow
+    /// entries redacted, environment entries by slot name.
+    #[test]
+    fn auto_mode_settings_by_shape() {
+        let v = serde_json::json!({
+            "environment": ["$defaults", "**Trusted cloud buckets**: s3://a", "Source control: github.com/acme", "free prose", 7],
+            "allow": ["ok with ghp_Zq9AutoModeUnitCanaryAbCdEfGhIjKlMn12"],
+            "hard_deny": ["x"],
+            "notAKey": true
+        });
+        let a = auto_mode_settings(Some(&v)).unwrap();
+        let env = a.environment.unwrap();
+        assert!(env.has_defaults);
+        assert_eq!(env.entries, 3);
+        assert_eq!(env.shown, ["Trusted cloud buckets", "Source control", "custom entry"]);
+        let allow = a.allow.unwrap();
+        assert!(!allow.has_defaults && allow.entries == 1);
+        assert!(!allow.shown[0].contains("Zq9AutoModeUnit"), "{}", allow.shown[0]);
+        assert_eq!(a.hard_deny.unwrap().entries, 1);
+        assert!(a.soft_deny.is_none() && a.classify_all_shell.is_none());
+        assert!(auto_mode_settings(Some(&serde_json::json!({"other": 1}))).is_none());
     }
 
     /// Rules are stored redacted and capped; tool names stay readable.

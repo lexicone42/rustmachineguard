@@ -675,6 +675,12 @@ fn render_inner(report: &ScanReport) -> String {
                 };
                 out.push_str(&format!("    permission mode: {}\n", m));
             }
+            if s.auto_mode.as_ref().and_then(|a| a.classify_all_shell) == Some(true) {
+                out.push_str(&format!(
+                    "    {} autoMode.classifyAllShell (in auto mode the classifier reviews every shell command)\n",
+                    "✓".green()
+                ));
+            }
             if s.auto_approve_mcp {
                 out.push_str(&format!(
                     "    {} enableAllProjectMcpServers (auto-approves project MCP servers)\n",

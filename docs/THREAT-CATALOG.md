@@ -186,7 +186,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 
 | Resource | URL | Use |
 |---|---|---|
-| **Claude Code documentation** (Anthropic) | https://code.claude.com/docs/en/permissions.md, /permission-modes.md, /settings-reference.md (fetched 2026-10-24) | Permission-rule grammar, path anchors, protected paths, `defaultMode` values and where each takes effect, `skipDangerousModePermissionPrompt`: the source for grading permission modes and allow rules (not catalog rows) |
+| **Claude Code documentation** (Anthropic) | https://code.claude.com/docs/en/permissions.md, /permission-modes.md, /auto-mode-config.md, /settings-reference.md (fetched 2026-10-24) | Permission-rule grammar, path anchors, protected paths, wrapper stripping, `defaultMode` values, where each takes effect and their precedence, the allow rules auto mode drops ("On entering auto mode, broad allow rules that grant arbitrary code execution are dropped"), `skipDangerousModePermissionPrompt`, and the `autoMode` block (`environment`, `allow`, `soft_deny`, `hard_deny`, `"$defaults"`, `classifyAllShell`, scopes it is read from): the source for grading permission modes, allow rules and auto-mode configuration (not catalog rows) |
 | **vulnerablemcp.info** | https://vulnerablemcp.info/ | Comprehensive MCP vulnerability database (50+ CVEs) |
 | **OWASP MCP Top 10** | https://owasp.org/www-project-mcp-top-10/ | Risk taxonomy |
 | **NVD** | https://nvd.nist.gov/ | CVE details and CVSS scores |

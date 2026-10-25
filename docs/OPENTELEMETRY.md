@@ -253,7 +253,7 @@ starts a thread.
 | `rmguard.walk.scope` | skills.walk | `global` \| `project` |
 | `rmguard.walk.root_link` | skills.walk | `plain` (no symlink to the root, or no root) \| `followed` (a linked root that is walked) \| `refused` (a linked root that is inventoried unread) |
 | `rmguard.walk.entries` | skills.walk, gitconfig.nested_walk, transcripts.store | directory entries visited |
-| `rmguard.walk.files` | skills.walk, transcripts.store | skills: files read through the shared reader; transcripts: regular files counted (never opened) |
+| `rmguard.walk.files` | skills.walk, transcripts.store | skills: files read through the shared reader; transcripts: regular files counted (never opened, except the head of at most 50 session-env / shell-snapshots files read for exported variable names) |
 | `rmguard.walk.bytes_hashed` | skills.walk | bytes of file content hashed for the inventory's sha256 |
 | `rmguard.walk.hooks` | skills.walk | frontmatter hooks found |
 | `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk (budgets set by `--walk-budget`) |

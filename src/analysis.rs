@@ -200,10 +200,10 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "EAA-011 (environment-expanded MCP activation)",
         },
         "Permissions" => Guidance {
-            what: "How much the agent may do without asking: a permission mode of `bypassPermissions` (Cursor: `unrestricted`) or `auto`, `skipDangerousModePermissionPrompt` (the confirmation before bypassPermissions mode), or Claude Code allow rules that pre-approve every tool of an MCP server, a shell or interpreter (`Bash(python3:*)`, `Bash(curl:*)`), or reads of credential and agent-state paths. A rule pre-approving a server that is not configured, and a path rule that does not match the path it names, are Low notes.",
-            why: "Each one removes a prompt a person would otherwise answer, so the agent, or a prompt injection steering it, acts on that surface unreviewed. Claude Code's docs: in bypassPermissions mode it \"runs everything without asking\"; in auto mode \"a background classifier checks\" shell commands and network requests instead of you; `Bash(python3:*)` matches every python3 command, which is any code. Allow rules \"accept tool-name globs only after a literal mcp__<server>__ prefix\", so `mcp__x__*` approves whatever tools server x has, including one configured later under that name. A single leading slash in a path rule \"anchors at the settings source, not the filesystem root\" (in ~/.claude/settings.json, at ~/.claude/), and `Write(path)` rules never match. Rules in a repository's .claude/settings.json apply to everyone who opens it.",
-            fix: "Remove the rules you do not rely on (`/permissions`, or edit the settings file shown) and prefer scoped rules such as `Bash(npm test)` or `mcp__github__get_*`. Remove `skipDangerousModePermissionPrompt` to get the bypassPermissions confirmation back. To stop the modes being used, set `permissions.disableBypassPermissionsMode` or `permissions.disableAutoMode` to \"disable\". Write absolute paths in path rules as `//path` and home paths as `~/path`.",
-            reference: "code.claude.com/docs/en/permissions · /permission-modes · OWASP Agentic Apps Top 10 (excessive agency)",
+            what: "How much the agent may do without asking: a permission mode of `bypassPermissions` (Cursor: `unrestricted`) or `auto`, `skipDangerousModePermissionPrompt` (the confirmation before bypassPermissions mode), Claude Code allow rules that pre-approve every tool of an MCP server, a shell, interpreter or package runner (`Bash(python3:*)`, `Bash(uv run:*)`), network transfer (`Bash(curl:*)`), commands that change remote or privileged state (`Bash(ssh:*)`, `Bash(sudo:*)`, `Bash(gh api:*)`, `Bash(aws iam:*)`, `Bash(rm -rf:*)`), or reads of credential and agent-state paths (the finding names what the rule reaches), and the `autoMode` block (built-in denials discarded, custom allow exceptions, trusted environment entries). Code-running, state-changing and wrapper rules are one finding per machine listing every settings file. A rule pre-approving a server no installed plugin provides, a path rule that never matches what it names, a wrapper rule (`Bash(xargs:*)`, `Bash(env:*)`, `Bash(make:*)`), and an `autoMode` block in project settings (which Claude Code ignores) are Low notes.",
+            why: "Each one removes a prompt a person would otherwise answer, so the agent, or a prompt injection steering it, acts on that surface unreviewed. Claude Code's docs: in bypassPermissions mode it \"runs everything without asking\"; in auto mode \"a background classifier checks\" shell commands and network requests instead of you, and \"On entering auto mode, broad allow rules that grant arbitrary code execution are dropped: Blanket Bash(*) or PowerShell(*), Wildcarded interpreters like Bash(python*), Package-manager run commands, Agent allow rules, Monitor allow rules\". So where sessions start in auto mode (user or managed `defaultMode: auto`, not overridden by the project), interpreter and package-runner rules are suspended (Low), while `Bash(curl:*)` and state-changing rules \"stay in effect\" and are resolved \"before the classifier runs\" (Medium). In other modes `Bash(python3:*)` matches every python3 command, which is any code. Allow rules \"accept tool-name globs only after a literal mcp__<server>__ prefix\", so `mcp__x__*` approves whatever tools server x has, including one configured later under that name. A single leading slash in a path rule \"anchors at the settings source, not the filesystem root\" (in ~/.claude/settings.json, at ~/.claude/), and `Write(path)` rules never match. Setting `autoMode.soft_deny` or `hard_deny` without the `$defaults` entry discards the built-in rules, for hard_deny \"the built-in data exfiltration rule\". Rules in a repository's .claude/settings.json apply to everyone who opens it.",
+            fix: "Remove the rules you do not rely on (`/permissions`, or edit the settings files listed) and prefer scoped rules such as `Bash(npm test)` or `mcp__github__get_*`. Set `autoMode.classifyAllShell: true` in ~/.claude/settings.json to have the classifier review every shell command in auto mode. Keep `\"$defaults\"` in every `autoMode` list you set. Remove `skipDangerousModePermissionPrompt` to get the bypassPermissions confirmation back. To stop the modes being used, set `permissions.disableBypassPermissionsMode` or `permissions.disableAutoMode` to \"disable\". Write absolute paths in path rules as `//path` and home paths as `~/path`.",
+            reference: "code.claude.com/docs/en/permissions · /permission-modes · /auto-mode-config · OWASP Agentic Apps Top 10 (excessive agency)",
         },
         "Gateway routing" => Guidance {
             what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not any AI provider's own API, so requests (and the API key) route through it. A provider's own API host counts as official under every base-URL variable (api.anthropic.com, api.openai.com and its regional hosts such as eu.api.openai.com, and named OpenAI- or Anthropic-compatible providers: Groq, Azure OpenAI and AI Foundry, Mistral, Gemini, NVIDIA NIM, Bedrock, DeepSeek, Z.ai, Moonshot, ...), and loopback proxies (including a client dial to 0.0.0.0 or [::], which reaches this machine) are not reported.",
@@ -224,7 +224,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "least privilege",
         },
         "Transcript exposure" => Guidance {
-            what: "An agent transcript or state store has files other users can read (mode o+r, reached through directories with o+x): conversation transcripts, command history, shell snapshots and session environment (which may hold exported environment variables), backups of ~/.claude.json, file-edit history, plans, tasks, paste cache, agent memory, or metadata (telemetry, feature flags, usage data). Or ~/.claude.json itself, which holds the account identifier and the list of every project path, is readable by other users or by its group. Permissions only: rmguard never opens these files. When a directory above the store (usually HOME at 0700) cannot be traversed by others, the finding is Low.",
+            what: "An agent transcript or state store has files other users can read (mode o+r, reached through directories with o+x): conversation transcripts, command history, shell snapshots and session environment, backups of ~/.claude.json, file-edit history, plans, tasks, paste cache, agent memory, or metadata (telemetry, feature flags, usage data). Or ~/.claude.json itself, which holds the account identifier and the list of every project path, is readable by other users or by its group. Claude Code's stores are one finding with a table of stores, graded by the most sensitive one; the evidence also counts the other accounts with a login shell. rmguard opens none of these files except session-env and shell-snapshots, whose exported variable NAMES it reads (the first 64 KiB of at most 50 readable files, never a value): PATH and shell state only is Low, other names Medium, a secret-shaped name High. When a directory above the store (usually HOME at 0700) cannot be traversed by others, the finding is Low.",
             why: "Transcripts and snapshots routinely contain pasted credentials, source code, environment values and internal details, a rich target that any local user can read; the account file maps the machine's projects and identifies the account.",
             fix: "Restrict the store's permissions to owner-only (chmod -R go-rwx ~/.claude, chmod 600 ~/.claude.json*), or make HOME 0700 so nothing under it is reachable. Consider pruning old transcripts and snapshots you no longer need.",
             reference: "EAA-005 (agent-state collection)",
@@ -561,8 +561,144 @@ fn list_rules(rules: &[&str], cap: usize) -> String {
     s
 }
 
+/// The project directory of a project or local Claude Code settings file
+/// (`<dir>/.claude/settings.json`, `<dir>/.claude/settings.local.json`).
+fn settings_project_dir(path: &str) -> Option<&str> {
+    path.strip_suffix("/.claude/settings.local.json")
+        .or_else(|| path.strip_suffix("/.claude/settings.json"))
+}
+
+/// Whether sessions that read settings file `s` start in auto mode, from the settings
+/// files this scan read, as code.claude.com/docs/en/permission-modes.md (fetched
+/// 2026-10-24) describes it: "When more than one settings file sets
+/// `permissions.defaultMode`, settings precedence decides, so a project or managed value
+/// outranks `~/.claude/settings.json`", and "If you set `"auto"` in
+/// `.claude/settings.json` or `.claude/settings.local.json`, the value doesn't take
+/// effect, and Claude Code then uses the built-in default rather than a `defaultMode`
+/// from `~/.claude/settings.json`. If you set `"bypassPermissions"` in those two files,
+/// it doesn't take effect either, and the session starts in Manual mode." The order is
+/// therefore managed, then the project's local file, then its shared file, then user
+/// settings. Auto counts only when a managed or user file selects it: the built-in
+/// default depends on the Claude Code version and how it is run ("`claude -p` or the
+/// Agent SDK" start in `default`), so it is not assumed. "Any settings file sets
+/// `disableAutoMode` to `"disable"`" removes auto mode.
+fn starts_in_auto(report: &ScanReport, s: &crate::models::AgentSettings) -> bool {
+    let claude: Vec<&crate::models::AgentSettings> = report
+        .agent_settings
+        .iter()
+        .filter(|x| x.framework == "claude-code")
+        .collect();
+    let project = matches!(s.source.as_str(), "local" | "project")
+        .then(|| settings_project_dir(&s.path))
+        .flatten();
+    let same_project = |x: &&&crate::models::AgentSettings| {
+        project.is_some()
+            && matches!(x.source.as_str(), "local" | "project")
+            && settings_project_dir(&x.path) == project
+    };
+    let applies =
+        |x: &&&crate::models::AgentSettings| matches!(x.source.as_str(), "managed" | "user-global") || same_project(x);
+    if claude.iter().filter(applies).any(|x| x.disable_auto_mode) {
+        return false;
+    }
+    if let Some(m) = claude
+        .iter()
+        .find(|x| x.source == "managed" && x.permission_mode.is_some())
+    {
+        return m.permission_mode.as_deref() == Some("auto");
+    }
+    // A project or local value decides the mode; there `auto` falls to the built-in
+    // default and `bypassPermissions` to Manual, neither of which is counted as auto.
+    if claude.iter().filter(same_project).any(|x| x.permission_mode.is_some()) {
+        return false;
+    }
+    claude
+        .iter()
+        .find(|x| x.source == "user-global")
+        .and_then(|x| x.permission_mode.as_deref())
+        == Some("auto")
+}
+
+/// `autoMode.classifyAllShell: true` in user or managed settings, the scopes the
+/// classifier reads `autoMode` from: "suspend every Bash and PowerShell allow rule while
+/// auto mode is active" (code.claude.com/docs/en/auto-mode-config.md, fetched 2026-10-24).
+fn classify_all_shell(report: &ScanReport) -> bool {
+    report.agent_settings.iter().any(|s| {
+        s.framework == "claude-code"
+            && matches!(s.source.as_str(), "managed" | "user-global")
+            && s.auto_mode.as_ref().and_then(|a| a.classify_all_shell) == Some(true)
+    })
+}
+
+/// `a, b and c`.
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// One machine-level group of allow rules of one grade: the files and their rules.
+#[derive(Default)]
+struct RuleGroup<'a> {
+    files: Vec<(&'a str, &'a str, Vec<&'a str>)>,
+}
+
+impl<'a> RuleGroup<'a> {
+    fn add(&mut self, path: &'a str, source: &'a str, rule: &'a str) {
+        match self.files.iter_mut().find(|(p, _, _)| *p == path) {
+            Some((_, _, rules)) => rules.push(rule),
+            None => self.files.push((path, source, vec![rule])),
+        }
+    }
+    fn rules(&self) -> usize {
+        self.files.iter().map(|(_, _, r)| r.len()).sum()
+    }
+    /// "3 project settings files", "1 settings file", "user settings and 2 project
+    /// settings files".
+    fn files_noun(&self) -> String {
+        let n = self.files.len();
+        let project = self
+            .files
+            .iter()
+            .filter(|(_, s, _)| matches!(*s, "local" | "project"))
+            .count();
+        let s = if n == 1 { "" } else { "s" };
+        if project == n {
+            format!("{n} project settings file{s}")
+        } else {
+            format!("{n} settings file{s}")
+        }
+    }
+    fn location(&self) -> String {
+        match self.files.as_slice() {
+            [(p, _, _)] => p.to_string(),
+            _ => format!(
+                "{} Claude Code settings files (listed in the evidence)",
+                self.files.len()
+            ),
+        }
+    }
+    /// `path: r1, r2; path2: r3`, at most 30 files and 8 rules per file.
+    fn evidence(&self) -> String {
+        let mut s = self
+            .files
+            .iter()
+            .take(30)
+            .map(|(p, _, r)| format!("{p}: {}", list_rules(r, 8)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if self.files.len() > 30 {
+            s.push_str(&format!(" (+{} more files)", self.files.len() - 30));
+        }
+        s
+    }
+}
+
 /// Claude Code permission posture (code.claude.com/docs/en/permissions.md,
-/// /permission-modes.md and /settings-reference.md, fetched 2026-10-24):
+/// /permission-modes.md, /auto-mode-config.md and /settings-reference.md, fetched
+/// 2026-10-24):
 ///
 /// - `permissions.defaultMode: "auto"` in user settings: Low. Auto mode has a background
 ///   classifier review shell commands and network requests instead of a prompt, and it
@@ -575,22 +711,51 @@ fn list_rules(rules: &[&str], cap: usize) -> String {
 ///   confirmation before `bypassPermissions` is off; Critical when user or managed
 ///   settings also start sessions in `bypassPermissions`. Managed files are the
 ///   organization's policy and stay inventory.
-/// - Allow rules, one finding per file per class (see
-///   `scanners::agent_settings::classify_allow_rule`): a whole MCP server pre-approved
-///   (Medium; High from a repository's file; Low when no server of that name is
-///   configured), code-running shell rules (Medium; High from a repository's file),
-///   reads of credential or agent-state paths and edits of credential paths (High), and
-///   path rules that do not match the path they name (Low).
+/// - Allow rules (see `scanners::agent_settings::classify_allow_rule`), per file: a whole
+///   MCP server pre-approved (Medium; High from a repository's file; Low when every such
+///   server is a disabled plugin's or none is installed), reads of credential or
+///   agent-state paths and edits of credential paths (High, naming what the rule
+///   reaches), and path rules that never match what they name (Low).
+/// - Allow rules, one finding per machine per grade, listing the files: code-running
+///   rules ([`code_exec_findings`]), rules that change remote or privileged state
+///   (Medium; High from a repository's file), and wrapper rules (Low).
+/// - The `autoMode` block ([`auto_mode_findings`]).
 fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     use crate::scanners::agent_settings::{
-        RULE_CODE_EXEC, RULE_CREDENTIAL_EDIT, RULE_CREDENTIAL_READ, RULE_INERT_PATH, RULE_MCP_SERVER,
+        CODE_EXEC_NETWORK, RULE_CODE_EXEC, RULE_CREDENTIAL_EDIT, RULE_CREDENTIAL_READ, RULE_DESTRUCTIVE,
+        RULE_INERT_PATH, RULE_MCP_SERVER, RULE_WRAPPER,
     };
+    use std::collections::BTreeMap;
     let claude = || report.agent_settings.iter().filter(|s| s.framework == "claude-code");
     let bypass_default = claude().find(|s| {
         matches!(s.source.as_str(), "user-global" | "managed")
             && s.permission_mode.as_deref() == Some("bypassPermissions")
     });
     let known_servers = known_mcp_segments(report);
+    // Servers marked off: a disabled plugin's, or a connector under
+    // disableClaudeAiConnectors (by folded tool segment).
+    let mut inactive: BTreeSet<String> = BTreeSet::new();
+    let mut active: BTreeSet<String> = BTreeSet::new();
+    for c in &report.mcp_configs {
+        for s in &c.servers {
+            let mut segs = vec![mcp_tool_segment(&s.name)];
+            if let Some(p) = &s.plugin {
+                let plugin = p.rsplit_once('@').map(|(n, _)| n).unwrap_or(p);
+                segs.push(mcp_tool_segment(&format!("plugin_{plugin}_{}", s.name)));
+            }
+            for seg in segs {
+                if s.is_active() {
+                    active.insert(seg);
+                } else {
+                    inactive.insert(seg);
+                }
+            }
+        }
+    }
+    let shell_all = classify_all_shell(report);
+
+    // Machine-level groups: (severity, title) -> files and rules.
+    let mut groups: BTreeMap<(Severity, String), RuleGroup> = BTreeMap::new();
 
     for s in claude() {
         let user_scoped = matches!(s.source.as_str(), "user-global" | "user-local" | "local");
@@ -634,6 +799,7 @@ fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 evidence: Some("skipDangerousModePermissionPrompt: true".into()),
             });
         }
+        auto_mode_findings(report, s, f);
 
         if !(user_scoped || repository) {
             continue; // managed policy and plugin files: inventory
@@ -644,93 +810,663 @@ fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
         };
         let scoped_sev = if repository { Severity::High } else { Severity::Medium };
 
-        let (mut configured, mut phantom) = (Vec::new(), Vec::new());
+        let (mut live, mut disabled, mut phantom) = (Vec::new(), Vec::new(), Vec::new());
         for r in of(RULE_MCP_SERVER) {
             let server = r.detail.as_deref().unwrap_or("");
+            let seg = mcp_tool_segment(server);
             match &known_servers {
-                Some(k) if !k.contains(&mcp_tool_segment(server)) => phantom.push(r),
-                _ => configured.push(r),
+                Some(k) if !k.contains(&seg) => phantom.push(r),
+                _ if inactive.contains(&seg) && !active.contains(&seg) => disabled.push(r),
+                _ => live.push(r),
             }
         }
-        if !configured.is_empty() {
-            let servers: BTreeSet<&str> = configured.iter().filter_map(|r| r.detail.as_deref()).collect();
-            let rules: Vec<&str> = configured.iter().map(|r| r.rule.as_str()).collect();
+        let names = |rs: &[&crate::models::PermissionRule]| -> Vec<String> {
+            rs.iter()
+                .filter_map(|r| r.detail.clone())
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect()
+        };
+        if !live.is_empty() || !disabled.is_empty() {
+            let rules: Vec<&str> = live.iter().chain(&disabled).map(|r| r.rule.as_str()).collect();
+            let off = names(&disabled);
+            let (severity, title) = if live.is_empty() {
+                (
+                    Severity::Low,
+                    format!(
+                        "every tool of MCP server(s) {} is pre-approved by an allow rule, but the server(s) are currently disabled{origin}",
+                        off.join(", ")
+                    ),
+                )
+            } else {
+                let off_note = if off.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} currently disabled: {})", off.len(), off.join(", "))
+                };
+                (
+                    scoped_sev,
+                    format!(
+                        "every tool of MCP server(s) {} is pre-approved by an allow rule{off_note}{origin}",
+                        names(&live).join(", ")
+                    ),
+                )
+            };
             f.push(Finding {
-                severity: scoped_sev,
+                severity,
                 category: "Permissions".into(),
-                title: format!(
-                    "every tool of MCP server(s) {} is pre-approved by an allow rule{origin}",
-                    servers.into_iter().collect::<Vec<_>>().join(", ")
-                ),
+                title,
                 location: s.path.clone(),
                 evidence: Some(list_rules(&rules, 20)),
             });
         }
         if !phantom.is_empty() {
-            let servers: BTreeSet<&str> = phantom.iter().filter_map(|r| r.detail.as_deref()).collect();
+            let servers = names(&phantom);
             let rules: Vec<&str> = phantom.iter().map(|r| r.rule.as_str()).collect();
             f.push(Finding {
                 severity: Severity::Low,
                 category: "Permissions".into(),
                 title: format!(
-                    "allow rule(s) pre-approve MCP server(s) that are not configured: {} — a server added later under that name runs its tools without a prompt",
-                    list_rules(&servers.into_iter().collect::<Vec<_>>(), 20)
+                    "Allow rules pre-approve {} MCP server name(s) that no installed plugin or configured server provides; a server later added under that name is trusted without a prompt: {}",
+                    servers.len(),
+                    list_rules(&servers.iter().map(String::as_str).collect::<Vec<_>>(), 20)
                 ),
                 location: s.path.clone(),
                 evidence: Some(list_rules(&rules, 20)),
             });
         }
-        let classes = [
-            (
-                RULE_CODE_EXEC,
-                scoped_sev,
-                "allow rule(s) approve arbitrary code execution or network transfer without a prompt",
-            ),
-            (
-                RULE_CREDENTIAL_READ,
-                Severity::High,
-                "pre-approved read of credential or agent-state paths",
-            ),
-            (
-                RULE_CREDENTIAL_EDIT,
-                Severity::High,
-                "pre-approved edit of credential paths",
-            ),
-            (
-                RULE_INERT_PATH,
-                Severity::Low,
-                "allow rule(s) do not match the path they name",
-            ),
-        ];
-        for (class, severity, what) in classes {
-            let rules = of(class);
+        for (class, verb) in [(RULE_CREDENTIAL_READ, "reading"), (RULE_CREDENTIAL_EDIT, "editing")] {
+            let mut rules = of(class);
             if rules.is_empty() {
                 continue;
             }
-            let names: Vec<&str> = rules.iter().map(|r| r.rule.as_str()).collect();
-            let evidence = if class == RULE_INERT_PATH {
-                rules
-                    .iter()
-                    .take(8)
-                    .map(|r| {
-                        format!("{} {}", r.rule, r.detail.as_deref().unwrap_or(""))
-                            .trim()
-                            .to_string()
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
+            // The broadest rule (the one reaching the most paths) leads the title.
+            let reach =
+                |r: &crate::models::PermissionRule| r.detail.as_deref().map(|d| d.split(", ").count()).unwrap_or(0);
+            rules.sort_by_key(|r| std::cmp::Reverse(reach(r)));
+            let lead = rules[0];
+            let mut labels: Vec<&str> = lead
+                .detail
+                .as_deref()
+                .map(|d| d.split(", ").collect())
+                .unwrap_or_else(|| vec!["credential paths"]);
+            let extra = labels.len().saturating_sub(3);
+            labels.truncate(3);
+            let more_paths = if extra > 0 {
+                format!(" and {extra} more credential path(s)")
             } else {
-                list_rules(&names, 20)
+                String::new()
+            };
+            let more = if rules.len() > 1 {
+                format!(" (+{} more rule(s))", rules.len() - 1)
+            } else {
+                String::new()
             };
             f.push(Finding {
-                severity,
+                severity: Severity::High,
                 category: "Permissions".into(),
-                title: format!("{what}: {}{origin}", list_rules(&names, 8)),
+                title: format!(
+                    "{} pre-approves {verb} {}{more_paths}{more}{origin}",
+                    lead.rule,
+                    if extra > 0 {
+                        labels.join(", ")
+                    } else {
+                        and_list(&labels)
+                    }
+                ),
                 location: s.path.clone(),
-                evidence: Some(evidence),
+                evidence: Some(
+                    rules
+                        .iter()
+                        .take(20)
+                        .map(|r| format!("{} → {}", r.rule, r.detail.as_deref().unwrap_or("credential paths")))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+            });
+        }
+        let inert = of(RULE_INERT_PATH);
+        if !inert.is_empty() {
+            let names: Vec<&str> = inert.iter().map(|r| r.rule.as_str()).collect();
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Permissions".into(),
+                title: format!(
+                    "{} allow rule(s) never match what they name: {}{origin}",
+                    inert.len(),
+                    list_rules(&names, 8)
+                ),
+                location: s.path.clone(),
+                evidence: Some(
+                    inert
+                        .iter()
+                        .take(8)
+                        .map(|r| {
+                            format!("{} {}", r.rule, r.detail.as_deref().unwrap_or(""))
+                                .trim()
+                                .to_string()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+            });
+        }
+
+        // Machine-level classes: grade each rule, group by grade.
+        let auto = starts_in_auto(report, s);
+        let from = if repository { " — from project settings" } else { "" };
+        for r in of(RULE_CODE_EXEC) {
+            let network = r.detail.as_deref() == Some(CODE_EXEC_NETWORK);
+            let suspended = auto && (!network || shell_all);
+            let (severity, title) = if suspended {
+                (
+                    if repository { Severity::Medium } else { Severity::Low },
+                    format!(
+                        "Code-execution allow rules in {{files}}: suspended while auto mode is active; sessions here start in auto{from}"
+                    ),
+                )
+            } else if network && auto {
+                (
+                    scoped_sev,
+                    format!(
+                        "Network-transfer allow rules (curl, wget) in {{files}}: they stay active in auto mode, so these commands run without a prompt or a classifier check{from}"
+                    ),
+                )
+            } else if network {
+                (
+                    scoped_sev,
+                    format!(
+                        "Network-transfer allow rules (curl, wget) in {{files}}: any download or upload runs without a prompt{from}"
+                    ),
+                )
+            } else {
+                (
+                    scoped_sev,
+                    format!("Code-execution allow rules in {{files}}: arbitrary code runs without a prompt{from}"),
+                )
+            };
+            groups
+                .entry((severity, title))
+                .or_default()
+                .add(&s.path, &s.source, &r.rule);
+        }
+        for r in of(RULE_DESTRUCTIVE) {
+            let suspended = auto && shell_all;
+            let (severity, title) = if suspended {
+                (
+                    Severity::Low,
+                    format!(
+                        "Allow rules in {{files}} pre-approve commands that change remote or privileged state (ssh, sudo, cloud and GitHub mutations, recursive rm); suspended while auto mode is active (classifyAllShell){from}"
+                    ),
+                )
+            } else {
+                (
+                    scoped_sev,
+                    format!(
+                        "Allow rules in {{files}} pre-approve commands that change remote or privileged state (ssh, sudo, cloud and GitHub mutations, recursive rm){from}"
+                    ),
+                )
+            };
+            groups
+                .entry((severity, title))
+                .or_default()
+                .add(&s.path, &s.source, &r.rule);
+        }
+        for r in of(RULE_WRAPPER) {
+            let title =
+                "{rules} allow rule(s) in {files} may run arbitrary commands through a wrapper or environment runner"
+                    .to_string();
+            let shown: &str = &r.rule;
+            groups
+                .entry((Severity::Low, title))
+                .or_default()
+                .add(&s.path, &s.source, shown);
+        }
+    }
+
+    // Wrapper rules carry what is known about each wrapper in their detail.
+    let wrapper_detail: BTreeMap<&str, &str> = claude()
+        .flat_map(|s| s.permission_rules.iter())
+        .filter(|r| r.class.as_deref() == Some(RULE_WRAPPER))
+        .filter_map(|r| r.detail.as_deref().map(|d| (r.rule.as_str(), d)))
+        .collect();
+    for ((severity, title), g) in groups {
+        let title = title
+            .replace("{files}", &g.files_noun())
+            .replace("{rules}", &g.rules().to_string());
+        let mut evidence = g.evidence();
+        if title.contains("through a wrapper") {
+            let notes: Vec<String> = wrapper_detail
+                .iter()
+                .take(8)
+                .map(|(r, d)| format!("{r}: {d}"))
+                .collect();
+            evidence.push_str(&format!(" | {}", notes.join("; ")));
+        }
+        f.push(Finding {
+            severity,
+            category: "Permissions".into(),
+            title,
+            location: g.location(),
+            evidence: Some(evidence),
+        });
+    }
+}
+
+/// The `autoMode` block (code.claude.com/docs/en/auto-mode-config.md, fetched
+/// 2026-10-24). The classifier reads it from user and managed settings only: "The
+/// classifier doesn't read `autoMode` from project settings in `.claude/settings.json`
+/// or `.claude/settings.local.json`", so a block there is a Low inert note. In user and
+/// managed settings:
+///
+/// - `soft_deny` / `hard_deny` set without `"$defaults"`: High. "If you set an array
+///   without `"$defaults"`, you discard the built-in rules for that section: `soft_deny`:
+///   every built-in soft block rule, including force push, `curl | bash`, production
+///   deploys, and auto-mode bypass; `hard_deny`: the built-in data exfiltration rule".
+///   Medium when another scope's list of that name keeps `"$defaults"`: "Entries from
+///   each scope are combined", and whether that restores the defaults is not documented.
+/// - Custom `allow` entries: Medium, the entries (redacted by shape) as evidence: allow
+///   rules "override matching `soft_deny` rules as exceptions".
+/// - `environment` entries in a trust slot: Medium, the slot names as evidence: "any
+///   destination not listed is a potential exfiltration target", so a listed one is not.
+///   `environment` without `"$defaults"` is not graded: `/auto-mode-setup` "writes the
+///   `environment` list without `"$defaults"`" by design.
+/// - `classifyAllShell: true` is inventory (it narrows what allow rules approve).
+fn auto_mode_findings(report: &ScanReport, s: &crate::models::AgentSettings, f: &mut Vec<Finding>) {
+    use crate::scanners::agent_settings::AUTO_MODE_TRUST_SLOTS;
+    let Some(a) = &s.auto_mode else { return };
+    if !matches!(s.source.as_str(), "user-global" | "managed") {
+        let keys: Vec<&str> = [
+            ("environment", a.environment.is_some()),
+            ("allow", a.allow.is_some()),
+            ("soft_deny", a.soft_deny.is_some()),
+            ("hard_deny", a.hard_deny.is_some()),
+            ("classifyAllShell", a.classify_all_shell.is_some()),
+        ]
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(k, _)| *k)
+        .collect();
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "Permissions".into(),
+            title: "autoMode in project settings is ignored by Claude Code: the auto-mode classifier reads it only from user and managed settings".into(),
+            location: s.path.clone(),
+            evidence: Some(format!("autoMode keys: {}", keys.join(", "))),
+        });
+        return;
+    }
+    let other_keeps = |pick: fn(&crate::models::AutoModeSettings) -> Option<&crate::models::AutoModeList>| {
+        report.agent_settings.iter().any(|o| {
+            !std::ptr::eq(o, s)
+                && o.framework == "claude-code"
+                && matches!(o.source.as_str(), "user-global" | "managed")
+                && o.auto_mode.as_ref().and_then(pick).is_some_and(|l| l.has_defaults)
+        })
+    };
+    let mut discarded: Vec<(&str, &str, bool)> = Vec::new();
+    if a.hard_deny.as_ref().is_some_and(|l| !l.has_defaults) {
+        discarded.push((
+            "hard_deny",
+            "the built-in data-exfiltration hard-deny",
+            other_keeps(|m| m.hard_deny.as_ref()),
+        ));
+    }
+    if a.soft_deny.as_ref().is_some_and(|l| !l.has_defaults) {
+        discarded.push((
+            "soft_deny",
+            "every built-in soft block (force push, curl | bash, production deploys, auto-mode bypass)",
+            other_keeps(|m| m.soft_deny.as_ref()),
+        ));
+    }
+    if !discarded.is_empty() {
+        let kept_elsewhere = discarded.iter().all(|(_, _, k)| *k);
+        let lists: Vec<&str> = discarded.iter().map(|(k, _, _)| *k).collect();
+        let what: Vec<&str> = discarded.iter().map(|(_, w, _)| *w).collect();
+        f.push(Finding {
+            severity: if kept_elsewhere { Severity::Medium } else { Severity::High },
+            category: "Permissions".into(),
+            title: format!(
+                "built-in auto-mode denials are discarded: autoMode.{} is set without \"$defaults\", which drops {}{}",
+                lists.join(" and autoMode."),
+                and_list(&what),
+                if kept_elsewhere {
+                    " (another settings scope's list keeps \"$defaults\"; how the scopes combine for the built-in rules is not documented)"
+                } else {
+                    ""
+                }
+            ),
+            location: s.path.clone(),
+            evidence: Some(
+                discarded
+                    .iter()
+                    .map(|(k, _, _)| {
+                        let n = match *k {
+                            "hard_deny" => a.hard_deny.as_ref(),
+                            _ => a.soft_deny.as_ref(),
+                        }
+                        .map(|l| l.entries)
+                        .unwrap_or(0);
+                        format!("autoMode.{k}: {n} custom entr{}, no \"$defaults\"", if n == 1 { "y" } else { "ies" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+        });
+    }
+    if let Some(l) = a.allow.as_ref().filter(|l| l.entries > 0) {
+        f.push(Finding {
+            severity: Severity::Medium,
+            category: "Permissions".into(),
+            title: format!(
+                "autoMode.allow adds {} custom exception(s) that override the auto-mode classifier's soft blocks",
+                l.entries
+            ),
+            location: s.path.clone(),
+            evidence: Some(l.shown.join("; ")),
+        });
+    }
+    if let Some(l) = &a.environment {
+        let mut slots: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for e in &l.shown {
+            if AUTO_MODE_TRUST_SLOTS.contains(&e.as_str()) {
+                *slots.entry(e.as_str()).or_default() += 1;
+            }
+        }
+        if !slots.is_empty() {
+            let shown: Vec<String> = slots.iter().map(|(k, n)| format!("{k} ({n})")).collect();
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Permissions".into(),
+                title: format!(
+                    "autoMode.environment widens what the auto-mode classifier trusts: {}",
+                    shown.join(", ")
+                ),
+                location: s.path.clone(),
+                evidence: Some(format!(
+                    "trust-slot entries by slot name (their text is not shown): {}",
+                    shown.join(", ")
+                )),
             });
         }
     }
+}
+
+/// One Claude Code store others can read, graded: (severity before reachability, what
+/// it exposes, readable files). None when other users can open nothing in it.
+struct StoreRow {
+    severity: Severity,
+    what: String,
+    readable: usize,
+}
+
+/// Shell state an exported NAME may carry without being a credential: a closed list
+/// (prefixes end in `_`).
+const SHELL_STATE_NAMES: &[&str] = &[
+    "PATH",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_",
+    "PWD",
+    "OLDPWD",
+    "SHLVL",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "XDG_",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "SSH_AUTH_SOCK",
+];
+
+fn is_shell_state_name(n: &str) -> bool {
+    SHELL_STATE_NAMES
+        .iter()
+        .any(|s| if s.ends_with('_') { n.starts_with(s) } else { n == *s })
+}
+
+/// The grade of a `session-env` / `shell-snapshots` store by the NAMES its sampled files
+/// export (values are never read): a secret-shaped name is High, any name outside
+/// [`SHELL_STATE_NAMES`] Medium, shell state only Low.
+fn exported_names_grade(n: &crate::models::ExportedNames) -> (Severity, String) {
+    let sample = format!(
+        "{} of {} readable files sampled, first {} KiB each, in path order",
+        n.sampled_files,
+        n.readable_files,
+        n.bytes_per_file / 1024
+    );
+    if n.sampled_files == 0 {
+        return (Severity::Medium, format!("exported names could not be read ({sample})"));
+    }
+    let secret: Vec<&str> = n
+        .names
+        .iter()
+        .map(String::as_str)
+        .filter(|x| crate::scanners::env_files::is_secret_key_name(x) || *x == "<key-shaped name>")
+        .collect();
+    let other: Vec<&str> = n
+        .names
+        .iter()
+        .map(String::as_str)
+        .filter(|x| !is_shell_state_name(x))
+        .collect();
+    if !secret.is_empty() {
+        (
+            Severity::High,
+            format!(
+                "exports a secret-named variable (name only): {} ({sample})",
+                list_rules(&secret, 8)
+            ),
+        )
+    } else if !other.is_empty() || n.truncated {
+        (
+            Severity::Medium,
+            format!(
+                "exports variables beyond shell state (names only): {} ({sample})",
+                list_rules(&other, 8)
+            ),
+        )
+    } else {
+        (Severity::Low, format!("contains PATH/shell state only ({sample})"))
+    }
+}
+
+/// What other users can open in one Claude Code store, graded. Content-bearing stores
+/// (transcripts, command history, ~/.claude.json and its backups, agent memory and
+/// journals, paste cache, file-edit history) are High; metadata stores (todos, tasks,
+/// plans, telemetry, feature flags, usage data, plugin logs) Medium; session-env and
+/// shell-snapshots by the names they export ([`exported_names_grade`]).
+fn claude_store_row(t: &crate::models::AgentTranscriptStore) -> Option<StoreRow> {
+    use crate::scanners::transcripts::{ACCOUNT_STATE, ACCOUNT_STATE_BACKUP, store_exposure};
+    let (what, content) = store_exposure(&t.kind);
+    let readable = t.readable_files.unwrap_or(t.file_count);
+    if matches!(t.kind.as_str(), ACCOUNT_STATE | ACCOUNT_STATE_BACKUP) {
+        return if t.world_readable {
+            Some(StoreRow {
+                severity: Severity::High,
+                what: what.to_string(),
+                readable: 1,
+            })
+        } else if t.group_readable {
+            Some(StoreRow {
+                severity: Severity::Medium,
+                what: format!("{what}; readable by its group only"),
+                readable: 1,
+            })
+        } else {
+            None
+        };
+    }
+    if !(t.world_readable && readable > 0) {
+        return None;
+    }
+    let (severity, what) = match &t.exported_names {
+        Some(n) => exported_names_grade(n),
+        None if content => (Severity::High, what.to_string()),
+        None => (Severity::Medium, what.to_string()),
+    };
+    Some(StoreRow {
+        severity,
+        what,
+        readable,
+    })
+}
+
+/// The Claude Code store finding of one home: every store under ~/.claude and
+/// ~/.claude.json other local accounts can read, as a table in the evidence, graded by the most
+/// sensitive reachable store. A store behind an ancestor others cannot traverse is a
+/// Low row; when every store is, the finding is Low "not reachable".
+fn claude_store_finding(rows: &[(&crate::models::AgentTranscriptStore, StoreRow)]) -> Option<Finding> {
+    if rows.is_empty() {
+        return None;
+    }
+    let reachable: Vec<&(&crate::models::AgentTranscriptStore, StoreRow)> =
+        rows.iter().filter(|(t, _)| t.unreachable_via.is_none()).collect();
+    let files: usize = reachable.iter().map(|(_, r)| r.readable).sum();
+    let (severity, lead) = match reachable.iter().min_by_key(|(_, r)| r.severity.rank()) {
+        Some((t, r)) => (r.severity, *t),
+        None => (Severity::Low, rows[0].0),
+    };
+    let name = |t: &crate::models::AgentTranscriptStore| t.path.rsplit('/').next().unwrap_or(&t.path).to_string();
+    let title = if reachable.is_empty() {
+        let all: usize = rows.iter().map(|(_, r)| r.readable).sum();
+        format!(
+            "Claude Code state under ~/.claude and ~/.claude.json has files other local accounts could read ({} stores, about {all} files) — not reachable: {}",
+            rows.len(),
+            rows[0].0.unreachable_via.as_deref().unwrap_or("")
+        )
+    } else {
+        format!(
+            "Claude Code state under ~/.claude and ~/.claude.json is readable by other local accounts ({} store{}, about {files} files)",
+            reachable.len(),
+            if reachable.len() == 1 { "" } else { "s" }
+        )
+    };
+    let mut table: Vec<String> = rows
+        .iter()
+        .map(|(t, r)| {
+            let grade = if t.unreachable_via.is_some() {
+                format!("low (not reachable: {})", t.unreachable_via.as_deref().unwrap_or(""))
+            } else {
+                r.severity.label().to_string()
+            };
+            let total = if t.file_count > 1 {
+                format!("{} of {} files", r.readable, t.file_count)
+            } else {
+                "file".to_string()
+            };
+            format!("{} ({}): {total}, {grade}: {}", name(t), t.kind, r.what)
+        })
+        .collect();
+    table.push(match rows[0].0.other_login_accounts {
+        Some(n) => format!("other accounts with a login shell on this machine: {n} (from /etc/passwd)"),
+        None => "other accounts with a login shell on this machine: not determined".to_string(),
+    });
+    Some(Finding {
+        severity,
+        category: "Transcript exposure".into(),
+        title,
+        location: lead.path.clone(),
+        evidence: Some(table.join("; ")),
+    })
+}
+
+/// Installed plugins this scan knows by name, as `(name, plugin@marketplace)`: from
+/// plugin hook files, skill provenance and plugin MCP servers.
+fn installed_plugins(report: &ScanReport) -> Vec<(String, String)> {
+    let mut out: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut add = |id: &str| {
+        let name = id.split_once('@').map(|(n, _)| n).unwrap_or(id);
+        if !name.is_empty() {
+            out.insert((name.to_string(), id.to_string()));
+        }
+    };
+    for s in &report.agent_settings {
+        if let Some(p) = s.provenance.as_ref().and_then(|p| p.plugin.as_deref()) {
+            add(p);
+        }
+    }
+    for k in &report.agent_skills {
+        if let Some(p) = k.provenance.as_ref().filter(|p| p.active) {
+            match (p.plugin.as_deref(), p.marketplace.as_deref()) {
+                (Some(n), Some(m)) if !n.contains('@') => add(&format!("{n}@{m}")),
+                (Some(n), _) => add(n),
+                _ => {}
+            }
+        }
+    }
+    for c in &report.mcp_configs {
+        for s in &c.servers {
+            if let Some(p) = &s.plugin {
+                add(p);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The Low executables in `~/.claude/bin` (outside any plugin cache, owned by the user,
+/// not writable by others) as one finding: the count, the plugin each is named after
+/// (its file name is the plugin's name or starts with `<name>-`), and each file as
+/// evidence. rmguard does not know which plugin installed a file; the name is the only
+/// link it draws, and says so.
+fn agent_bin_finding(report: &ScanReport, bins: &[(&crate::models::PersistenceArtifact, bool)]) -> Option<Finding> {
+    let first = bins.first()?;
+    let plugins = installed_plugins(report);
+    let file_name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+    let mut by_plugin: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut unattributed = 0usize;
+    for (a, _) in bins {
+        let n = file_name(&a.path);
+        // A `plugin@marketplace` id is preferred over a bare name for the same plugin.
+        match plugins
+            .iter()
+            .filter(|(name, _)| n == *name || n.starts_with(&format!("{name}-")))
+            .max_by_key(|(name, id)| (name.len(), id.contains('@')))
+        {
+            Some((_, id)) => by_plugin.entry(id.clone()).or_default().push(n),
+            None => unattributed += 1,
+        }
+    }
+    let count = bins.len();
+    let s = if count == 1 { "" } else { "s" };
+    let title = match (by_plugin.len(), unattributed) {
+        (0, _) => format!("{count} executable{s} in ~/.claude/bin survive plugin uninstall"),
+        (1, 0) => format!(
+            "{count} executable{s} in ~/.claude/bin (plugin {}, by name) survive uninstall",
+            by_plugin.keys().next().map(String::as_str).unwrap_or("")
+        ),
+        _ => format!(
+            "{count} executable{s} in ~/.claude/bin survive plugin uninstall ({}{})",
+            by_plugin
+                .iter()
+                .map(|(id, v)| format!("{} named after plugin {id}", v.len()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if unattributed > 0 {
+                format!("; {unattributed} named after no installed plugin")
+            } else {
+                String::new()
+            }
+        ),
+    };
+    let dir = first.0.path.rsplit_once('/').map(|(d, _)| d).unwrap_or(&first.0.path);
+    Some(Finding {
+        severity: Severity::Low,
+        category: "Persistence".into(),
+        title,
+        location: dir.to_string(),
+        evidence: Some(
+            bins.iter()
+                .take(30)
+                .map(|(a, hooked)| format!("{}{}", a.detail, if *hooked { " — a hook runs it" } else { "" }))
+                .collect::<Vec<_>>()
+                .join("; "),
+        ),
+    })
 }
 
 pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
@@ -1075,6 +1811,8 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         .flat_map(|s| s.hooks.iter().chain(&s.helper_commands))
         .map(|h| h.command.as_str())
         .collect();
+    // Low agent-bin executables are one finding per machine (agent_bin_finding).
+    let mut bin_lows: Vec<(&crate::models::PersistenceArtifact, bool)> = Vec::new();
     for a in &report.persistence_artifacts {
         let (severity, category, title) = match a.kind.as_str() {
             "python-startup-hook" => {
@@ -1189,6 +1927,11 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 format!("Known worm persistence artifact: {}", a.detail),
             ),
         };
+        if a.kind == "agent-bin" && severity == Severity::Low {
+            let hooked = hook_commands.iter().any(|c| references_bin(c, &a.path));
+            bin_lows.push((a, hooked));
+            continue;
+        }
         f.push(Finding {
             severity,
             category: category.into(),
@@ -1196,6 +1939,9 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             location: a.path.clone(),
             evidence: Some(a.detail.clone()),
         });
+    }
+    if let Some(finding) = agent_bin_finding(report, &bin_lows) {
+        f.push(finding);
     }
 
     // Git configuration that turns an ordinary git command into code execution.
@@ -1331,15 +2077,31 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         }
     }
 
-    // World-readable agent transcript/state stores (EAA-005 collection surface):
-    // these hold full conversation history — code, prompts, and any secrets discussed —
-    // so loose permissions let any local user read the lot.
+    // Agent transcript/state stores others can read (EAA-005 collection surface).
     // Value-gated on what other users can actually open: files with o+r reached through
     // directories with o+x (a store of 0600 files under a 0755 directory exposes names
     // only). An ancestor others cannot traverse (HOME 0700) makes it Low. Reports from
     // older versions carry no per-file count and are graded on the store's own mode.
+    // Claude Code's stores are one finding per Claude Code config directory, i.e. per
+    // scanned home ([`claude_store_finding`]); other agents' stores are one finding each.
+    let mut claude_rows: Vec<(String, Vec<(&crate::models::AgentTranscriptStore, StoreRow)>)> = Vec::new();
     for t in &report.transcripts {
         use crate::scanners::transcripts::{ACCOUNT_STATE, ACCOUNT_STATE_BACKUP, store_exposure};
+        if t.framework == "claude-code" {
+            if let Some(row) = claude_store_row(t) {
+                let parent = t.path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                let key = if matches!(t.kind.as_str(), ACCOUNT_STATE | ACCOUNT_STATE_BACKUP) {
+                    format!("{parent}/.claude")
+                } else {
+                    parent.to_string()
+                };
+                match claude_rows.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, rows)) => rows.push((t, row)),
+                    None => claude_rows.push((key, vec![(t, row)])),
+                }
+            }
+            continue;
+        }
         let (what, content) = store_exposure(&t.kind);
         let readable = t.readable_files.unwrap_or(t.file_count);
         let account = matches!(t.kind.as_str(), ACCOUNT_STATE | ACCOUNT_STATE_BACKUP);
@@ -1375,6 +2137,11 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             location: t.path.clone(),
             evidence: None,
         });
+    }
+    for (_, rows) in &claude_rows {
+        if let Some(finding) = claude_store_finding(rows) {
+            f.push(finding);
+        }
     }
 
     // Auto-updating third-party plugin marketplaces (EAA-009): a non-official source
@@ -1502,8 +2269,8 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
             category: "Toxic Flow".into(),
             title: format!(
                 "sensitive source ({}) + exfil sink ({}) on the agent surface",
-                tf.sources.join("/"),
-                tf.sinks.join("/")
+                tf.leg_title(&tf.sources),
+                tf.leg_title(&tf.sinks)
             ),
             location: report.device.hostname.clone(),
             evidence: Some(tf.evidence()),
@@ -3058,39 +3825,77 @@ pub struct ToxicFlowSurface {
     /// Untrusted-content capabilities present (`untrusted_content`), the third leg.
     pub untrusted: Vec<String>,
     /// What supplies each leg, as `(capability, contributor)`: MCP servers by name and
-    /// origin first, then skill files as one count per capability.
+    /// origin first, then skill files as one count per capability ("N loading skill(s)
+    /// mention it": a keyword in a skill file is a mention, not a source).
     pub contributors: Vec<(String, String)>,
+    /// The servers among the contributors, as `(capability, server name)`.
+    pub servers: Vec<(String, String)>,
 }
 
 /// The contributor label of skill files ([`analyze_toxic_flow`]).
-const SKILL_COUNT_SUFFIX: &str = " skill file(s) of the user and enabled plugins";
+const SKILL_COUNT_SUFFIX: &str = " loading skill(s) mention it";
 
 fn is_skill_count(who: &str) -> bool {
     who.ends_with(SKILL_COUNT_SUFFIX)
 }
 
 impl ToxicFlowSurface {
+    /// One leg for a title: the servers that supply it first, with their capabilities,
+    /// then the capabilities only skill files mention: `claude.ai Gmail, claude.ai Google
+    /// Drive: private_data; skills mention filesystem/environment`.
+    pub fn leg_title(&self, caps: &[String]) -> String {
+        let mut names: Vec<&str> = Vec::new();
+        let mut served: Vec<&str> = Vec::new();
+        for c in caps {
+            for (k, n) in self.servers.iter().filter(|(k, _)| k == c) {
+                if !names.contains(&n.as_str()) {
+                    names.push(n);
+                }
+                if !served.contains(&k.as_str()) {
+                    served.push(k);
+                }
+            }
+        }
+        let mentioned: Vec<&str> = caps
+            .iter()
+            .map(String::as_str)
+            .filter(|c| !served.contains(c))
+            .collect();
+        let mut parts = Vec::new();
+        if !names.is_empty() {
+            parts.push(format!("{}: {}", list_rules(&names, 3), served.join("/")));
+        }
+        if !mentioned.is_empty() {
+            parts.push(format!("loading skills mention {}", mentioned.join("/")));
+        }
+        parts.join("; ")
+    }
+
     /// One line naming what supplies each leg: MCP servers first (a server pair is the
-    /// concrete flow), then skill files as counts.
+    /// concrete flow), each with its origin, then skill files as counts labelled
+    /// "mention", never "source".
     pub fn evidence(&self) -> String {
         let servers: Vec<&(String, String)> = self.contributors.iter().filter(|(_, w)| !is_skill_count(w)).collect();
         let skills: Vec<&(String, String)> = self.contributors.iter().filter(|(_, w)| is_skill_count(w)).collect();
-        let render = |rows: &[&(String, String)], caps: &[String]| -> Vec<String> {
-            caps.iter()
-                .filter_map(|c| {
-                    let who: Vec<&str> = rows.iter().filter(|(k, _)| k == c).map(|(_, w)| w.as_str()).collect();
-                    (!who.is_empty()).then(|| format!("{c} from {}", who.join(", ")))
-                })
-                .collect()
-        };
         let mut parts = Vec::new();
         for (label, caps) in [
             ("sources", &self.sources),
             ("sinks", &self.sinks),
             ("untrusted content", &self.untrusted),
         ] {
-            let mut leg = render(&servers, caps);
-            leg.extend(render(&skills, caps));
+            // Server -> the capabilities of this leg it supplies, in contributor order.
+            let mut rows: Vec<(&str, Vec<&str>)> = Vec::new();
+            for (c, who) in servers.iter().filter(|(c, _)| caps.contains(c)) {
+                match rows.iter_mut().find(|(w, _)| w == who) {
+                    Some((_, cs)) => cs.push(c),
+                    None => rows.push((who, vec![c])),
+                }
+            }
+            let mut leg: Vec<String> = rows.iter().map(|(w, cs)| format!("{w}: {}", cs.join("/"))).collect();
+            for (c, who) in skills.iter().filter(|(c, _)| caps.contains(c)) {
+                let n = who.trim_end_matches(SKILL_COUNT_SUFFIX);
+                leg.push(format!("(+{n} loading skill(s) mention {c})"));
+            }
             if !leg.is_empty() {
                 parts.push(format!("{label}: {}", leg.join("; ")));
             }
@@ -3134,12 +3939,24 @@ pub fn mcp_server_capabilities(s: &crate::models::McpServerDetail) -> Vec<&'stat
     caps
 }
 
-/// A server row's origin, for evidence.
-fn server_origin(cfg: &crate::models::McpConfig, s: &crate::models::McpServerDetail) -> String {
+/// A server row's origin, for evidence. A claude.ai connector also says when it was last
+/// used: the newest modification time of its `mcp-logs-<server>` directories, when the
+/// MCP scanner saw any.
+fn server_origin(report: &ScanReport, cfg: &crate::models::McpConfig, s: &crate::models::McpServerDetail) -> String {
     if cfg.config_source == crate::models::MCP_SOURCE_PLUGIN {
         format!("plugin MCP server of {}", s.plugin.as_deref().unwrap_or("?"))
     } else if cfg.config_source == crate::models::MCP_SOURCE_CONNECTOR {
-        "claude.ai connector, ever connected".to_string()
+        let seg = mcp_tool_segment(&s.name);
+        let last = report
+            .mcp_observed_servers
+            .iter()
+            .filter(|o| mcp_tool_segment(&o.name) == seg)
+            .filter_map(|o| o.newest_mtime)
+            .max()
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|d| format!(", last used {}", d.format("%Y-%m-%d")))
+            .unwrap_or_default();
+        format!("claude.ai connector, ever connected{last}")
     } else {
         format!("MCP server in {}", cfg.config_source)
     }
@@ -3180,17 +3997,21 @@ pub fn analyze_toxic_flow(report: &ScanReport) -> Option<ToxicFlowSurface> {
             list.push(who);
         }
     };
+    let mut probed: Vec<(String, String)> = Vec::new();
     for probe in &report.mcp_probes {
         if probe.success {
             for c in &probe.observed_capabilities {
                 add(c, format!("probed MCP server '{}'", probe.server_name));
+                probed.push((c.clone(), probe.server_name.clone()));
             }
         }
     }
+    let mut servers: Vec<(String, String)> = Vec::new();
     for cfg in &report.mcp_configs {
         for s in cfg.servers.iter().filter(|s| s.is_active()) {
             for c in mcp_server_capabilities(s) {
-                add(c, format!("{} ({})", s.name, server_origin(cfg, s)));
+                add(c, format!("{} ({})", s.name, server_origin(report, cfg, s)));
+                servers.push((c.to_string(), s.name.clone()));
             }
         }
     }
@@ -3223,11 +4044,13 @@ pub fn analyze_toxic_flow(report: &ScanReport) -> Option<ToxicFlowSurface> {
         .iter()
         .flat_map(|(c, who)| who.iter().map(move |w| (c.to_string(), w.clone())))
         .collect();
+    probed.extend(servers);
     Some(ToxicFlowSurface {
         sources,
         sinks,
         untrusted,
         contributors,
+        servers: probed,
     })
 }
 

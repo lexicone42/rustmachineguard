@@ -633,10 +633,53 @@ pub struct AgentSettings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_dangerous_mode_prompt: bool,
     /// The `permissions.allow`, `ask` and `deny` rules themselves (counts above): each
-    /// redacted and sanitized to at most 200 characters, at most 200 per list. An allow
-    /// rule carries the class rmguard grades it by, if any.
+    /// redacted and sanitized to at most 200 characters, at most 200 per list. Every
+    /// allow rule is classified; the stored list always keeps the classified ones and
+    /// fills the rest of the 200 with unclassified rules in file order. An allow rule
+    /// carries the class rmguard grades it by, if any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permission_rules: Vec<PermissionRule>,
+    /// Claude Code `permissions.disableAutoMode: "disable"` (auto mode removed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_auto_mode: bool,
+    /// Claude Code `autoMode` block (code.claude.com/docs/en/auto-mode-config.md), by
+    /// shape: which lists are set, whether each keeps `"$defaults"`, and what the
+    /// custom entries are (see [`AutoModeList`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_mode: Option<AutoModeSettings>,
+}
+
+/// A settings file's `autoMode` block. Only the keys the auto-mode-config page documents
+/// are read: `environment`, `allow`, `soft_deny`, `hard_deny`, `classifyAllShell`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AutoModeSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<AutoModeList>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<AutoModeList>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft_deny: Option<AutoModeList>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_deny: Option<AutoModeList>,
+    /// `autoMode.classifyAllShell`: every Bash and PowerShell allow rule is suspended
+    /// while auto mode is active, so the classifier sees every shell command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classify_all_shell: Option<bool>,
+}
+
+/// One `autoMode` list (an array of prose rules).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AutoModeList {
+    /// The list contains the literal `"$defaults"`, which splices the built-in entries in.
+    pub has_defaults: bool,
+    /// String entries other than `"$defaults"`.
+    pub entries: usize,
+    /// `allow`: the custom entries, redacted by shape and sanitized (at most 20 of 200
+    /// characters). `environment`: the slot label of each custom entry (the text before
+    /// its first `:` when that is a documented slot name, else `custom entry`), never
+    /// the entry's text. Empty for `soft_deny` and `hard_deny`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<String>,
 }
 
 /// One Claude Code permission rule (code.claude.com/docs/en/permissions.md).
@@ -765,7 +808,7 @@ pub struct AgentHook {
 
 /// An agent transcript / conversation-state store (EAA-005 collection surface).
 /// Records existence, size, and permissions only — content is never read.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentTranscriptStore {
     pub framework: String,
     pub path: String,
@@ -788,6 +831,36 @@ pub struct AgentTranscriptStore {
     /// its own mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreachable_via: Option<String>,
+    /// Claude Code `session-env` and `shell-snapshots` stores with files other users can
+    /// read: the variable NAMES their files export, never a value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported_names: Option<ExportedNames>,
+    /// Claude Code stores: other accounts on this machine with a login shell (Linux:
+    /// `/etc/passwd` entries whose shell is not `nologin`/`false`/`sync`/`shutdown`/`halt`,
+    /// the scanning user excluded). None when not determined (macOS, unreadable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_login_accounts: Option<usize>,
+}
+
+/// The variable names a store's files export, read by name only: `export NAME=`,
+/// `declare -x NAME=`, and in `session-env` files a line-start `NAME=` (the right-hand
+/// side is never kept). Bounded: the first 64 KiB of at most 50 files other users can
+/// read, sampled in path order.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct ExportedNames {
+    /// Files read.
+    pub sampled_files: usize,
+    /// Files other users can read in the store (the population the sample is drawn from;
+    /// at most the walk bound).
+    pub readable_files: usize,
+    /// Bytes read from the head of each file.
+    pub bytes_per_file: usize,
+    /// The distinct names, sorted (at most 100).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    /// More than 100 distinct names were seen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 /// A configured plugin marketplace — a remote source whose skills/plugins run as

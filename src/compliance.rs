@@ -245,7 +245,7 @@ pub const CONTROLS: &[Control] = &[
         id: "EAA-002",
         title: "Permissive or unattended agent execution",
         coverage: Coverage::Partial,
-        how: "Flags bypassPermissions and auto mode in settings, a skipped bypassPermissions confirmation, Claude Code allow rules that pre-approve whole MCP servers, code-running shells or credential reads, and skills that pre-approve unrestricted Bash; runtime invocation flags are out of scope.",
+        how: "Flags bypassPermissions and auto mode in settings, a skipped bypassPermissions confirmation, Claude Code allow rules that pre-approve whole MCP servers, code-running shells (graded by whether auto mode suspends them), commands that change remote or privileged state, wrapper commands or credential reads, an autoMode block that discards the built-in denials or widens what the classifier trusts, and skills that pre-approve unrestricted Bash; runtime invocation flags are out of scope.",
         finding_categories: &["Permissions", "Skill grant"],
     },
     Control {

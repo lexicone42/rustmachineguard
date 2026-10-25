@@ -247,43 +247,58 @@ fn allow_rules_are_kept_and_graded_per_class_in_user_settings() {
     let mcp = find("every tool of MCP server(s)");
     assert_eq!(mcp.severity, Severity::Medium, "{d}");
     assert!(mcp.title.contains("cfg") && !mcp.title.contains("ghost"), "{d}");
-    let phantom = find("not configured");
+    let phantom = find("that no installed plugin or configured server provides");
     assert_eq!(phantom.severity, Severity::Low, "{d}");
     assert!(phantom.title.contains("ghost") && !phantom.title.contains("cfg"), "{d}");
 
-    // (b) Code-running shells: one Medium listing them, not the scoped rules.
-    let exec = find("arbitrary code execution");
+    // (b) Code-running shells: no session starts in auto mode here, so the interpreter
+    // rules are one Medium and the network-transfer rule another; scoped rules are in
+    // neither.
+    let exec = find("Code-execution allow rules in 1 settings file: arbitrary code runs without a prompt");
     assert_eq!(exec.severity, Severity::Medium, "{d}");
-    for r in ["Bash(curl:*)", "Bash(python3:*)", "Bash(uv run:*)"] {
-        assert!(exec.title.contains(r), "{r}: {d}");
+    let ev = exec.evidence.as_deref().unwrap_or("");
+    for r in ["Bash(python3:*)", "Bash(uv run:*)"] {
+        assert!(ev.contains(r), "{r}: {d}");
     }
-    for r in ["git status", "git push", "npm test", "api.example.com"] {
-        assert!(!exec.title.contains(r), "{r} is scoped: {d}");
+    let net = find("Network-transfer allow rules (curl, wget) in 1 settings file");
+    assert_eq!(net.severity, Severity::Medium, "{d}");
+    assert!(net.evidence.as_deref().unwrap_or("").contains("Bash(curl:*)"), "{d}");
+    for f in [exec, net] {
+        let ev = f.evidence.as_deref().unwrap_or("");
+        for r in ["git status", "git push", "npm test", "api.example.com"] {
+            assert!(!ev.contains(r), "{r} is scoped: {d}");
+        }
     }
 
-    // (c) Read of agent state: High. (d) Edit of ~/.ssh: High; Edit(~/.claude/**) is a
-    // protected-path write no allow rule pre-approves, so it is not listed.
-    let read = find("pre-approved read");
+    // (c) Read of agent state: High, naming what it reaches. (d) Edit of ~/.ssh: High;
+    // Edit(~/.claude/**) is a protected-path write no allow rule pre-approves, so it is
+    // not listed.
+    let read = find("pre-approves reading");
     assert_eq!(read.severity, Severity::High, "{d}");
     assert!(
-        read.title.contains("Read(~/.claude/**)") && !read.title.contains("src/**"),
+        read.title
+            .starts_with("Read(~/.claude/**) pre-approves reading ~/.claude/.credentials.json")
+            && !read.title.contains("src/**"),
         "{d}"
     );
-    let edit = find("pre-approved edit");
+    let edit = find("pre-approves editing");
     assert_eq!(edit.severity, Severity::High, "{d}");
     assert!(
-        edit.title.contains("Edit(~/.ssh/**)") && !edit.title.contains(".claude"),
+        edit.title.starts_with("Edit(~/.ssh/**) pre-approves editing ~/.ssh") && !edit.title.contains(".claude"),
         "{d}"
     );
 
     // A single-slash absolute home path anchors at ~/.claude/, and Write(path) never
     // matches: one Low note.
-    let inert = find("do not match the path they name");
+    let inert = find("allow rule(s) never match what they name");
     assert_eq!(inert.severity, Severity::Low, "{d}");
-    assert!(inert.title.contains("Write(~/notes/**)"), "{d}");
+    assert!(
+        inert.title.starts_with("2 allow rule(s)") && inert.title.contains("Write(~/notes/**)"),
+        "{d}"
+    );
     assert!(inert.evidence.as_deref().unwrap_or("").contains("anchors at"), "{d}");
 
-    assert_eq!(perms.len(), 6, "one finding per class: {d}");
+    assert_eq!(perms.len(), 7, "one finding per class and grade: {d}");
 
     // The rules themselves are in the report, the deny rule as inventory, and a token
     // pasted into a rule is redacted.
@@ -331,7 +346,9 @@ fn allow_rules_from_a_repository_settings_file_are_high() {
     assert!(
         perms.iter().any(|f| f.severity == Severity::High
             && f.title
-                .contains("without a prompt: Bash(bash:*) — from project settings")),
+                .contains("Code-execution allow rules in 1 project settings file")
+            && f.title.ends_with("— from project settings")
+            && f.evidence.as_deref().unwrap_or("").contains("Bash(bash:*)")),
         "{d}"
     );
     assert!(
@@ -403,46 +420,45 @@ fn world_readable_stores_and_account_file_are_graded_by_what_others_can_open() {
             .map(|m| m.permissions().mode() & 0o001 == 0)
             .unwrap_or(false)
     });
+    // Claude Code's stores are ONE finding with a table of stores in the evidence.
+    assert_eq!(t.len(), 1, "{d}");
+    let f = t[0];
+    let ev = f.evidence.as_deref().unwrap_or("");
     if blocked_above {
-        assert_eq!(t.len(), 5, "{d}");
-        for f in &t {
-            assert_eq!(
-                f.severity,
-                Severity::Low,
-                "ancestor above the fixture is not traversable: {d}"
-            );
-            assert!(f.title.contains("not reachable:"), "{d}");
-        }
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "ancestor above the fixture is not traversable: {d}"
+        );
+        assert!(f.title.contains("not reachable:"), "{d}");
         return;
     }
-    let at = |suffix: &str| {
-        t.iter()
-            .find(|f| f.location.ends_with(suffix))
-            .unwrap_or_else(|| panic!("no finding at {suffix}:\n{d}"))
-    };
-    let snap = at("/.claude/shell-snapshots");
-    assert_eq!(snap.severity, Severity::High, "{d}");
-    assert!(snap.title.contains("exported environment variables"), "{d}");
-    let backups = at("/.claude/backups");
-    assert_eq!(backups.severity, Severity::High, "{d}");
-    assert!(backups.title.contains("account id and project paths"), "{d}");
-    assert_eq!(at("/.claude/statsig").severity, Severity::Medium, "metadata store: {d}");
-    let account = at("/.claude.json");
-    assert_eq!(account.severity, Severity::High, "{d}");
+    assert_eq!(f.severity, Severity::High, "{d}\n{ev}");
     assert!(
-        account
-            .title
-            .contains("(account identifier and project list) readable by other users"),
+        f.title.starts_with(
+            "Claude Code state under ~/.claude and ~/.claude.json is readable by other local accounts (5 stores, about 5 files)"
+        ),
         "{d}"
     );
-    let backup = at("/.claude.json.backup");
-    assert_eq!(backup.severity, Severity::Medium, "group-readable only: {d}");
+    for row in [
+        // A snapshot exporting nothing beyond shell state is Low on its own.
+        "shell-snapshots (shell snapshots): file, low: contains PATH/shell state only",
+        "backups (settings backups): file, high: copies of ~/.claude.json",
+        "statsig (feature-flag cache): file, medium",
+        ".claude.json (account state file): file, high: account identifier and project list",
+        ".claude.json.backup (account state backup): file, medium",
+    ] {
+        assert!(ev.contains(row), "{row}: {ev}");
+    }
     assert!(
-        !t.iter().any(|f| f.location.ends_with("/paste-cache")),
-        "0600 files under a 0755 directory are not readable: {d}"
+        !ev.contains("paste-cache"),
+        "0600 files under a 0755 directory are not readable: {ev}"
     );
-    assert!(!t.iter().any(|f| f.location.ends_with("/.claude/projects")), "{d}");
-    assert_eq!(t.len(), 5, "{d}");
+    assert!(!ev.contains("projects ("), "{ev}");
+    assert!(
+        ev.contains("other accounts with a login shell on this machine: not determined"),
+        "no /etc/passwd under the test system root: {ev}"
+    );
 }
 
 #[test]
@@ -453,11 +469,14 @@ fn a_home_others_cannot_traverse_downgrades_store_findings_to_low() {
     chmod(&home, 0o755);
     let d = dump(&findings);
     let t = of(&findings, "Transcript exposure");
-    assert_eq!(t.len(), 5, "{d}");
-    for f in &t {
-        assert_eq!(f.severity, Severity::Low, "{d}");
-        assert!(f.title.contains("not reachable:") && f.title.contains("is 0700"), "{d}");
-    }
+    assert_eq!(t.len(), 1, "{d}");
+    assert_eq!(t[0].severity, Severity::Low, "{d}");
+    assert!(
+        t[0].title.contains("(5 stores, about 5 files)")
+            && t[0].title.contains("not reachable:")
+            && t[0].title.contains("is 0700"),
+        "{d}"
+    );
 }
 
 // ── W4: URL scheme handlers ────────────────────────────────────────────────────────────
@@ -551,22 +570,26 @@ fn agent_bin_executables_are_inventoried_and_graded() {
     assert_eq!(row("helper")["bin"]["owned_by_user"], true);
     assert_eq!(row("helper")["bin"]["sha256"].as_str().unwrap().len(), 64, "hex sha256");
 
-    let bin_findings: Vec<_> = findings
+    // The world-writable one is its own High; the two Lows are one finding per machine.
+    let open = findings
         .iter()
-        .filter(|f| f.title.starts_with("Executable in the agent's bin directory"))
+        .find(|f| f.location.ends_with("/bin/open"))
+        .unwrap_or_else(|| panic!("{d}"));
+    assert_eq!(open.severity, Severity::High, "world-writable: {d}");
+    assert!(open.title.starts_with("Executable in the agent's bin directory"), "{d}");
+    let lows: Vec<_> = findings
+        .iter()
+        .filter(|f| f.title.contains("in ~/.claude/bin") && f.title.contains("survive"))
         .collect();
-    assert_eq!(bin_findings.len(), 3, "{d}");
-    let by = |name: &str| {
-        bin_findings
-            .iter()
-            .find(|f| f.location.ends_with(&format!("/bin/{name}")))
-            .unwrap()
-    };
-    assert_eq!(by("open").severity, Severity::High, "world-writable: {d}");
-    assert_eq!(by("native").severity, Severity::Low, "{d}");
-    let helper = by("helper");
-    assert_eq!(helper.severity, Severity::Low, "hooked, but owned by the user: {d}");
-    assert!(helper.title.contains("a hook runs it"), "{d}");
+    assert_eq!(lows.len(), 1, "{d}");
+    assert_eq!(lows[0].severity, Severity::Low, "{d}");
+    assert!(lows[0].title.starts_with("2 executables in ~/.claude/bin"), "{d}");
+    let ev = lows[0].evidence.as_deref().unwrap_or("");
+    assert!(ev.contains("native (elf, 0755)"), "{ev}");
+    assert!(
+        ev.contains("helper (script, 0755) — a hook runs it"),
+        "hooked, but owned by the user: {ev}"
+    );
 
     // The same hooked file owned by someone else is High.
     let mut json = json;
