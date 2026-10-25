@@ -13,7 +13,9 @@ pub struct EnvFilesScanner;
 
 const ENV_FILENAMES: &[&str] = &[".env", ".env.local", ".env.development", ".env.production", ".env.test"];
 
-/// Substrings in a key NAME that suggest it holds a secret.
+/// Substrings in a key NAME that suggest it holds a secret. `AUTH` is not among them: it
+/// is matched as a word by [`auth_word_hint`] (`git commit --author=`, `ssh -o
+/// PubkeyAuthentication=no` and `WEBAUTHN_RP_ID` are not secrets).
 const SECRET_KEY_HINTS: &[&str] = &[
     "TOKEN",
     "SECRET",
@@ -22,9 +24,107 @@ const SECRET_KEY_HINTS: &[&str] = &[
     "PASSWD",
     "PASSPHRASE",
     "CREDENTIAL",
-    "AUTH",
     "PRIVATE",
 ];
+
+/// One upper-cased word of a name is an `AUTH` hint: the word `AUTH` (`AUTH_TOKEN`,
+/// `NPM_AUTH`, `x-auth-token`, `_authToken`, `AUTH2`), a word ending in it (`OAUTH`,
+/// `BASICAUTH`), or one holding `AUTHTOKEN` or `AUTHORIZATION` (`NPMAUTHTOKEN`,
+/// `HTTP_AUTHORIZATION`). Not `AUTHOR` (`--author=`, `GIT_AUTHOR_NAME`), not
+/// `AUTHENTICATION` (`PubkeyAuthentication=no`, `PasswordAuthentication=yes` are modes,
+/// not secrets), not `AUTHORITY`, not `WEBAUTHN`.
+fn is_auth_word(w: &str) -> bool {
+    let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
+    w.ends_with("AUTH") || w.contains("AUTHTOKEN") || w.contains("AUTHORIZATION")
+}
+
+/// A NAME whose last word is `AUTHENTICATION`: an authentication-mode switch
+/// (ssh_config's `PasswordAuthentication`, `PubkeyAuthentication`,
+/// `KbdInteractiveAuthentication`, set to `yes`/`no`), not a secret, though it may
+/// contain a hint (`PASSWORD`, a glued `PUBKEY`).
+fn is_authentication_mode_name(name: &str) -> bool {
+    key_words(name).last().is_some_and(|w| w == "AUTHENTICATION")
+}
+
+/// `AUTH` as a word of a NAME ([`is_auth_word`] over its `_`/`-`/`.`/camelCase words).
+pub fn auth_word_hint(name: &str) -> bool {
+    key_words(name).iter().any(|w| is_auth_word(w))
+}
+
+/// Words that may follow a secret hint in a `.env` NAME and still name the secret
+/// itself: its encoding (`_B64`, `_BASE64`, `_HEX`, `_JSON`, `_PEM`, `_DER`, `_RAW`,
+/// `_VALUE`, `_ENC`), Rails' `SECRET_KEY_BASE`, and a variant or environment
+/// (`GITHUB_TOKEN_PROD`, `DB_PASSWORD_OLD`). Anything else after the last hint makes
+/// the name describe the secret rather than hold it: `VIEW_TOKEN_IPS`, `JWT_SECRET_TTL`,
+/// `DB_PASS_FILE`, `PRIVATE_KEY_PATH`, `API_KEY_ID`, `TOKEN_EXPIRY`, `PASSWORD_LENGTH`,
+/// `AUTH_ENABLED`, `TOKENIZERS_PARALLELISM`. A connection string under `DATABASE_URL`
+/// is [`is_connection_string_key_name`]'s rule.
+const SECRET_VALUE_QUALIFIERS: &[&str] = &[
+    "B64",
+    "BASE64",
+    "HEX",
+    "JSON",
+    "PEM",
+    "DER",
+    "RAW",
+    "VALUE",
+    "ENC",
+    "ENCRYPTED",
+    "BASE",
+    "PROD",
+    "PRODUCTION",
+    "DEV",
+    "DEVELOPMENT",
+    "STAGING",
+    "STAGE",
+    "TEST",
+    "LIVE",
+    "SANDBOX",
+    "LOCAL",
+    "PRIMARY",
+    "SECONDARY",
+    "OLD",
+    "NEW",
+    "CURRENT",
+    "PREVIOUS",
+    "NEXT",
+    "BACKUP",
+    "RO",
+    "RW",
+    "READONLY",
+];
+
+/// A word of a `.env` NAME that is a secret hint: a long hint as a substring of the
+/// word (`GITHUBTOKEN`, `APIKEY`, `dbPassword`; `TOKEN` not in `TOKENIZER`), the
+/// [`is_auth_word`] rule, or a [`SECRET_LAST_WORDS`] word whole.
+fn is_env_hint_word(w: &str) -> bool {
+    let w = w.trim_end_matches(|c: char| c.is_ascii_digit());
+    is_auth_word(w)
+        || SECRET_LAST_WORDS.contains(&w)
+        || SECRET_KEY_HINTS
+            .iter()
+            .any(|h| w.contains(h) && !(*h == "TOKEN" && w.contains("TOKENIZ")))
+}
+
+/// The `.env` secret-NAME rule: the last hint word of the name ([`is_env_hint_word`])
+/// is its last word, or is followed only by [`SECRET_VALUE_QUALIFIERS`] and version
+/// digits. `FULL_TOKEN`, `VIEW_PASS`, `SECRET_KEY_BASE`, `GITHUB_TOKEN_B64` and
+/// `API_KEY_2` are secret names; `VIEW_TOKEN_IPS`, `WEBAUTHN_RP_ID` (no hint: `ID` is
+/// not one and `WEBAUTHN` is not `AUTH`), `DB_PASS_FILE` and `API_KEY_ID` are not.
+/// The MCP and command checks keep [`is_secret_key_name`]: there a missed name can
+/// show a value, while here the record is a NAME and the value is never read.
+pub fn is_secret_env_key_name(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("PWD") {
+        return false;
+    }
+    let words = key_words(name);
+    let Some(i) = words.iter().rposition(|w| is_env_hint_word(w)) else {
+        return false;
+    };
+    words[i + 1..]
+        .iter()
+        .all(|w| w.bytes().all(|b| b.is_ascii_digit()) || SECRET_VALUE_QUALIFIERS.contains(&w.as_str()))
+}
 
 /// Short secret words that are matched only as the LAST word of a name (or the whole
 /// name), never as a substring: `DB_PASS`, `SMTP_PASS`, `DB_PWD`, `GITHUB_PAT`,
@@ -82,8 +182,11 @@ pub fn is_secret_key_name(name: &str) -> bool {
 /// rule. The command redactor uses only this for a bare single-dash flag (`-token X`):
 /// `-sk` / `-sSk` is curl's silent + insecure cluster, not a name ending in `SK`.
 pub fn has_secret_key_hint(name: &str) -> bool {
+    if is_authentication_mode_name(name) {
+        return false;
+    }
     let upper = name.to_ascii_uppercase();
-    SECRET_KEY_HINTS.iter().any(|h| upper.contains(h))
+    SECRET_KEY_HINTS.iter().any(|h| upper.contains(h)) || auth_word_hint(name)
 }
 
 /// [`is_secret_key_name`] for the command redactor, with the `KEY` hint matched as a
@@ -107,8 +210,11 @@ pub fn is_secret_command_key_name(name: &str) -> bool {
 
 /// [`has_secret_key_hint`] with `KEY` matched by [`key_word_hint`].
 pub fn has_secret_command_key_hint(name: &str) -> bool {
+    if is_authentication_mode_name(name) {
+        return false;
+    }
     let upper = name.to_ascii_uppercase();
-    SECRET_KEY_HINTS.iter().any(|h| *h != "KEY" && upper.contains(h)) || key_word_hint(name)
+    SECRET_KEY_HINTS.iter().any(|h| *h != "KEY" && upper.contains(h)) || key_word_hint(name) || auth_word_hint(name)
 }
 
 /// Words that put a following `KEY` in a secret's name though more words come after it
@@ -149,8 +255,8 @@ const KEY_WORD_STEMS: &[&str] = &["MON", "TUR", "DON", "HOC", "JOC", "WHIS", "LA
 /// - holds `KEY` mid-word right after a qualifier (`APIKEYVALUE`).
 ///
 /// It does not match `KEY` inside a camelCase name between other words
-/// (`StrictHostKeyChecking`, `HostKeyAlgorithms`) or at the start of a longer word
-/// (`KEYBOARD`, `KEYWORD`).
+/// (`StrictHostKeyChecking`, `HostKeyAlgorithms`, and a glued `Pubkey` in
+/// `PubkeyAuthentication`) or at the start of a longer word (`KEYBOARD`, `KEYWORD`).
 pub fn key_word_hint(name: &str) -> bool {
     let glued = |w: &str| -> bool {
         let stem = w.strip_suffix("KEYS").or_else(|| w.strip_suffix("KEY"));
@@ -170,6 +276,11 @@ pub fn key_word_hint(name: &str) -> bool {
             }
             if w == "KEY" || w == "KEYS" {
                 return i + 1 == words.len() || (i > 0 && KEY_QUALIFIERS.contains(&words[i - 1].as_str()));
+            }
+            // A glued `...KEY` word inside a longer camelCase name is part of an option
+            // name (`PubkeyAuthentication=no`, ssh_config), not a key's name.
+            if w.ends_with("KEY") || w.ends_with("KEYS") {
+                return i + 1 == words.len() && glued(w);
             }
             glued(w)
         })
@@ -695,7 +806,7 @@ pub fn parse_env_lines(content: &str) -> EnvLines {
             continue;
         }
         out.key_count += 1;
-        if (is_secret_key_name(key) || is_connection_string_key_name(key) || is_webhook_key_name(key))
+        if (is_secret_env_key_name(key) || is_connection_string_key_name(key) || is_webhook_key_name(key))
             && !out.secret_keys.iter().any(|k| k == key)
         {
             out.secret_keys.push(key.to_string());

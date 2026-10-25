@@ -323,6 +323,17 @@ pub struct McpServerDetail {
     /// "git HEAD", "docker :latest". Only stdio launchers through a package runner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpinned: Option<String>,
+    /// Packages the launch installs next to the one it runs: `uvx` / `uv run` /
+    /// `uv tool run` `--with` requirements (name and version spec, redacted and
+    /// sanitized), in order. Matched against the catalog and graded by the unpinned rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_packages: Vec<String>,
+    /// Project `.mcp.json` servers: listed in `enabledMcpjsonServers` of that project's
+    /// `.claude/settings.json` or `settings.local.json` (approved by the user;
+    /// code.claude.com/docs/en/settings.md, /mcp.md). A server listed in
+    /// `disabledMcpjsonServers` there is `enabled: false` instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
 }
 
 impl McpServerDetail {

@@ -189,10 +189,18 @@ fn render_inner(report: &ScanReport) -> String {
     // Risk Analysis — composition-level signals
     if let Some(tf) = crate::analysis::analyze_toxic_flow(report) {
         section_header(&mut out, "Risk Analysis");
+        // Both legs from keywords in skill files only: the finding (when there is one) says
+        // "based on skill-file mentions only" (f8aa2a1), and so does this heading.
+        let mentions_only = if tf.server_backed() {
+            ""
+        } else {
+            " (skill-file mentions only)"
+        };
         out.push_str(&format!(
-            "  {} {}\n",
+            "  {} {}{}\n",
             "!".red().bold(),
-            "Toxic-flow surface (lethal trifecta)".red().bold()
+            "Toxic-flow surface (lethal trifecta)".red().bold(),
+            mentions_only.yellow()
         ));
         out.push_str(&format!(
             "    The agent surface combines a sensitive-data {} with an exfiltration {}.\n",

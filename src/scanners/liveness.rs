@@ -12,11 +12,21 @@
 //!   exists and is owned by the scanning user. `kill(pid, 0)` is not used. Off Linux
 //!   there is no `/proc` and nothing is reported (a documented floor).
 //! - **npx caches running.** A process counts when one of its command-line arguments
-//!   is a path inside `~/.npm/_npx/<hash>/` (`node ~/.npm/_npx/<hash>/node_modules/.bin/x`).
-//!   This reads `/proc/<pid>/cmdline` of the scanning user's processes, bounded, and
-//!   never the environment. The command line is matched in memory and dropped: only
-//!   the cache path and a process count are kept. Linux only. A cache moved by
-//!   `npm_config_cache` is not followed.
+//!   STARTS with a path inside `~/.npm/_npx/<hash>/` (`node ~/.npm/_npx/<hash>/node_modules/.bin/x`).
+//!   The command line is needed: the processes this was built for (playwright-mcp run by
+//!   `npx`, three on the machine it was written on, 2026-10-24) have `exe` = the system
+//!   `node`, a `cwd` in the project, and no open descriptor or mapping under the cache
+//!   (node reads the scripts and closes them), so `exe`, `cwd`, `fd/*` and `maps` find
+//!   none of them. argv can carry secrets (`--token X`), so the reader is narrow: for
+//!   each `/proc/<pid>` owned by the scanning user (`stat(2)` of the directory), at most
+//!   16 KiB of `cmdline` is read into one buffer, each NUL-separated element is
+//!   compared by byte prefix against the cache root, the `<hash>` directory name (hex,
+//!   at most 64 characters) is the only text kept, and the buffer is zeroed before the
+//!   next process. No argv text is stored, logged, traced or printed (a test plants a
+//!   canary argument and checks every output format and the trace). `environ`, `comm`,
+//!   `exe`, `cwd` and `fd` are not opened. Linux only. A cache moved by
+//!   `npm_config_cache` is not followed. Debug builds read a fixture tree under
+//!   `RMGUARD_TEST_PROC_ROOT` (the listener scanner's knob); release builds read `/proc`.
 
 use crate::models::{NpxCacheRunning, PluginVersionInUse};
 use crate::platform::PlatformInfo;
@@ -49,6 +59,17 @@ pub fn scan_home(platform: &dyn PlatformInfo) -> Vec<LivenessOut> {
     out
 }
 
+/// The `/proc` this scanner reads: `/proc`, or in a debug build a fixture tree named by
+/// `RMGUARD_TEST_PROC_ROOT`. Unlike [`crate::scanners::listeners::proc_root`] it is not
+/// re-rooted under `RMGUARD_TEST_SYSTEM_ROOT`: the liveness tests run real processes.
+fn proc_root() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os("RMGUARD_TEST_PROC_ROOT").filter(|r| !r.is_empty()) {
+        return PathBuf::from(root);
+    }
+    PathBuf::from("/proc")
+}
+
 /// A process of this user with this pid exists (Linux `/proc`). Always false elsewhere.
 pub fn pid_is_live(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
@@ -56,7 +77,7 @@ pub fn pid_is_live(pid: u32) -> bool {
         use std::os::unix::fs::MetadataExt;
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        std::fs::metadata(format!("/proc/{pid}")).is_ok_and(|m| m.uid() == me)
+        std::fs::metadata(proc_root().join(pid.to_string())).is_ok_and(|m| m.uid() == me)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -235,12 +256,14 @@ pub fn running_under(roots: &[PathBuf], each: CmdlineSource<'_>) -> std::collect
 
 /// Call `f` with the command line of every process of this user (Linux `/proc`), at most
 /// the scaled [`BASE_PROCESSES`], each read to [`MAX_CMDLINE_BYTES`]. Nothing elsewhere.
+/// The one buffer is zeroed after each call, so no argv outlives its comparison.
 fn process_cmdlines(f: &mut dyn FnMut(&[u8])) {
     #[cfg(target_os = "linux")]
     {
         use std::io::Read;
         use std::os::unix::fs::MetadataExt;
-        let Ok(rd) = std::fs::read_dir("/proc") else {
+        let root = proc_root();
+        let Ok(rd) = std::fs::read_dir(&root) else {
             return;
         };
         // SAFETY: geteuid has no preconditions and cannot fail.
@@ -257,19 +280,19 @@ fn process_cmdlines(f: &mut dyn FnMut(&[u8])) {
         }
         let mut buf = Vec::new();
         for pid in pids {
-            let dir = PathBuf::from(format!("/proc/{pid}"));
+            let dir = root.join(pid.to_string());
             if !std::fs::metadata(&dir).is_ok_and(|m| m.uid() == me) {
                 continue;
             }
             let Ok(file) = std::fs::File::open(dir.join("cmdline")) else {
                 continue;
             };
-            buf.clear();
             if file.take(MAX_CMDLINE_BYTES).read_to_end(&mut buf).is_ok() && !buf.is_empty() {
                 f(&buf);
             }
+            buf.fill(0);
+            buf.clear();
         }
-        buf.clear();
     }
     #[cfg(not(target_os = "linux"))]
     {

@@ -1579,6 +1579,31 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     )),
                 });
             }
+            // `--with` dependencies of a plugin server's uv launch: the same rule, one
+            // grade lower (the launched package is what the plugin chose to run).
+            if mcp.config_source == crate::models::MCP_SOURCE_PLUGIN {
+                let floating: Vec<String> = s
+                    .extra_packages
+                    .iter()
+                    .filter_map(|p| crate::scanners::mcp::extra_package_unpinned(p).map(|r| format!("{p} ({r})")))
+                    .collect();
+                if !floating.is_empty() {
+                    f.push(Finding {
+                        severity: Severity::Low,
+                        category: "MCP command".into(),
+                        title: format!(
+                            "plugin MCP server runs an extra unpinned package: '{}' from plugin '{}' installs {} with --with — each start can fetch new code",
+                            s.name,
+                            s.plugin.as_deref().unwrap_or("?"),
+                            floating.join(", ")
+                        ),
+                        location: mcp.config_path.clone(),
+                        evidence: Some(crate::scanners::redact_secrets_in_text(
+                            format!("{} {}", s.command.as_deref().unwrap_or(""), s.args.join(" ")).trim(),
+                        )),
+                    });
+                }
+            }
             // Plaintext remote transport: credentials/data sent unencrypted.
             if let Some(url) = &s.url
                 && url.to_lowercase().starts_with("http://")

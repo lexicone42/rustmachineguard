@@ -96,7 +96,8 @@ impl Scanner for McpScanner {
             if server_names.is_empty() {
                 continue;
             }
-            let servers = extract_mcp_server_details(&pv);
+            let mut servers = extract_mcp_server_details(&pv);
+            apply_mcpjson_toggles(&proj, &mut servers);
             let server_count = server_names.len();
             results.push(McpConfig {
                 config_source: format!("Project MCP ({})", proj.display()),
@@ -112,6 +113,45 @@ impl Scanner for McpScanner {
         results.extend(plugin_servers(&home));
         results.extend(connector_servers(&home, &claude_json, claude_value.as_ref()));
         results
+    }
+}
+
+/// A project's `.mcp.json` approvals from its own `.claude/settings.json` and
+/// `.claude/settings.local.json` (lists merge across files, code.claude.com/docs/en/settings.md
+/// "Lists merge instead of overriding"): a server in `disabledMcpjsonServers` is
+/// `enabled: false` ("blocks it in every permission mode", code.claude.com/docs/en/mcp.md),
+/// and one in `enabledMcpjsonServers` and not disabled is `approved: true`. Inventory
+/// only. An approval committed to `.claude/settings.json` takes effect only once the
+/// folder is trusted (mcp.md, "Project server approvals and workspace trust"), which
+/// this scanner cannot see; user and managed settings are not read here.
+fn apply_mcpjson_toggles(proj: &Path, servers: &mut [McpServerDetail]) {
+    let mut disabled = std::collections::BTreeSet::new();
+    let mut approved = std::collections::BTreeSet::new();
+    for file in ["settings.json", "settings.local.json"] {
+        let p = proj.join(".claude").join(file);
+        if !crate::scanners::probe_file(&p) {
+            continue;
+        }
+        let Some(v) =
+            crate::scanners::read_bounded(&p).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        else {
+            continue;
+        };
+        for (key, set) in [
+            ("disabledMcpjsonServers", &mut disabled),
+            ("enabledMcpjsonServers", &mut approved),
+        ] {
+            if let Some(a) = v.get(key).and_then(|x| x.as_array()) {
+                set.extend(a.iter().filter_map(|x| x.as_str()).map(|s| sanitize_display(s, 128)));
+            }
+        }
+    }
+    for s in servers {
+        if disabled.contains(&s.name) {
+            s.enabled = Some(false);
+        } else if approved.contains(&s.name) {
+            s.approved = true;
+        }
     }
 }
 
@@ -714,6 +754,10 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
 
     let inline_secret_env_keys = extract_inline_secret_env_keys(cfg.get("env"));
     let unpinned = command.as_deref().and_then(|c| unpinned_reason(c, &raw_args));
+    let extra_packages = command
+        .as_deref()
+        .map(|c| with_packages(c, &raw_args))
+        .unwrap_or_default();
 
     McpServerDetail {
         name: crate::scanners::sanitize_display(name, 128),
@@ -731,6 +775,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         env: shapes(cfg.get("env"), "="),
         headers: shapes(cfg.get("headers"), ": "),
         unpinned,
+        extra_packages,
         ..Default::default()
     }
 }
@@ -871,22 +916,7 @@ pub fn unpinned_reason(command: &str, raw_args: &[String]) -> Option<String> {
             if launch.local_project {
                 return None;
             }
-            if spec.starts_with("git+") {
-                return git_reason(spec);
-            }
-            // A local script or project path (`uv run server.py`, `uvx ./tool`) is not a
-            // registry package.
-            if spec.ends_with(".py") || is_local_path(spec) || spec.starts_with('$') || spec.contains('/') {
-                return None;
-            }
-            if spec.split(['@', '=']).any(|p| p == "latest") {
-                return Some("@latest".to_string());
-            }
-            match split_python_spec(spec) {
-                (_, Some(_)) => None,
-                _ if spec.contains(['<', '>', '~', '!', ',']) => Some("a version range".to_string()),
-                _ => Some("no version".to_string()),
-            }
+            python_spec_reason(spec)
         }
         LaunchKind::Docker => {
             if spec.contains("@sha256:") {
@@ -898,6 +928,118 @@ pub fn unpinned_reason(command: &str, raw_args: &[String]) -> Option<String> {
             }
         }
     }
+}
+
+/// Why a Python requirement (`uvx` / `pipx run` package, a `--with` dependency) floats,
+/// or None when it is pinned (`==`, uv's `@version`, a full git commit) or local.
+fn python_spec_reason(spec: &str) -> Option<String> {
+    if spec.starts_with("git+") {
+        return git_reason(spec);
+    }
+    // A local script or project path (`uv run server.py`, `uvx ./tool`) is not a
+    // registry package.
+    if spec.ends_with(".py") || is_local_path(spec) || spec.starts_with('$') || spec.contains('/') {
+        return None;
+    }
+    if spec.split(['@', '=']).any(|p| p == "latest") {
+        return Some("@latest".to_string());
+    }
+    match split_python_spec(spec) {
+        (_, Some(_)) => None,
+        _ if spec.contains(['<', '>', '~', '!', ',']) => Some("a version range".to_string()),
+        _ => Some("no version".to_string()),
+    }
+}
+
+/// Extra packages a launch installs next to the one it runs: every `--with` value of a
+/// `uvx`, `uv run` or `uv tool run` launch, in order (docs.astral.sh/uv/reference/cli:
+/// `--with <WITH>` "Run with the given packages installed", repeatable and
+/// comma-separated; `--with-requirements` names a file and `--with-editable` a local
+/// path, so neither is a package). A comma inside a version specifier (`pkg>=1,<2`)
+/// stays in its requirement. Values are stored redacted and sanitized (a `git+https`
+/// requirement may carry userinfo); at most [`MAX_EXTRA_PACKAGES`].
+pub fn with_packages(command: &str, args: &[String]) -> Vec<String> {
+    let base = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    let region: &[String] = match base {
+        "uvx" => args,
+        "uv" => {
+            let global = read_options(args, UV_VALUE_FLAGS, &[]);
+            let Some(i) = global.positional else {
+                return Vec::new();
+            };
+            match args[i].as_str() {
+                "run" => &args[i + 1..],
+                "tool" if args.get(i + 1).is_some_and(|a| a == "run") => &args[i + 2..],
+                _ => return Vec::new(),
+            }
+        }
+        _ => return Vec::new(),
+    };
+    let mut values: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < region.len() {
+        let a = region[i].as_str();
+        if a == "--" || !a.starts_with('-') || a == "-" {
+            break;
+        }
+        if let Some(v) = a.strip_prefix("--with=") {
+            values.push(v);
+            i += 1;
+        } else if a == "--with" {
+            if let Some(v) = region.get(i + 1) {
+                values.push(v);
+            }
+            i += 2;
+        } else if UV_VALUE_FLAGS.contains(&a) {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for v in values {
+        let mut reqs: Vec<String> = Vec::new();
+        for piece in v.split(',') {
+            let p = piece.trim();
+            match reqs.last_mut() {
+                Some(last) if p.starts_with(['<', '>', '=', '!', '~']) => {
+                    last.push(',');
+                    last.push_str(p);
+                }
+                _ if !p.is_empty() => reqs.push(p.to_string()),
+                _ => {}
+            }
+        }
+        for r in reqs {
+            if out.len() >= MAX_EXTRA_PACKAGES {
+                return out;
+            }
+            out.push(crate::scanners::sanitize_display(
+                &crate::scanners::redact_secrets_in_text(&r),
+                256,
+            ));
+        }
+    }
+    out
+}
+
+/// `--with` requirements kept per server.
+const MAX_EXTRA_PACKAGES: usize = 32;
+
+/// An extra package's (name, exact version) for the catalog: extras (`mcp[cli]`) are
+/// not part of the name; a range gives no version.
+pub fn split_extra_package(spec: &str) -> (String, Option<String>) {
+    let (name, version) = split_python_spec(spec.trim());
+    let name = name.split('[').next().unwrap_or(&name).trim().to_string();
+    (name, version)
+}
+
+/// Why a `--with` requirement floats ([`python_spec_reason`]), or None when pinned.
+pub fn extra_package_unpinned(spec: &str) -> Option<String> {
+    python_spec_reason(spec.trim())
 }
 
 /// A local path rather than a registry name: `./x`, `../x`, `/abs`, `~/x`, `file:x`.

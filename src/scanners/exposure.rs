@@ -33,6 +33,15 @@ impl ExposureCatalog {
 
     pub fn check_mcp_server(&self, server: &McpServerDetail, config_path: &str) -> Vec<ExposureFinding> {
         let mut findings = Vec::new();
+        // `uvx --with pkg` / `uv run --with pkg` dependencies are PyPI packages the
+        // launch installs and imports too.
+        for extra in &server.extra_packages {
+            let (name, version) = crate::scanners::mcp::split_extra_package(extra);
+            if name.is_empty() {
+                continue;
+            }
+            findings.extend(self.check_package("pypi", &name, version.as_deref(), config_path));
+        }
         let Some(ref pkg_name) = server.package_name else {
             return findings;
         };
@@ -62,6 +71,31 @@ impl ExposureCatalog {
         }
 
         findings
+    }
+
+    /// One package (name, version if known) against every row of `ecosystem`.
+    fn check_package(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: Option<&str>,
+        found_in: &str,
+    ) -> Vec<ExposureFinding> {
+        self.entries
+            .iter()
+            .filter(|e| eq_case_insensitive(&e.ecosystem, ecosystem))
+            .filter(|e| names_match(ecosystem, &e.name, name))
+            .filter(|e| version_matches(e, version))
+            .map(|entry| ExposureFinding {
+                ecosystem: ecosystem.to_string(),
+                name: name.to_string(),
+                version: version.unwrap_or("unknown").to_string(),
+                advisory: entry.advisory.clone().unwrap_or_default(),
+                found_in: found_in.to_string(),
+                matched_range: matched_range(entry),
+                ..Default::default()
+            })
+            .collect()
     }
 
     pub fn check_extension(&self, ecosystem: &str, name: &str, version: &str, found_in: &str) -> Vec<ExposureFinding> {
