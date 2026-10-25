@@ -66,46 +66,68 @@ impl Scanner for McpScanner {
         } else {
             None
         };
-        if let Some(v) = &claude_value
-            && let Some(projects) = v.get("projects").and_then(|v| v.as_object())
-        {
-            for (proj_path, _) in projects {
-                let mcp_json = std::path::PathBuf::from(proj_path).join(".mcp.json");
-                if !crate::scanners::probe_file(&mcp_json) {
-                    continue;
-                }
-                let proj_content = match crate::scanners::read_bounded(&mcp_json) {
-                    Some(c) => c,
-                    None => continue,
-                };
-                let (server_names, servers) = match serde_json::from_str::<serde_json::Value>(&proj_content) {
-                    Ok(pv) => {
-                        let names = extract_mcp_servers(&pv);
-                        let details = extract_mcp_server_details(&pv);
-                        (names, details)
-                    }
-                    Err(_) => continue,
-                };
-                if server_names.is_empty() {
-                    continue;
-                }
-                let server_count = server_names.len();
-                results.push(McpConfig {
-                    config_source: format!("Project MCP ({})", proj_path),
-                    config_path: mcp_json.display().to_string(),
-                    vendor: "Project".to_string(),
-                    server_names,
-                    server_count,
-                    git_tracked: is_git_tracked(&mcp_json),
-                    servers,
-                });
+        // Project-scope servers (`<project>/.mcp.json`) of every project of this pass,
+        // built as every other scanner builds its list: registered in `~/.claude.json`,
+        // recovered from `~/.claude/projects/<encoded>` names, and (primary pass) the
+        // working directory. Another scan home, or an ancestor of one, is not this pass's
+        // project (its own pass reads it); this pass's own home stays, as on 4e23ef8, when
+        // it is a registered project or the working directory: Claude Code run in `~`
+        // loads `~/.mcp.json`. Local-scope servers (`projects.<path>.mcpServers`) are in
+        // the `~/.claude.json` row above. `mcpServers` is not a settings-file key
+        // (code.claude.com/docs/en/settings-reference), so `.claude/settings*.json` adds none.
+        let registered: Vec<PathBuf> = claude_value
+            .as_ref()
+            .and_then(|v| v.get("projects"))
+            .and_then(|p| p.as_object())
+            .map(|o| o.keys().map(PathBuf::from).collect())
+            .unwrap_or_default();
+        for proj in project_dirs(platform.pass_scope(), &home, registered) {
+            let mcp_json = proj.join(".mcp.json");
+            if !crate::scanners::probe_file(&mcp_json) {
+                continue;
             }
+            let Some(proj_content) = crate::scanners::read_bounded(&mcp_json) else {
+                continue;
+            };
+            let Ok(pv) = serde_json::from_str::<serde_json::Value>(&proj_content) else {
+                continue;
+            };
+            let server_names = extract_mcp_servers(&pv);
+            if server_names.is_empty() {
+                continue;
+            }
+            let servers = extract_mcp_server_details(&pv);
+            let server_count = server_names.len();
+            results.push(McpConfig {
+                config_source: format!("Project MCP ({})", proj.display()),
+                config_path: mcp_json.display().to_string(),
+                vendor: "Project".to_string(),
+                server_names,
+                server_count,
+                git_tracked: is_git_tracked(&mcp_json),
+                servers,
+            });
         }
 
         results.extend(plugin_servers(&home));
         results.extend(connector_servers(&home, &claude_json, claude_value.as_ref()));
         results
     }
+}
+
+/// The projects whose `.mcp.json` this pass reads ([`crate::platform::PassScope::with_cwd`]),
+/// without another scan home or an ancestor of one, and each directory once (by real
+/// path; the working directory is often registered too).
+fn project_dirs(scope: &crate::platform::PassScope, home: &Path, registered: Vec<PathBuf>) -> Vec<PathBuf> {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let own_home = real(home);
+    let mut seen = std::collections::HashSet::new();
+    scope
+        .with_cwd(registered)
+        .into_iter()
+        .filter(|d| real(d) == own_home || !scope.is_scan_home_or_ancestor(d))
+        .filter(|d| seen.insert(real(d)))
+        .collect()
 }
 
 /// What the `mcp` job stores: config rows and observed (logged) server names.
@@ -548,12 +570,26 @@ pub fn extract_mcp_server_details(json: &serde_json::Value) -> Vec<McpServerDeta
     .flatten()
     .collect();
 
-    // Also collect project-scoped servers
+    // Also collect project-scoped (local-scope) servers. Claude Code records the `/mcp`
+    // toggle per project in `~/.claude.json` as `projects.<path>.disabledMcpServers`
+    // and does not connect to a server listed there
+    // (code.claude.com/docs/en/mcp, "disabledMcpServers"): such a local server is
+    // `enabled: false`. A user-scope server disabled in one project still runs in the
+    // others, so the list does not mark it.
     if let Some(projects) = json.get("projects").and_then(|v| v.as_object()) {
         for (_, proj_cfg) in projects {
+            let disabled: Vec<&str> = proj_cfg
+                .get("disabledMcpServers")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|n| n.as_str()).collect())
+                .unwrap_or_default();
             if let Some(servers) = proj_cfg.get("mcpServers").and_then(|v| v.as_object()) {
                 for (name, cfg) in servers {
-                    details.push(parse_server_detail(name, cfg));
+                    let mut d = parse_server_detail(name, cfg);
+                    if disabled.contains(&name.as_str()) {
+                        d.enabled = Some(false);
+                    }
+                    details.push(d);
                 }
             }
         }
@@ -788,55 +824,87 @@ pub fn inline_secret_header_keys(headers: Option<&serde_json::Value>) -> Vec<Str
 /// None when it names a fixed version (or is not a package-runner launch at all: a
 /// `node ${CLAUDE_PLUGIN_ROOT}/server.js` ships with, and is pinned by, its plugin).
 ///
-/// - `npx` / `bunx` / `pnpx`: no version, `@latest`, or another dist-tag or a range;
-/// - `uvx` / `pipx` / `uv run|tool run`: a `git+` source with no commit (`git HEAD`, or a
-///   branch/tag ref), or a package with no `==` / `@` version;
+/// The spec is found by [`launch_spec`], which skips each launcher's own options and
+/// their values (`uv run --with pkg script.py` runs the local `script.py`; reading `pkg`
+/// as the launched package was wrong). Pinned: an exact version, an `@sha256:` digest, a
+/// full commit, a local path. Unpinned:
+///
+/// - `npx` / `bunx` / `pnpx`: no version, `@latest`, another dist-tag or a range, or a
+///   git spec (`github:o/r`, `o/r`, `git+https://...`) with no `#<commit>`;
+/// - `uvx` / `pipx run` / `uv tool run` / `uv run`: a `git+` source with no commit (`git
+///   HEAD`, or a branch/tag ref), `@latest`, a range, or a package with no `==` / `@`
+///   version (`uv run` in a `--directory` / `--project` runs that local project);
 /// - `docker` / `podman run`: no tag or `:latest`, unless pinned by `@sha256:` digest.
 pub fn unpinned_reason(command: &str, raw_args: &[String]) -> Option<String> {
-    let base = Path::new(command)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(command);
-    match base {
-        "npx" | "bunx" | "pnpx" => {
-            let (_, name, version) = parse_npm_launcher(raw_args);
-            name?;
+    let launch = launch_spec(command, raw_args)?;
+    let spec = launch.spec;
+    match launch.kind {
+        LaunchKind::Npm => {
+            if is_local_path(spec) {
+                return None;
+            }
+            if let Some(r) = npm_git_reason(spec) {
+                return r;
+            }
+            let (_, version) = split_npm_package_version(spec);
             npm_version_reason(version.as_deref())
         }
-        "uvx" | "pipx" | "uv" => {
-            if base == "uv" && !raw_args.first().is_some_and(|a| a == "run" || a == "tool") {
+        LaunchKind::Python => {
+            if launch.local_project {
                 return None;
             }
-            if let Some(git) = raw_args.iter().find(|a| a.starts_with("git+")) {
-                return git_reason(git);
+            if spec.starts_with("git+") {
+                return git_reason(spec);
             }
-            let rest = if base == "uv" { &raw_args[1..] } else { raw_args };
-            let (_, name, version) = parse_python_launcher(rest);
-            let name = name?;
             // A local script or project path (`uv run server.py`, `uvx ./tool`) is not a
             // registry package.
-            if name.ends_with(".py") || name.starts_with(['.', '/', '~', '$']) || name.contains('/') {
+            if spec.ends_with(".py") || is_local_path(spec) || spec.starts_with('$') || spec.contains('/') {
                 return None;
             }
-            version.is_none().then(|| "no version".to_string())
+            if spec.split(['@', '=']).any(|p| p == "latest") {
+                return Some("@latest".to_string());
+            }
+            match split_python_spec(spec) {
+                (_, Some(_)) => None,
+                _ if spec.contains(['<', '>', '~', '!', ',']) => Some("a version range".to_string()),
+                _ => Some("no version".to_string()),
+            }
         }
-        "docker" | "podman" => {
-            let image = raw_args
-                .iter()
-                .skip_while(|a| a.as_str() != "run")
-                .skip(1)
-                .find(|a| !a.starts_with('-'))?;
-            if image.contains("@sha256:") {
+        LaunchKind::Docker => {
+            if spec.contains("@sha256:") {
                 return None;
             }
-            let (_, _, tag) = parse_docker_launcher(raw_args);
-            match tag.as_deref() {
+            match split_image(spec).1.as_deref() {
                 None | Some("latest") => Some("docker :latest".to_string()),
                 _ => None,
             }
         }
-        _ => None,
     }
+}
+
+/// A local path rather than a registry name: `./x`, `../x`, `/abs`, `~/x`, `file:x`.
+fn is_local_path(spec: &str) -> bool {
+    spec.starts_with(['.', '/', '~']) || spec.starts_with("file:")
+}
+
+/// For an npm git spec (`git+https://...`, `git://...`, `github:o/r`, `gitlab:`,
+/// `bitbucket:`, `gist:`, or the `o/r` GitHub shorthand): `Some(None)` when pinned by
+/// a full commit after `#`, else `Some(Some(reason))`. None: not a git spec.
+fn npm_git_reason(spec: &str) -> Option<Option<String>> {
+    let hosted = ["git+", "git://", "github:", "gitlab:", "bitbucket:", "gist:"]
+        .iter()
+        .any(|p| spec.starts_with(p));
+    let shorthand = !spec.starts_with('@') && !spec.contains(':') && spec.contains('/');
+    if !hosted && !shorthand {
+        return None;
+    }
+    Some(match spec.split_once('#') {
+        None => Some("git HEAD".to_string()),
+        Some((_, r)) => {
+            let hex = (r.len() == 40 || r.len() == 64) && r.chars().all(|c| c.is_ascii_hexdigit());
+            (!hex).then(|| "a git branch or tag (not a commit)".to_string())
+        }
+    })
 }
 
 fn npm_version_reason(version: Option<&str>) -> Option<String> {
@@ -939,9 +1007,6 @@ pub fn infer_package_from_command(command: &str, args: &[String]) -> (Option<Str
         .unwrap_or(command);
 
     match cmd_base {
-        "npx" | "bunx" | "pnpx" => parse_npm_launcher(args),
-        "uvx" | "pipx" => parse_python_launcher(args),
-        "uv" if args.first().is_some_and(|a| a == "run" || a == "tool") => parse_python_launcher(&args[1..]),
         "python" | "python3" if args.first().is_some_and(|a| a == "-m") => {
             if let Some(module) = args.get(1) {
                 (Some("pypi".to_string()), Some(module.clone()), None)
@@ -949,7 +1014,6 @@ pub fn infer_package_from_command(command: &str, args: &[String]) -> (Option<Str
                 (None, None, None)
             }
         }
-        "docker" | "podman" => parse_docker_launcher(args),
         "node" => {
             if let Some(script) = args.first() {
                 (Some("npm".to_string()), Some(script.clone()), None)
@@ -957,82 +1021,280 @@ pub fn infer_package_from_command(command: &str, args: &[String]) -> (Option<Str
                 (None, None, None)
             }
         }
-        _ => (None, None, None),
-    }
-}
-
-fn parse_npm_launcher(args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
-    let mut pkg_arg: Option<&str> = None;
-    let mut skip_next = false;
-    let mut use_package_flag = false;
-
-    for (i, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
-        if arg == "-y" || arg == "--yes" || arg == "-q" || arg == "--quiet" {
-            continue;
-        }
-
-        if arg == "-p" || arg == "--package" {
-            if let Some(next) = args.get(i + 1) {
-                pkg_arg = Some(next.as_str());
-                use_package_flag = true;
-                skip_next = true;
+        _ => match launch_spec(command, args) {
+            Some(LaunchSpec {
+                kind: LaunchKind::Npm,
+                spec,
+                ..
+            }) => {
+                let (name, version) = split_npm_package_version(spec);
+                (Some("npm".to_string()), Some(name), version)
             }
-            continue;
-        }
-
-        if let Some(val) = arg.strip_prefix("--package=") {
-            pkg_arg = Some(val);
-            use_package_flag = true;
-            continue;
-        }
-
-        if arg.starts_with('-') {
-            continue;
-        }
-
-        if !use_package_flag {
-            pkg_arg = Some(arg.as_str());
-        }
-        break;
-    }
-
-    if let Some(pkg) = pkg_arg {
-        let (name, version) = split_npm_package_version(pkg);
-        (Some("npm".to_string()), Some(name), version)
-    } else {
-        (None, None, None)
+            Some(LaunchSpec {
+                kind: LaunchKind::Python,
+                spec,
+                ..
+            }) => {
+                let (name, version) = split_python_spec(spec);
+                (Some("pypi".to_string()), Some(name), version)
+            }
+            Some(LaunchSpec {
+                kind: LaunchKind::Docker,
+                spec,
+                ..
+            }) => {
+                let (name, version) = split_image(spec);
+                (Some("docker".to_string()), Some(name), version)
+            }
+            None => (None, None, None),
+        },
     }
 }
 
-/// Resolve the package identity from a Python launcher's arguments.
-///
-/// Handles the sub-command forms these launchers actually take. Without this, a
-/// `pipx run telnyx==4.87.1` resolved to the package name "run", silently defeating
-/// every pypi catalog row — the detection looked present but could not fire.
-fn parse_python_launcher(args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
-    // `pipx run X`, `uv run X`, `uv tool run X`, `uvx X` all reach here; strip the
-    // leading sub-commands so the first real argument is the package spec.
-    let mut rest = args;
-    while let Some(first) = rest.first() {
-        if first == "run" || first == "tool" {
-            rest = &rest[1..];
-        } else {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchKind {
+    Npm,
+    Python,
+    Docker,
+}
+
+/// The package (or image) a package-runner launch fetches.
+#[derive(Debug)]
+struct LaunchSpec<'a> {
+    kind: LaunchKind,
+    /// The value of the launcher's package option (`npx -p`, `uvx --from`, `pipx run
+    /// --spec`) when given, else its first positional argument.
+    spec: &'a str,
+    /// `uv run` in a `--directory` / `--project`: runs that local project.
+    local_project: bool,
+}
+
+/// `uv` / `uvx` options that take a value (docs.astral.sh/uv/reference/cli: `uv run`,
+/// `uv tool run`, and the global options valid before the subcommand).
+const UV_VALUE_FLAGS: &[&str] = &[
+    "--with",
+    "--with-requirements",
+    "--with-editable",
+    "--python",
+    "-p",
+    "--from",
+    "--index",
+    "--default-index",
+    "--index-url",
+    "--extra-index-url",
+    "--find-links",
+    "-f",
+    "--directory",
+    "--project",
+    "--package",
+    "--extra",
+    "--group",
+    "--env-file",
+    "--cache-dir",
+    "--config-file",
+];
+/// `pipx run` options that take a value (pipx.pypa.io/stable/docs, `pipx run`).
+const PIPX_RUN_VALUE_FLAGS: &[&str] = &["--spec", "--python", "--index-url", "-i", "--pip-args"];
+/// `npx` options that take a value other than `-p` / `--package`
+/// (docs.npmjs.com/cli/v10/commands/npx, and npm's common config flags).
+const NPX_VALUE_FLAGS: &[&str] = &[
+    "-c",
+    "--call",
+    "--registry",
+    "--cache",
+    "--userconfig",
+    "--prefix",
+    "-w",
+    "--workspace",
+];
+/// `docker` / `podman` options before the subcommand that take a value.
+const DOCKER_GLOBAL_VALUE_FLAGS: &[&str] = &["--context", "-c", "--host", "-H", "--config", "--log-level", "-l"];
+/// `docker run` options that take a value (docs.docker.com/reference/cli/docker/container/run).
+const DOCKER_RUN_VALUE_FLAGS: &[&str] = &[
+    "-e",
+    "--env",
+    "--env-file",
+    "-v",
+    "--volume",
+    "--mount",
+    "-p",
+    "--publish",
+    "--expose",
+    "--name",
+    "--network",
+    "--net",
+    "--network-alias",
+    "-w",
+    "--workdir",
+    "--entrypoint",
+    "--platform",
+    "-u",
+    "--user",
+    "--group-add",
+    "-l",
+    "--label",
+    "--label-file",
+    "-h",
+    "--hostname",
+    "--add-host",
+    "--dns",
+    "--cap-add",
+    "--cap-drop",
+    "--security-opt",
+    "--device",
+    "--gpus",
+    "-m",
+    "--memory",
+    "--cpus",
+    "--shm-size",
+    "--ulimit",
+    "--tmpfs",
+    "--pull",
+    "--restart",
+    "--runtime",
+    "--ipc",
+    "--pid",
+    "--userns",
+    "--uts",
+    "--log-driver",
+    "--log-opt",
+    "--cidfile",
+    "--stop-signal",
+    "--volumes-from",
+    "-a",
+    "--attach",
+];
+
+/// A launcher's leading options, read up to its first positional argument.
+#[derive(Default)]
+struct Options<'a> {
+    /// The value of the last `spec_flags` option.
+    spec: Option<&'a str>,
+    /// Every option name seen (`--name=value` as `--name`).
+    flags: Vec<&'a str>,
+    /// The index of the first positional argument.
+    positional: Option<usize>,
+}
+
+/// Read `args` up to the first positional, skipping the value of each option in
+/// `value_flags` or `spec_flags` (a `--name=value` option is one argument).
+fn read_options<'a>(args: &'a [String], value_flags: &[&str], spec_flags: &[&str]) -> Options<'a> {
+    let mut out = Options::default();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            out.positional = (i + 1 < args.len()).then_some(i + 1);
             break;
         }
-    }
-    for arg in rest {
-        if arg.starts_with('-') {
+        if !a.starts_with('-') || a == "-" {
+            out.positional = Some(i);
+            break;
+        }
+        if let Some((flag, value)) = a.split_once('=').filter(|(f, _)| f.starts_with("--")) {
+            if spec_flags.contains(&flag) {
+                out.spec = Some(value);
+            }
+            out.flags.push(flag);
+            i += 1;
             continue;
         }
-        let (name, version) = split_python_spec(arg);
-        return (Some("pypi".to_string()), Some(name), version);
+        out.flags.push(a);
+        if spec_flags.contains(&a) {
+            out.spec = args.get(i + 1).map(String::as_str);
+            i += 2;
+        } else if value_flags.contains(&a) {
+            i += 2;
+        } else {
+            i += 1;
+        }
     }
-    (None, None, None)
+    out
+}
+
+/// The package spec a package-runner launch fetches, or None for anything else.
+fn launch_spec<'a>(command: &str, args: &'a [String]) -> Option<LaunchSpec<'a>> {
+    let base = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    let spec_or_positional =
+        |args: &'a [String], o: &Options<'a>| o.spec.or_else(|| o.positional.map(|i| args[i].as_str()));
+    match base {
+        "npx" | "bunx" | "pnpx" => {
+            let o = read_options(args, NPX_VALUE_FLAGS, &["-p", "--package"]);
+            // `npx -c '<cmd>'` with no `-p` runs a command line, not a package.
+            if o.spec.is_none() && o.flags.iter().any(|f| *f == "-c" || *f == "--call") {
+                return None;
+            }
+            Some(LaunchSpec {
+                kind: LaunchKind::Npm,
+                spec: spec_or_positional(args, &o)?,
+                local_project: false,
+            })
+        }
+        "uvx" => {
+            let o = read_options(args, UV_VALUE_FLAGS, &["--from"]);
+            Some(LaunchSpec {
+                kind: LaunchKind::Python,
+                spec: spec_or_positional(args, &o)?,
+                local_project: false,
+            })
+        }
+        "uv" => {
+            let global = read_options(args, UV_VALUE_FLAGS, &[]);
+            let mut i = global.positional?;
+            let (rest, from) = match args[i].as_str() {
+                "run" => (&args[i + 1..], &[][..]),
+                "tool" if args.get(i + 1).is_some_and(|a| a == "run") => {
+                    i += 1;
+                    (&args[i + 1..], &["--from"][..])
+                }
+                _ => return None,
+            };
+            let o = read_options(rest, UV_VALUE_FLAGS, from);
+            let local_project = from.is_empty()
+                && global
+                    .flags
+                    .iter()
+                    .chain(&o.flags)
+                    .any(|f| *f == "--directory" || *f == "--project");
+            Some(LaunchSpec {
+                kind: LaunchKind::Python,
+                spec: spec_or_positional(rest, &o)?,
+                local_project,
+            })
+        }
+        "pipx" => {
+            let global = read_options(args, &[], &[]);
+            let i = global.positional?;
+            if args[i] != "run" {
+                return None;
+            }
+            let rest = &args[i + 1..];
+            let o = read_options(rest, PIPX_RUN_VALUE_FLAGS, &["--spec"]);
+            Some(LaunchSpec {
+                kind: LaunchKind::Python,
+                spec: spec_or_positional(rest, &o)?,
+                local_project: false,
+            })
+        }
+        "docker" | "podman" => {
+            let global = read_options(args, DOCKER_GLOBAL_VALUE_FLAGS, &[]);
+            let i = global.positional?;
+            if args[i] != "run" {
+                return None;
+            }
+            let rest = &args[i + 1..];
+            let o = read_options(rest, DOCKER_RUN_VALUE_FLAGS, &[]);
+            Some(LaunchSpec {
+                kind: LaunchKind::Docker,
+                spec: rest.get(o.positional?)?.as_str(),
+                local_project: false,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Split a package spec into (name, version). Understands the PEP 440 specifiers and
@@ -1058,33 +1320,17 @@ fn split_python_spec(spec: &str) -> (String, Option<String>) {
     (spec.to_string(), None)
 }
 
-fn parse_docker_launcher(args: &[String]) -> (Option<String>, Option<String>, Option<String>) {
-    let mut found_run = false;
-    for arg in args {
-        if arg == "run" {
-            found_run = true;
-            continue;
+/// Split an image reference into (name, tag): `ghcr.io/o/mcp:1.4@sha256:..` is
+/// (`ghcr.io/o/mcp`, `1.4`); a registry port (`host:5000/img`) is not a tag.
+fn split_image(image: &str) -> (String, Option<String>) {
+    let reference = image.split_once('@').map_or(image, |(r, _)| r);
+    if let Some(idx) = reference.rfind(':') {
+        let tag = &reference[idx + 1..];
+        if !tag.contains('/') {
+            return (reference[..idx].to_string(), Some(tag.to_string()));
         }
-        if !found_run {
-            continue;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        // docker image: registry/name:tag
-        let (name, version) = if let Some(idx) = arg.rfind(':') {
-            let tag = &arg[idx + 1..];
-            if tag.contains('/') {
-                (arg.clone(), None)
-            } else {
-                (arg[..idx].to_string(), Some(tag.to_string()))
-            }
-        } else {
-            (arg.clone(), None)
-        };
-        return (Some("docker".to_string()), Some(name), version);
     }
-    (None, None, None)
+    (reference.to_string(), None)
 }
 
 /// Split an npm package specifier into (name, optional version).
@@ -1359,6 +1605,213 @@ mod coverage_tests {
         assert_eq!(r("docker", &["run", "ghcr.io/o/mcp@sha256:abcd"]), None);
         // Bundled with the plugin: pinned by the plugin itself.
         assert_eq!(r("node", &["${CLAUDE_PLUGIN_ROOT}/server.js"]), None);
+    }
+
+    /// Launcher options and their values are not the package: each launcher's
+    /// value-taking flags are skipped, its package option (`npx -p`, `uvx --from`,
+    /// `pipx run --spec`) is the spec, and the first positional is the package or image.
+    /// On 4e23ef8 `uv run --with pkg script.py` read `pkg` (no version), `docker run -e
+    /// TOKEN img:1.4` read the image `TOKEN`, and `uvx --python 3.12 pkg==1.0` read `3.12`.
+    #[test]
+    fn launcher_flags_are_not_packages() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let git_sha = format!("git+https://github.com/o/serena@{sha}");
+        let npm_sha = format!("github:o/r#{sha}");
+        // (command, args, unpinned reason, inferred package name)
+        type Row<'a> = (&'a str, &'a [&'a str], Option<&'a str>, Option<&'a str>);
+        let table: &[Row] = &[
+            // uv run / uvx: values of --with, --python, -p, --from, --index, ...
+            ("uv", &["run", "--with", "pkg", "script.py"], None, Some("script.py")),
+            (
+                "uv",
+                &["run", "--with", "mcp[cli]", "--with-requirements", "r.txt", "server.py"],
+                None,
+                Some("server.py"),
+            ),
+            (
+                "uv",
+                &["run", "--python", "3.12", "mcp-thing"],
+                Some("no version"),
+                Some("mcp-thing"),
+            ),
+            (
+                "uv",
+                &["--directory", "/srv/weather", "run", "weather"],
+                None,
+                Some("weather"),
+            ),
+            ("uv", &["run", "--project", "/srv/w", "weather"], None, Some("weather")),
+            (
+                "uv",
+                &["tool", "run", "--from", "mcp-x==1.0.0", "mcp-x"],
+                None,
+                Some("mcp-x"),
+            ),
+            (
+                "uvx",
+                &["--python", "3.12", "mcp-server-fetch==1.0.0"],
+                None,
+                Some("mcp-server-fetch"),
+            ),
+            (
+                "uvx",
+                &["-p", "3.12", "mcp-server-fetch"],
+                Some("no version"),
+                Some("mcp-server-fetch"),
+            ),
+            (
+                "uvx",
+                &["--index", "https://idx.example/simple", "pkg@1.2.3"],
+                None,
+                Some("pkg"),
+            ),
+            (
+                "uvx",
+                &["--extra-index-url", "https://idx.example/simple", "pkg"],
+                Some("no version"),
+                Some("pkg"),
+            ),
+            ("uvx", &["--with", "extra-dep", "pkg==2.0"], None, Some("pkg")),
+            ("uvx", &["--from", "mcp-x==1.0.0", "mcp-x"], None, Some("mcp-x")),
+            ("uvx", &["--from", "mcp-x", "mcp-x"], Some("no version"), Some("mcp-x")),
+            ("uvx", &["--from=mcp-x==1.0.0", "mcp-x"], None, Some("mcp-x")),
+            ("uvx", &["--from", "./local/tool", "tool"], None, Some("./local/tool")),
+            ("uvx", &["--from", &git_sha, "serena"], None, None),
+            (
+                "uvx",
+                &["--from", "git+https://github.com/o/serena", "serena"],
+                Some("git HEAD"),
+                None,
+            ),
+            ("uvx", &["pkg@latest"], Some("@latest"), Some("pkg")),
+            ("uvx", &["pkg>=1.0"], Some("a version range"), Some("pkg")),
+            ("uvx", &["--directory", "/x", "pkg==1.0"], None, Some("pkg")),
+            // npx: -p / --package is the spec; other value flags are skipped.
+            (
+                "npx",
+                &["-y", "-p", "some-mcp@1.2.3", "some-mcp"],
+                None,
+                Some("some-mcp"),
+            ),
+            (
+                "npx",
+                &["-p", "some-mcp", "some-mcp@1.2.3"],
+                Some("no version"),
+                Some("some-mcp"),
+            ),
+            (
+                "npx",
+                &["--package=some-mcp@latest", "bin"],
+                Some("@latest"),
+                Some("some-mcp"),
+            ),
+            (
+                "npx",
+                &["--registry", "https://r.example", "some-mcp@1.2.3"],
+                None,
+                Some("some-mcp"),
+            ),
+            (
+                "npx",
+                &["--registry", "https://r.example", "some-mcp"],
+                Some("no version"),
+                Some("some-mcp"),
+            ),
+            ("npx", &["-y", "./local-server"], None, Some("./local-server")),
+            ("npx", &["-y", "github:o/r"], Some("git HEAD"), Some("github:o/r")),
+            (
+                "npx",
+                &["-y", "o/r#main"],
+                Some("a git branch or tag (not a commit)"),
+                Some("o/r#main"),
+            ),
+            ("npx", &["-y", &npm_sha], None, Some(&npm_sha)),
+            ("npx", &["-c", "echo hi"], None, None),
+            // pipx run: --spec is the spec, --python skipped.
+            ("pipx", &["run", "--spec", "mcp-x==1.0", "mcp-x"], None, Some("mcp-x")),
+            (
+                "pipx",
+                &["run", "--spec", "mcp-x", "mcp-x"],
+                Some("no version"),
+                Some("mcp-x"),
+            ),
+            ("pipx", &["run", "--python", "3.12", "mcp-x==1.0"], None, Some("mcp-x")),
+            (
+                "pipx",
+                &["run", "--python", "3.12", "mcp-x"],
+                Some("no version"),
+                Some("mcp-x"),
+            ),
+            ("pipx", &["install", "mcp-x"], None, None),
+            // docker run: values of -e, -v, -p, --name, --network, -w, --entrypoint, ...
+            (
+                "docker",
+                &[
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_TOKEN",
+                    "ghcr.io/github/github-mcp-server:1.4",
+                ],
+                None,
+                Some("ghcr.io/github/github-mcp-server"),
+            ),
+            (
+                "docker",
+                &[
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_TOKEN",
+                    "ghcr.io/github/github-mcp-server",
+                ],
+                Some("docker :latest"),
+                Some("ghcr.io/github/github-mcp-server"),
+            ),
+            (
+                "docker",
+                &["run", "-v", "/a:/b", "-p", "8080:80", "--name", "m", "img:2"],
+                None,
+                Some("img"),
+            ),
+            (
+                "docker",
+                &["run", "--network", "host", "-w", "/w", "--entrypoint", "sh", "img"],
+                Some("docker :latest"),
+                Some("img"),
+            ),
+            (
+                "docker",
+                &["run", "--platform", "linux/amd64", "--user", "1000", "img:latest"],
+                Some("docker :latest"),
+                Some("img"),
+            ),
+            ("docker", &["run", "-e", "A=1", "img@sha256:abcd"], None, Some("img")),
+            (
+                "docker",
+                &["run", "--env=A=1", "localhost:5000/img"],
+                Some("docker :latest"),
+                Some("localhost:5000/img"),
+            ),
+            ("podman", &["run", "-e", "K", "img:1.0@sha256:abcd"], None, Some("img")),
+            ("docker", &["--context", "remote", "run", "img:3"], None, Some("img")),
+            ("docker", &["ps"], None, None),
+        ];
+        for (cmd, a, reason, name) in table {
+            let a = args(a);
+            assert_eq!(unpinned_reason(cmd, &a).as_deref(), *reason, "unpinned: {cmd} {a:?}");
+            if let Some(name) = name {
+                assert_eq!(
+                    infer_package_from_command(cmd, &a).1.as_deref(),
+                    Some(*name),
+                    "package: {cmd} {a:?}"
+                );
+            } else if !a.iter().any(|x| x.starts_with("git+")) {
+                assert_eq!(infer_package_from_command(cmd, &a).1, None, "package: {cmd} {a:?}");
+            }
+        }
     }
 
     #[test]

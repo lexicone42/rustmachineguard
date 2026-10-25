@@ -515,3 +515,132 @@ fn vulnerable_sdk_in_an_npx_cache_a_server_launches_stays_critical() {
     assert_active_critical(&sdk_hits(&findings));
     let _ = fs::remove_dir_all(&home);
 }
+
+/// The `.mcp.json` servers of every project of the pass, servers whose config row is a
+/// project-scope `.mcp.json`.
+fn project_servers(v: &Value) -> Vec<(&str, &Value)> {
+    v["mcp_configs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["vendor"] == "Project")
+        .flat_map(|c| {
+            let path = c["config_path"].as_str().unwrap_or("");
+            c["servers"].as_array().into_iter().flatten().map(move |s| (path, s))
+        })
+        .collect()
+}
+
+/// V1: the MCP scanner takes its project list from the pass (registry, recovered
+/// `~/.claude/projects/<encoded>` names, working directory), so a project Claude Code
+/// has a session store for but no `~/.claude.json` entry has its `.mcp.json` servers
+/// inventoried. The working directory's own `.mcp.json` is read, once, even when it is
+/// also registered. Fails on 4e23ef8, which read only `~/.claude.json` project keys.
+#[test]
+fn recovered_project_mcp_json_is_inventoried() {
+    let home = temp_home("recovered");
+    let proj = home.join("work").join("app_v2");
+    write(
+        &proj.join(".mcp.json"),
+        r#"{"mcpServers":{"recovered-srv":{"command":"npx","args":["-y","recovered-mcp@1.0.0"]}}}"#,
+    );
+    fs::create_dir_all(
+        home.join(".claude/projects")
+            .join(rustmachineguard::platform::encode_project_path(&proj)),
+    )
+    .unwrap();
+    // The working directory (HOME here) is registered too: one row, not two.
+    write(
+        &home.join(".claude.json"),
+        &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, home.display()),
+    );
+    write(
+        &home.join(".mcp.json"),
+        r#"{"mcpServers":{"cwd-srv":{"command":"uvx","args":["cwd-mcp==1.0"]}}}"#,
+    );
+    let (_, v, _) = scan(&home, &["mcp"]);
+    let rows = project_servers(&v);
+    let rec: Vec<_> = rows.iter().filter(|(_, s)| s["name"] == "recovered-srv").collect();
+    assert_eq!(rec.len(), 1, "{rows:#?}");
+    assert_eq!(Path::new(rec[0].0), proj.join(".mcp.json"));
+    assert_eq!(rec[0].1["package_name"], "recovered-mcp");
+    let cwd: Vec<_> = rows.iter().filter(|(_, s)| s["name"] == "cwd-srv").collect();
+    assert_eq!(cwd.len(), 1, "{rows:#?}");
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// V1: Claude Code records the per-project `/mcp` toggle in `~/.claude.json` as
+/// `projects.<path>.disabledMcpServers` (code.claude.com/docs/en/mcp); a local-scope
+/// server listed there is `enabled: false`, the same name in another project is not,
+/// and a user-scope server is not marked by one project's list. Fails on 4e23ef8
+/// (`enabled` absent on every configured server).
+#[test]
+fn disabled_mcp_servers_mark_local_servers_off() {
+    let home = temp_home("disabled");
+    let (a, b) = (home.join("a"), home.join("b"));
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(&b).unwrap();
+    write(
+        &home.join(".claude.json"),
+        &format!(
+            r#"{{"mcpServers":{{"user-srv":{{"command":"npx","args":["-y","u@1.0.0"]}}}},
+                "projects":{{
+                  "{}":{{"disabledMcpServers":["local-srv","user-srv"],"mcpServers":{{"local-srv":{{"command":"npx","args":["-y","l@1.0.0"]}}}}}},
+                  "{}":{{"mcpServers":{{"local-srv":{{"command":"npx","args":["-y","l@1.0.0"]}}}}}}
+                }}}}"#,
+            a.display(),
+            b.display()
+        ),
+    );
+    let (_, v, _) = scan(&home, &["mcp"]);
+    let rows = servers(&v, "Claude Code (home)");
+    let local: Vec<&Value> = rows.iter().copied().filter(|s| s["name"] == "local-srv").collect();
+    assert_eq!(local.len(), 2, "{rows:#?}");
+    assert_eq!(local.iter().filter(|s| s["enabled"] == false).count(), 1, "{local:#?}");
+    assert!(local.iter().any(|s| s.get("enabled").is_none()), "{local:#?}");
+    let user = named(&rows, "user-srv").expect("user-scope server");
+    assert!(user.get("enabled").is_none(), "{user:#?}");
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// V2: the same vulnerable version in an npx cache and in a project's `node_modules` is
+/// two exposure rows: the cache copy (`cache: "npx cache"`, graded dormant High) and the
+/// project install (no `cache`, Critical). Fails on 4e23ef8, whose (name, version)
+/// dedupe kept only the npx-cache copy (scanned first): one row, High.
+#[test]
+fn npx_cache_copy_does_not_hide_an_active_install() {
+    let home = temp_home("both");
+    npx_cache(&home);
+    let proj = home.join("proj");
+    write(
+        &proj.join("node_modules/@modelcontextprotocol/server/package.json"),
+        r#"{"name":"@modelcontextprotocol/server","version":"2.0.0"}"#,
+    );
+    write(
+        &home.join(".claude.json"),
+        &format!(r#"{{"projects":{{"{}":{{}}}}}}"#, proj.display()),
+    );
+    let (_, v, findings) = scan(&home, &["npmpkgs"]);
+    let rows: Vec<&Value> = v["exposure_findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["name"] == "@modelcontextprotocol/server")
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:#?}");
+    let cached: Vec<&&Value> = rows.iter().filter(|e| e["cache"] == "npx cache").collect();
+    assert_eq!(cached.len(), 1, "{rows:#?}");
+    assert!(cached[0]["found_in"].as_str().unwrap().contains("/.npm/_npx/"));
+    let active: Vec<&&Value> = rows.iter().filter(|e| e.get("cache").is_none()).collect();
+    assert_eq!(active.len(), 1, "{rows:#?}");
+    assert!(Path::new(active[0]["found_in"].as_str().unwrap()).starts_with(&proj));
+    let hits = sdk_hits(&findings);
+    let mut sev: Vec<Severity> = hits.iter().map(|f| f.severity).collect();
+    sev.sort();
+    assert_eq!(hits.len(), 2, "{hits:#?}");
+    assert!(
+        sev.contains(&Severity::Critical) && sev.contains(&Severity::High),
+        "{hits:#?}"
+    );
+    let _ = fs::remove_dir_all(&home);
+}

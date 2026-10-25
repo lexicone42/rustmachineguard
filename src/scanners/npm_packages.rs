@@ -34,16 +34,26 @@ impl Scanner for NpmPackagesScanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Vec<NpmPackage> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for root in node_modules_roots(platform) {
+        // The same package appears in many trees; keep one per (name, version, root
+        // class). The class keeps a dormant copy from hiding an active one: the npx cache
+        // is listed first, and keeping one row per (name, version) dropped the same
+        // version in a project's node_modules, so a vulnerable install was graded as
+        // dormant cache code (High) instead of Critical. Each npx cache directory is its
+        // own class: whether one is active depends on the package it was fetched for.
+        let mut uniq = std::collections::HashSet::new();
+        for (root, class) in node_modules_roots(platform) {
             if !seen.insert(root.clone()) {
                 continue;
             }
             let mut budget = MAX_PACKAGES_PER_ROOT;
-            scan_root(&root, &mut out, &mut budget);
+            let mut found = Vec::new();
+            scan_root(&root, &mut found, &mut budget);
+            out.extend(
+                found
+                    .into_iter()
+                    .filter(|p| uniq.insert((p.name.clone(), p.version.clone(), class.clone()))),
+            );
         }
-        // The same package appears in many trees; keep one per (name, version).
-        let mut uniq = std::collections::HashSet::new();
-        out.retain(|p| uniq.insert((p.name.clone(), p.version.clone())));
         out
     }
 }
@@ -51,7 +61,16 @@ impl Scanner for NpmPackagesScanner {
 /// Where npm packages live. Deliberately bounded: the global roots of each package
 /// manager, plus `node_modules` in the agent's registered project roots — which is where
 /// an agent actually installs things. We do not sweep the whole filesystem.
-fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
+/// Which kind of root a package was found in, for deduplication: a global install, a
+/// project's `node_modules`, or one npx cache directory (`~/.npm/_npx/<hash>`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RootClass {
+    Global,
+    Project,
+    NpxCache(PathBuf),
+}
+
+fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> {
     let home = platform.home_dir();
     let mut roots = Vec::new();
 
@@ -69,7 +88,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
         "/usr/local/lib64/node_modules",
         "/opt/homebrew/lib/node_modules",
     ] {
-        roots.push(PathBuf::from(base));
+        roots.push((PathBuf::from(base), RootClass::Global));
     }
     // Per-user global prefixes, one per package manager.
     for rel in [
@@ -81,20 +100,22 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
         ".config/yarn/global/node_modules",
         ".local/share/pnpm/global/5/node_modules",
     ] {
-        roots.push(home.join(rel));
+        roots.push((home.join(rel), RootClass::Global));
     }
     // `npx <pkg>` without a local install lands in the npx cache, one hashed dir per
     // package set, which is where a documented `npx @deepseek-ai/dsh web` or an
     // `npx -y some-mcp` actually puts the code.
     if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".npm/_npx")) {
-        for e in entries.flatten() {
-            roots.push(e.path().join("node_modules"));
+        let mut caches: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        caches.sort();
+        for c in caches {
+            roots.push((c.join("node_modules"), RootClass::NpxCache(c)));
         }
     }
     // nvm keeps one global root per installed Node version.
     if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".nvm/versions/node")) {
         for e in entries.flatten() {
-            roots.push(e.path().join("lib/node_modules"));
+            roots.push((e.path().join("lib/node_modules"), RootClass::Global));
         }
     }
     // Project-local installs in registered project roots and (primary pass) the cwd.
@@ -102,11 +123,11 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<PathBuf> {
         .pass_scope()
         .with_cwd(project_dirs(&home.join(".claude.json")).unwrap_or_default());
     for proj in projects {
-        roots.push(proj.join("node_modules"));
+        roots.push((proj.join("node_modules"), RootClass::Project));
     }
     // A `lib64 -> lib` link would list the same tree twice: one root per real path.
     let mut real = std::collections::HashSet::new();
-    roots.retain(|p| {
+    roots.retain(|(p, _)| {
         crate::scanners::probe_dir(p) && real.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
     });
     roots
