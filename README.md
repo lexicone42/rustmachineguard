@@ -426,7 +426,7 @@ Floors (documented but not read):
 - Everywhere: Windows paths (`%APPDATA%`, `ProgramData`).
 - Budgets: at most 500 hooks per file entry and per plugin (a plugin manifest's list of hook files is read once per path and only until the plugin's cap) and 10,000 per scan; hooks past either are not parsed (the file is counted as a miss in the diagnostics and traced as "hook budget spent" under `--trace`). The on-disk checks of one command (native-binary probe, symlink check) stop after 16 path words, program words first, and after 20,000 per scan; the lexical agent-directory check still sees every word.
 
-A built-in **threat catalog** (228 entries; its version, the date of its last change, is in `rmguard --version` and the JSON report's `catalog` block) flags known-malicious or known-vulnerable
+A built-in **threat catalog** (305 entries; its version, the date of its last change, is in `rmguard --version` and the JSON report's `catalog` block) flags known-malicious or known-vulnerable
 packages, MCP servers, IDE plugins and browser extensions during the scan — and, via the
 `agent-runtime` ecosystem, checks the **agent's own version** (Claude Code, Claude
 Desktop/Cowork, Codex CLI, Copilot CLI, Gemini CLI, Goose, Kiro IDE, Ollama) against

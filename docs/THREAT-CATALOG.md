@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog (version `2026-10-22`) currently contains 228 entries
+that is automatically checked during every scan. The catalog (version `2026-10-25`) currently contains 305 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -18,7 +18,8 @@ affected versions so we do **not** false-positive on the clean releases.
 
 For "vulnerable below version X" cases — legitimate, ubiquitous packages with a CVE fixed
 in a known release — entries carry a **`version_range`** (semver) instead: e.g.
-`@modelcontextprotocol/server-filesystem` (`<2025.7.1`, the EscapeRoute CVEs),
+`@modelcontextprotocol/server-filesystem` (`<1.0.0`, `>=2025.1.14, <=2026.8.31` and `>=1.0.0, <2.0.1`,
+one row per version scheme; see "Version-scheme resets" below),
 `mcp-remote` (`>=0.0.5, <0.1.16` and `>=0.1.32, <0.1.39`), `@modelcontextprotocol/inspector`
 (`<1.0.3` and `>=2.0.0, <2.12.0`, one row per release line), the MCP Python SDK `mcp`
 (`<1.30.0` and `>=2.0.0, <2.2.0`), the TypeScript SDK `@modelcontextprotocol/sdk` (`<1.32.0`)
@@ -33,7 +34,46 @@ treated as the fix version `X.Y.Z` itself, a conservative miss.
 
 A package compromised at several non-adjacent releases gets one exact-version row per
 release (`@memtensor/memos-cloud-openclaw-plugin` 0.1.21 / 0.1.23 / 0.1.25): the matcher
-has no `||` alternation, and the clean releases in between must not match.
+has no `||` alternation, and the clean releases in between must not match. Malicious
+releases stay exact-version rows even when they are consecutive (`agentic-awesome-skills`,
+20 rows; `opencode-skills-collection`, 21 rows): a row's kind is read from its shape, so a
+`version_range` row would be reported as a "Vulnerable ... package version" (and downgraded
+to High in a dormant npx cache) instead of "Known-bad".
+
+### Version-scheme resets
+
+A range compares numbers, not release dates, so a package that changes its versioning
+scheme can turn a correct row into a false positive overnight.
+`@modelcontextprotocol/server-filesystem` went from 0.x (0.2.0 to 0.6.2) to date versions
+(2025.1.14 to 2026.8.31) and then restarted on semver: 1.0.0 (2026-10-11), 2.0.0
+(2026-10-19) and 2.0.1 (2026-10-25, the fix for four new advisories). Every semver release
+sorts below 2025.7.1, so the 2026-10-22 row `<2025.7.1` reported the fixed 2.0.1 as a
+Critical vulnerable install. The 2026-10-25 catalog gives each scheme its own row (`<1.0.0`,
+`>=2025.1.14, <=2026.8.31`, `>=1.0.0, <2.0.1`); the date line has no fixed release, so its
+row is closed at the last date release rather than open-ended. `server-everything` restarted
+the same way and has the same two-row shape. Rules that follow:
+
+- A range on a date-versioned package names both ends (`>=first, <=last`), never just `<fix`.
+- When a date-versioned package publishes a version that looks like semver, re-check every
+  row for it. `mcp-server-git` (PyPI, still date-versioned at 2026.10.19) is the next one to
+  watch.
+- `scripts/catalog-latest-check.py` (see "Updating the Catalog") flags a row whose range
+  contains the registry's current release, which is how a reset shows up.
+
+### Malicious rows backed only by an advisory
+
+The 2026-10-22 bar for a malicious row was a GitHub malware advisory plus registry removal
+(an OSSF MAL record alone, with no human analysis and no removal, is not enough). Some rows
+meet that bar with no published cause: `@tekmidian/pai` 1.0.8 to 1.0.10, `skillward`,
+`x402-prompt-injection-scan` 0.1.4, the `agentic-awesome-skills` and
+`opencode-skills-collection` releases, the seven `@beloved-lenora/opencode-*` packages, and
+the 2026-10-19 lure cluster (`claude-desktop-setup` and siblings). Their advisory text says
+so ("flagged by GitHub malware advisory ...; npm removed the versions; cause not
+published"). An automated false positive, an account takeover and a malicious bundled skill
+all fit the registry evidence; if a maintainer disclosure or a retraction appears, revisit
+these rows first. Two `opencode-skills-collection` releases the advisory lists (4.1.7 and
+4.1.16) were still downloadable on 2026-10-25; they are catalogued because the advisory
+names them.
 
 A test (`cve_citing_catalog_entries_must_be_version_bounded`) enforces the rule that any
 entry citing a CVE must carry a version bound — an unbounded CVE entry flags every
@@ -67,11 +107,59 @@ not re-propose them:
   releases; the documented install is a clone under `~/.hermes/hermes-agent`, which only
   commit ancestry can classify.
 
+Left out during the 2026-10-25 refresh:
+
+- **`trigger.dev`** CVE-2026-114090 / GHSA-pqmg-rq46-vm4m (`trigger dev --mcp` binds all
+  interfaces with no auth): the advisory names `@trigger.dev/cli-v3`, which npm does not
+  have; mapping it to the `trigger.dev` CLI package is an inference, and a row has no field
+  to say so. Add it once the advisory names the published package.
+- **vLLM** (about 20 advisories in the window, including GHSA-h3rc-j82p-2c3h and
+  GHSA-6757-hggm-hp2w RCEs and the permissive default CORS GHSA-vvpg-rrww-wpmh), the
+  litellm proxy, LMCache, mem0ai, MLflow, Langflow, langgraph-checkpoint, open-webui,
+  strands-agents A2A, crewai-tools and pydantic-ai's server-side set: inference servers and
+  server-side frameworks, the langgraph-sdk precedent.
+- **`fastmcp` below 2.10.0**: the row's lower bound comes from the client RCE
+  GHSA-gpgx-58w2-xwwf; older installs are affected only by server-side advisories
+  (GHSA-99xm-8q53-5c8p, GHSA-qvjc-pw7p-hvg5, GHSA-63pr-7fpf-v477, GHSA-m2xc-hx3h-rjf6,
+  GHSA-p8g9-xjch-9mxg) and the Windows-only GHSA-57vm-5fr9-3r5x, which this catalog does not
+  count as endpoint posture. The bound stays at 2.10.0, and the `fastmcp-slim` rows mirror
+  the fastmcp ones, citing only the advisories that name `fastmcp-slim`.
+- **Goose** CVE-2026-111079 (terminal integration sends shell history to the LLM provider):
+  the Red Hat record names no affected or fixed version, and an unbounded CVE row is
+  forbidden by test.
+- **JetBrains Junie CLI** CVE-2026-111091 (fixed 26.8.3): there is no `agent-runtime` key
+  for Junie, and the npm packages (`@jetbrains/junie-cli` 1468.x, `@jetbrains/junie`
+  3110.x) do not use the vendor's 26.x numbering, so no bound can be stated.
+- **Z.ai ZCode** CVE-2026-88755 and **DeepSeek Harness (dsh)** CVE-2026-95183: a CNA
+  record and a researcher gist only, no vendor source; dsh is identified by commit, not
+  version.
+- **`mcp-ripgrep`** CVE-2026-113378: the CNA marks its existence as disputed and no fixed
+  release exists.
+- **Optional rows not taken**: `mcp-server-fetch` GHSA-3jqg-r5pp-rmp2 (low: robots.txt not
+  rechecked after redirects; a match is graded Critical until grading reads
+  `advisory_severity`), `mcp-contextforge-gateway` CVE-2026-8355 (authenticated SSRF,
+  server-side), `@aborruso/ckan-mcp-server` CVE-2026-76894 (low), `@lumen-labs-dev/whisper-node`
+  0.5.1 (speech bindings, not an agent surface), and the kam193 `2026-10-voice-synthesis-profiles`
+  and `2026-10-emberlytts` PyPI loader campaigns (about 45 AI-audio-themed names with an
+  unknown payload; weak tie to agent posture, deferred).
+- **`netbox-mcp-server`** CVE-2026-57207: not published on PyPI, so there is no name to match.
+
 ## How It Works
 
 The catalog is compiled into the binary at build time from
 `src/catalogs/builtin_catalog.json`. Each entry specifies an ecosystem, package name,
 optional version constraint, and an advisory string citing the source.
+
+A vulnerable-range row may also carry `advisory_severity` (`critical`, `high`, `medium` or
+`low`): the highest severity among the advisories the row cites, as the advisory states it.
+It is data only for now: the loader ignores the field and every match is graded as
+described below. Grading a vulnerable range by its advisory severity is a queued change
+(it needs `advisory_severity` on `ExposureEntry` in `src/models.rs`, read by
+`exposure_finding` in `src/analysis.rs`). Malware rows do not carry it: GitHub stamps every
+malware record critical, and a malicious release is Critical by kind. A row spanning
+versions where only some advisories apply still carries the highest (the
+server-filesystem date row is `high` for its EscapeRoute part, though 2025.7.1 and later
+releases have only medium and low advisories).
 
 During scanning, every discovered MCP server (configured, and an enabled Claude Code
 plugin's own `.mcp.json` / `plugin.json` `mcpServers`; a disabled plugin's servers and
@@ -129,6 +217,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **OX Security** | SANDWORM_MODE 19-package re-analysis; AI-chat Chrome extension stealers | Public blog posts |
 | **OSV.dev / PyPA Advisory DB** | MAL-/PYSEC records for the 2026 MCP-named PyPI typosquat wave (`openai-mcp`, `langchain-core-mcp`, `instructor-mcp`, `tiktoken-mcp`, `ray-mcp-server`) | OSV (CC-BY-4.0) |
 | **GitHub Advisory Database** | GHSA records for `@mcpjam/inspector` (CVE-2026-23744), `@cyanheads/git-mcp-server` (CVE-2025-53107) | GHSA (CC-BY-4.0) |
+| **GitHub Advisory Database / npm Security** | 2026-10-25 refresh: the malware records behind the `@beloved-lenora/opencode-*`, `skillward`, `x402-prompt-injection-scan`, `@tekmidian/pai`, `agentic-awesome-skills`, `opencode-skills-collection`, `unicode-title-normalizer` and `formatting-subtitles` rows, and the reviewed records for `obsidian-tc`, `graphifyy`, `netlicensing-mcp`, `mcp-contextforge-gateway` and `pydantic-ai` (https://github.com/advisories) | GHSA (CC-BY-4.0) |
 
 | **LayerX Security / Akamai** | AiFrame: 32 fake AI-assistant Chrome extensions (260K+ users) with injected-iframe credential and Gmail theft; IDs verified against the original post | Public blog post |
 | **Air Security** | Plugin4Shell: SHA-shaped-branch plugin pin bypass in Claude Code (CVE-2026-86063), Codex, Copilot CLI and Gemini CLI; inspired the plugin-pin check | Public blog post, GHSA credit |
@@ -181,6 +270,10 @@ disclosures. We credit the organizations and individuals whose work makes this p
 | **bhavya32, Lemohang Khaile, sondt99, CloneOfAlex, 0xParth, hackyhunter, eilonc-pillar** | MCP Inspector 2026-10-21 advisories |
 | **jlmitra-ampl, 0xParth, rishid, LHMisme420, GEONWOOHAN** | FastMCP October 2026 advisories |
 | **Grg0rry, rainfantry, EQSTLab** | langgraph-sdk, mcp-atlassian, meta-ads-mcp advisories |
+| **moamenmahmood** (HackerOne) | Claude Agent SDK for Python CVE-2026-96620 (`resume` flag injection) |
+| **ehudmelzer** | `server-everything` GHSA-mvf5-2qqv-rg3c (cross-origin environment read) |
+| **gdegrange** | MCP TypeScript SDK CVE-2026-111771 (bearer tokens for another service; `express`, `server-legacy`) |
+| **Kamil Mańkowski (kam193)** | Human analysis of `py-worm` (campaign 2026-10-agentaix, MAL-2026-17883) |
 
 ### Databases and Trackers
 
@@ -249,6 +342,18 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
 }
 ```
 
+or, for a vulnerable range, with the optional severity:
+
+```json
+{
+  "ecosystem": "pypi",
+  "name": "package-name",
+  "version_range": ">=1.0.0, <1.2.3",
+  "advisory": "CVE-... / GHSA-...: what goes wrong. Fixed: 1.2.3. Source: ...",
+  "advisory_severity": "high"
+}
+```
+
 - Omit both `version` and `version_range` to match all versions — **only** for fully
   malicious packages, where every release is bad
 - Include `version` for exact matching (a single compromised release, e.g. Nx Console
@@ -257,7 +362,12 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
   legitimate package with a CVE fixed in a known release
 - **Any entry citing a CVE must carry a bound** — an unbounded CVE entry flags every
   install including patched ones. This is enforced by a test
-- Always include the source in the advisory string
+- Always include the source in the advisory string, and write ids in full
+  (`GHSA-xxxx-xxxx-xxxx`, never a short `GHSA-xxxx`), so the finding's evidence lists them
+- `advisory_severity` (optional, vulnerable-range rows only): `critical`, `high`, `medium`
+  or `low`, the highest the cited advisories state
+- A date-versioned package gets a closed range (`>=first, <=last`), and one row per version
+  scheme if it ever changes scheme (see "Version-scheme resets")
 - Bump the catalog version in the same change: `builtin_catalog_version!()` in
   `src/catalogs/builtin.rs` is the date of the last edit (`YYYY-MM-DD`, `.2`, `.3`, ...
   for further edits that day), and `catalog_version_is_bumped_with_the_catalog` pins the
@@ -268,10 +378,88 @@ To add entries, edit `src/catalogs/builtin_catalog.json`. Each entry is:
 - Update the version and the entry count in this document's intro in the same change:
   `catalog_doc_states_the_current_version_and_count` fails until they match
 
+### Refresh procedure
+
+1. Sweep the sources for the window: the GitHub advisory API
+   (`https://api.github.com/advisories?type=reviewed` and `type=malware`, with `published=`
+   and `updated=` set to the window), the vendor repositories' security advisories, OSV
+   (`https://api.osv.dev/v1/query` per package name), NVD keyword search
+   (`https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=...`), the CISA KEV
+   feed, and the registries (`registry.npmjs.org`, `pypi.org/pypi/<name>/json`) for
+   version history and removals.
+2. Read each candidate's primary source; take ranges from the advisory, and runs of
+   malicious releases from the registry `time` map (every version ever published).
+3. Edit the JSON, bump the version and the doc intro, and add a table test that each new
+   row matches a sample vulnerable version and not its fix
+   (`tests/catalog_refresh_2026_10_25.rs` is the pattern).
+4. Run the registry check, read-only and rate-limited:
+
+   ```sh
+   uv run --script scripts/catalog-latest-check.py [--catalog FILE] [--delay 0.3]
+   ```
+
+   It fetches each npm/PyPI vulnerable-range row's current release (npm
+   `dist-tags.latest`, PyPI `info.version`) and lists rows whose range contains it
+   (`LATEST MATCHES`: a probable false positive for upgraded installs, a version-scheme
+   reset, or an advisory with no fix yet) and packages the registry no longer has
+   (`MISSING`). It compares versions the way the matcher does (numeric core, pre-release
+   ignored) and exits 1 when anything is listed. On the 2026-10-25 catalog it lists
+   `hermes-agent` (PyPI is stale at 0.19.0 below the git-only fix 0.21.1, as the row says)
+   and `agentwork-cli` (unpublished by npm, a worm node); on the 2026-10-22 catalog it also
+   listed `@modelcontextprotocol/server-filesystem` `<2025.7.1` against latest 2.0.1.
+
 To contribute additional entries, please open a PR with:
 1. The JSON entry in `builtin_catalog.json`
 2. A link to the public advisory or CVE in the PR description
 3. A test in `tests/property_tests.rs` verifying the match
+
+## Refresh history
+
+- **2026-10-22** (99 to 228 rows): five research sweeps (packages, extensions, runtimes,
+  techniques, spec) with one verifier per candidate reading the primary source; 129 rows
+  added, 4 widened.
+- **2026-10-25** (228 to 305 rows; 78 added, 1 removed, 11 changed). Window 2026-10-15 to
+  2026-10-25.
+  - Replaced: `@modelcontextprotocol/server-filesystem` `<2025.7.1` by three rows, one per
+    version scheme (see "Version-scheme resets"), carrying GHSA-53mr-w429-c597,
+    GHSA-7rgq-gccq-qphx, GHSA-4gxg-m5jx-9j57 and GHSA-hhwq-wxfx-cj7g.
+  - 19 further vulnerable-range rows: `server-everything` (two schemes, GHSA-mvf5-2qqv-rg3c),
+    `claude-agent-sdk` (CVE-2026-96620), `mcp-server-fetch` (GHSA-v38p-wf49-hx2j,
+    GHSA-66qx-2266-pmj6), `@modelcontextprotocol/server-legacy`, `@modelcontextprotocol/hono`,
+    `fastmcp-slim` (3.x, 4.x), `obsidian-tc`, `@zenalexa/unicli`, `pydantic-ai` and
+    `pydantic-ai-slim` (1.x, 2.x each), `graphifyy`, `netlicensing-mcp`,
+    `mcp-contextforge-gateway`, and the Inspector split packages `inspector-server` and
+    `inspector-client` (the Inspector row's text claimed they were covered; they had no
+    rows). Every one carries `advisory_severity`.
+  - 56 malicious rows: seven `@beloved-lenora/opencode-*` packages, `formatting-subtitles`
+    (tarball inspected), `unicode-title-normalizer`, `py-worm` (campaign
+    2026-10-agentaix), `skillward`, `x402-prompt-injection-scan` 0.1.4, `@tekmidian/pai`
+    (3 releases), `agentic-awesome-skills` (20) and `opencode-skills-collection` (21). The
+    last five are advisory-backed only (see above).
+  - Changed: both `mcp` rows gain CVE-2026-115563 (GHSA-qx49-fqc8-xw99); the Inspector
+    `<1.0.3` row gains GHSA-8qgq-27v6-55w3; `claude-desktop-setup`, `codex-setup`,
+    `chatgpt-pro-activator` and `formatting-subtitles-for-claude` gain their GHSA ids; the
+    three `litellm` rows gain GHSA-92x9-889m-jgmw; the `fastmcp` 3.x row points at the new
+    `fastmcp-slim` rows.
+  - Sources swept: GitHub advisory API (871 reviewed and malware records published or
+    updated in the window, https://api.github.com/advisories), about 55 vendor repository
+    advisory pages (among them https://github.com/modelcontextprotocol/servers/security/advisories,
+    https://github.com/modelcontextprotocol/typescript-sdk/security/advisories,
+    https://github.com/modelcontextprotocol/python-sdk/security/advisories,
+    https://github.com/modelcontextprotocol/inspector/security/advisories,
+    https://github.com/PrefectHQ/fastmcp/security/advisories,
+    https://github.com/anthropics/claude-code/security/advisories), OSV
+    (https://api.osv.dev/v1/query, about 100 package names, and the MAL records cited), NVD
+    (https://services.nvd.nist.gov/rest/json/cves/2.0, 17 keywords), the CISA KEV feed
+    (catalog 2026.10.23, nothing agent-related), vendor pages (https://access.redhat.com/security/cve/CVE-2026-111079,
+    https://www.jetbrains.com/privacy-security/issues-fixed/,
+    https://docs.mistral.ai/resources/security-advisories,
+    https://www.ibm.com/support/pages/node/7285723), and the npm and PyPI registries.
+    Third-party research blogs (Socket, Phylum, ReversingLabs, Snyk, Sonatype) were not
+    swept this round, which is why no cause is known for the advisory-backed malicious rows.
+  - Left out, with reasons: see "Deliberately not catalogued" (vLLM and other server-side
+    frameworks, Goose with no fixed version, Junie with no runtime key, ZCode and dsh with no
+    primary source, the disputed mcp-ripgrep record, the inferred trigger.dev mapping).
 
 ## License
 

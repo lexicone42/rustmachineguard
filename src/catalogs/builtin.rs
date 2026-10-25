@@ -31,7 +31,7 @@ pub const BUILTIN_CATALOG: &str = include_str!("builtin_catalog.json");
 #[macro_export]
 macro_rules! builtin_catalog_version {
     () => {
-        "2026-10-22"
+        "2026-10-25"
     };
 }
 
@@ -49,8 +49,8 @@ mod tests {
     /// The catalog file's sha256 at [`BUILTIN_CATALOG_VERSION`]. A catalog edit without a
     /// version bump fails here; update both together.
     const PINNED: (&str, &str) = (
-        "2026-10-22",
-        "05589b49640b018bd2f10e779c6be4d5b0bde185c27d0d84c5667c921bb5dcb1",
+        "2026-10-25",
+        "df9d41b3ce60dc2f95b875c829e312eea5b7e2484e25b9d9c88978e1587432cd",
     );
 
     #[test]

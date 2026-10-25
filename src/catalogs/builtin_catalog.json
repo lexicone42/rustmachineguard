@@ -84,13 +84,42 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
     "version_range": "<1.0.3",
-    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp. Same ranges apply to @modelcontextprotocol/inspector-server and inspector-client. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22."
+    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp; low GHSA-8qgq-27v6-55w3 (SSE authentication and custom headers logged verbatim, from 0.14.2, published 2026-10-21). The split packages @modelcontextprotocol/inspector-server and @modelcontextprotocol/inspector-client have their own rows. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server-filesystem",
-    "version_range": "<2025.7.1",
-    "advisory": "CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3): symlink bypass + directory containment bypass enabling arbitrary file read/write. Fixed: 2025.7.1. Source: Cymulate (EscapeRoute)"
+    "version_range": "<1.0.0",
+    "advisory": "MCP filesystem server, original 0.x line (0.2.0 to 0.6.2): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), the EscapeRoute symlink and directory-containment bypasses enabling arbitrary file read/write (GHSA-q66q-fx2p-7w4m / GHSA-hc55-p739-j48w, affected <=0.6.2), and GHSA-53mr-w429-c597 (low, CVSS 2.2: ENOENT-fallback TOCTOU write outside allowedDirectories, affected below 2.0.1). The package then moved to date versions (2025.1.14 to 2026.8.31) and restarted on semver at 1.0.0 (2026-10-11); each line has its own row. Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-filesystem",
+    "version_range": ">=2025.1.14, <=2026.8.31",
+    "advisory": "MCP filesystem server, date-versioned line (2025.1.14 to 2026.8.31, the last date release): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), EscapeRoute, below 2025.7.1; and four advisories published 2026-10-25 with no fix on this line: GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata) (GHSA-7rgq-gccq-qphx from 2025.8.21, GHSA-hhwq-wxfx-cj7g from 2025.7.1, GHSA-4gxg-m5jx-9j57 in 2026.8.31). No date release is fixed: upgrade to 2.0.1, the semver release that replaced the date line (it sorts below every date version, which is why the lines need separate rows). Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-filesystem",
+    "version_range": ">=1.0.0, <2.0.1",
+    "advisory": "MCP filesystem server, semver line restarted 2026-10-11 (1.0.0, then 2.0.0 on 2026-10-19): GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata), all published 2026-10-25. Fixed: 2.0.1. Source: modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-everything",
+    "version_range": ">=2025.9.24, <=2026.8.31",
+    "advisory": "MCP reference test server, date-versioned line (from 2025.9.24 to 2026.8.31, the last date release; no fix on this line, upgrade to the semver release 2.0.1): GHSA-mvf5-2qqv-rg3c (medium, CVSS 6.5): the HTTP transport binds all interfaces with Access-Control-Allow-Origin * and no authentication, and the get-env tool returns the whole process environment, so any web page the user visits while the server runs can read its environment variables (API keys included). Reporter ehudmelzer. Source: modelcontextprotocol/servers advisories (2026-10-25). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-everything",
+    "version_range": ">=1.0.0, <2.0.1",
+    "advisory": "MCP reference test server, semver line restarted 2026-10 (1.0.0, 2.0.0). Fixed: 2.0.1. GHSA-mvf5-2qqv-rg3c (medium, CVSS 6.5): the HTTP transport binds all interfaces with Access-Control-Allow-Origin * and no authentication, and the get-env tool returns the whole process environment, so any web page the user visits while the server runs can read its environment variables (API keys included). Reporter ehudmelzer. Source: modelcontextprotocol/servers advisories (2026-10-25). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
   },
   {
     "ecosystem": "npm",
@@ -108,7 +137,7 @@
     "ecosystem": "pypi",
     "name": "mcp",
     "version_range": "<1.30.0",
-    "advisory": "MCP Python SDK 1.x line: CVE-2025-66416 (DNS rebinding, fixed 1.23.0, GHSA-9h52-p55h-vw2f), CVE-2026-52869/52870 (fixed 1.27.2), CVE-2026-59950 (fixed 1.28.1), CVE-2026-109527 / GHSA-fmmv-w9g8-j3gc (unbounded request bodies, fixed 1.29.1), and five advisories fixed in 1.30.0: GHSA-qx49-fqc8-xw99 (CVSS 7.5: OAuth client sent client_secret, authorization code and PKCE verifier to the authorization server the MCP server named; Cycode and others), CVE-2026-59951 / GHSA-84m7-p3x7-pcfv (Streamable HTTP sessions never reclaimed), GHSA-rwrf-2pqf-9j8j (client fetched server-chosen $ref URLs while validating tool output schemas), GHSA-w4fh-qvv9-3v23 (bearer tokens for another resource server accepted), GHSA-5h93-6whr-6q8j (cross-origin redirects carry headers and bodies). Fixed: 1.30.0 (the 2.x line has its own row). Source: modelcontextprotocol/python-sdk advisories (Cycode / Yuval Elbar, Aviral2642, AlexMelanFromRingo, Gal3m, mrostamipoor, RoniGurvich, mahmoudalbustan1, rharang, Hem1700, u-ktdi, dodge1218, nickelsec, razashariff, shmulc8), vulnerablemcp.info. Verified against primary sources 2026-10-22."
+    "advisory": "MCP Python SDK 1.x line: CVE-2025-66416 (DNS rebinding, fixed 1.23.0, GHSA-9h52-p55h-vw2f), CVE-2026-52869/52870 (fixed 1.27.2), CVE-2026-59950 (fixed 1.28.1), CVE-2026-109527 / GHSA-fmmv-w9g8-j3gc (unbounded request bodies, fixed 1.29.1), and five advisories fixed in 1.30.0: CVE-2026-115563 / GHSA-qx49-fqc8-xw99 (CVSS 7.5: OAuth client sent client_secret, authorization code and PKCE verifier to the authorization server the MCP server named; Cycode and others), CVE-2026-59951 / GHSA-84m7-p3x7-pcfv (Streamable HTTP sessions never reclaimed), GHSA-rwrf-2pqf-9j8j (client fetched server-chosen $ref URLs while validating tool output schemas), GHSA-w4fh-qvv9-3v23 (bearer tokens for another resource server accepted), GHSA-5h93-6whr-6q8j (cross-origin redirects carry headers and bodies). Fixed: 1.30.0 (the 2.x line has its own row). Source: modelcontextprotocol/python-sdk advisories (Cycode / Yuval Elbar, Aviral2642, AlexMelanFromRingo, Gal3m, mrostamipoor, RoniGurvich, mahmoudalbustan1, rharang, Hem1700, u-ktdi, dodge1218, nickelsec, razashariff, shmulc8), vulnerablemcp.info. Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "vscode",
@@ -266,13 +295,13 @@
     "ecosystem": "pypi",
     "name": "litellm",
     "version": "1.82.7",
-    "advisory": "TeamPCP supply-chain compromise (2026-03-24): AES/RSA-encrypted credential exfil to models.litellm.cloud, systemd persistence, privileged K8s pods. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+    "advisory": "TeamPCP supply-chain compromise (2026-03-24): AES/RSA-encrypted credential exfil to models.litellm.cloud, systemd persistence, privileged K8s pods. Only these versions are malicious; the package itself is legitimate. GitHub malware record GHSA-92x9-889m-jgmw covers 1.82.7, 1.82.8 and 1.107.0. Source: Datadog Security Labs, GitHub Advisory Database"
   },
   {
     "ecosystem": "pypi",
     "name": "litellm",
     "version": "1.82.8",
-    "advisory": "TeamPCP supply-chain compromise (2026-03-24): encrypted credential exfil to models.litellm.cloud. Only these versions are malicious; the package itself is legitimate. Source: Datadog Security Labs"
+    "advisory": "TeamPCP supply-chain compromise (2026-03-24): encrypted credential exfil to models.litellm.cloud. Only these versions are malicious; the package itself is legitimate. GitHub malware record GHSA-92x9-889m-jgmw covers 1.82.7, 1.82.8 and 1.107.0. Source: Datadog Security Labs, GitHub Advisory Database"
   },
   {
     "ecosystem": "pypi",
@@ -738,7 +767,7 @@
   {
     "ecosystem": "npm",
     "name": "chatgpt-pro-activator",
-    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.3 published 2026-10-08; OSV MAL-2026-18057). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.3 published 2026-10-08; OSV MAL-2026-18057 / GHSA-qp43-mgx6-56x2). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
   },
   {
     "ecosystem": "npm",
@@ -748,17 +777,17 @@
   {
     "ecosystem": "npm",
     "name": "claude-desktop-setup",
-    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.13 published 2026-10-14 to 10-19; OSV MAL-2026-18059). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (versions 1.0.0 to 1.0.13 published 2026-10-14 to 10-19; OSV MAL-2026-18059 / GHSA-f4mf-vhm8-xxqc). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
   },
   {
     "ecosystem": "npm",
     "name": "codex-setup",
-    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (OSV MAL-2026-18060). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (OSV MAL-2026-18060 / GHSA-h8cg-xwfv-9x77). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
   },
   {
     "ecosystem": "npm",
     "name": "formatting-subtitles-for-claude",
-    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (removed 2026-10-20; OSV MAL-2026-18099). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+    "advisory": "AI-assistant-themed lure package removed by npm security as malware in the 2026-10-19 cluster and replaced with a 0.0.1-security holder (removed 2026-10-20; OSV MAL-2026-18099 / GHSA-xxr7-33gg-pcg6). Only npm's ghsa-malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
   },
   {
     "ecosystem": "npm",
@@ -885,7 +914,7 @@
     "ecosystem": "pypi",
     "name": "litellm",
     "version": "1.107.0",
-    "advisory": "Second LiteLLM compromise (2026-10-21, live on PyPI 11:39 to 13:20 UTC, about 49k downloads; also Docker/GHCR tags v1.107.0, latest, main-latest, main-stable): all seven wheels, built from a lookalike repo, drop cook.pth, cook.py and sitecustomize.py into the site-packages root so a compiled credential stealer and hourly remote-code loader run on every Python interpreter start even if litellm is never imported, and survive pip uninstall if the stray files remain. Steals browser credentials, SSH and GPG keys, AWS/Azure/GCP/Kubernetes credentials, and the session/token stores of Claude Code, Claude Desktop, Cursor, Windsurf, Codeium, Copilot, Cline, Roo and Cody; exfiltration by plain HTTP to the lookalike www.litellm[.]dev; loader polls a GitHub dead drop (lock file /tmp/remote_code_loader.lock). Only this version is malicious; 1.82.7/1.82.8 were the March TeamPCP compromise. Source: Lidor Machluf (BerriAI/litellm#47826, first report), BerriAI post-mortem, Datadog Security Labs (Ian Kretz), Socket, Wiz Research (Benjamin Read, Rami McCarthy), Upwind Security, OX Security, StepSecurity; OSV MAL-2026-2144 / PYSEC-2026-2."
+    "advisory": "Second LiteLLM compromise (2026-10-21, live on PyPI 11:39 to 13:20 UTC, about 49k downloads; also Docker/GHCR tags v1.107.0, latest, main-latest, main-stable): all seven wheels, built from a lookalike repo, drop cook.pth, cook.py and sitecustomize.py into the site-packages root so a compiled credential stealer and hourly remote-code loader run on every Python interpreter start even if litellm is never imported, and survive pip uninstall if the stray files remain. Steals browser credentials, SSH and GPG keys, AWS/Azure/GCP/Kubernetes credentials, and the session/token stores of Claude Code, Claude Desktop, Cursor, Windsurf, Codeium, Copilot, Cline, Roo and Cody; exfiltration by plain HTTP to the lookalike www.litellm[.]dev; loader polls a GitHub dead drop (lock file /tmp/remote_code_loader.lock). Only this version is malicious; 1.82.7/1.82.8 were the March TeamPCP compromise. Source: Lidor Machluf (BerriAI/litellm#47826, first report), BerriAI post-mortem, Datadog Security Labs (Ian Kretz), Socket, Wiz Research (Benjamin Read, Rami McCarthy), Upwind Security, OX Security, StepSecurity; OSV MAL-2026-2144 / PYSEC-2026-2, GitHub GHSA-92x9-889m-jgmw."
   },
   {
     "ecosystem": "pypi",
@@ -962,7 +991,7 @@
     "ecosystem": "pypi",
     "name": "fastmcp",
     "version_range": ">=2.10.0, <3.4.10",
-    "advisory": "FastMCP 2.x/3.x line, sixteen advisories 2026-10-16 to 10-20. Critical GHSA-gpgx-58w2-xwwf (fixed 3.4.8): remote code execution in the FastMCP client when parsing a server-supplied tool output schema (untrusted schema title passed to pydantic ForwardRef). High GHSA-57vm-5fr9-3r5x (fixed 3.4.8): incomplete fix for CVE-2025-64340, command injection in the 'fastmcp install claude-code' and 'gemini-cli' installers. Also GHSA-7xgj-8392-5q4r (authorization skipped on transformed components, fixed 3.4.10) and GHSA-pwp3-fpg3-p53c (a symlinked SKILL.md escaping its skill folder, fixed 3.4.9). Fixed: 3.4.10 (4.x has its own row; fastmcp-slim shares the bound). Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, GEONWOOHAN). Verified against primary sources 2026-10-22."
+    "advisory": "FastMCP 2.x/3.x line, sixteen advisories 2026-10-16 to 10-20. Critical GHSA-gpgx-58w2-xwwf (fixed 3.4.8): remote code execution in the FastMCP client when parsing a server-supplied tool output schema (untrusted schema title passed to pydantic ForwardRef). High GHSA-57vm-5fr9-3r5x (fixed 3.4.8): incomplete fix for CVE-2025-64340, command injection in the 'fastmcp install claude-code' and 'gemini-cli' installers. Also GHSA-7xgj-8392-5q4r (authorization skipped on transformed components, fixed 3.4.10) and GHSA-pwp3-fpg3-p53c (a symlinked SKILL.md escaping its skill folder, fixed 3.4.9). Fixed: 3.4.10 (4.x has its own row; fastmcp-slim has its own rows). Source: PrefectHQ/fastmcp advisories (reporters jlmitra-ampl, 0xParth, rishid, GEONWOOHAN). Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "pypi",
@@ -974,7 +1003,7 @@
     "ecosystem": "pypi",
     "name": "mcp",
     "version_range": ">=2.0.0, <2.2.0",
-    "advisory": "MCP Python SDK 2.x line: the six late-September/October 2026 advisories of the 1.x row (GHSA-qx49-fqc8-xw99 OAuth credential misdirection from 2.0.0a1, CVE-2026-59951 session accumulation, GHSA-rwrf-2pqf-9j8j $ref fetching, GHSA-w4fh-qvv9-3v23 cross-service bearer tokens, GHSA-5h93-6whr-6q8j redirect header leak, all fixed 2.2.0; CVE-2026-109527 unbounded bodies fixed 2.1.0). Fixed: 2.2.0. Source: modelcontextprotocol/python-sdk advisories. Verified against primary sources 2026-10-22."
+    "advisory": "MCP Python SDK 2.x line: the six late-September/October 2026 advisories of the 1.x row (CVE-2026-115563 / GHSA-qx49-fqc8-xw99 OAuth credential misdirection from 2.0.0a1, CVE-2026-59951 session accumulation, GHSA-rwrf-2pqf-9j8j $ref fetching, GHSA-w4fh-qvv9-3v23 cross-service bearer tokens, GHSA-5h93-6whr-6q8j redirect header leak, all fixed 2.2.0; CVE-2026-109527 unbounded bodies fixed 2.1.0). Fixed: 2.2.0. Source: modelcontextprotocol/python-sdk advisories. Verified against primary sources 2026-10-22."
   },
   {
     "ecosystem": "pypi",
@@ -1225,5 +1254,449 @@
     "ecosystem": "chrome",
     "name": "phiphcloddhmndjbdedgfbglhpkjcffh",
     "advisory": "AiFrame 'Asking Chat Gpt' (396 installs): one of 32 fake AI-assistant Chrome extensions sharing a single codebase that overlays a full-screen iframe served from operator-controlled tapnetic[.]pro subdomains, scrapes page content, monitors Gmail, captures voice input and exfiltrates; behaviour is backend-controlled so it can change without a Web Store update. 260,000+ users across the campaign. Source: LayerX Security (Natalie Zargarov, Dar Kahllon; now Akamai), 2026-02-12."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "claude-agent-sdk",
+    "version_range": "<0.2.121",
+    "advisory": "Claude Agent SDK for Python: CVE-2026-96620 / GHSA-h4mw-j7qp-8mwm (critical): the resume option was passed to the Claude Code CLI unvalidated, so a value starting with a dash became a CLI flag (for example --mcp-config naming a stdio server) and ran commands at CLI startup, outside the SDK's permission controls. Exploitable only when the application passes untrusted input as the resume session id. Fixed: 0.2.121. Source: anthropics/claude-agent-sdk-python advisory (reporter moamenmahmood via HackerOne). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-server-fetch",
+    "version_range": ">=2026.10.10, <2026.10.24",
+    "advisory": "MCP fetch server: the private-address SSRF guard added in 2026.10.10 is bypassable. GHSA-v38p-wf49-hx2j (medium: the hostname is checked with IDNA 2003 but connected with IDNA 2008, so an internationalized name passes the check and resolves to a private address) and GHSA-66qx-2266-pmj6 (low: the NAT64 prefix 64:ff9b::/96 is treated as public, so the cloud metadata address is reachable). Fixed: 2026.10.24. Source: modelcontextprotocol/servers advisories (2026-10-25). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-legacy",
+    "version_range": ">=2.0.0, <2.3.1",
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111771 / GHSA-rvq5-wwqv-78pq (medium): server bearer authentication accepted tokens issued for another service. Pre-releases 2.0.0-alpha onward are affected. Fixed: 2.3.1. Source: modelcontextprotocol/typescript-sdk advisories (reporter gdegrange). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/hono",
+    "version_range": ">=2.0.0, <2.0.1",
+    "advisory": "MCP TypeScript SDK v2 Hono adapter: GHSA-f897-62hf-6gxq (high): the HTTP transports did not limit the request body size or the JSON-RPC batch length, so one request can exhaust the server's memory. Pre-releases 2.0.0-alpha onward are affected. Fixed: 2.0.1. Source: modelcontextprotocol/typescript-sdk advisories (2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "fastmcp-slim",
+    "version_range": ">=3.0.0, <3.4.10",
+    "advisory": "FastMCP slim distribution (same code as fastmcp; first release 3.3.0b1), 3.x line: GHSA-7xgj-8392-5q4r (medium: authorization checks on transformed components are skipped when the component is called directly). The advisories that name only fastmcp are on the fastmcp rows. Fixed: 3.4.10 (4.x has its own row). Source: PrefectHQ/fastmcp advisories. Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "fastmcp-slim",
+    "version_range": ">=4.0.0, <4.1.2",
+    "advisory": "FastMCP slim distribution, 4.x line: GHSA-7xgj-8392-5q4r (medium: authorization skipped on transformed components, fixed 4.1.2) and GHSA-vqqp-x5qm-5qp4 (medium, CVSS 5.9: the client's M2M OAuth provider sent the client secret to an attacker-advertised authorization server, from 4.0.0a1). Pre-releases 4.0.0a1 onward are affected. Fixed: 4.1.2. Source: PrefectHQ/fastmcp advisories (reporter LHMisme420). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "obsidian-tc",
+    "version_range": "<1.31.4",
+    "advisory": "MCP server for Obsidian vaults: CVE-2026-77363 / GHSA-pqh8-4pj7-32xx (critical, below 1.3.1): the Streamable HTTP transport had no DNS-rebinding or Origin check and the documented loopback default is auth mode none, so a web page the user visits gets full vault read/write; CVE-2026-77361 / GHSA-c5xx-h28h-f682 (medium, below 1.3.1); CVE-2026-115477 / GHSA-737x-cwfr-5vvc (high, from 1.13.0: declined human-in-the-loop confirmations still execute); CVE-2026-115478 / GHSA-r3g7-r4hr-m258 (high, from 1.0.1). Fixed: 1.31.4. Source: GitHub Advisory Database (The-40-Thieves/obsidian-tc, 2026-10-23). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@zenalexa/unicli",
+    "version_range": "<0.225.2",
+    "advisory": "Uni-CLI (one command interface for agents, websites, desktop apps and MCP): CVE-2026-58497 / GHSA-v3f4-w7r7-v3hm (high, CVSS 4.0 8.6): the legacy JSON-RPC-over-HTTP MCP transport on loopback did not validate the browser Origin, so a web page can send a simple CORS POST and drive tools/call against the user's local Uni-CLI server once its HTTP transport is started. Fixed: 0.225.2. Source: olo-dot-io/Uni-CLI advisory, NVD (CVE published 2026-10-23). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai",
+    "version_range": ">=1.34.0, <1.107.5",
+    "advisory": "Pydantic AI 1.x line (meta-package; the code ships in pydantic-ai-slim, which has its own rows): CVE-2026-107295 / GHSA-h4xc-3qfq-jf93 (high: the local web chat UI served by Agent.to_web() and 'clai web' does not check the request content type, so any website the user visits can run the served agent and its tools, even on localhost) and CVE-2026-107292 / GHSA-q2xc-rrxj-58x9 (medium: no Host header check, so DNS rebinding reaches the same endpoint). Fixed: 1.107.5 (GHSA-h4xc-3qfq-jf93 fixed 1.107.4; 2.x has its own row). Source: pydantic/pydantic-ai advisories (GHSA 2026-10-08; PYSEC-2026-4278/4279 2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai",
+    "version_range": ">=2.0.0, <2.30.0",
+    "advisory": "Pydantic AI 2.x line (from 2.0.0b1): CVE-2026-107295 / GHSA-h4xc-3qfq-jf93 (high: the local web chat UI served by Agent.to_web() and 'clai web' does not check the request content type, so any website the user visits can run the served agent and its tools, even on localhost) and CVE-2026-107292 / GHSA-q2xc-rrxj-58x9 (medium: no Host header check, so DNS rebinding reaches the same endpoint). Fixed: 2.30.0 (GHSA-h4xc-3qfq-jf93 fixed 2.28.0). Source: pydantic/pydantic-ai advisories (GHSA 2026-10-08; PYSEC-2026-4278/4279 2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai-slim",
+    "version_range": ">=1.34.0, <1.107.5",
+    "advisory": "Pydantic AI slim distribution, 1.x line: CVE-2026-107295 / GHSA-h4xc-3qfq-jf93 (high: the local web chat UI served by Agent.to_web() and 'clai web' does not check the request content type, so any website the user visits can run the served agent and its tools, even on localhost) and CVE-2026-107292 / GHSA-q2xc-rrxj-58x9 (medium: no Host header check, so DNS rebinding reaches the same endpoint). Fixed: 1.107.5 (GHSA-h4xc-3qfq-jf93 fixed 1.107.4; 2.x has its own row). Source: pydantic/pydantic-ai advisories (GHSA 2026-10-08; PYSEC-2026-4278/4279 2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai-slim",
+    "version_range": ">=2.0.0, <2.30.0",
+    "advisory": "Pydantic AI slim distribution, 2.x line (from 2.0.0b1): CVE-2026-107295 / GHSA-h4xc-3qfq-jf93 (high: the local web chat UI served by Agent.to_web() and 'clai web' does not check the request content type, so any website the user visits can run the served agent and its tools, even on localhost) and CVE-2026-107292 / GHSA-q2xc-rrxj-58x9 (medium: no Host header check, so DNS rebinding reaches the same endpoint). Fixed: 2.30.0 (GHSA-h4xc-3qfq-jf93 fixed 2.28.0). Source: pydantic/pydantic-ai advisories (GHSA 2026-10-08; PYSEC-2026-4278/4279 2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "graphifyy",
+    "version_range": ">=0.7.2, <0.9.70",
+    "advisory": "Graphify, a coding-assistant knowledge-graph skill: GHSA-pcc4-rvhr-2pr8 (medium): indexing an untrusted repository with a .F* Fortran file follows its #include of absolute or ../ host paths (for example ~/.ssh) into graph.json, which is handed to the LLM agent. Fixed: 0.9.70. Source: Graphify-Labs/graphify advisory (2026-10-19). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "netlicensing-mcp",
+    "version_range": "<0.1.8",
+    "advisory": "NetLicensing MCP server: CVE-2026-57496 / GHSA-hxpf-9xvq-wph8 (critical: a ../token path traversal returns unredacted API keys) and CVE-2026-54446 / GHSA-x9vc-9ffq-p3gj (high, up to 0.1.5: HTTP mode forwards unauthenticated calls with the operator's API key). Fixed: 0.1.8. Source: GitHub Advisory Database. Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-contextforge-gateway",
+    "version_range": "<1.0.2",
+    "advisory": "IBM MCP Context Forge gateway, run locally to front MCP servers: CVE-2026-53710 / GHSA-xm98-3vcf-fph7 (critical): RestrictedPython sandbox escape in the bundled python_sandbox_server, whose execute_code MCP tool can be exposed over HTTP/SSE without authentication. Fixed: 1.0.2. Source: GitHub Advisory Database (published 2026-08-24, updated 2026-10-15). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector-server",
+    "version_range": ">=0.14.1, <1.0.3",
+    "advisory": "MCP Inspector split package, 0.x/1.x line (the 2.x inspector has its own row): GHSA-6x67-4w4w-9f3w (critical, from 0.20.0: a remote MCP App steals the proxy auth token and runs local commands), GHSA-wmjf-2m46-2352 (high, from 0.14.1: missing authentication), GHSA-f6mc-jg3x-vq53 (medium, from 1.0.0: /fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp (medium, from 0.21.2), GHSA-8qgq-27v6-55w3 (low, from 0.14.2: SSE authentication and custom headers logged verbatim). The lower bound is the earliest version these advisories name. Fixed: 1.0.3. Source: modelcontextprotocol/inspector advisories (2026-10-21). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector-client",
+    "version_range": ">=0.13.0, <1.0.3",
+    "advisory": "MCP Inspector split package, 0.x/1.x line (the 2.x inspector has its own row): GHSA-4fc4-wcmh-4g86 (critical, from 0.13.0: a malicious MCP OAuth callback switches the transport to stdio and runs local commands), GHSA-6x67-4w4w-9f3w (critical, from 0.20.0), GHSA-2rq8-f55p-j2jp (medium, from 0.14.1). The lower bound is the earliest version these advisories name. Fixed: 1.0.3. Source: modelcontextprotocol/inspector advisories (2026-10-21). Verified against primary sources 2026-10-25.",
+    "advisory_severity": "critical"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-btw",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-xv54-6gmc-3xph / OSV MAL-2026-17903). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-goal",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-c78h-wwhq-g6j8 / OSV MAL-2026-17904). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-orchestrator",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-7wq2-8pc2-wm26 / OSV MAL-2026-17905). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-shared-rpc",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-8c9g-fwgq-rqq5 / OSV MAL-2026-17906). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-shell-guard",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-pm76-w63j-7j29 / OSV MAL-2026-17907). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-stats",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-f4h2-68pg-ffhj / OSV MAL-2026-17908). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@beloved-lenora/opencode-todo",
+    "advisory": "OpenCode-plugin-named package, one of seven from the @beloved-lenora scope created and removed by npm security as malware on 2026-10-16 (now a 0.0.1-security holder; GHSA-9rjq-6mhc-46c5 / OSV MAL-2026-17909). Only npm's malware record is public: no behaviour was published, and no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "formatting-subtitles",
+    "advisory": "Lure package described as 'Formatting subtitles for claude', sibling of the catalogued formatting-subtitles-for-claude (2026-10-19/20 cluster). Release 1.0.2 runs prepare.js through sh as a preinstall script; the file hides two shell command substitutions in a JavaScript comment, one beaconing to a webhook[.]site collector and one downloading a gist file and running it (tarball read, never executed, during the 2026-10-25 refresh). Still listed on npm at that time; GHSA-2cph-9873-fh57 / OSV MAL-2026-18184 name 1.0.2; the row is unbounded because the name is a lure with no legitimate use. Source: Amazon Inspector (OSV MAL-2026-18184), GitHub Advisory Database, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "unicode-title-normalizer",
+    "advisory": "Dependency (1.1.0) of the formatting-subtitles lure, same 2026-10-19/20 cluster as formatting-subtitles-for-claude; removed by npm security as malware and replaced with a 0.0.1-security holder (GHSA-66rv-6q99-h89g / OSV MAL-2026-18100). Only npm's malware record is public; no benign version ever existed. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "py-worm",
+    "advisory": "Campaign 2026-10-agentaix (versions 0.1.0, 2.0.0 and 2.0.1; MAL-2026-17883 / GHSA-483q-j87r-c97c), sibling of agentaix, agent-vx and py-wormgpt: on import it fetches a mutable payload from raw.githubusercontent[.]com, a Python RAT with HKCU Run persistence polling C2 googleforum.pythonanywhere[.]com. The payload targets Windows, as for the agentaix row. Source: Kamil Mankowski / kam193 (human analysis), OpenSSF malicious-packages, GitHub Advisory Database."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "x402-prompt-injection-scan",
+    "version": "0.1.4",
+    "advisory": "'Prompt-injection scanner for AI agents' package created 2026-10-21: release 0.1.4 flagged by GitHub malware advisory GHSA-w84w-rhx7-2f7g (OSV MAL-2026-18197); npm removed the version (latest is back to 0.1.3); cause not published. Earlier releases are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "skillward",
+    "advisory": "AI-skills-named package created 2026-10-23: flagged by GitHub malware advisory GHSA-9wgc-5pgr-25p3 (OSV MAL-2026-18220) for both real releases, 0.1.1 and 0.1.2; npm removed the versions, leaving only a 0.0.0-stage placeholder; cause not published, and the agent relevance rests on the name. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@tekmidian/pai",
+    "version": "1.0.8",
+    "advisory": "'PAI Knowledge OS' package that ships a Claude Code plugin (.claude-plugin, hooks), a Gemini extension and Cursor plugins: release 1.0.8 is one of three consecutive releases (1.0.8 to 1.0.10, 2026-10-22/23) flagged by GitHub malware advisory GHSA-xvgg-qjjh-gq34 (OSV MAL-2026-18205); npm removed the versions (latest is back to 1.0.7); cause not published. Other releases are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@tekmidian/pai",
+    "version": "1.0.9",
+    "advisory": "'PAI Knowledge OS' package that ships a Claude Code plugin (.claude-plugin, hooks), a Gemini extension and Cursor plugins: release 1.0.9 is one of three consecutive releases (1.0.8 to 1.0.10, 2026-10-22/23) flagged by GitHub malware advisory GHSA-xvgg-qjjh-gq34 (OSV MAL-2026-18205); npm removed the versions (latest is back to 1.0.7); cause not published. Other releases are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@tekmidian/pai",
+    "version": "1.0.10",
+    "advisory": "'PAI Knowledge OS' package that ships a Claude Code plugin (.claude-plugin, hooks), a Gemini extension and Cursor plugins: release 1.0.10 is one of three consecutive releases (1.0.8 to 1.0.10, 2026-10-22/23) flagged by GitHub malware advisory GHSA-xvgg-qjjh-gq34 (OSV MAL-2026-18205); npm removed the versions (latest is back to 1.0.7); cause not published. Other releases are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.9.0",
+    "advisory": "Agent-skills aggregator: release 18.9.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.10.0",
+    "advisory": "Agent-skills aggregator: release 18.10.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.11.0",
+    "advisory": "Agent-skills aggregator: release 18.11.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.12.0",
+    "advisory": "Agent-skills aggregator: release 18.12.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.13.0",
+    "advisory": "Agent-skills aggregator: release 18.13.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "18.14.0",
+    "advisory": "Agent-skills aggregator: release 18.14.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.0.0",
+    "advisory": "Agent-skills aggregator: release 19.0.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.0.1",
+    "advisory": "Agent-skills aggregator: release 19.0.1 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.1.0",
+    "advisory": "Agent-skills aggregator: release 19.1.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.2.0",
+    "advisory": "Agent-skills aggregator: release 19.2.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.3.0",
+    "advisory": "Agent-skills aggregator: release 19.3.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.4.0",
+    "advisory": "Agent-skills aggregator: release 19.4.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.5.0",
+    "advisory": "Agent-skills aggregator: release 19.5.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.6.0",
+    "advisory": "Agent-skills aggregator: release 19.6.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.7.0",
+    "advisory": "Agent-skills aggregator: release 19.7.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.9.0",
+    "advisory": "Agent-skills aggregator: release 19.9.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.10.1",
+    "advisory": "Agent-skills aggregator: release 19.10.1 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.12.0",
+    "advisory": "Agent-skills aggregator: release 19.12.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.12.1",
+    "advisory": "Agent-skills aggregator: release 19.12.1 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentic-awesome-skills",
+    "version": "19.13.0",
+    "advisory": "Agent-skills aggregator: release 19.13.0 is one of 20 releases (18.9.0 to 19.13.0, 2026-09-29 to 10-21, interleaved with clean ones) flagged by GitHub malware advisory GHSA-rgwm-3jj9-h563 (OSV MAL-2026-18192); npm removed the versions; cause not published (no maintainer disclosure found). Clean releases such as 18.15.0, 19.8.0, 19.11.0 and 19.14.0 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.0.56",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.0.56 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.0.57",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.0.57 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.0.77",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.0.77 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.0",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.0 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.1",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.1 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.3",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.3 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.4",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.4 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.6",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.6 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.7",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.7 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.8",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.8 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.9",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.9 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.10",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.10 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.11",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.11 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.12",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.12 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.13",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.13 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.14",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.14 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.16",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.16 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.17",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.17 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.18",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.18 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.19",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.19 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "opencode-skills-collection",
+    "version": "4.1.20",
+    "advisory": "OpenCode plugin that downloads agent skills: release 4.1.20 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
   }
 ]

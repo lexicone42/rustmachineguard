@@ -3228,17 +3228,19 @@ fn builtin_catalog_version_ranges_flag_only_vulnerable() {
         let s = mcp_server_with_pkg("npm", name, ver);
         !catalog.check_mcp_server(&s, "/t").is_empty()
     };
-    // server-filesystem: EscapeRoute CVEs, fixed 2025.7.1.
+    // server-filesystem: EscapeRoute CVEs (fixed 2025.7.1), then the 2026-10-25 advisories,
+    // which have no fix on the date line; the fix is 2.0.1 on the restarted semver line,
+    // which sorts below every date version (tests/catalog_refresh_2026_10_25.rs).
     let sf = "@modelcontextprotocol/server-filesystem";
     assert!(
         flagged(sf, "2025.6.0"),
         "a vulnerable server-filesystem must still flag"
     );
-    assert!(!flagged(sf, "2025.7.1"), "the patched server-filesystem must NOT flag");
     assert!(
-        !flagged(sf, "2025.8.0"),
-        "a newer patched server-filesystem must NOT flag"
+        flagged(sf, "2025.8.0"),
+        "the date line has no fix for the 2026-10-25 advisories"
     );
+    assert!(!flagged(sf, "2.0.1"), "the patched server-filesystem must NOT flag");
     // mcp-remote: affected 0.0.5–0.1.15, fixed 0.1.16.
     assert!(flagged("mcp-remote", "0.1.10"), "a vulnerable mcp-remote must flag");
     assert!(!flagged("mcp-remote", "0.1.16"), "the patched mcp-remote must NOT flag");
@@ -3266,7 +3268,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        228,
+        305,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
