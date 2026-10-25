@@ -1025,7 +1025,11 @@ mod enabled {
 
         // T4: one transcripts.store span per store, with the walked numbers.
         let stores = named("transcripts.store");
-        assert_eq!(stores.len(), 6);
+        assert_eq!(
+            stores.len(),
+            21,
+            "projects, history, todos, 13 more ~/.claude stores, ~/.claude.json and its backup, codex x2, gemini"
+        );
         let proj_store = stores
             .iter()
             .find(|s| {

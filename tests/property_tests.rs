@@ -7982,3 +7982,99 @@ proptest! {
         prop_assert_eq!(redact_command_text(&once), once.clone(), "command input {:?}", s);
     }
 }
+
+/// MCP allow-rule wildcards are matched against the inventory the way Claude Code names
+/// tools: a plugin server as `plugin_<plugin>_<server>`, a claude.ai connector as
+/// `claude_ai_<Name>`, a server seen only in the MCP logs by its log name. Anything else
+/// is a phantom (Low); a skipped MCP scanner makes no phantom claim.
+#[test]
+fn mcp_allow_wildcards_fold_plugin_connector_and_observed_names() {
+    use rustmachineguard::analysis::{Severity, collect_findings};
+    use rustmachineguard::models::*;
+    let rule = |r: &str, server: &str| PermissionRule {
+        list: "allow".into(),
+        rule: r.into(),
+        class: Some("mcp-server-wildcard".into()),
+        detail: Some(server.into()),
+    };
+    let build = |mcp_skipped: bool| {
+        make_test_report(|r| {
+            r.mcp_configs = vec![
+                McpConfig {
+                    config_source: MCP_SOURCE_PLUGIN.into(),
+                    config_path: "/h/.claude/plugins/cache/o/playwright/1/.mcp.json".into(),
+                    vendor: "claude-code".into(),
+                    server_names: vec!["playwright".into()],
+                    server_count: 1,
+                    git_tracked: false,
+                    servers: vec![McpServerDetail {
+                        name: "playwright".into(),
+                        plugin: Some("playwright@claude-plugins-official".into()),
+                        ..Default::default()
+                    }],
+                },
+                McpConfig {
+                    config_source: MCP_SOURCE_CONNECTOR.into(),
+                    config_path: "/h/.claude.json (claudeAiMcpEverConnected)".into(),
+                    vendor: "claude-code".into(),
+                    server_names: vec!["claude.ai Google Drive".into()],
+                    server_count: 1,
+                    git_tracked: false,
+                    servers: vec![],
+                },
+            ];
+            r.mcp_observed_servers = vec![McpObservedServer {
+                name: "plugin-greptile-greptile".into(),
+                ..Default::default()
+            }];
+            if mcp_skipped {
+                r.diagnostics = vec![ScannerStat {
+                    scanner: "mcp".into(),
+                    root: None,
+                    duration_ms: 0,
+                    files_read: 0,
+                    files_missing: 0,
+                    items: 0,
+                    skipped: true,
+                    truncated: false,
+                }];
+            }
+            r.agent_settings = vec![AgentSettings {
+                path: "/h/.claude/settings.json".into(),
+                source: "user-global".into(),
+                framework: "claude-code".into(),
+                permission_rules: vec![
+                    rule("mcp__plugin_playwright_playwright__*", "plugin_playwright_playwright"),
+                    rule("mcp__claude_ai_Google_Drive__*", "claude_ai_Google_Drive"),
+                    rule("mcp__plugin_greptile_greptile", "plugin_greptile_greptile"),
+                    rule("mcp__session7__*", "session7"),
+                    rule("mcp__plugin_feature_dev__*", "plugin_feature_dev"),
+                ],
+                ..Default::default()
+            }];
+        })
+    };
+    let f = collect_findings(&build(false));
+    let perms: Vec<_> = f.iter().filter(|x| x.category == "Permissions").collect();
+    assert_eq!(perms.len(), 2, "{perms:#?}");
+    let configured = perms.iter().find(|x| x.severity == Severity::Medium).unwrap();
+    for s in [
+        "plugin_playwright_playwright",
+        "claude_ai_Google_Drive",
+        "plugin_greptile_greptile",
+    ] {
+        assert!(configured.title.contains(s), "{s}: {}", configured.title);
+    }
+    let phantom = perms.iter().find(|x| x.severity == Severity::Low).unwrap();
+    assert!(
+        phantom.title.contains("session7") && phantom.title.contains("plugin_feature_dev"),
+        "{}",
+        phantom.title
+    );
+    assert!(!phantom.title.contains("playwright"), "{}", phantom.title);
+
+    let skipped = collect_findings(&build(true));
+    let perms: Vec<_> = skipped.iter().filter(|x| x.category == "Permissions").collect();
+    assert_eq!(perms.len(), 1, "no phantom claim without an MCP inventory: {perms:#?}");
+    assert_eq!(perms[0].severity, Severity::Medium);
+}

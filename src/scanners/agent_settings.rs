@@ -701,7 +701,277 @@ pub(crate) fn parse_settings_file_in(
         } else {
             Vec::new()
         },
+        skip_dangerous_mode_prompt: flag("skipDangerousModePermissionPrompt"),
+        permission_rules: if framework == "claude-code" {
+            let home = rule_home(path, source, scan_home);
+            permission_rules(permissions, source, path, &home)
+        } else {
+            Vec::new()
+        },
     })
+}
+
+/// Rules kept per list (`allow`, `ask`, `deny`) and characters kept per rule.
+const MAX_RULES_PER_LIST: usize = 200;
+const MAX_RULE_CHARS: usize = 200;
+
+/// Allow-rule classes (`PermissionRule::class`), a closed set graded in `analysis`.
+pub const RULE_MCP_SERVER: &str = "mcp-server-wildcard";
+pub const RULE_CODE_EXEC: &str = "code-execution";
+pub const RULE_CREDENTIAL_READ: &str = "credential-read";
+pub const RULE_CREDENTIAL_EDIT: &str = "credential-edit";
+pub const RULE_INERT_PATH: &str = "inert-path";
+
+/// The home a rule's `~/` and `/` anchors resolve against: the scan home, or for a user
+/// settings file read on its own, the directory above its `.claude/`.
+fn rule_home(path: &Path, source: &str, scan_home: Option<&Path>) -> PathBuf {
+    if let Some(h) = scan_home {
+        return h.to_path_buf();
+    }
+    if matches!(source, "user-global" | "user-local")
+        && let Some(h) = path.parent().and_then(Path::parent)
+    {
+        return h.to_path_buf();
+    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// `permissions.allow` / `ask` / `deny` as [`PermissionRule`]s: non-string entries
+/// skipped, each rule classified from its raw text and stored redacted
+/// ([`crate::scanners::redact_command_text`]) and sanitized, at most
+/// [`MAX_RULES_PER_LIST`] per list.
+fn permission_rules(
+    permissions: Option<&serde_json::Value>,
+    source: &str,
+    settings_path: &Path,
+    home: &Path,
+) -> Vec<crate::models::PermissionRule> {
+    let mut out = Vec::new();
+    let Some(p) = permissions else { return out };
+    for list in ["allow", "ask", "deny"] {
+        let Some(arr) = p.get(list).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for raw in arr.iter().filter_map(|v| v.as_str()).take(MAX_RULES_PER_LIST) {
+            let (class, detail) = if list == "allow" {
+                match classify_allow_rule(raw, source, settings_path, home) {
+                    Some((c, d)) => (Some(c.to_string()), d),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+            out.push(crate::models::PermissionRule {
+                list: list.to_string(),
+                rule: show_rule(raw),
+                class,
+                detail: detail.map(|d| show_rule(&d)),
+            });
+        }
+    }
+    out
+}
+
+/// A rule (or rule detail) as it may be shown. A tool name (`mcp__github__get_*`,
+/// `Bash`) is an identifier and is kept as written, so the key-shaped-run redactor does
+/// not hide a server name; the text inside the parentheses, which can carry a token
+/// pasted into a command, goes through [`crate::scanners::redact_command_text`], and so
+/// does anything that is not of the `Tool` / `Tool(spec)` shape.
+fn show_rule(s: &str) -> String {
+    let ident = |t: &str| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '*' | '.'))
+    };
+    let shown = match s.find('(') {
+        Some(i) if s.ends_with(')') && ident(&s[..i]) => {
+            format!(
+                "{}({})",
+                &s[..i],
+                crate::scanners::redact_command_text(&s[i + 1..s.len() - 1])
+            )
+        }
+        None if ident(s) => s.to_string(),
+        _ => crate::scanners::redact_command_text(s),
+    };
+    crate::scanners::sanitize_display(&shown, MAX_RULE_CHARS - 1)
+}
+
+/// Programs a `Bash(<program>:*)` allow rule hands arbitrary code (or arbitrary network
+/// transfer) to: shells, interpreters, package runners, curl/wget, eval. A closed list.
+const CODE_EXEC_PROGRAMS: &[&str] = &[
+    "bash", "sh", "zsh", "dash", "ksh", "fish", "node", "npx", "bunx", "bun", "deno", "uvx", "uv", "perl", "ruby",
+    "php", "curl", "wget", "eval", "exec",
+];
+/// Interpreter flags that take the program text itself (`python3 -c`, `node -e`).
+const INLINE_CODE_FLAGS: &[&str] = &["-c", "-e", "--eval", "-"];
+
+/// True when `tokens` (a Bash rule's prefix before its trailing wildcard) names only a
+/// code-running program, optionally with an inline-code flag; `uv run` is looked
+/// through (`uv run:*`, `uv run python:*`).
+fn is_code_exec_prefix(tokens: &[&str]) -> bool {
+    let Some(first) = tokens.first() else {
+        return true; // `Bash(*)`
+    };
+    let prog = first.rsplit('/').next().unwrap_or(first);
+    if prog == "uv" && tokens.get(1) == Some(&"run") {
+        return is_code_exec_prefix(&tokens[2..]);
+    }
+    let runs_code = CODE_EXEC_PROGRAMS.contains(&prog)
+        || (prog.starts_with("python") && prog[6..].chars().all(|c| c.is_ascii_digit() || c == '.'));
+    runs_code && (tokens.len() == 1 || (tokens.len() == 2 && INLINE_CODE_FLAGS.contains(&tokens[1])))
+}
+
+/// Classify one Claude Code allow rule (grammar: code.claude.com/docs/en/permissions.md,
+/// fetched 2026-10-24). Returns the class and its detail, or None for a scoped rule.
+///
+/// - `mcp__<server>` or `mcp__<server>__*`: every tool of that server. An allow glob in
+///   the server segment is skipped by Claude Code and is not classified.
+/// - `Bash`, `Bash(*)`, or a trailing-wildcard rule whose prefix is only a code-running
+///   program ([`CODE_EXEC_PROGRAMS`], `python*`): arbitrary code execution.
+/// - `Read` / `Edit` (and bare `Write`) whose path, resolved by the documented anchors
+///   (`//` filesystem root, `~/` home, `/` the settings source: `~/.claude/` for user
+///   settings, the project for project and local settings), covers a credential path,
+///   agent state (`~/.claude/`, Read only: edits there are protected-path writes allow
+///   rules never pre-approve) or a `.env` file.
+/// - A path rule that does not match what it names: a single-slash path spelled as an
+///   absolute home path (`/home/u/...` anchors at the settings source), or a
+///   `Write(path)` / `NotebookEdit(path)` / `Glob(path)` rule, which never matches.
+pub fn classify_allow_rule(
+    rule: &str,
+    source: &str,
+    settings_path: &Path,
+    home: &Path,
+) -> Option<(&'static str, Option<String>)> {
+    let rule = rule.trim();
+    let (tool, spec) = match rule.find('(') {
+        Some(i) if rule.ends_with(')') => (rule[..i].trim(), Some(rule[i + 1..rule.len() - 1].trim())),
+        Some(_) => return None,
+        None => (rule, None),
+    };
+    if let Some(rest) = tool.strip_prefix("mcp__") {
+        if spec.is_some() {
+            return None;
+        }
+        let (server, tail) = match rest.split_once("__") {
+            Some((s, t)) => (s, Some(t)),
+            None => (rest, None),
+        };
+        if server.is_empty() || server.contains('*') {
+            return None;
+        }
+        return matches!(tail, None | Some("*")).then(|| (RULE_MCP_SERVER, Some(server.to_string())));
+    }
+    match tool {
+        "Bash" => {
+            let Some(spec) = spec else {
+                return Some((RULE_CODE_EXEC, None));
+            };
+            let prefix = spec
+                .strip_suffix(":*")
+                .or_else(|| spec.strip_suffix(" *"))
+                .or_else(|| spec.strip_suffix('*'))?;
+            let tokens: Vec<&str> = prefix.split_whitespace().collect();
+            is_code_exec_prefix(&tokens).then_some((RULE_CODE_EXEC, None))
+        }
+        "Read" | "Edit" | "Write" => {
+            let edit = tool != "Read";
+            let class = if edit {
+                RULE_CREDENTIAL_EDIT
+            } else {
+                RULE_CREDENTIAL_READ
+            };
+            let pattern = match spec {
+                None => return Some((class, None)),
+                Some(_) if tool == "Write" => {
+                    return Some((
+                        RULE_INERT_PATH,
+                        Some("Write(path) rules never match; use Edit(path)".into()),
+                    ));
+                }
+                Some("" | "*" | "**") => return Some((class, None)),
+                Some(p) => p,
+            };
+            let anchor = match source {
+                "user-global" => home.join(".claude"),
+                "user-local" => home.to_path_buf(),
+                _ => settings_path
+                    .parent()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| home.to_path_buf()),
+            };
+            let resolved = if let Some(abs) = pattern.strip_prefix("//") {
+                format!("/{abs}")
+            } else if pattern == "~" {
+                home.display().to_string()
+            } else if let Some(rel) = pattern.strip_prefix("~/") {
+                format!("{}/{rel}", home.display())
+            } else {
+                // A pattern without a leading `/` is relative to the session's working
+                // directory, where reads need no approval anyway: not graded.
+                let rel = pattern.strip_prefix('/')?;
+                let home_s = home.display().to_string();
+                let looks_absolute = (home_s.len() > 1 && pattern.starts_with(&format!("{home_s}/")))
+                    || ["home/", "Users/", "root/"].iter().any(|p| rel.starts_with(p));
+                if looks_absolute {
+                    return Some((
+                        RULE_INERT_PATH,
+                        Some(format!(
+                            "anchors at {}/, so it matches {}/{rel}; write /{pattern} for the absolute path",
+                            anchor.display(),
+                            anchor.display()
+                        )),
+                    ));
+                }
+                format!("{}/{rel}", anchor.display())
+            };
+            covers_sensitive(&resolved, home, edit).then_some((class, None))
+        }
+        "NotebookEdit" | "Glob" | "MultiEdit" if spec.is_some_and(|s| !s.is_empty()) => Some((
+            RULE_INERT_PATH,
+            Some(format!("{tool}(path) rules never match; use Edit(path) or Read(path)")),
+        )),
+        _ => None,
+    }
+}
+
+/// True when the absolute glob `pattern` (gitignore semantics: a bare directory also
+/// covers what is under it) matches a credential path or a `.env` file under HOME, or
+/// for reads Claude Code's own state (`~/.claude/.credentials.json`, `~/.claude.json`).
+fn covers_sensitive(pattern: &str, home: &Path, edit: bool) -> bool {
+    let h = home.display().to_string();
+    let h = h.trim_end_matches('/');
+    let mut targets: Vec<String> = [
+        ".ssh/id_ed25519",
+        ".ssh/authorized_keys",
+        ".aws/credentials",
+        ".config/gh/hosts.yml",
+        ".gnupg/private-keys-v1.d/key",
+        ".netrc",
+        ".git-credentials",
+        ".docker/config.json",
+        ".kube/config",
+        "project/.env",
+    ]
+    .iter()
+    .map(|t| format!("{h}/{t}"))
+    .collect();
+    if !edit {
+        targets.push(format!("{h}/.claude/.credentials.json"));
+        targets.push(format!("{h}/.claude.json"));
+    }
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let trimmed = pattern.trim_end_matches('/');
+    let candidates = [trimmed.to_string(), format!("{trimmed}/**")];
+    candidates
+        .iter()
+        .filter_map(|c| glob::Pattern::new(c).ok())
+        .any(|p| targets.iter().any(|t| p.matches_with(t, opts)))
 }
 
 /// A managed file's `enabledPlugins` keys set to true (`plugin@marketplace`): Claude Code
@@ -1656,5 +1926,144 @@ mod tests {
         ] {
             assert_ne!(url_host(spoof), "api.anthropic.com", "spoof leaked: {spoof}");
         }
+    }
+
+    /// The allow-rule classifier: every class, its anchors, and the scoped rules it
+    /// leaves alone (code.claude.com/docs/en/permissions.md, fetched 2026-10-24).
+    #[test]
+    fn classify_allow_rule_covers_each_class_and_leaves_scoped_rules() {
+        let home = Path::new("/home/u");
+        let user = Path::new("/home/u/.claude/settings.json");
+        let proj = Path::new("/w/p/.claude/settings.json");
+        let c = |r: &str, src: &str, path: &Path| classify_allow_rule(r, src, path, home).map(|(c, _)| c);
+        let u = |r: &str| c(r, "user-global", user);
+        // MCP: whole server, wildcard; a tool, or a glob in the server segment, is not.
+        assert_eq!(
+            classify_allow_rule("mcp__github__*", "user-global", user, home),
+            Some((RULE_MCP_SERVER, Some("github".into())))
+        );
+        assert_eq!(u("mcp__github"), Some(RULE_MCP_SERVER));
+        assert_eq!(u("mcp__github__get_issue"), None);
+        assert_eq!(u("mcp__github__get_*"), None);
+        assert_eq!(u("mcp__*"), None);
+        // Code-running shells.
+        for r in [
+            "Bash",
+            "Bash(*)",
+            "Bash(bash:*)",
+            "Bash(sh *)",
+            "Bash(python3:*)",
+            "Bash(python3.12:*)",
+            "Bash(python -c:*)",
+            "Bash(node -e:*)",
+            "Bash(npx:*)",
+            "Bash(uv run:*)",
+            "Bash(uv run python:*)",
+            "Bash(curl:*)",
+            "Bash(wget *)",
+            "Bash(eval:*)",
+            "Bash(/usr/bin/python3:*)",
+        ] {
+            assert_eq!(u(r), Some(RULE_CODE_EXEC), "{r}");
+        }
+        for r in [
+            "Bash(git status:*)",
+            "Bash(git push:*)",
+            "Bash(npm test)",
+            "Bash(python3 -m pytest:*)",
+            "Bash(uv run pytest:*)",
+            "Bash(curl https://example.com/x)",
+            "Bash(pythonista:*)",
+            "Bash(cargo:*)",
+        ] {
+            assert_eq!(u(r), None, "{r}");
+        }
+        // Reads: ~/.claude, ~/.ssh, ~/.config, the whole home or filesystem, and in user
+        // settings `/` anchors at ~/.claude/ so Read(/**) is all of it.
+        for r in [
+            "Read",
+            "Read(~/.claude/**)",
+            "Read(~/.ssh/**)",
+            "Read(//home/u/.config/**)",
+            "Read(//**)",
+            "Read(~/**)",
+            "Read(//**/.env*)",
+            "Read(/**)",
+            "Read(~/.claude)",
+        ] {
+            assert_eq!(u(r), Some(RULE_CREDENTIAL_READ), "{r}");
+        }
+        for r in [
+            "Read(~/Documents/**)",
+            "Read(src/**)",
+            "Read(./**)",
+            "Read(**/.env*)",
+            "Read(~/.claude/plans/**)",
+        ] {
+            assert_eq!(u(r), None, "{r}");
+        }
+        // The same `/**` in project settings is the project: reads there need no rule.
+        assert_eq!(c("Read(/**)", "project", proj), None);
+        // Edits: credential paths only; ~/.claude is a protected path allow rules never
+        // pre-approve.
+        assert_eq!(u("Edit(~/.ssh/**)"), Some(RULE_CREDENTIAL_EDIT));
+        assert_eq!(u("Edit"), Some(RULE_CREDENTIAL_EDIT));
+        assert_eq!(u("Write"), Some(RULE_CREDENTIAL_EDIT));
+        assert_eq!(u("Edit(~/.claude/**)"), None);
+        assert_eq!(u("Edit(src/**)"), None);
+        // Rules that do not match the path they name.
+        let (class, detail) = classify_allow_rule("Read(/home/u/.claude/**)", "user-global", user, home).unwrap();
+        assert_eq!(class, RULE_INERT_PATH);
+        let detail = detail.unwrap();
+        assert!(
+            detail.contains("/home/u/.claude/home/u/.claude/**") && detail.contains("//home/u/.claude/**"),
+            "{detail}"
+        );
+        assert_eq!(c("Edit(/Users/a/x/**)", "local", proj), Some(RULE_INERT_PATH));
+        assert_eq!(u("Write(~/notes/**)"), Some(RULE_INERT_PATH));
+        assert_eq!(u("Glob(src/**)"), Some(RULE_INERT_PATH));
+        // Other tools are inventory.
+        for r in [
+            "WebFetch",
+            "WebFetch(domain:docs.rs)",
+            "Skill(x:y)",
+            "Agent(Explore)",
+            "Bash(git:* push)",
+        ] {
+            assert_eq!(u(r), None, "{r}");
+        }
+    }
+
+    /// Rules are stored redacted and capped; tool names stay readable.
+    #[test]
+    fn permission_rules_are_redacted_capped_and_keep_tool_names() {
+        let mut allow: Vec<serde_json::Value> = (0..250)
+            .map(|i| serde_json::json!(format!("Bash(tool{i}:*)")))
+            .collect();
+        allow.insert(
+            0,
+            serde_json::json!("Bash(curl -H 'Authorization: Bearer ghp_Zq9CanaryUnitTokenAbCdEfGhIjKlMnOpQr12' x:*)"),
+        );
+        allow.insert(1, serde_json::json!("mcp__session7__*"));
+        allow.insert(2, serde_json::json!(format!("Bash({})", "a".repeat(400))));
+        let perms = serde_json::json!({"allow": allow, "deny": ["Read(./.env)"], "ask": [42, "Bash(git push:*)"]});
+        let rules = permission_rules(
+            Some(&perms),
+            "user-global",
+            Path::new("/h/.claude/settings.json"),
+            Path::new("/h"),
+        );
+        let allow: Vec<_> = rules.iter().filter(|r| r.list == "allow").collect();
+        assert_eq!(allow.len(), MAX_RULES_PER_LIST);
+        assert!(!allow[0].rule.contains("ghp_Zq9Canary"), "{}", allow[0].rule);
+        assert_eq!(allow[1].rule, "mcp__session7__*");
+        assert_eq!(allow[1].detail.as_deref(), Some("session7"));
+        assert!(allow[2].rule.chars().count() <= MAX_RULE_CHARS);
+        assert_eq!(rules.iter().filter(|r| r.list == "deny").count(), 1);
+        assert_eq!(
+            rules.iter().filter(|r| r.list == "ask").count(),
+            1,
+            "non-strings skipped"
+        );
     }
 }

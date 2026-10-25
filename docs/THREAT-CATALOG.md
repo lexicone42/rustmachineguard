@@ -186,6 +186,7 @@ disclosures. We credit the organizations and individuals whose work makes this p
 
 | Resource | URL | Use |
 |---|---|---|
+| **Claude Code documentation** (Anthropic) | https://code.claude.com/docs/en/permissions.md, /permission-modes.md, /settings-reference.md (fetched 2026-10-24) | Permission-rule grammar, path anchors, protected paths, `defaultMode` values and where each takes effect, `skipDangerousModePermissionPrompt`: the source for grading permission modes and allow rules (not catalog rows) |
 | **vulnerablemcp.info** | https://vulnerablemcp.info/ | Comprehensive MCP vulnerability database (50+ CVEs) |
 | **OWASP MCP Top 10** | https://owasp.org/www-project-mcp-top-10/ | Risk taxonomy |
 | **NVD** | https://nvd.nist.gov/ | CVE details and CVSS scores |

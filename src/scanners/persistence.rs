@@ -203,10 +203,261 @@ impl Scanner for PersistenceScanner {
             }
         }
 
+        // Agent launch surface and leftovers under the agent's own directories.
+        scan_url_handlers(&home, &mut out);
+        let claude = platform.claude_config_dir();
+        scan_agent_bin(&claude.join("bin"), &home, &mut out);
+        scan_dangling_plugin_records(&claude, &mut out);
+
         let mut seen = std::collections::HashSet::new();
         out.retain(|a| seen.insert((a.kind.clone(), a.path.clone())));
         out
     }
+}
+
+/// Program basenames of coding agents a URL scheme handler can launch.
+const AGENT_PROGRAMS: &[&str] = &["claude", "codex", "cursor", "windsurf", "gemini", "vibe"];
+/// Entries looked at per applications directory, and bytes read per `.desktop` file.
+const MAX_DESKTOP_FILES: usize = 2_000;
+const MAX_DESKTOP_BYTES: usize = 64 * 1024;
+
+/// The `x-scheme-handler/<scheme>` types and the Exec program basename of a `.desktop`
+/// file's `[Desktop Entry]` group (freedesktop Desktop Entry Specification).
+pub fn desktop_scheme_handler(text: &str) -> (Vec<String>, Option<String>) {
+    let mut in_entry = false;
+    let (mut schemes, mut program) = (Vec::new(), None);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("MimeType=") {
+            schemes.extend(
+                v.split(';')
+                    .filter_map(|m| m.trim().strip_prefix("x-scheme-handler/"))
+                    .filter(|s| !s.is_empty())
+                    .map(|s| sanitize_display(s, 64)),
+            );
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            let v = v.trim_start();
+            let first = match v.strip_prefix('"') {
+                Some(rest) => rest.split('"').next().unwrap_or(""),
+                None => v.split_whitespace().next().unwrap_or(""),
+            };
+            let base = first.rsplit('/').next().unwrap_or(first);
+            if !base.is_empty() {
+                program = Some(sanitize_display(base, 64));
+            }
+        }
+    }
+    (schemes, program)
+}
+
+/// `x-scheme-handler/<scheme>=<desktop>` defaults from the user's `mimeapps.list` files.
+fn default_scheme_handlers(home: &Path) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for p in [
+        home.join(".config").join("mimeapps.list"),
+        home.join(".local/share/applications").join("mimeapps.list"),
+    ] {
+        let Some(text) = crate::scanners::read_bounded(&p) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some((k, v)) = line.trim().split_once('=')
+                && let Some(scheme) = k.strip_prefix("x-scheme-handler/")
+            {
+                let desktop = v.split(';').next().unwrap_or("").trim();
+                out.entry(scheme.to_string()).or_insert_with(|| desktop.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Linux URL scheme handlers that launch a coding agent: a `.desktop` file in the user's
+/// or the system's applications directory declaring `x-scheme-handler/claude-cli`, or
+/// any `x-scheme-handler/*` whose Exec program is a known agent ([`AGENT_PROGRAMS`]).
+/// Records the scheme and the program basename only. macOS registers handlers in the
+/// LaunchServices database (a binary plist) and app bundles' Info.plist: not parsed.
+fn scan_url_handlers(home: &Path, out: &mut Vec<PersistenceArtifact>) {
+    let defaults = default_scheme_handlers(home);
+    for dir in [
+        home.join(".local/share/applications"),
+        crate::scanners::system_path("/usr/share/applications"),
+        crate::scanners::system_path("/usr/local/share/applications"),
+    ] {
+        let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten().take(MAX_DESKTOP_FILES) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Some(bytes) = crate::scanners::read_head_bytes_nofollow(&path, MAX_DESKTOP_BYTES) else {
+                continue;
+            };
+            let (schemes, program) = desktop_scheme_handler(&String::from_utf8_lossy(&bytes));
+            let agent_program = program.as_deref().is_some_and(|p| AGENT_PROGRAMS.contains(&p));
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            for scheme in schemes.iter().filter(|s| *s == "claude-cli" || agent_program) {
+                let is_default = defaults.get(scheme.as_str()).is_some_and(|d| *d == file_name);
+                out.push(PersistenceArtifact {
+                    kind: "url-handler".into(),
+                    path: show(&path),
+                    scope: show(&dir),
+                    detail: format!(
+                        "{scheme}:// opens {}{}",
+                        program.as_deref().unwrap_or("an unnamed program"),
+                        if is_default {
+                            " (the default handler in mimeapps.list)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    sensitive_target: agent_program,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+}
+
+/// Entries looked at in the agent's bin directory, and the hashing bound.
+const MAX_BIN_ENTRIES: usize = 200;
+const MAX_HASH_BYTES: usize = 64 * 1024 * 1024;
+
+/// Executables in `~/.claude/bin/`: Claude Code keeps plugins under plugins/cache, so a
+/// file here was put by a plugin's script or by hand, is outside any plugin cache, and
+/// survives the plugin's uninstall. Identity only: mode, owner, mtime, a 4-byte magic
+/// read and a SHA-256.
+fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
+    let Ok(entries) = crate::scanners::probe_read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = entries.flatten().take(MAX_BIN_ENTRIES).map(|e| e.path()).collect();
+    files.sort();
+    for path in files {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || !is_executable(&meta) {
+            continue;
+        }
+        let magic = crate::scanners::read_head_bytes_nofollow(&path, 4).unwrap_or_default();
+        let format = match magic.as_slice() {
+            [0x7f, b'E', b'L', b'F', ..] => "elf",
+            [0xcf, 0xfa, 0xed, 0xfe, ..] | [0xfe, 0xed, 0xfa, 0xcf, ..] | [0xca, 0xfe, 0xba, 0xbe, ..] => "mach-o",
+            [b'#', b'!', ..] => "script",
+            _ => "other",
+        };
+        let sha256 = if meta.len() as usize <= MAX_HASH_BYTES {
+            crate::scanners::read_head_bytes_nofollow(&path, MAX_HASH_BYTES).map(|b| {
+                use sha2::Digest;
+                sha2::Sha256::digest(&b)
+                    .iter()
+                    .map(|x| format!("{x:02x}"))
+                    .collect::<String>()
+            })
+        } else {
+            None
+        };
+        let (mode, owned_by_user, world_writable) = owner_and_mode(&meta);
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push(PersistenceArtifact {
+            kind: "agent-bin".into(),
+            path: show(&path),
+            scope: show(home),
+            detail: format!("{} ({format}, {mode})", sanitize_display(&name, 128)),
+            bin: Some(crate::models::AgentBinInfo {
+                format: format.into(),
+                mode,
+                mtime,
+                size: meta.len(),
+                sha256,
+                owned_by_user,
+                world_writable,
+            }),
+            ..Default::default()
+        });
+    }
+}
+
+#[cfg(unix)]
+fn owner_and_mode(meta: &std::fs::Metadata) -> (String, bool, bool) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let m = meta.permissions().mode() & 0o7777;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    (format!("{m:04o}"), meta.uid() == me, m & 0o022 != 0)
+}
+#[cfg(not(unix))]
+fn owner_and_mode(_meta: &std::fs::Metadata) -> (String, bool, bool) {
+    (String::new(), true, false)
+}
+
+/// `installed_plugins.json` entries whose `installPath` does not exist. `sensitive_target`
+/// marks a plugin `enabledPlugins` turns on in user settings (key and boolean only).
+fn scan_dangling_plugin_records(claude: &Path, out: &mut Vec<PersistenceArtifact>) {
+    let record = claude.join("plugins").join("installed_plugins.json");
+    let Some(json) =
+        crate::scanners::read_bounded(&record).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+    else {
+        return;
+    };
+    let enabled: std::collections::HashSet<String> = crate::scanners::read_bounded(&claude.join("settings.json"))
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|s| {
+            s.get("enabledPlugins").and_then(|v| v.as_object()).map(|m| {
+                m.iter()
+                    .filter(|(_, v)| v.as_bool() == Some(true))
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    for ((plugin, market), entries) in crate::scanners::marketplaces::installed_entries(&json) {
+        let key = format!("{plugin}@{market}");
+        for e in entries {
+            let Some(install) = e.get("installPath").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let install = Path::new(install);
+            if crate::scanners::probe_exists(install) {
+                continue;
+            }
+            let on = enabled.contains(&key);
+            out.push(PersistenceArtifact {
+                kind: "dangling-plugin-record".into(),
+                path: show(install),
+                scope: show(&record),
+                detail: format!(
+                    "{}; {}",
+                    sanitize_display(&key, 200),
+                    if on { "enabled in user settings" } else { "not enabled" }
+                ),
+                sensitive_target: on,
+                ..Default::default()
+            });
+        }
+    }
+}
+
+fn show(p: &Path) -> String {
+    sanitize_display(&p.to_string_lossy(), 512)
 }
 
 fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> PersistenceArtifact {
@@ -218,6 +469,7 @@ fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> Persiste
         git_tracked,
         claimed: false,
         sensitive_target: false,
+        bin: None,
     }
 }
 
@@ -297,6 +549,7 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
             git_tracked: false,
             claimed,
             sensitive_target: is_ioc,
+            bin: None,
         });
     }
 }
@@ -426,6 +679,7 @@ fn scan_planted_binaries(proj: &Path, path_searches_cwd: bool, out: &mut Vec<Per
                 git_tracked,
                 claimed: false,
                 sensitive_target: path_searches_cwd,
+                bin: None,
             });
         }
     }
@@ -487,6 +741,7 @@ fn scan_loader_staging(proj: &Path, out: &mut Vec<PersistenceArtifact>) {
                 git_tracked: is_git_tracked(&path),
                 claimed: false,
                 sensitive_target: known_loader,
+                bin: None,
             });
         }
     }
@@ -539,6 +794,7 @@ fn scan_committed_symlinks(proj: &Path, home: &Path, out: &mut Vec<PersistenceAr
             git_tracked: true,
             claimed: false,
             sensitive_target: verdict,
+            bin: None,
         });
     }
 }
@@ -884,6 +1140,28 @@ pub(crate) fn worst_read_kind(kinds: impl IntoIterator<Item = Option<&'static st
 
 #[cfg(test)]
 mod tests {
+
+    /// The `[Desktop Entry]` group's scheme handlers and Exec program basename; other
+    /// groups (desktop actions) are ignored.
+    #[test]
+    fn desktop_scheme_handler_reads_schemes_and_program() {
+        let (schemes, prog) = desktop_scheme_handler(
+            "[Desktop Entry]\nExec=\"~/.local/bin/claude\" --handle-uri %u\nMimeType=x-scheme-handler/claude-cli;text/plain;\n[Desktop Action new]\nExec=evil\nMimeType=x-scheme-handler/evil;\n",
+        );
+        assert_eq!(schemes, ["claude-cli"]);
+        assert_eq!(prog.as_deref(), Some("claude"));
+        let (schemes, prog) =
+            desktop_scheme_handler("[Desktop Entry]\nExec=/opt/codex/bin/codex %U\nMimeType=x-scheme-handler/codex\n");
+        assert_eq!(schemes, ["codex"]);
+        assert_eq!(prog.as_deref(), Some("codex"));
+        assert_eq!(
+            desktop_scheme_handler("Exec=claude\nMimeType=x-scheme-handler/claude-cli;")
+                .0
+                .len(),
+            0
+        );
+    }
+
     use super::*;
 
     #[test]

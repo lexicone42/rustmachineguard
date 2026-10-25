@@ -200,10 +200,10 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "EAA-011 (environment-expanded MCP activation)",
         },
         "Permissions" => Guidance {
-            what: "The agent's permission mode is `bypassPermissions`, so it acts without the usual approval prompts.",
-            why: "The human-in-the-loop guardrail is off — the agent (or a prompt injection steering it) can run tools and edits with no confirmation.",
-            fix: "Set the permission mode back to a prompting mode (e.g. acceptEdits or default). Reserve bypass modes for disposable sandboxes.",
-            reference: "OWASP Agentic Apps Top 10 (excessive agency)",
+            what: "How much the agent may do without asking: a permission mode of `bypassPermissions` (Cursor: `unrestricted`) or `auto`, `skipDangerousModePermissionPrompt` (the confirmation before bypassPermissions mode), or Claude Code allow rules that pre-approve every tool of an MCP server, a shell or interpreter (`Bash(python3:*)`, `Bash(curl:*)`), or reads of credential and agent-state paths. A rule pre-approving a server that is not configured, and a path rule that does not match the path it names, are Low notes.",
+            why: "Each one removes a prompt a person would otherwise answer, so the agent, or a prompt injection steering it, acts on that surface unreviewed. Claude Code's docs: in bypassPermissions mode it \"runs everything without asking\"; in auto mode \"a background classifier checks\" shell commands and network requests instead of you; `Bash(python3:*)` matches every python3 command, which is any code. Allow rules \"accept tool-name globs only after a literal mcp__<server>__ prefix\", so `mcp__x__*` approves whatever tools server x has, including one configured later under that name. A single leading slash in a path rule \"anchors at the settings source, not the filesystem root\" (in ~/.claude/settings.json, at ~/.claude/), and `Write(path)` rules never match. Rules in a repository's .claude/settings.json apply to everyone who opens it.",
+            fix: "Remove the rules you do not rely on (`/permissions`, or edit the settings file shown) and prefer scoped rules such as `Bash(npm test)` or `mcp__github__get_*`. Remove `skipDangerousModePermissionPrompt` to get the bypassPermissions confirmation back. To stop the modes being used, set `permissions.disableBypassPermissionsMode` or `permissions.disableAutoMode` to \"disable\". Write absolute paths in path rules as `//path` and home paths as `~/path`.",
+            reference: "code.claude.com/docs/en/permissions · /permission-modes · OWASP Agentic Apps Top 10 (excessive agency)",
         },
         "Gateway routing" => Guidance {
             what: "An AI provider base-URL override (in agent settings or a project .env) points at a host that is not any AI provider's own API, so requests (and the API key) route through it. A provider's own API host counts as official under every base-URL variable (api.anthropic.com, api.openai.com and its regional hosts such as eu.api.openai.com, and named OpenAI- or Anthropic-compatible providers: Groq, Azure OpenAI and AI Foundry, Mistral, Gemini, NVIDIA NIM, Bedrock, DeepSeek, Z.ai, Moonshot, ...), and loopback proxies (including a client dial to 0.0.0.0 or [::], which reaches this machine) are not reported.",
@@ -224,9 +224,9 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "least privilege",
         },
         "Transcript exposure" => Guidance {
-            what: "An agent transcript / conversation-state store (full chat history, prompts, and any secrets discussed) is world-readable.",
-            why: "Transcripts routinely contain pasted credentials, source code, and internal details — a rich target that any local user can read.",
-            fix: "Restrict the store's permissions to owner-only. Consider pruning old transcripts you no longer need.",
+            what: "An agent transcript or state store has files other users can read (mode o+r, reached through directories with o+x): conversation transcripts, command history, shell snapshots and session environment (which may hold exported environment variables), backups of ~/.claude.json, file-edit history, plans, tasks, paste cache, agent memory, or metadata (telemetry, feature flags, usage data). Or ~/.claude.json itself, which holds the account identifier and the list of every project path, is readable by other users or by its group. Permissions only: rmguard never opens these files. When a directory above the store (usually HOME at 0700) cannot be traversed by others, the finding is Low.",
+            why: "Transcripts and snapshots routinely contain pasted credentials, source code, environment values and internal details, a rich target that any local user can read; the account file maps the machine's projects and identifies the account.",
+            fix: "Restrict the store's permissions to owner-only (chmod -R go-rwx ~/.claude, chmod 600 ~/.claude.json*), or make HOME 0700 so nothing under it is reachable. Consider pruning old transcripts and snapshots you no longer need.",
             reference: "EAA-005 (agent-state collection)",
         },
         "Plugin marketplace" => Guidance {
@@ -488,6 +488,251 @@ pub fn is_read_only_context_command(cmd: &str) -> bool {
 
 /// Collect and rank the actionable findings in a scan. Highest severity first.
 /// This is the risk-first view that HTML/fleet reports lead with.
+/// True when hook `command` names the agent-bin file at `path` (`/home/u/.claude/bin/x`)
+/// by its full path or as `~/.claude/bin/x`, `$HOME/.claude/bin/x`, `${HOME}/.claude/bin/x`.
+fn references_bin(command: &str, path: &str) -> bool {
+    let Some(idx) = path.rfind("/.claude/bin/") else {
+        return command.contains(path);
+    };
+    let tail = &path[idx..];
+    let boundary = |s: &str, needle: &str| {
+        s.match_indices(needle).any(|(i, _)| {
+            s[i + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        })
+    };
+    boundary(command, path)
+        || ["~", "$HOME", "${HOME}"]
+            .iter()
+            .any(|h| boundary(command, &format!("{h}{tail}")))
+}
+
+/// A Claude Code MCP server name as it appears in a tool name (`mcp__<server>__<tool>`),
+/// folded for comparison: lowercase, every character other than a letter or digit as
+/// `_`. Claude Code writes plugin servers as `plugin_<plugin>_<server>` and claude.ai
+/// connectors as `claude_ai_<Name>`; its MCP log directories use `-` for the same.
+fn mcp_tool_segment(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Every server name the report's MCP inventory knows, folded by [`mcp_tool_segment`]:
+/// configured servers (plugin servers also as `plugin_<plugin>_<server>`) and the servers
+/// Claude Code's MCP logs show have run. None when the MCP scanner was skipped, so no
+/// server can be called unconfigured.
+fn known_mcp_segments(report: &ScanReport) -> Option<BTreeSet<String>> {
+    if report.diagnostics.iter().any(|d| d.scanner == "mcp" && d.skipped) {
+        return None;
+    }
+    let mut out = BTreeSet::new();
+    for c in &report.mcp_configs {
+        for n in &c.server_names {
+            out.insert(mcp_tool_segment(n));
+        }
+        for s in &c.servers {
+            out.insert(mcp_tool_segment(&s.name));
+            if let Some(p) = &s.plugin {
+                let plugin = p.rsplit_once('@').map(|(n, _)| n).unwrap_or(p);
+                out.insert(mcp_tool_segment(&format!("plugin_{plugin}_{}", s.name)));
+            }
+        }
+    }
+    for o in &report.mcp_observed_servers {
+        out.insert(mcp_tool_segment(&o.name));
+    }
+    Some(out)
+}
+
+/// Rules listed in a title or evidence: the first `cap`, then a count.
+fn list_rules(rules: &[&str], cap: usize) -> String {
+    let mut s = rules.iter().take(cap).copied().collect::<Vec<_>>().join(", ");
+    if rules.len() > cap {
+        s.push_str(&format!(" (+{} more)", rules.len() - cap));
+    }
+    s
+}
+
+/// Claude Code permission posture (code.claude.com/docs/en/permissions.md,
+/// /permission-modes.md and /settings-reference.md, fetched 2026-10-24):
+///
+/// - `permissions.defaultMode: "auto"` in user settings: Low. Auto mode has a background
+///   classifier review shell commands and network requests instead of a prompt, and it
+///   is the built-in starting mode from v2.1.283, so it is reported as the posture it
+///   is, not as an alarm. `auto` (like `bypassPermissions`) does not take effect from
+///   project or local settings, and `dontAsk` denies whatever would prompt: neither is
+///   graded.
+/// - `skipDangerousModePermissionPrompt: true` (honoured in user, local and managed
+///   settings; "An untrusted repository can't skip the dialog for you"): Medium, the
+///   confirmation before `bypassPermissions` is off; Critical when user or managed
+///   settings also start sessions in `bypassPermissions`. Managed files are the
+///   organization's policy and stay inventory.
+/// - Allow rules, one finding per file per class (see
+///   `scanners::agent_settings::classify_allow_rule`): a whole MCP server pre-approved
+///   (Medium; High from a repository's file; Low when no server of that name is
+///   configured), code-running shell rules (Medium; High from a repository's file),
+///   reads of credential or agent-state paths and edits of credential paths (High), and
+///   path rules that do not match the path they name (Low).
+fn collect_permission_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    use crate::scanners::agent_settings::{
+        RULE_CODE_EXEC, RULE_CREDENTIAL_EDIT, RULE_CREDENTIAL_READ, RULE_INERT_PATH, RULE_MCP_SERVER,
+    };
+    let claude = || report.agent_settings.iter().filter(|s| s.framework == "claude-code");
+    let bypass_default = claude().find(|s| {
+        matches!(s.source.as_str(), "user-global" | "managed")
+            && s.permission_mode.as_deref() == Some("bypassPermissions")
+    });
+    let known_servers = known_mcp_segments(report);
+
+    for s in claude() {
+        let user_scoped = matches!(s.source.as_str(), "user-global" | "user-local" | "local");
+        let repository = !matches!(s.source.as_str(), "managed" | "plugin") && (s.source == "project" || s.git_tracked);
+        let origin = if !repository {
+            ""
+        } else if s.git_tracked {
+            " — from a git-tracked project settings file"
+        } else {
+            " — from project settings"
+        };
+
+        if s.source == "user-global" && s.permission_mode.as_deref() == Some("auto") {
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Permissions".into(),
+                title: "Claude Code sessions start in auto mode: a background classifier, not a prompt, reviews shell commands and network requests".into(),
+                location: s.path.clone(),
+                evidence: Some("permissions.defaultMode: auto".into()),
+            });
+        }
+        if s.skip_dangerous_mode_prompt && user_scoped && !s.git_tracked {
+            let (severity, title) = match bypass_default {
+                Some(b) => (
+                    Severity::Critical,
+                    format!(
+                        "the bypassPermissions confirmation is disabled and sessions start in bypassPermissions ({}): every tool call runs without a prompt or a confirmation",
+                        b.path
+                    ),
+                ),
+                None => (
+                    Severity::Medium,
+                    "the dangerous-mode confirmation is disabled: a session launched with --dangerously-skip-permissions or into bypassPermissions enters it without asking".into(),
+                ),
+            };
+            f.push(Finding {
+                severity,
+                category: "Permissions".into(),
+                title,
+                location: s.path.clone(),
+                evidence: Some("skipDangerousModePermissionPrompt: true".into()),
+            });
+        }
+
+        if !(user_scoped || repository) {
+            continue; // managed policy and plugin files: inventory
+        }
+        let allow = || s.permission_rules.iter().filter(|r| r.list == "allow");
+        let of = |class: &str| -> Vec<&crate::models::PermissionRule> {
+            allow().filter(|r| r.class.as_deref() == Some(class)).collect()
+        };
+        let scoped_sev = if repository { Severity::High } else { Severity::Medium };
+
+        let (mut configured, mut phantom) = (Vec::new(), Vec::new());
+        for r in of(RULE_MCP_SERVER) {
+            let server = r.detail.as_deref().unwrap_or("");
+            match &known_servers {
+                Some(k) if !k.contains(&mcp_tool_segment(server)) => phantom.push(r),
+                _ => configured.push(r),
+            }
+        }
+        if !configured.is_empty() {
+            let servers: BTreeSet<&str> = configured.iter().filter_map(|r| r.detail.as_deref()).collect();
+            let rules: Vec<&str> = configured.iter().map(|r| r.rule.as_str()).collect();
+            f.push(Finding {
+                severity: scoped_sev,
+                category: "Permissions".into(),
+                title: format!(
+                    "every tool of MCP server(s) {} is pre-approved by an allow rule{origin}",
+                    servers.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+                location: s.path.clone(),
+                evidence: Some(list_rules(&rules, 20)),
+            });
+        }
+        if !phantom.is_empty() {
+            let servers: BTreeSet<&str> = phantom.iter().filter_map(|r| r.detail.as_deref()).collect();
+            let rules: Vec<&str> = phantom.iter().map(|r| r.rule.as_str()).collect();
+            f.push(Finding {
+                severity: Severity::Low,
+                category: "Permissions".into(),
+                title: format!(
+                    "allow rule(s) pre-approve MCP server(s) that are not configured: {} — a server added later under that name runs its tools without a prompt",
+                    list_rules(&servers.into_iter().collect::<Vec<_>>(), 20)
+                ),
+                location: s.path.clone(),
+                evidence: Some(list_rules(&rules, 20)),
+            });
+        }
+        let classes = [
+            (
+                RULE_CODE_EXEC,
+                scoped_sev,
+                "allow rule(s) approve arbitrary code execution or network transfer without a prompt",
+            ),
+            (
+                RULE_CREDENTIAL_READ,
+                Severity::High,
+                "pre-approved read of credential or agent-state paths",
+            ),
+            (
+                RULE_CREDENTIAL_EDIT,
+                Severity::High,
+                "pre-approved edit of credential paths",
+            ),
+            (
+                RULE_INERT_PATH,
+                Severity::Low,
+                "allow rule(s) do not match the path they name",
+            ),
+        ];
+        for (class, severity, what) in classes {
+            let rules = of(class);
+            if rules.is_empty() {
+                continue;
+            }
+            let names: Vec<&str> = rules.iter().map(|r| r.rule.as_str()).collect();
+            let evidence = if class == RULE_INERT_PATH {
+                rules
+                    .iter()
+                    .take(8)
+                    .map(|r| {
+                        format!("{} {}", r.rule, r.detail.as_deref().unwrap_or(""))
+                            .trim()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            } else {
+                list_rules(&names, 20)
+            };
+            f.push(Finding {
+                severity,
+                category: "Permissions".into(),
+                title: format!("{what}: {}{origin}", list_rules(&names, 8)),
+                location: s.path.clone(),
+                evidence: Some(evidence),
+            });
+        }
+    }
+}
+
 pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     let mut f = Vec::new();
 
@@ -618,6 +863,9 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
 
     // Hooks of every agent and every scope: settings, plugin files and skill frontmatter.
     collect_hook_findings(report, &mut f);
+
+    // Claude Code permission modes, the dangerous-mode confirmation, and allow rules.
+    collect_permission_findings(report, &mut f);
 
     for s in &report.agent_settings {
         // Credential/telemetry helpers: commands Claude Code runs on its own. In the
@@ -819,7 +1067,14 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     }
 
     // Persistence and planting artifacts: Python startup hooks, tool-shadowing
-    // binaries, committed symlinks that escape the repo, staged loaders, worm IOCs.
+    // binaries, committed symlinks that escape the repo, staged loaders, worm IOCs,
+    // agent URL handlers, executables in ~/.claude/bin, dangling plugin records.
+    let hook_commands: Vec<&str> = report
+        .agent_settings
+        .iter()
+        .flat_map(|s| s.hooks.iter().chain(&s.helper_commands))
+        .map(|h| h.command.as_str())
+        .collect();
     for a in &report.persistence_artifacts {
         let (severity, category, title) = match a.kind.as_str() {
             "python-startup-hook" => {
@@ -889,6 +1144,45 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     format!("Loader staged in an agent directory: {}", a.detail),
                 )
             }
+            "url-handler" => (
+                Severity::Low,
+                "Persistence",
+                format!("URL scheme handler: a browser link can launch the agent — {}", a.detail),
+            ),
+            "agent-bin" => {
+                let info = a.bin.clone().unwrap_or_default();
+                let hooked = hook_commands.iter().any(|c| references_bin(c, &a.path));
+                let sev = if info.world_writable || (hooked && !info.owned_by_user) {
+                    Severity::High
+                } else {
+                    Severity::Low
+                };
+                let why = if info.world_writable {
+                    " — writable by group or other"
+                } else if hooked && !info.owned_by_user {
+                    " — a hook runs it and it is not owned by you"
+                } else if hooked {
+                    " — a hook runs it"
+                } else {
+                    ""
+                };
+                (
+                    sev,
+                    "Persistence",
+                    format!(
+                        "Executable in the agent's bin directory, outside any plugin cache; survives plugin uninstall: {}{why}",
+                        a.detail
+                    ),
+                )
+            }
+            "dangling-plugin-record" => (
+                Severity::Low,
+                "Persistence",
+                format!(
+                    "Plugin record points at a missing install ({}); recreating the path may load it without a new install prompt",
+                    a.detail
+                ),
+            ),
             _ => (
                 Severity::Critical,
                 "Persistence",
@@ -1040,19 +1334,47 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     // World-readable agent transcript/state stores (EAA-005 collection surface):
     // these hold full conversation history — code, prompts, and any secrets discussed —
     // so loose permissions let any local user read the lot.
+    // Value-gated on what other users can actually open: files with o+r reached through
+    // directories with o+x (a store of 0600 files under a 0755 directory exposes names
+    // only). An ancestor others cannot traverse (HOME 0700) makes it Low. Reports from
+    // older versions carry no per-file count and are graded on the store's own mode.
     for t in &report.transcripts {
-        if t.world_readable {
-            f.push(Finding {
-                severity: Severity::High,
-                category: "Transcript exposure".into(),
-                title: format!(
-                    "{} {} store is world-readable ({} files) — conversation history exposed (EAA-005)",
+        use crate::scanners::transcripts::{ACCOUNT_STATE, ACCOUNT_STATE_BACKUP, store_exposure};
+        let (what, content) = store_exposure(&t.kind);
+        let readable = t.readable_files.unwrap_or(t.file_count);
+        let account = matches!(t.kind.as_str(), ACCOUNT_STATE | ACCOUNT_STATE_BACKUP);
+        let (base, title) = if account && t.world_readable {
+            (
+                Severity::High,
+                format!("{} {} ({what}) readable by other users", t.framework, t.kind),
+            )
+        } else if account && t.group_readable {
+            (
+                Severity::Medium,
+                format!("{} {} ({what}) readable by its group", t.framework, t.kind),
+            )
+        } else if !account && t.world_readable && readable > 0 {
+            (
+                if content { Severity::High } else { Severity::Medium },
+                format!(
+                    "{} {} store is world-readable ({readable} of {} files readable by other users) — {what} (EAA-005)",
                     t.framework, t.kind, t.file_count
                 ),
-                location: t.path.clone(),
-                evidence: None,
-            });
-        }
+            )
+        } else {
+            continue;
+        };
+        let (severity, title) = match &t.unreachable_via {
+            Some(why) => (Severity::Low, format!("{title} — not reachable: {why}")),
+            None => (base, title),
+        };
+        f.push(Finding {
+            severity,
+            category: "Transcript exposure".into(),
+            title,
+            location: t.path.clone(),
+            evidence: None,
+        });
     }
 
     // Auto-updating third-party plugin marketplaces (EAA-009): a non-official source

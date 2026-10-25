@@ -264,7 +264,7 @@ starts a thread.
 | `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |
 | `rmguard.repos` | gitconfig.repos, gitconfig.nested_walk | projects whose own config was checked; nested git directories found |
 | `rmguard.transcripts.framework` | transcripts.store | `claude-code` \| `codex` \| `gemini-cli` |
-| `rmguard.transcripts.kind` | transcripts.store | `conversation transcripts` \| `command history` \| `todo state` \| `sessions` \| `session state` |
+| `rmguard.transcripts.kind` | transcripts.store | `conversation transcripts` \| `command history` \| `todo state` \| `shell snapshots` \| `session environment` \| `task lists` \| `plan files` \| `settings backups` \| `telemetry queue` \| `security plugin state` \| `exo-self plugin state` \| `feature-flag cache` \| `paste cache` \| `usage data` \| `agent memory` \| `file edit history` \| `account state file` \| `account state backup` \| `sessions` \| `session state` |
 | `rmguard.mcp.server_index` | mcp.probe | position among probed servers (not the name) |
 | `rmguard.mcp.outcome` | mcp.probe, metric | `ok` \| `empty_command` \| `spawn_failed` \| `timeout` (deadline or watchdog) \| `closed` (server exited: EOF or broken pipe) \| `error` (anything else, including every server-reported error) |
 | `rmguard.mcp.tools`, `rmguard.mcp.resources` | mcp.probe | counts |

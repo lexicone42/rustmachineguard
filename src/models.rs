@@ -627,6 +627,34 @@ pub struct AgentSettings {
     /// true. Their hooks run even under `allowManagedHooksOnly`. Sorted, at most 200.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub force_enabled_plugins: Vec<String>,
+    /// Claude Code `skipDangerousModePermissionPrompt`: the confirmation dialog before a
+    /// session enters `bypassPermissions` mode is skipped. Honoured in user, local and
+    /// managed settings only (code.claude.com/docs/en/settings-reference).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_dangerous_mode_prompt: bool,
+    /// The `permissions.allow`, `ask` and `deny` rules themselves (counts above): each
+    /// redacted and sanitized to at most 200 characters, at most 200 per list. An allow
+    /// rule carries the class rmguard grades it by, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_rules: Vec<PermissionRule>,
+}
+
+/// One Claude Code permission rule (code.claude.com/docs/en/permissions.md).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct PermissionRule {
+    /// "allow" | "ask" | "deny"
+    pub list: String,
+    /// The rule text, redacted and sanitized (at most 200 characters).
+    pub rule: String,
+    /// Allow rules only: "mcp-server-wildcard" | "code-execution" | "credential-read" |
+    /// "credential-edit" | "inert-path" (see `scanners::agent_settings`). None: a scoped
+    /// rule that is inventoried, not graded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// mcp-server-wildcard: the server segment of the tool name. inert-path: what the
+    /// rule matches instead of the path it names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Claude Code's forced login method / Claude apps gateway URL.
@@ -746,6 +774,20 @@ pub struct AgentTranscriptStore {
     pub file_count: usize,
     pub total_size_bytes: u64,
     pub world_readable: bool,
+    /// Files in the store other users can read: mode o+r on the file and o+x on every
+    /// directory between it and the store root. None in reports from older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readable_files: Option<usize>,
+    /// The store's own mode (`0644`), and whether it is group-readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_readable: bool,
+    /// An ancestor directory other users cannot traverse (no o+x), e.g. a HOME of 0700:
+    /// `"/home/u is 0700"`. Set means the store is not reachable by other users whatever
+    /// its own mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable_via: Option<String>,
 }
 
 /// A configured plugin marketplace — a remote source whose skills/plugins run as
@@ -917,9 +959,10 @@ pub struct EnvAgentOverride {
 /// a project root, a committed symlink that escapes its repository, a JavaScript loader
 /// staged in an agent directory, or a known worm persistence path. See
 /// `scanners::persistence`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersistenceArtifact {
-    /// "python-startup-hook" | "planted-binary" | "escaping-symlink" | "loader-script" | "worm-ioc"
+    /// "python-startup-hook" | "planted-binary" | "escaping-symlink" | "loader-script" |
+    /// "worm-ioc" | "url-handler" | "agent-bin" | "dangling-plugin-record"
     pub kind: String,
     pub path: String,
     /// The site-packages root, project root, or home the artifact was found under.
@@ -935,6 +978,30 @@ pub struct PersistenceArtifact {
     /// into a credential/agent-config path, a PATH that searches the working directory,
     /// or a known loader name.
     pub sensitive_target: bool,
+    /// agent-bin only: what the file is, from its mode, owner and first four bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin: Option<AgentBinInfo>,
+}
+
+/// An executable in the agent's own bin directory (`~/.claude/bin/`), outside any plugin
+/// cache. Identity only: a 4-byte magic read and a SHA-256 of the file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AgentBinInfo {
+    /// "elf" | "mach-o" | "script" | "other" (from the first four bytes).
+    pub format: String,
+    /// Permission bits, e.g. "0755".
+    pub mode: String,
+    /// Modification time, seconds since the epoch.
+    pub mtime: i64,
+    pub size: u64,
+    /// Hex SHA-256 of the contents; None when the file could not be read or exceeds the
+    /// hashing bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Owned by the user running the scan.
+    pub owned_by_user: bool,
+    /// Writable by group or other.
+    pub world_writable: bool,
 }
 
 /// Exposure catalog entry for known-bad packages.
