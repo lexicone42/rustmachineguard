@@ -5,9 +5,11 @@ a baseline and a daily diff, a severity gate, local notifications, OpenTelemetry
 to a collector, a Grafana dashboard and two Prometheus alert rules.
 
 Everything here uses the CLI as it ships; the helper scripts are POSIX `sh`. Every
-command below was run against the release build (`rmguard 0.1.0 (threat catalog
-2026-10-25.2)`, Linux x86_64) on 2026-10-25, with outputs pasted as they came, home
-directory shortened to `~`. Where something could not be run here, it says so
+command below was run against a release build on Linux x86_64 on 2026-10-25, with outputs
+pasted as they came, home directory shortened to `~`: the one-machine and notification
+commands against `rmguard 0.1.0 (threat catalog 2026-10-25.3)`, after the exit-code
+change below; the fleet commands against the 2026-10-25.2 build before it. Where
+something could not be run here, it says so
 ([What was and was not verified](#what-was-and-was-not-verified)).
 
 - [One machine](#one-machine)
@@ -35,55 +37,41 @@ configuration are, so keep the directory owner-only.
 
 ```console
 $ STATE=${XDG_STATE_HOME:-$HOME/.local/state}/rmguard; mkdir -p "$STATE" && chmod 700 "$STATE"; cd ~ && rmguard --format json -o "$STATE/baseline.json"
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
+info: loaded built-in threat catalog 2026-10-25.3 (307 entries)
 [exit 0]
 ```
 
-**Every later run: two invocations.** One writes the current JSON and gates on severity,
-the other diffs against the baseline:
+**Every later run: one invocation** writes the current JSON, diffs against the baseline
+and gates on severity. With `--diff`, stdout is the diff; `-o` receives the scan, in
+`--format`; `--fail-on` is evaluated on that scan exactly as in a run without `--diff`:
 
 ```console
-$ cd ~ && rmguard --format json -o ~/.local/state/rmguard/latest.json --fail-on high
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
-fail-on: 1 finding(s) at or above high (most severe: high) — exiting 2
-[exit 2]
-
-$ cd ~ && rmguard --diff ~/.local/state/rmguard/baseline.json -o ~/.local/state/rmguard/diff.txt; cat ~/.local/state/rmguard/diff.txt
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
+$ cd ~ && rmguard --format json -o ~/.local/state/rmguard/latest.json --diff ~/.local/state/rmguard/baseline.json --fail-on high
+info: loaded built-in threat catalog 2026-10-25.3 (307 entries)
 === Scan Diff Report ===
 
 --- MCP Servers ---
-  + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi)
+  + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi, unpinned=no version)
   ~ notes|Claude Code (home)
       package_version: 0.6.0 -> 0.6.2
 
 --- Summary ---
   MCP servers: 1 -> 2 (+1)
 
-[exit 0]
+fail-on: 1 finding(s) at or above high (most severe: high) — exiting 3
+[exit 3]
 ```
 
 (That is a scratch home in which, after the baseline, one MCP server was added, another
 moved from `server-memory@0.6.0` to `@0.6.2`, and `~/.claude.json` was made
 world-readable, which is the one high finding. With nothing changed the diff prints
-`No changes detected between baseline and current scan.`)
+`No changes detected between baseline and current scan.`
+[`scripts/rmguard-notify.sh`](../scripts/rmguard-notify.sh) runs this and decides
+whether to tell you.)
 
-**Why not one invocation.** `--diff` replaces the report: with `--diff`, `-o` receives
-the diff text, `--format` is ignored, and `--fail-on` is not evaluated. This looks
-right and is not:
-
-```console
-$ rmguard --format json -o ~/.local/state/rmguard/combined.json --diff ~/.local/state/rmguard/baseline.json --fail-on high; head -c 40 ~/.local/state/rmguard/combined.json
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
-=== Scan Diff Report ===
-
---- MCP Server[exit 0]
-```
-
-The "JSON" is diff text, and the exit code is 0 although the same machine has a high
-finding. So every scheduled run scans twice (on the development machine this was
-written on, about 7 s per scan); [`scripts/rmguard-notify.sh`](../scripts/rmguard-notify.sh)
-does both and decides whether to tell you.
+This changed on 2026-10-25: before it, a `--diff` run wrote the diff text into `-o`,
+ignored `--format`, never evaluated `--fail-on` (exit 0 on a machine with high
+findings), and the gate exited 2.
 
 **What `--diff` compares.** Inventory, not findings: MCP servers (by name, comparing
 transport, package identity and version, URL, inline secret env key names and whether
@@ -96,18 +84,18 @@ the diff together; neither covers the other.
 
 ### Exit codes
 
-| Invocation | 0 | 1 | 2 |
-|---|---|---|---|
-| `rmguard ... --fail-on <sev>` | no finding at or above `<sev>` | the scan could not run or write (missing HOME, write error) | at least one finding at or above `<sev>`; the report was still written, and stderr has the `fail-on:` line |
-| `rmguard --diff <baseline>` | diff written, **whether or not anything changed** | baseline unreadable or not JSON, write error | never |
-| `rmguard --report <dir>` | fleet HTML written | no valid scan in `<dir>`, write error | never |
-| `scripts/rmguard-notify.sh` | nothing to report | error (no baseline, scan failed, another run holds the lock) | reported: gate tripped or the diff has entries |
-| `scripts/rmguard-baseline.sh` | baseline written or rotated | error, nothing changed | (3) a baseline exists and `--force` was not given; the drift was printed |
+| Invocation | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| `rmguard ... --fail-on <sev>` (with or without `--diff`) | no finding at or above `<sev>` | the scan could not run or write (missing HOME, unreadable or non-JSON `--diff` baseline, write error) | usage error | at least one finding at or above `<sev>`; the report (and diff) was still written, and stderr has the `fail-on:` line |
+| `rmguard --diff <baseline>` without `--fail-on` | diff written, **whether or not anything changed** | baseline unreadable or not JSON, write error | usage error | never |
+| `rmguard --report <dir>` | fleet HTML written | no valid scan in `<dir>`, write error | usage error | never |
+| `scripts/rmguard-notify.sh` | nothing to report | error (no baseline, scan failed, rmguard usage error, another run holds the lock) | never | reported: gate tripped or the diff has entries |
+| `scripts/rmguard-baseline.sh` | baseline written or rotated | error, nothing changed | never | a baseline exists and `--force` was not given; the drift was printed |
 
-**A command-line usage error also exits 2** (an unknown flag, `--fail-on severe`): that is
-the argument parser's convention, and it prints usage instead of a report. Tell the two
-apart by the `fail-on:` line on stderr, as `rmguard-notify.sh` does; a scheduled job with
-a typo would otherwise look like a machine with findings.
+**A command-line usage error exits 2** (an unknown flag, `--fail-on severe`): the
+argument parser's convention; it prints usage instead of a report. The findings gate
+exits 3, so a scheduled job with a typo does not look like a machine with findings (until
+2026-10-25 both were 2).
 
 A diff's first line can be `threat catalog: <old> -> <new> (findings may change without
 any change on this machine)`: the binary's built-in catalog changed since the baseline.
@@ -126,17 +114,19 @@ version inventories for the first time (the README's
 without `--force` it prints the drift and changes nothing; with `--force` it keeps the
 previous baseline as `baseline.<UTC timestamp>.json` and replaces it. `--from <file>`
 promotes a scan you already have (the `latest.json` whose diff you just read) instead of
-taking a new one, so what becomes the baseline is exactly what you reviewed; the file is
+the one the printed drift came from, so what becomes the baseline is exactly what you
+reviewed (without `--from`, the new baseline is the scan the printed drift was computed
+from: one scan per run); the file is
 checked with rmguard's own report loader first (a file that is not an rmguard JSON scan
 is refused).
 
 ```console
 $ rmguard-baseline.sh
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
+info: loaded built-in threat catalog 2026-10-25.3 (307 entries)
 === Scan Diff Report ===
 
 --- MCP Servers ---
-  + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi)
+  + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi, unpinned=no version)
   ~ notes|Claude Code (home)
       package_version: 0.6.0 -> 0.6.2
 
@@ -148,11 +138,11 @@ baseline unchanged: review the drift above, then re-run with --force to rotate
 [exit 3]
 
 $ rmguard-baseline.sh --force --from ~/.local/state/rmguard/latest.json
-info: loaded built-in threat catalog 2026-10-25.2 (307 entries)
+info: loaded built-in threat catalog 2026-10-25.3 (307 entries)
 === Scan Diff Report ===
 ...
 drift since baseline: 1 added, 0 removed, 1 changed
-previous baseline kept: ~/.local/state/rmguard/baseline.20261025T071050Z.json
+previous baseline kept: ~/.local/state/rmguard/baseline.20261025T080113Z.json
 baseline rotated: ~/.local/state/rmguard/baseline.json
 [exit 0]
 ```
@@ -227,8 +217,8 @@ systemctl --user enable --now rmguard.timer # daily, RandomizedDelaySec=1h, Pers
 loginctl enable-linger "$USER"              # optional: run while you are logged out
 ```
 
-Exit 2 (gate tripped or drift) leaves the unit `failed` until the next clean run, so
-`systemctl --user --failed` doubles as a reminder; uncomment `SuccessExitStatus=2` if you
+Exit 3 (gate tripped or drift) leaves the unit `failed` until the next clean run, so
+`systemctl --user --failed` doubles as a reminder; uncomment `SuccessExitStatus=3` if you
 would rather it did not.
 
 #### Hardening
@@ -303,8 +293,8 @@ lock in the state directory, so a slow scan does not overlap the next one.
 
 ## Notifications
 
-[`scripts/rmguard-notify.sh`](../scripts/rmguard-notify.sh) runs the two scans, and when
-the gate trips (exit 2) or the diff has any entry it:
+[`scripts/rmguard-notify.sh`](../scripts/rmguard-notify.sh) runs the one scan above, and
+when the gate trips (rmguard exit 3) or the diff has any entry it:
 
 1. appends a summary and the diff to `rmguard.log` in the state directory (owner-only;
    the diff names items, with the redaction rmguard applies to every output);
@@ -322,15 +312,15 @@ Nothing leaves the machine unless that variable is set.
 ```console
 $ RMGUARD_DESKTOP=0 rmguard-notify.sh
 rmguard: 1 finding(s) at or above high (worst: high); drift since baseline: 1 added, 0 removed, 1 changed (MCP Servers)
-[exit 2]
+[exit 3]
 
 $ cat ~/.local/state/rmguard/rmguard.log
-== 2026-10-25T07:10:50Z ==
+== 2026-10-25T08:01:13Z ==
 rmguard: 1 finding(s) at or above high (worst: high); drift since baseline: 1 added, 0 removed, 1 changed (MCP Servers)
   === Scan Diff Report ===
 
   --- MCP Servers ---
-    + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi)
+    + fetcher (transport=stdio, package_name=mcp-server-fetch, package_ecosystem=pypi, unpinned=no version)
     ~ notes|Claude Code (home)
         package_version: 0.6.0 -> 0.6.2
 
@@ -381,10 +371,9 @@ OTEL_TRACES_EXPORTER=none \
   export, and rmguard prints
   `warning: OpenTelemetry export failed (HTTP 404); telemetry only, the report and exit code are not affected by this`
   (seen here with a metrics-only collector; the metrics arrived regardless).
-- Put the export on the gated JSON scan, not the `--diff` run, so each scan exports once.
-  The notify script forwards arguments after `--` to both scans; for a fleet, run the
-  exporting scan yourself, or accept that each run exports twice (the gauges are
-  replaced, not added, so the dashboard is unaffected).
+- The notify script runs one scan per run, so `rmguard-notify.sh -- --otel
+  --otel-instance "$ASSET_TAG"` exports once per run (the posture metrics describe the
+  scan, not the diff).
 
 On the collector, the `prometheus` exporter with default translation produces the names
 the dashboard and rules use. Scrape it with `honor_labels: true`, or Prometheus renames
@@ -515,6 +504,14 @@ and `notify-send` through a stand-in that recorded its arguments; `shellcheck --
 container) on both units, with and without the optional directives, clean; the plist
 parsed with Python's `plistlib`; the collector → Prometheus → Grafana path and the alert
 rules as described above.
+
+Re-run after the single-scan change (2026-10-25, catalog 2026-10-25.3), in an `env -i`
+environment with a scratch home: the one-machine commands as shown; both scripts (first
+baseline, drift without `--force`, `--force`, `--force --from`; notify with the gate
+tripped and drift, with `RMGUARD_FAIL_ON=critical` and no drift, and with an rmguard
+usage error after `--`, which it reports as an error, exit 1); `sh -n` on both scripts.
+Not re-run after that change: `shellcheck` (not installed on the machine), the webhook
+receiver and the `notify-send` stand-in (their code did not change).
 
 Not run here:
 

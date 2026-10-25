@@ -832,7 +832,21 @@ pub fn redact_token_shapes(text: &str) -> String {
                 .find(|(p, _)| bytes[i..].starts_with(p.as_bytes()))
         {
             let start = i + prefix.len();
-            let end = start + bytes[start..].iter().take_while(|b| is_token_char(**b)).count();
+            let mut end = start + bytes[start..].iter().take_while(|b| is_token_char(**b)).count();
+            // A stateless GitHub App installation token is `ghs_<app id>_<JWT>`: the JWT's
+            // payload and signature follow dots, and redacting only up to the first dot
+            // would print them (transcript_content::stateless_ghs has the sources).
+            if *prefix == "ghs_" {
+                for _ in 0..2 {
+                    let seg = bytes
+                        .get(end + 1..)
+                        .map_or(0, |r| r.iter().take_while(|b| is_token_char(**b)).count());
+                    if bytes.get(end) != Some(&b'.') || seg == 0 {
+                        break;
+                    }
+                    end += 1 + seg;
+                }
+            }
             if end - start >= *min {
                 out.push_str(&text[copied..start]);
                 out.push_str("<redacted>");

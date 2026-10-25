@@ -544,8 +544,8 @@ detection coverage, with each finding tied to the control it evidences.
 
 [docs/OPERATIONS.md](docs/OPERATIONS.md) covers running rmguard daily and acting on drift:
 a reviewed baseline, then on each run a `--fail-on` gate and a `--diff` against that
-baseline (two invocations: with `--diff`, `-o` gets the diff text and `--fail-on` is not
-applied), with
+baseline (one invocation: with `--diff`, stdout is the diff, `-o` receives the scan in
+`--format`, and `--fail-on` gates on that scan), with
 [`scripts/rmguard-baseline.sh`](scripts/rmguard-baseline.sh) to create or rotate the
 baseline and [`scripts/rmguard-notify.sh`](scripts/rmguard-notify.sh) to log and notify
 (desktop by default; a webhook only if you set one, and then counts only). It also has
@@ -574,12 +574,14 @@ To **gate** on posture instead of just reporting it — a pre-commit hook, an on
 check, or a CI step that must fail a machine with serious findings — use `--fail-on`:
 
 ```bash
-# Exits 2 (report still prints) if any Critical finding is present; else 0.
+# Exits 3 (report still prints) if any Critical finding is present; else 0.
 rmguard --fail-on critical || echo "machine failed its security gate"
 ```
 
-Operational errors exit 1, findings-at-threshold exit 2, clean exits 0 — so scripts can
-tell "the scan couldn't run" from "the scan found something."
+**Exit codes** (the gate moved from 2 to 3 on 2026-10-25, so a usage error no longer looks like findings):
+
+| 0 clean, or below the `--fail-on` threshold | 1 operational error (scan, baseline or write failed) | 2 usage error (bad flag or value) | 3 `--fail-on` threshold breached (report still written) |
+|---|---|---|---|
 
 ### Debugging a scan
 
@@ -817,7 +819,9 @@ Options:
                                      the built-in catalog.
       --no-builtin-catalog           Disable the built-in threat catalog.
       --diff <BASELINE.json>         Compare against a previous --format json scan
-                                     and report drift (incl. MCP rug-pulls).
+                                     and report drift (incl. MCP rug-pulls). With
+                                     --diff, stdout is the diff; -o receives the
+                                     scan; --fail-on still applies.
       --probe-mcp                    Live-probe local stdio MCP servers to
                                      enumerate tools/resources (opt-in; spawns the
                                      server processes).
@@ -840,7 +844,7 @@ Options:
                                      the other walk caps scale in the same ratio.
                                      Larger = more coverage, slower; a walk that
                                      reaches it is marked partial. At least 1.
-      --fail-on <SEVERITY>           Exit 2 if any finding is at or above this
+      --fail-on <SEVERITY>           Exit 3 if any finding is at or above this
                                      severity [values: critical, high, medium,
                                      low]. The report still prints; only the exit
                                      status changes. For CI / fleet-onboarding gates.

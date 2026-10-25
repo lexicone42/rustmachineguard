@@ -414,6 +414,27 @@ or, for a vulnerable range, with the optional severity:
    and `agentwork-cli` (unpublished by npm, a worm node; from 2026-10-25.2 its rows are
    exact versions, which the check skips); on the 2026-10-22 catalog it also
    listed `@modelcontextprotocol/server-filesystem` `<2025.7.1` against latest 2.0.1.
+5. Run the advisory-id check, read-only and rate-limited (set `GITHUB_TOKEN`, e.g.
+   `GITHUB_TOKEN=$(gh auth token)`; unauthenticated GitHub calls stop at 60 an hour):
+
+   ```sh
+   uv run --script scripts/catalog-id-check.py [--catalog FILE] [--delay 0.5]
+   ```
+
+   It resolves every id the rows cite: GHSA ids in GitHub's advisory database, then (for
+   a maintainer-published advisory not reviewed into it) in the row's repository's
+   security advisories, the repository taken from the registry or the row; CVE ids in
+   OSV, NVD and CVE.org, then as the `cve_id` of a published repository advisory (listed
+   as `CVE UNPUBLISHED`: assigned, record not yet public); MAL and PYSEC ids in OSV.
+   Vendor ids with no public resolver (JFrog `XRAY-`, codelake `CLR-`, Mistral `MAI-`)
+   are listed `NOT CHECKED` unless the row cites a URL, which must answer 200. It exits 1
+   when an id is `UNRESOLVED` or `WITHDRAWN`. On the 2026-10-25.3 catalog (265 distinct ids in 307 rows) every
+   GHSA, MAL and PYSEC id resolves (32 GHSA ids only as repository advisories); six CVEs
+   are `CVE UNPUBLISHED` (CVE-2026-111768 to -111771 in
+   `modelcontextprotocol/typescript-sdk`, CVE-2026-115563 in
+   `modelcontextprotocol/python-sdk`, CVE-2026-88066 in `anthropics/claude-code`); nine
+   vendor ids are `NOT CHECKED`; and GHSA-7x36-8jrh-v4pw is `NOTED` (the `hermes-agent`
+   row names it as the wrong id it replaced).
 
 To contribute additional entries, please open a PR with:
 1. The JSON entry in `builtin_catalog.json`

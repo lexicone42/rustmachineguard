@@ -134,9 +134,16 @@ const fn shape(
 ///   and the base62 body with a CRC32 checksum in its last six characters,
 ///   <https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/>.
 ///   Neither page states a length: 36 is the issued body of the classic tokens (40 in
-///   all). The first page also says that since 2026-04-27 new GitHub App installation
-///   tokens have a stateless `ghs_APPID_JWT` form, which is not 40 characters; the 36-byte
-///   `ghs_` shape below does not match it.
+///   all). GitHub App installation tokens also come in a stateless `ghs_APPID_JWT` form:
+///   "Starting April 27, 2026, GitHub began a staged rollout of a stateless format
+///   (`ghs_APPID_JWT`) to all newly minted GitHub App installation tokens" (the first
+///   page); "A stateless token is a `ghs_`-prefixed JWT. It is longer (~520 characters)
+///   and contains two dots", while "a stateful token is a short opaque string with no
+///   dots" (<https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/>);
+///   the rollout completed per
+///   <https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out>
+///   (pages fetched 2026-10-25). A JWT's dots end a word, so that form is matched by
+///   [`stateless_ghs`] beside the 36-byte `ghs_` row, with the same label.
 /// - AWS access key ids `AKIA` (access key) and `ASIA` (temporary STS key), 16 more
 ///   `[A-Z0-9]`: the prefixes,
 ///   <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-prefixes>.
@@ -319,6 +326,42 @@ pub fn token_label(w: &[u8]) -> Option<&'static str> {
     mixed.then_some(s.label)
 }
 
+/// The label of both GitHub installation-token forms.
+const GITHUB_TOKEN: &str = "GitHub token";
+
+/// A stateless GitHub App installation token at the word `buf[s..e]`: `ghs_`, the numeric
+/// app id, `_`, then a JWT, three base64url segments joined by dots (sources at
+/// [`TOKEN_SHAPES`]). The word (which ends at the first dot) must be `ghs_<digits>_eyJ...`
+/// (a JWT header is base64url JSON, which starts `eyJ`), followed by `.` and a payload of
+/// at least 16 bytes, `.` and a signature of at least 16 bytes, and nothing more of the
+/// token after it (no further dot-joined segment).
+fn stateless_ghs(buf: &[u8], s: usize, e: usize) -> bool {
+    let w = &buf[s..e];
+    let Some(rest) = w.strip_prefix(b"ghs_") else {
+        return false;
+    };
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    if !(1..=20).contains(&digits) || rest.get(digits) != Some(&b'_') {
+        return false;
+    }
+    let header = &rest[digits + 1..];
+    if header.len() < 16 || !header.starts_with(b"eyJ") {
+        return false;
+    }
+    let mut p = e;
+    for _ in 0..2 {
+        if buf.get(p) != Some(&b'.') {
+            return false;
+        }
+        let seg = buf[p + 1..].iter().take_while(|b| is_word(**b)).count();
+        if seg < 16 {
+            return false;
+        }
+        p += 1 + seg;
+    }
+    !(buf.get(p) == Some(&b'.') && buf.get(p + 1).is_some_and(|b| is_word(*b)))
+}
+
 /// A PEM private-key block starting at the word `-----BEGIN` that ends at `e`: within 48
 /// bytes `PRIVATE KEY-----`, then a line break (raw, or the `\n` escape of a JSON string),
 /// then at least 40 base64 bytes. A header alone (code that checks for one) is not a key.
@@ -464,7 +507,7 @@ pub fn shapes_in(buf: &[u8]) -> FileShapes {
             }
             return;
         }
-        if let Some(label) = token_label(w) {
+        if let Some(label) = token_label(w).or_else(|| stateless_ghs(buf, s, i).then_some(GITHUB_TOKEN)) {
             out.labels.insert(label);
             out.tokens += 1;
             return;

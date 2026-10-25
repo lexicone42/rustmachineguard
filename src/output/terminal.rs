@@ -59,7 +59,7 @@ fn render_inner(report: &ScanReport) -> String {
     ));
     out.push_str(&format!(
         "{}\n",
-        "║          Dev Machine Guard — Scan Report                ║"
+        "║                  rmguard — Scan Report                   ║"
             .bold()
             .cyan()
     ));

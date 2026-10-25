@@ -570,7 +570,7 @@ fn diff_array_section(
                 cn = normalize_permission_rules(c.get(*field));
                 (bn.as_ref(), cn.as_ref())
             } else {
-                (b.get(*field), c.get(*field))
+                flag_pair(field, b.get(*field), c.get(*field))
             };
             if bv != cv {
                 changes.push(format!("{}: {} -> {}", field, display_value(bv), display_value(cv)));
@@ -668,13 +668,12 @@ fn diff_rules_files(baseline: Vec<Value>, current: Vec<Value>) -> SectionDiff {
             changes.push(format!("CONTENT CHANGED: hash {} -> {}", b_hash, c_hash));
         }
 
-        let b_tracked = b.get("git_tracked").and_then(|v| v.as_bool());
-        let c_tracked = c.get("git_tracked").and_then(|v| v.as_bool());
+        let (b_tracked, c_tracked) = flag_pair("git_tracked", b.get("git_tracked"), c.get("git_tracked"));
         if b_tracked != c_tracked {
             changes.push(format!(
                 "git_tracked: {} -> {}",
-                display_value(b.get("git_tracked")),
-                display_value(c.get("git_tracked"))
+                display_value(b_tracked),
+                display_value(c_tracked)
             ));
         }
 
@@ -939,6 +938,36 @@ fn format_item(v: &Value, key_field: &str, fields: &[&str]) -> String {
         key.to_string()
     } else {
         format!("{} ({})", key, details.join(", "))
+    }
+}
+
+/// Compared fields that are `Option<bool>` in the report: absent means "not set" (an MCP
+/// server loaded as configured, a Vibe key left at its default), which is not `false`.
+const TRISTATE_BOOLS: &[&str] = &[
+    "enabled",
+    "auto_approve",
+    "enable_auto_update",
+    "enable_update_checks",
+    "enable_telemetry",
+    "bypass_tool_permissions",
+];
+
+static FALSE: Value = Value::Bool(false);
+
+/// A boolean field as drift sees it. Every other compared boolean is a plain `bool`, many
+/// serialized only when true (`skip_serializing_if`) and read back with a serde default,
+/// so a side where it is absent (or null) while the other side has a boolean IS `false`:
+/// a flag turning off prints `true -> false`, not `true -> null`, and an explicit `false`
+/// against an absent one is no change.
+fn flag_pair<'a>(field: &str, b: Option<&'a Value>, c: Option<&'a Value>) -> (Option<&'a Value>, Option<&'a Value>) {
+    if TRISTATE_BOOLS.contains(&field) {
+        return (b, c);
+    }
+    let unset = |v: Option<&Value>| v.is_none_or(Value::is_null);
+    match (b, c) {
+        (Some(Value::Bool(_)), c) if unset(c) => (b, Some(&FALSE)),
+        (b, Some(Value::Bool(_))) if unset(b) => (Some(&FALSE), c),
+        _ => (b, c),
     }
 }
 
@@ -1243,5 +1272,44 @@ mod hook_diff_tests {
         ));
         assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'), "{text:?}");
         assert!(!text.lines().any(|l| l.starts_with("forged")), "{text:?}");
+    }
+    /// A boolean serialized only when true reads `false` when absent: turning it off is
+    /// `true -> false` (it printed `true -> null`), turning it on `false -> true` (it
+    /// printed `null -> true`), and an explicit `false` against an absent one is no change.
+    /// An `Option<bool>` field (`enabled`) keeps `null`: there, absent means "not set".
+    #[test]
+    fn absent_skip_if_false_booleans_render_as_false() {
+        let settings = |extra: Value| {
+            let mut m = serde_json::json!({"path": "/p/.claude/settings.json"});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::json!({ "agent_settings": [m] })
+        };
+        let on = settings(serde_json::json!({"disable_all_hooks": true}));
+        let off = settings(serde_json::json!({}));
+        let text = render_diff(&diff_reports(&on, &off));
+        assert!(text.contains("disable_all_hooks: true -> false"), "{text}");
+        assert!(!text.contains("null"), "{text}");
+        let text = render_diff(&diff_reports(&off, &on));
+        assert!(text.contains("disable_all_hooks: false -> true"), "{text}");
+        let explicit = settings(serde_json::json!({"disable_all_hooks": false}));
+        assert!(diff_reports(&explicit, &off).is_empty(), "explicit false equals absent");
+        let rules = |t: Option<bool>| {
+            let mut r = serde_json::json!({"path": "/p/CLAUDE.md", "file_name": "CLAUDE.md", "sha256": "a"});
+            if let Some(t) = t {
+                r["git_tracked"] = Value::Bool(t);
+            }
+            serde_json::json!({ "rules_files": [r] })
+        };
+        let text = render_diff(&diff_reports(&rules(None), &rules(Some(true))));
+        assert!(text.contains("git_tracked: false -> true"), "{text}");
+        let server = |enabled: Option<bool>| {
+            let mut s = serde_json::json!({"name": "x", "transport": "stdio"});
+            if let Some(e) = enabled {
+                s["enabled"] = Value::Bool(e);
+            }
+            serde_json::json!({"mcp_configs": [{"config_source": "Claude Code", "config_path": "/h/.claude.json", "servers": [s]}]})
+        };
+        let text = render_diff(&diff_reports(&server(Some(false)), &server(None)));
+        assert!(text.contains("enabled: false -> null"), "{text}");
     }
 }

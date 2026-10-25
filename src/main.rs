@@ -52,7 +52,8 @@ struct Cli {
     no_builtin_catalog: bool,
 
     /// Compare against a baseline scan (JSON format from a previous --format json run).
-    /// Shows added, removed, and changed items across all categories.
+    /// Shows added, removed, and changed items across all categories. With --diff,
+    /// stdout is the diff; -o receives the scan (in --format); --fail-on still applies.
     #[arg(long)]
     diff: Option<PathBuf>,
 
@@ -72,9 +73,10 @@ struct Cli {
     #[arg(long)]
     verify_registry: bool,
 
-    /// Exit with code 2 if any finding at or above this severity is present, after
-    /// printing the report as usual. For CI / fleet-onboarding gates (e.g. fail a
-    /// machine's check on any Critical). Operational errors still exit 1.
+    /// Exit with code 3 if any finding at or above this severity is present, after
+    /// printing the report as usual (with --diff too: the gate is on the current scan).
+    /// For CI / fleet-onboarding gates (e.g. fail a machine's check on any Critical).
+    /// Operational errors exit 1, command-line usage errors 2.
     #[arg(long, value_name = "SEVERITY")]
     fail_on: Option<FailOn>,
 
@@ -122,6 +124,11 @@ struct Cli {
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     walk_budget: Option<u64>,
 }
+
+/// Exit status when `--fail-on` trips. Not 2: that is the argument parser's usage-error
+/// status, and a scheduled job with a typo must not look like a machine with findings.
+/// Operational errors exit 1.
+const FINDINGS_GATE_EXIT: i32 = 3;
 
 /// Severity threshold for `--fail-on`, ordered most- to least-severe.
 #[derive(Clone, Copy, ValueEnum)]
@@ -1172,39 +1179,6 @@ fn main() {
         report.compute_summary();
     }
 
-    // Diff mode: compare against a baseline scan
-    if let Some(ref baseline_path) = cli.diff {
-        {
-            let _p = otel::span("phase.diff", || vec![Attr::str(Key::Phase, "diff")]);
-            let baseline_str = std::fs::read_to_string(baseline_path).unwrap_or_else(|e| {
-                eprintln!("Error reading baseline {}: {}", baseline_path.display(), e);
-                otel::shutdown();
-                std::process::exit(1);
-            });
-            let baseline: serde_json::Value = serde_json::from_str(&baseline_str).unwrap_or_else(|e| {
-                eprintln!("Error parsing baseline JSON: {}", e);
-                otel::shutdown();
-                std::process::exit(1);
-            });
-
-            let current_json = serde_json::to_value(&report).unwrap_or_default();
-            let diff = rustmachineguard::diff::diff_reports(&baseline, &current_json);
-            let diff_output = rustmachineguard::diff::render_diff(&diff);
-
-            if let Some(ref path) = cli.output {
-                std::fs::write(path, &diff_output).unwrap_or_else(|e| {
-                    eprintln!("Error writing to {path}: {e}");
-                    otel::shutdown();
-                    std::process::exit(1);
-                });
-            } else {
-                write_report_to_stdout(&diff_output);
-            }
-        }
-        finish_scan(root, scan_start, &report);
-        return;
-    }
-
     // Skipped scanners appear in diagnostics too, so the table answers "did it run?"
     // for every scanner, not just the ones that did.
     let mut skipped: std::collections::BTreeSet<&str> = skip.iter().copied().collect();
@@ -1228,19 +1202,39 @@ fn main() {
             .push(rustmachineguard::scanners::telemetry::skipped(label));
     }
 
-    let rendered = {
+    // Diff mode: compare against a baseline scan. With --diff, stdout is the diff and `-o`
+    // receives this scan in `--format`; `--fail-on` gates on this scan below, as in any run.
+    let diff_output = cli.diff.as_ref().map(|baseline_path| {
+        let _p = otel::span("phase.diff", || vec![Attr::str(Key::Phase, "diff")]);
+        let baseline_str = std::fs::read_to_string(baseline_path).unwrap_or_else(|e| {
+            eprintln!("Error reading baseline {}: {}", baseline_path.display(), e);
+            otel::shutdown();
+            std::process::exit(1);
+        });
+        let baseline: serde_json::Value = serde_json::from_str(&baseline_str).unwrap_or_else(|e| {
+            eprintln!("Error parsing baseline JSON: {}", e);
+            otel::shutdown();
+            std::process::exit(1);
+        });
+        let current_json = serde_json::to_value(&report).unwrap_or_default();
+        let diff = rustmachineguard::diff::diff_reports(&baseline, &current_json);
+        rustmachineguard::diff::render_diff(&diff)
+    });
+
+    // The scan itself is rendered unless the diff takes stdout and there is no `-o`.
+    let rendered = (diff_output.is_none() || cli.output.is_some()).then(|| {
         let _p = otel::span("phase.render", || vec![Attr::str(Key::Phase, "render")]);
         let mut rendered = output::render(&report, format);
         if cli.verbose && format == OutputFormat::Terminal {
             rendered.push_str(&output::terminal::render_diagnostics(&report));
         }
         rendered
-    };
+    });
 
     {
         let _p = otel::span("phase.write", || vec![Attr::str(Key::Phase, "write")]);
-        if let Some(ref path) = cli.output {
-            std::fs::write(path, &rendered).unwrap_or_else(|e| {
+        if let (Some(path), Some(rendered)) = (cli.output.as_ref(), rendered.as_ref()) {
+            std::fs::write(path, rendered).unwrap_or_else(|e| {
                 eprintln!("Error writing to {path}: {e}");
                 otel::shutdown();
                 std::process::exit(1);
@@ -1248,8 +1242,11 @@ fn main() {
             if format == OutputFormat::Terminal {
                 eprintln!("Report written to {path}");
             }
-        } else {
-            write_report_to_stdout(&rendered);
+        }
+        match (&diff_output, &rendered) {
+            (Some(diff), _) => write_report_to_stdout(diff),
+            (None, Some(rendered)) if cli.output.is_none() => write_report_to_stdout(rendered),
+            _ => {}
         }
     }
 
@@ -1270,11 +1267,11 @@ fn main() {
                 .min()
                 .expect("non-empty since breaching > 0");
             eprintln!(
-                "fail-on: {breaching} finding(s) at or above {} (most severe: {}) — exiting 2",
+                "fail-on: {breaching} finding(s) at or above {} (most severe: {}) — exiting {FINDINGS_GATE_EXIT}",
                 threshold.label(),
                 worst.label()
             );
-            std::process::exit(2);
+            std::process::exit(FINDINGS_GATE_EXIT);
         }
     }
 }
@@ -1400,8 +1397,34 @@ fn dedupe_report(report: &mut ScanReport) {
         .package_config_audits
         .retain(|x| seen.insert(x.config_path.clone()));
 
-    let mut seen = HashSet::new();
-    report.rules_files.retain(|x| seen.insert(x.path.clone()));
+    // One file can be read by two scanners: Cline's `.clinerules` as a single file is a
+    // `rules` row (an instruction-file name) and an `agents` row (Cline's rules, which also
+    // get the prompt-injection phrases). The first row is kept and the others' findings and
+    // agent metadata are merged into it, so which checks a file gets does not depend on
+    // which scanner's row comes first.
+    let mut first: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut kept: Vec<models::RulesFile> = Vec::with_capacity(report.rules_files.len());
+    for row in std::mem::take(&mut report.rules_files) {
+        let Some(&i) = first.get(&row.path) else {
+            first.insert(row.path.clone(), kept.len());
+            kept.push(row);
+            continue;
+        };
+        let k = &mut kept[i];
+        for f in row.findings {
+            if !k
+                .findings
+                .iter()
+                .any(|x| x.severity == f.severity && x.pattern == f.pattern)
+            {
+                k.findings.push(f);
+            }
+        }
+        k.kind = k.kind.take().or(row.kind);
+        k.framework = k.framework.take().or(row.framework);
+        k.scope = k.scope.take().or(row.scope);
+    }
+    report.rules_files = kept;
 
     let mut seen = HashSet::new();
     report.agent_skills.retain(|x| seen.insert(x.path.clone()));

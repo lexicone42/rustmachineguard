@@ -2119,12 +2119,12 @@ mod enabled {
             &["--otel", "--fail-on", "low", "--format", "json", "--skip", SLOW_SKIP],
         ));
         let bodies = collector.finish();
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(3), "stderr:\n{}", stderr(&out));
         json(&out);
         let all = spans(&traces(&bodies));
         assert!(
             all.iter().any(|s| s.name == "rmguard.scan"),
-            "root span not flushed before exit 2"
+            "root span not flushed before exit 3"
         );
         let _ = std::fs::remove_dir_all(&home);
     }

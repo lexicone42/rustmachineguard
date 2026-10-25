@@ -16,9 +16,9 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The working directory is scanned as a project unless it is a scanned home (or an
 # ancestor of one): run from the home so the timer adds no project.
 WorkingDirectory=%h
-# Exit 2 (gate tripped or drift) leaves the unit "failed" until the next clean run, so
+# Exit 3 (gate tripped or drift) leaves the unit "failed" until the next clean run, so
 # `systemctl --user --failed` lists it. Uncomment to treat it as success instead.
-#SuccessExitStatus=2
+#SuccessExitStatus=3
 TimeoutStartSec=30min
 Nice=10
 IOSchedulingClass=idle

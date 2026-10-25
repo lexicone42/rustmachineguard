@@ -4,13 +4,12 @@
 #
 #   rmguard-notify.sh [-- extra rmguard args]
 #
-# Each run does two scans (rmguard's --diff mode writes the diff instead of the JSON and
-# ignores --fail-on, so one invocation cannot do both):
-#   1. rmguard --format json -o latest.json --fail-on $RMGUARD_FAIL_ON
-#   2. rmguard --diff baseline.json -o diff.txt
-# When the gate trips (exit 2) or the diff has any entry, it appends a summary to
+# Each run is one scan (needs an rmguard from 2026-10-25 or later, whose --diff run writes
+# the scan to -o, the diff to stdout, and applies --fail-on):
+#   rmguard --format json -o latest.json --diff baseline.json --fail-on $RMGUARD_FAIL_ON > diff.txt
+# When the gate trips (rmguard exit 3) or the diff has any entry, it appends a summary to
 # rmguard.log and, if a desktop is reachable, shows a notification. Anything after `--`
-# goes to both scans (keep it the same as the baseline's).
+# goes to the scan (keep it the same as the baseline's).
 #
 # Environment (all optional):
 #   RMGUARD               the rmguard binary (default: rmguard on PATH)
@@ -26,7 +25,7 @@
 # Files in the state directory: baseline.json (written by rmguard-baseline.sh),
 # latest.json, diff.txt, rmguard.log. Created with umask 077.
 #
-# Exit codes: 0 nothing to report; 2 reported (gate tripped or drift); 1 error.
+# Exit codes: 0 nothing to report; 3 reported (gate tripped or drift); 1 error.
 
 set -eu
 umask 077
@@ -39,7 +38,7 @@ WEBHOOK=${RMGUARD_WEBHOOK_URL:-}
 INSTANCE=${RMGUARD_INSTANCE:-}
 
 case ${1:-} in
-    -h | --help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift ;;
     '') ;;
     *) echo "error: unknown option: $1 (extra rmguard arguments go after --)" >&2; exit 1 ;;
@@ -72,39 +71,35 @@ trap 'exit 130' INT TERM
 # home or an ancestor of one, and a timer's working directory should add nothing.
 cd "$HOME"
 
-# 1. The JSON scan and the severity gate.
-gate=0
+# 1. One scan: the JSON report (-o), the drift (stdout) and the severity gate. rmguard
+# exits 3 when the gate trips, 2 on a usage error, 1 on an operational error (an
+# unreadable baseline, a write error).
+rc=0
 if [ "$FAIL_ON" = none ]; then
-    "$RMGUARD" --format json -o "$STATE_DIR/latest.json.tmp" "$@" 2>"$STATE_DIR/scan.err" || gate=$?
+    "$RMGUARD" --format json -o "$STATE_DIR/latest.json.tmp" --diff "$baseline" "$@" \
+        >"$STATE_DIR/diff.txt.tmp" 2>"$STATE_DIR/scan.err" || rc=$?
 else
-    "$RMGUARD" --format json -o "$STATE_DIR/latest.json.tmp" --fail-on "$FAIL_ON" "$@" 2>"$STATE_DIR/scan.err" || gate=$?
+    "$RMGUARD" --format json -o "$STATE_DIR/latest.json.tmp" --diff "$baseline" --fail-on "$FAIL_ON" "$@" \
+        >"$STATE_DIR/diff.txt.tmp" 2>"$STATE_DIR/scan.err" || rc=$?
 fi
-# Exit 2 is also what a command-line usage error returns (the argument parser's
-# convention), so a 2 counts as the gate only with rmguard's own fail-on line.
-rc=$gate
-if [ "$gate" -eq 2 ] && ! grep -q '^fail-on: ' "$STATE_DIR/scan.err"; then
-    gate=1
-fi
-case $gate in
-    0 | 2) mv "$STATE_DIR/latest.json.tmp" "$STATE_DIR/latest.json" ;;
+case $rc in
+    0) gate=0 ;;
+    3) gate=1 ;;
     *)
-        echo "error: scan failed (exit $rc):" >&2
+        echo "error: scan against $baseline failed (exit $rc):" >&2
         cat "$STATE_DIR/scan.err" >&2
-        rm -f "$STATE_DIR/latest.json.tmp"
+        rm -f "$STATE_DIR/latest.json.tmp" "$STATE_DIR/diff.txt.tmp"
         exit 1
         ;;
 esac
-# rmguard's own line, e.g. "fail-on: 3 finding(s) at or above high (most severe: critical) — exiting 2"
+mv "$STATE_DIR/latest.json.tmp" "$STATE_DIR/latest.json"
+mv "$STATE_DIR/diff.txt.tmp" "$STATE_DIR/diff.txt"
+# rmguard's own line, e.g. "fail-on: 3 finding(s) at or above high (most severe: critical) — exiting 3"
 gate_line=$(grep '^fail-on: ' "$STATE_DIR/scan.err" || true)
 gate_count=$(printf '%s\n' "$gate_line" | sed -n 's/^fail-on: \([0-9][0-9]*\) finding.*/\1/p')
 gate_worst=$(printf '%s\n' "$gate_line" | sed -n 's/.*(most severe: \([a-z]*\)).*/\1/p')
 
 # 2. The drift.
-"$RMGUARD" --diff "$baseline" -o "$STATE_DIR/diff.txt" "$@" 2>>"$STATE_DIR/scan.err" || {
-    echo "error: diff against $baseline failed:" >&2
-    cat "$STATE_DIR/scan.err" >&2
-    exit 1
-}
 added=$(grep -c '^  + ' "$STATE_DIR/diff.txt" || true)
 removed=$(grep -c '^  - ' "$STATE_DIR/diff.txt" || true)
 changed=$(grep -c '^  ~ ' "$STATE_DIR/diff.txt" || true)
@@ -115,14 +110,14 @@ grep -q '^No changes detected between baseline and current scan\.$' "$STATE_DIR/
 sections=$(sed -n 's/^--- \(.*\) ---$/\1/p' "$STATE_DIR/diff.txt" | grep -vx 'Summary' | paste -s -d, - | sed 's/,/, /g' || true)
 catalog_line=$(grep '^threat catalog: ' "$STATE_DIR/diff.txt" || true)
 
-if [ "$gate" -ne 2 ] && [ "$drift" -eq 0 ]; then
+if [ "$gate" -eq 0 ] && [ "$drift" -eq 0 ]; then
     exit 0
 fi
 
 # 3. Report. The headline holds counts and section titles only: it is what leaves this
 # file (desktop notification, webhook).
 headline="rmguard:"
-if [ "$gate" -eq 2 ]; then
+if [ "$gate" -eq 1 ]; then
     headline="$headline ${gate_count:-?} finding(s) at or above $FAIL_ON (worst: ${gate_worst:-?});"
 fi
 if [ "$drift" -eq 1 ]; then
@@ -170,4 +165,4 @@ if [ -n "$WEBHOOK" ]; then
 fi
 
 echo "$headline"
-exit 2
+exit 3

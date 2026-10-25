@@ -77,6 +77,10 @@ new_scan() {
         [ -f "$from" ] || { echo "error: --from: no such file: $from" >&2; return 1; }
         is_scan "$from" || { echo "error: --from: not an rmguard --format json scan: $from" >&2; return 1; }
         cp "$from" "$work/new.json"
+    elif [ -s "$work/fresh.json" ]; then
+        # The scan the drift above was computed from: what becomes the baseline is what
+        # was printed.
+        mv "$work/fresh.json" "$work/new.json"
     else
         (cd "$HOME" && "$RMGUARD" --format json -o "$work/new.json" "$@") || {
             echo "error: scan failed; baseline unchanged" >&2
@@ -93,8 +97,9 @@ if [ ! -e "$baseline" ]; then
     exit 0
 fi
 
-# A baseline exists: show what changed since it, before anything is replaced.
-(cd "$HOME" && "$RMGUARD" --diff "$baseline" -o "$work/diff.txt" "$@") || {
+# A baseline exists: show what changed since it, before anything is replaced. One scan:
+# the diff on stdout, the scan itself in fresh.json (rmguard 2026-10-25 or later).
+(cd "$HOME" && "$RMGUARD" --format json -o "$work/fresh.json" --diff "$baseline" "$@" >"$work/diff.txt") || {
     echo "error: diff against $baseline failed; baseline unchanged" >&2
     exit 1
 }

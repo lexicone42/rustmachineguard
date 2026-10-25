@@ -162,7 +162,7 @@ rmguard.scan                                   (root; one trace per run)
 │   └── registry.lookup                        (SpanKind=Client, one per package)
 ├── phase.identity
 ├── phase.diff                                 (--diff)
-├── phase.render
+├── phase.render                               (with --diff, only when -o receives the scan)
 └── phase.write
 ```
 
@@ -252,14 +252,14 @@ starts a thread.
 | `rmguard.scanners_run` | root | count of non-skipped diagnostics rows |
 | `rmguard.jobs` | root | threads a scan phase may use (`--jobs`, or the default) |
 | `rmguard.otel.instance_id_set` | root | bool: `--otel-instance` or a `service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES` was given ([Machine identity](#machine-identity)) |
-| `rmguard.catalog.version` | root, resource | the built-in threat catalog's version (`2026-10-22`: the date of its last change, a constant compiled into the binary, also in `rmguard --version` and the JSON report's `catalog.builtin_version`). On the root span only when the built-in catalog was used (absent with `--no-builtin-catalog`); on the resource always, as a fact of the binary |
+| `rmguard.catalog.version` | root, resource | the built-in threat catalog's version (the date of its last change, with a `.N` suffix for a later change that day: a constant compiled into the binary, also in `rmguard --version` and the JSON report's `catalog.builtin_version`). On the root span only when the built-in catalog was used (absent with `--no-builtin-catalog`); on the resource always, as a fact of the binary |
 | `rmguard.phase` | phase.* | the phase name |
 | `rmguard.root.index` | phase.home_pass | 0 = your home, 1.. = `--search-dirs` position |
 | `rmguard.root.kind` | phase.home_pass | `home` \| `search_dir` |
 | `rmguard.scanner` | scanner.*, metrics | scanner label: a closed set, the `--skip` labels (`VALID_SKIP` in src/main.rs: `mcp`, `packages`, ..., `statusline`, `listeners`, `agents`) plus `mcp-probe` and `registry` |
 | `rmguard.finding.severity` | `rmguard.findings` | `critical` \| `high` \| `medium` \| `low` |
-| `rmguard.finding.category` | `rmguard.findings` | one of the 38 entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
-| `rmguard.inventory.kind` | `rmguard.inventory` | one of the 35 report summary counts, named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
+| `rmguard.finding.category` | `rmguard.findings` | one of the entries of `analysis::FINDING_CATEGORIES` (`Exposure`, `Hook`, `Secret leak`, `SSH key`, ...: the report's own `category` strings), else `other` |
+| `rmguard.inventory.kind` | `rmguard.inventory` | one of the report summary counts (every `*_count` field of `summary`), named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
@@ -385,7 +385,7 @@ metrics are unchanged: durations are histograms, and the per-scanner
 | Name | Data points | Equals |
 |---|---|---|
 | `rmguard.findings` | one per (severity, category) pair with at least one finding; pairs with none are not exported | the report's findings grouped by severity and `category` (`analysis::collect_findings`, the list the terminal and HTML risk summary and `--fail-on` use) |
-| `rmguard.inventory` | one per kind, all 32, zeros included | the JSON report's `summary.<kind>_count` |
+| `rmguard.inventory` | one per kind, zeros included: every `*_count` field of the JSON report's `summary` | the JSON report's `summary.<kind>_count` |
 | `rmguard.scan.truncated_scanners` | one per scanner that ran: 0, or the number of its rows (one per home pass) that stopped early | diagnostics rows with `truncated: true` |
 
 The severity totals are also on the root span as ints (`rmguard.findings.critical`,
@@ -393,7 +393,7 @@ The severity totals are also on the root span as ints (`rmguard.findings.critica
 
 The labels are closed sets defined in code, each pinned by a test:
 `rmguard.finding.severity` is the `Severity` enum's lowercase label;
-`rmguard.finding.category` is `analysis::FINDING_CATEGORIES` (38 entries), the
+`rmguard.finding.category` is `analysis::FINDING_CATEGORIES`, the
 category strings exactly as the terminal, HTML and compliance reports show them. A unit test walks `src/analysis.rs`
 for every `category: "..."` literal and every `(severity, "...", title)` tuple and fails
 if one is not in the table (or a table entry is never emitted), a second checks the
@@ -613,6 +613,10 @@ points as JSON.
   is off from the wall clock by however far it was stepped during the run.
 
 ## Verified against
+
+The runs below are records: the counts, versions and exit codes in them are what that
+build printed on that date, not a description of the current binary (the findings gate
+exited 2 then; it exits 3 since 2026-10-25).
 
 The OpenTelemetry Collector Contrib distribution, image
 `docker.io/otel/opentelemetry-collector-contrib:latest` = 0.163.2 (image id

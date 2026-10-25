@@ -287,7 +287,8 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The --fail-on CI gate: a machine with Critical findings exits 2, and the same scan
+/// The --fail-on CI gate: a machine with Critical findings exits 3 (2 until 2026-10-25,
+/// which a usage error also returns), and the same scan
 /// still exits 0 when nothing breaches the threshold.
 #[test]
 fn fail_on_gates_the_exit_code() {
@@ -325,15 +326,15 @@ fn fail_on_gates_the_exit_code() {
             .code()
     };
 
-    // The poisoned rules file is Critical, so any threshold trips exit 2.
+    // The poisoned rules file is Critical, so any threshold trips exit 3.
     assert_eq!(
         run(&bad, "critical"),
-        Some(2),
+        Some(3),
         "critical finding gates at --fail-on critical"
     );
     assert_eq!(
         run(&bad, "low"),
-        Some(2),
+        Some(3),
         "a critical finding also breaches --fail-on low"
     );
     // A clean directory breaches nothing -> exit 0 even at the lowest threshold.
