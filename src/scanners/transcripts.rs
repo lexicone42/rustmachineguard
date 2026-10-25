@@ -7,13 +7,14 @@ use std::path::Path;
 /// Inventories agent transcript / conversation-state stores — the EAA-005 collection
 /// surface. These hold the full conversation history (code, prompts, and any secrets
 /// discussed), so a world-readable store is a real exposure. Records existence, file
-/// count, size, and permissions ONLY — it never reads transcript content.
+/// count, size, and permissions; transcript content is read only for secret-shaped KEY
+/// NAMES and token-prefix LABELS ([`crate::scanners::transcript_content`]), never a value.
 pub struct TranscriptsScanner;
 
 /// Cap the recursive walk so a pathological tree can't hang the scan: files counted per
 /// store at `--walk-budget` [`BASE_WALK_BUDGET`](crate::scanners::telemetry::BASE_WALK_BUDGET),
 /// scaled to the scan's budget ([`max_walk_files`]): 125,000 at the default.
-const BASE_WALK_FILES: usize = 20_000;
+pub const BASE_WALK_FILES: usize = 20_000;
 
 /// Files one store's count may take at the scan's `--walk-budget`.
 fn max_walk_files() -> usize {
@@ -60,7 +61,10 @@ impl Scanner for TranscriptsScanner {
                 ]
             });
             let mut walk = Walk::default();
-            if let Some(mut store) = inspect_store(framework, &path, kind, &mut walk) {
+            // Secret-shaped KEY NAMES and token-prefix LABELS only, from a bounded sample of
+            // the files the count walk lists ([`crate::scanners::transcript_content`]).
+            let sample = crate::scanners::transcript_content::in_scope(framework, kind).then_some(home.as_path());
+            if let Some(mut store) = inspect_store(framework, &path, kind, &mut walk, sample) {
                 if framework == "claude-code" {
                     store.other_login_accounts = accounts;
                 }
@@ -158,15 +162,34 @@ struct Walk {
     bytes: u64,
 }
 
-fn inspect_store(framework: &str, path: &Path, kind: &str, walk: &mut Walk) -> Option<AgentTranscriptStore> {
+/// One store by counts and modes; with `sample` (the scan pass's home) also its
+/// secret-shaped content by name and label ([`crate::scanners::transcript_content`]),
+/// sampled from the files this count walk lists.
+fn inspect_store(
+    framework: &str,
+    path: &Path,
+    kind: &str,
+    walk: &mut Walk,
+    sample: Option<&Path>,
+) -> Option<AgentTranscriptStore> {
+    use crate::scanners::transcript_content::{SAMPLE_BYTES, SAMPLE_FILES, SampleFile, sample_files};
     if !crate::scanners::probe_exists(path) {
         return None;
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
+    let mut listed: Option<Vec<SampleFile>> = sample.map(|_| Vec::new());
     let (file_count, total_size_bytes, readable) = if meta.is_dir() {
-        let (c, b, r) = walk_counts_readable(path, &mut walk.entries, other_bits(&meta).1);
+        let (c, b, r) = walk_counts_readable(path, &mut walk.entries, other_bits(&meta).1, listed.as_mut());
         (c, b, r)
     } else if meta.is_file() {
+        if let Some(l) = listed.as_mut() {
+            l.push(SampleFile {
+                mtime: std::time::UNIX_EPOCH,
+                path: path.to_path_buf(),
+                len: meta.len(),
+                others: other_bits(&meta).0,
+            });
+        }
         (1, meta.len(), usize::from(other_bits(&meta).0))
     } else {
         return None; // symlink / device / socket — skip
@@ -181,6 +204,13 @@ fn inspect_store(framework: &str, path: &Path, kind: &str, walk: &mut Walk) -> O
     let exported_names =
         (framework == "claude-code" && matches!(kind, SHELL_SNAPSHOTS | SESSION_ENV) && meta.is_dir() && readable > 0)
             .then(|| exported_names(path, kind == SESSION_ENV, other_bits(&meta).1));
+    let secret_shapes = match (sample, listed) {
+        (Some(home), Some(files)) => {
+            let walk_truncated = file_count >= max_walk_files();
+            sample_files(files, walk_truncated, home, SAMPLE_FILES, SAMPLE_BYTES)
+        }
+        _ => Default::default(),
+    };
     Some(AgentTranscriptStore {
         framework: framework.to_string(),
         path: path.display().to_string(),
@@ -194,6 +224,7 @@ fn inspect_store(framework: &str, path: &Path, kind: &str, walk: &mut Walk) -> O
         unreachable_via: untraversable_ancestor(path),
         exported_names,
         other_login_accounts: None,
+        secret_shapes,
     })
 }
 
@@ -484,13 +515,20 @@ pub fn count_login_accounts(passwd: &str, me: &str) -> usize {
 /// `entries` is incremented once per directory entry visited.
 #[cfg(test)]
 fn walk_counts(dir: &Path, entries_seen: &mut u64) -> (usize, u64) {
-    let (c, b, _) = walk_counts_readable(dir, entries_seen, true);
+    let (c, b, _) = walk_counts_readable(dir, entries_seen, true, None);
     (c, b)
 }
 
 /// [`walk_counts`] plus the files other users can read: o+r on the file, and o+x on
-/// every directory from `dir` (`root_traversable`) down to it. Mode bits only.
-fn walk_counts_readable(dir: &Path, entries_seen: &mut u64, root_traversable: bool) -> (usize, u64, usize) {
+/// every directory from `dir` (`root_traversable`) down to it. Mode bits only. With
+/// `listed`, every counted file is also pushed there (lstat data only) for the content
+/// sample.
+fn walk_counts_readable(
+    dir: &Path,
+    entries_seen: &mut u64,
+    root_traversable: bool,
+    mut listed: Option<&mut Vec<crate::scanners::transcript_content::SampleFile>>,
+) -> (usize, u64, usize) {
     let mut count = 0usize;
     let mut bytes = 0u64;
     let mut readable = 0usize;
@@ -518,6 +556,14 @@ fn walk_counts_readable(dir: &Path, entries_seen: &mut u64, root_traversable: bo
                 bytes += meta.len();
                 if reachable && o_read {
                     readable += 1;
+                }
+                if let Some(l) = listed.as_deref_mut() {
+                    l.push(crate::scanners::transcript_content::SampleFile {
+                        mtime: meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                        path: entry.path(),
+                        len: meta.len(),
+                        others: reachable && o_read,
+                    });
                 }
             }
         }
@@ -616,6 +662,7 @@ mod tests {
             d.path(),
             "conversation transcripts",
             &mut Walk::default(),
+            None,
         )
         .expect("populated dir should yield a store");
         assert_eq!(store.framework, "claude-code");
@@ -628,10 +675,10 @@ mod tests {
     fn inspect_store_skips_empty_and_missing() {
         let d = TmpDir::new("inspect-empty");
         // Empty directory: nothing collected here.
-        assert!(inspect_store("codex", d.path(), "sessions", &mut Walk::default()).is_none());
+        assert!(inspect_store("codex", d.path(), "sessions", &mut Walk::default(), None).is_none());
         // Missing path.
         let missing = d.path().join("does-not-exist");
-        assert!(inspect_store("codex", &missing, "sessions", &mut Walk::default()).is_none());
+        assert!(inspect_store("codex", &missing, "sessions", &mut Walk::default(), None).is_none());
     }
 
     #[test]
@@ -639,7 +686,7 @@ mod tests {
         let d = TmpDir::new("inspect-file");
         let f = d.path().join("history.jsonl");
         fs::write(&f, b"one\ntwo\n").unwrap(); // 8 bytes
-        let store = inspect_store("codex", &f, "command history", &mut Walk::default())
+        let store = inspect_store("codex", &f, "command history", &mut Walk::default(), None)
             .expect("a non-empty file should yield a store");
         assert_eq!(store.file_count, 1);
         assert_eq!(store.total_size_bytes, 8);
@@ -658,6 +705,7 @@ mod tests {
             d.path(),
             "conversation transcripts",
             &mut Walk::default(),
+            None,
         )
         .unwrap();
         assert!(store.world_readable);
@@ -671,6 +719,7 @@ mod tests {
             d2.path(),
             "conversation transcripts",
             &mut Walk::default(),
+            None,
         )
         .unwrap();
         assert!(!store2.world_readable);
@@ -705,7 +754,7 @@ mod tests {
         ] {
             set(&p, 0o755);
         }
-        let s = inspect_store("claude-code", &store, "session environment", &mut Walk::default()).unwrap();
+        let s = inspect_store("claude-code", &store, "session environment", &mut Walk::default(), None).unwrap();
         assert_eq!(s.file_count, 4);
         assert_eq!(s.readable_files, Some(2), "a.sh and open/c.sh");
         assert_eq!(s.mode.as_deref(), Some("0755"));
@@ -720,7 +769,7 @@ mod tests {
             );
         }
         set(&d.path().join("home"), 0o700);
-        let s = inspect_store("claude-code", &store, "session environment", &mut Walk::default()).unwrap();
+        let s = inspect_store("claude-code", &store, "session environment", &mut Walk::default(), None).unwrap();
         let via = s.unreachable_via.unwrap();
         assert!(via.ends_with("/home is 0700"), "{via}");
         set(&d.path().join("home"), 0o755);

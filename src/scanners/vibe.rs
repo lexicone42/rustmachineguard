@@ -153,7 +153,10 @@ pub fn scan_vibe_home(home: &Path) -> Vec<VibeOut> {
         (dir.join("vibehistory"), "command history"),
         (dir.join("plans"), "plan files"),
     ] {
-        if let Some(s) = inspect_store(&path, kind) {
+        if let Some(mut s) = inspect_store(&path, kind) {
+            if crate::scanners::transcript_content::in_scope(&s.framework, kind) {
+                s.secret_shapes = crate::scanners::transcript_content::sample_store(&path, home);
+            }
             out.push(VibeOut::Store(s));
         }
     }
@@ -317,6 +320,7 @@ fn inspect_store(path: &Path, kind: &str) -> Option<AgentTranscriptStore> {
         // sample; the other-login-accounts count is attached by the Claude store pass.
         exported_names: None,
         other_login_accounts: None,
+        secret_shapes: Default::default(),
     })
 }
 

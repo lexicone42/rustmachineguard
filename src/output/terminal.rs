@@ -857,6 +857,38 @@ fn render_inner(report: &ScanReport) -> String {
                 warn,
                 t.path.dimmed()
             ));
+            // Secret-shaped content, by name and label only (never a value).
+            let s = &t.secret_shapes;
+            if s.files_sampled > 0 {
+                let mut line = format!(
+                    "mentions {} secret-named key{} ({} file{} sampled{})",
+                    s.secret_key_names.len(),
+                    if s.secret_key_names.len() == 1 { "" } else { "s" },
+                    s.files_sampled,
+                    if s.files_sampled == 1 { "" } else { "s" },
+                    if s.sampling_truncated { ", sample truncated" } else { "" }
+                );
+                if !s.secret_key_names.is_empty() {
+                    let shown: Vec<&str> = s.secret_key_names.iter().take(8).map(String::as_str).collect();
+                    line.push_str(&format!(": {}", shown.join(", ")));
+                    if s.secret_key_names.len() > 8 || s.secret_key_names_truncated {
+                        line.push_str(" ...");
+                    }
+                }
+                if !s.token_prefix_labels.is_empty() {
+                    line.push_str(&format!(
+                        "; token-shaped strings: {} ({})",
+                        s.token_shaped_strings,
+                        s.token_prefix_labels.join(", ")
+                    ));
+                }
+                let line = if s.any() {
+                    line.yellow().to_string()
+                } else {
+                    line.dimmed().to_string()
+                };
+                out.push_str(&format!("    {line}\n"));
+            }
         }
         out.push('\n');
     }

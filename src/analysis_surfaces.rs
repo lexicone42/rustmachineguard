@@ -21,6 +21,7 @@ pub fn collect(report: &ScanReport, f: &mut Vec<Finding>) {
     vibe_findings(report, f);
     settings_script_findings(report, f);
     listener_findings(report, f);
+    transcript_content_findings(report, f);
 }
 
 /// An enabled plugin's LSP server launched through a package runner with no fixed version
@@ -535,5 +536,179 @@ fn listener_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 )),
             });
         }
+    }
+}
+
+/// The `claude_store_finding` group of a Claude Code store path: its directory, and for
+/// `~/.claude.json` and its backup the `.claude` directory beside them (as
+/// `crate::analysis` keys the rows).
+fn claude_group(path: &str) -> String {
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    if name == ".claude.json" || name == ".claude.json.backup" {
+        format!("{parent}/.claude")
+    } else {
+        parent.to_string()
+    }
+}
+
+/// The "Transcript exposure" finding that reports `t` as readable by other users: the
+/// one Claude Code state finding of its home, or the store's own finding.
+fn transcript_exposure_slot(f: &[Finding], t: &crate::models::AgentTranscriptStore) -> Option<usize> {
+    f.iter().position(|x| {
+        x.category == "Transcript exposure"
+            && if t.framework == "claude-code" {
+                x.title.starts_with("Claude Code state under") && claude_group(&x.location) == claude_group(&t.path)
+            } else {
+                x.location == t.path
+            }
+    })
+}
+
+/// One step up, at most Critical.
+fn raised(s: Severity) -> Severity {
+    match s {
+        Severity::Low => Severity::Medium,
+        Severity::Medium => Severity::High,
+        Severity::High | Severity::Critical => Severity::Critical,
+    }
+}
+
+/// `items` joined with ", ", at most `max` of them and "+N more".
+fn capped(items: &[&str], max: usize) -> String {
+    let mut s = items.iter().take(max).copied().collect::<Vec<_>>().join(", ");
+    if items.len() > max {
+        s.push_str(&format!(" +{} more", items.len() - max));
+    }
+    s
+}
+
+/// The token labels then the key names of one sample, names and labels only.
+fn shape_labels(s: &crate::models::TranscriptSecretShapes) -> Vec<&str> {
+    s.token_prefix_labels
+        .iter()
+        .chain(s.secret_key_names.iter())
+        .map(String::as_str)
+        .collect()
+}
+
+/// One store's sample for an evidence line: `<path> (<framework> <kind>): K of S sampled
+/// files; token labels: ...; key names: ...`. Store path, counts, labels and names only.
+fn shape_row(t: &crate::models::AgentTranscriptStore) -> String {
+    let s = &t.secret_shapes;
+    let mut row = format!(
+        "{} ({} {}): {} of {} sampled files{}",
+        t.path,
+        t.framework,
+        t.kind,
+        s.files_with_secret_shapes,
+        s.files_sampled,
+        if s.sampling_truncated {
+            " (sample truncated)"
+        } else {
+            ""
+        }
+    );
+    if !s.token_prefix_labels.is_empty() {
+        let l: Vec<&str> = s.token_prefix_labels.iter().map(String::as_str).collect();
+        row.push_str(&format!(
+            "; token labels: {} ({} strings)",
+            l.join(", "),
+            s.token_shaped_strings
+        ));
+    }
+    if !s.secret_key_names.is_empty() {
+        let n: Vec<&str> = s.secret_key_names.iter().map(String::as_str).collect();
+        row.push_str(&format!(
+            "; key names: {}{}",
+            capped(&n, 12),
+            if s.secret_key_names_truncated {
+                " (more than 50)"
+            } else {
+                ""
+            }
+        ));
+    }
+    row
+}
+
+/// Transcript stores whose sampled content mentions secret-named keys or token-shaped
+/// strings (by name and label only: [`crate::models::TranscriptSecretShapes`]). Value-gated
+/// on who can read the files that show them:
+///
+/// - a store other users can read (a shape-bearing file with o+r reached through o+x
+///   directories, and no ancestor they cannot traverse) raises its "Transcript exposure"
+///   finding one step (at most Critical) and the title says it "contains secret-shaped
+///   content (labels: ...)";
+/// - otherwise the stores of one home are one Low "Secret hygiene" advisory: the user's
+///   own transcripts hold what was pasted into or printed in a conversation.
+///
+/// Claude Code's session-env and shell-snapshots stores readable by others are graded by
+/// their exported NAMES already and are not raised again by their content.
+///
+/// A store with no shapes yields nothing.
+fn transcript_content_findings(report: &ScanReport, f: &mut Vec<Finding>) {
+    use crate::scanners::transcripts::{SESSION_ENV, SHELL_SNAPSHOTS};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut raise: BTreeMap<usize, Vec<&crate::models::AgentTranscriptStore>> = BTreeMap::new();
+    let mut advise: BTreeMap<String, Vec<&crate::models::AgentTranscriptStore>> = BTreeMap::new();
+    for t in report.transcripts.iter().filter(|t| t.secret_shapes.any()) {
+        let s = &t.secret_shapes;
+        let exposed = t.world_readable && t.unreachable_via.is_none() && s.other_readable_files_with_secret_shapes > 0;
+        // session-env and shell-snapshots readable by others are already graded by the
+        // NAMES they export (High for a secret-named one): the same text does not raise
+        // the finding a second time.
+        if exposed && t.framework == "claude-code" && matches!(t.kind.as_str(), SHELL_SNAPSHOTS | SESSION_ENV) {
+            continue;
+        }
+        match exposed.then(|| transcript_exposure_slot(f, t)).flatten() {
+            Some(i) => raise.entry(i).or_default().push(t),
+            None => advise
+                .entry(s.scan_home.clone().unwrap_or_default())
+                .or_default()
+                .push(t),
+        }
+    }
+    for (i, stores) in raise {
+        let mut labels: Vec<&str> = Vec::new();
+        for t in &stores {
+            for l in shape_labels(&t.secret_shapes) {
+                if !labels.contains(&l) {
+                    labels.push(l);
+                }
+            }
+        }
+        let slot = &mut f[i];
+        slot.severity = raised(slot.severity);
+        slot.title = format!(
+            "{} and contains secret-shaped content (labels: {})",
+            slot.title,
+            capped(&labels, 8)
+        );
+        let rows: Vec<String> = stores.iter().map(|t| shape_row(t)).collect();
+        let shapes = format!("secret-shaped content, names and labels only: {}", rows.join("; "));
+        slot.evidence = Some(match slot.evidence.take() {
+            Some(e) => format!("{e}; {shapes}"),
+            None => shapes,
+        });
+    }
+    for (home, stores) in advise {
+        let names: BTreeSet<&str> = stores
+            .iter()
+            .flat_map(|t| t.secret_shapes.secret_key_names.iter().map(String::as_str))
+            .collect();
+        let tokens: usize = stores.iter().map(|t| t.secret_shapes.token_shaped_strings).sum();
+        let location = if home.is_empty() { stores[0].path.clone() } else { home };
+        f.push(Finding {
+            severity: Severity::Low,
+            category: "Secret hygiene".into(),
+            title: format!(
+                "agent transcripts mention {} secret-named key{} / {tokens} token-shaped string{}; consider rotating anything pasted into a conversation",
+                names.len(),
+                if names.len() == 1 { "" } else { "s" },
+                if tokens == 1 { "" } else { "s" }
+            ),
+            location,
+            evidence: Some(stores.iter().map(|t| shape_row(t)).collect::<Vec<_>>().join("; ")),
+        });
     }
 }

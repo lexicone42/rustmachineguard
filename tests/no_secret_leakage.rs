@@ -2049,3 +2049,107 @@ fn encoded_synced_identifiers_reach_no_output_or_trace() {
     );
     let _ = fs::remove_dir_all(&home);
 }
+
+/// Agent transcripts are sampled for secret-named KEY NAMES and token-prefix LABELS only:
+/// a value planted next to each name, and each token-shaped string, reaches no output
+/// format and no `--trace` line, while the names and labels do (the positive control,
+/// which fails on b7747e9: transcript content was not sampled there).
+#[cfg(unix)]
+#[test]
+fn transcript_content_canaries_reach_no_output_or_trace() {
+    use std::fs;
+    let home = std::env::temp_dir().join(format!("rmg-e2e-transcripts-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let home = fs::canonicalize(&home).unwrap();
+    // Each token is shaped like the real thing (prefix, length, charset) and carries a
+    // canary word, so a leak of the match itself is caught; a value a tool printed in key
+    // position (`TRCANARYPRINTEDTOKEN: 0`) is counted as `<key-shaped name>`, never shown.
+    let gh = "ghp_TRCanaryGh0123456789abcdefghijKLMNOP";
+    let akia = "AKIATRCANARYA1234567";
+    let ant = "sk-ant-api03-TRCanaryAnt0123456789abcdefghijklmn";
+    // Built from parts so the source never holds a vendor-shaped literal (push protection).
+    let slack = format!("xoxb-{}-TRCanarySlack0abc", "1234567890");
+    let slack = slack.as_str();
+    let pem = "TRCanaryPemb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ";
+    let proj = home.join(".claude/projects/-work-app");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(
+        proj.join("s.jsonl"),
+        format!(
+            concat!(
+                r#"{{"type":"user","message":{{"content":"AWS_SECRET_ACCESS_KEY=TRCanaryKv1\nexport GITHUB_TOKEN=TRCanaryKv2\nTRCANARYPRINTEDTOKEN: 0"}}}}"#,
+                "\n",
+                r#"{{"type":"tool_result","content":"{{\"DB_PASSWORD\": \"TRCanaryKv3\"}} -e SLACK_BOT_TOKEN=TRCanaryKv4"}}"#,
+                "\n",
+                r#"{{"type":"tool_result","content":"{gh} {akia} \"{ant}\" {slack}\n-----BEGIN RSA PRIVATE KEY-----\n{pem}"}}"#,
+                "\n"
+            ),
+            gh = gh,
+            akia = akia,
+            ant = ant,
+            slack = slack,
+            pem = pem
+        ),
+    )
+    .unwrap();
+    fs::write(
+        home.join(".claude/history.jsonl"),
+        r#"{"display":"OPENAI_API_KEY=TRCanaryKv5 npm start"}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(home.join(".codex/sessions/2026")).unwrap();
+    fs::write(
+        home.join(".codex/sessions/2026/r.jsonl"),
+        r#"{"output":"npm_TRCanaryNpm0123456789abcdefghijklmno"}"#,
+    )
+    .unwrap();
+    let mut seen_names = false;
+    let mut seen_labels = false;
+    for args in [
+        &["--format", "json"][..],
+        &["--format", "terminal", "--verbose"],
+        &["--format", "html"],
+        &["--format", "sbom"],
+        &["--format", "blueprint"],
+        &["--format", "compliance"],
+        &["--format", "json", "--trace"],
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
+            .args(args)
+            .args(["--skip", "ai,frameworks,ide,extensions,mcp,node,shell,ssh,cloud,containers,notebooks,browser,packages,aicreds,envfiles,marketplaces,vscodetasks,gitconfig,pypkgs,npmpkgs,jbplugins,persistence,liveness,playwright,vibe,statusline,listeners"])
+            .env("HOME", &home)
+            .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .current_dir(&home)
+            .output()
+            .expect("run rmguard");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let leaked: Vec<&str> = text
+            .match_indices("TRCanary")
+            .map(|(i, _)| &text[i..(i + 16).min(text.len())])
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{args:?}: transcript values reached the output: {leaked:?}"
+        );
+        for t in ["TRCANARY", "0123456789abcdefghij"] {
+            assert!(!text.contains(t), "{args:?}: a token body reached the output ({t})");
+        }
+        seen_names |= text.contains("AWS_SECRET_ACCESS_KEY") && text.contains("SLACK_BOT_TOKEN");
+        seen_labels |= text.contains("PEM private key") && text.contains("npm token");
+    }
+    assert!(seen_names, "positive control: the key names were reported");
+    assert!(seen_labels, "positive control: the token labels were reported");
+    let _ = fs::remove_dir_all(&home);
+}

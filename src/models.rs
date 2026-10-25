@@ -834,7 +834,8 @@ pub struct AgentHook {
 }
 
 /// An agent transcript / conversation-state store (EAA-005 collection surface).
-/// Records existence, size, and permissions only — content is never read.
+/// Records existence, size, and permissions; content is read only for the NAMES and
+/// LABELS of [`TranscriptSecretShapes`] and the exported NAMES of [`ExportedNames`].
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentTranscriptStore {
     pub framework: String,
@@ -867,6 +868,11 @@ pub struct AgentTranscriptStore {
     /// the scanning user excluded). None when not determined (macOS, unreadable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other_login_accounts: Option<usize>,
+    /// Transcript stores: the secret-shaped KEY NAMES and token-prefix LABELS a bounded
+    /// sample of their files mentions ([`TranscriptSecretShapes`]), flattened into the
+    /// row. Never a value.
+    #[serde(flatten, default)]
+    pub secret_shapes: TranscriptSecretShapes,
 }
 
 /// The variable names a store's files export, read by name only: `export NAME=`,
@@ -1818,4 +1824,55 @@ pub struct NetworkListener {
     /// (`analysis_surfaces::correlate_listeners`); the files are not read again.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub readable_secret_files: usize,
+}
+
+/// Secret-shaped content in an agent transcript store, recorded by NAME and LABEL only
+/// (`crate::scanners::transcript_content`): the secret-named keys
+/// (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, by the `.env` classifier) that appear as
+/// `NAME=`, `NAME:`, `"NAME"`, `export NAME`, `-e NAME` or `--env NAME`, and the labels of
+/// well-known token prefixes (`GitHub token`, `AWS access key id`) whose match had a
+/// plausible length and charset. No value, no surrounding text, no excerpt, no hash.
+/// Bounded: the first 1 MiB of at most 200 files, newest first by mtime (ties by path),
+/// symlinks never followed. All empty / zero on stores outside the transcript scope and
+/// in reports from older versions.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct TranscriptSecretShapes {
+    /// Distinct secret-named keys, sorted (at most 50). A name that is itself shaped like
+    /// a key is shown as `<key-shaped name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_key_names: Vec<String>,
+    /// More than 50 distinct secret-named keys were seen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret_key_names_truncated: bool,
+    /// Labels of the token prefixes matched, sorted: closed values from
+    /// `transcript_content::TOKEN_LABELS`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_prefix_labels: Vec<String>,
+    /// Token-shaped strings matched across the sampled files (occurrences, not distinct).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub token_shaped_strings: usize,
+    /// Sampled files with at least one secret-named key or token-shaped string.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub files_with_secret_shapes: usize,
+    /// Of those, files other users can read (o+r on the file, o+x on every directory from
+    /// the store down to it). The store's ancestors are `unreachable_via`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub other_readable_files_with_secret_shapes: usize,
+    /// Files read for this sample.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub files_sampled: usize,
+    /// The sample did not cover the whole store: more files than the 200-file cap (or the
+    /// walk bound), or a sampled file longer than the 1 MiB read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sampling_truncated: bool,
+    /// The home of the scan pass that found the store (groups the hygiene advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_home: Option<String>,
+}
+
+impl TranscriptSecretShapes {
+    /// Whether the sample found any secret-named key or token-shaped string.
+    pub fn any(&self) -> bool {
+        !self.secret_key_names.is_empty() || !self.token_prefix_labels.is_empty()
+    }
 }

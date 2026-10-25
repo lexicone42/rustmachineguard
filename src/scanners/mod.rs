@@ -32,6 +32,7 @@ pub mod settings_scripts;
 pub mod shell_configs;
 pub mod skills;
 pub mod ssh_keys;
+pub mod transcript_content;
 pub mod transcripts;
 pub mod vibe;
 pub mod vscode_tasks;
