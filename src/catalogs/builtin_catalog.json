@@ -324,7 +324,7 @@
   {
     "ecosystem": "chrome",
     "name": "pajkjnmeojmbapicmbpliphjmcekeaac",
-    "version_range": ">=24.10.4, <24.10.5",
+    "version": "24.10.4",
     "advisory": "Cyberhaven Security Extension v24.10.4 compromised (2024-12-24/25) via phished developer account: injected code exfiltrated cookies and authenticated sessions to cyberhavenext[.]pro; 400K+ users. Clean release is 24.10.5, so only the one malicious version is flagged. Source: Cyberhaven incident report, Sekoia.io TDR, eSentire"
   },
   {
@@ -833,7 +833,13 @@
   {
     "ecosystem": "npm",
     "name": "agentwork-cli",
-    "version_range": ">=0.1.4, <=0.1.5",
+    "version": "0.1.4",
+    "advisory": "Compromised as a node of the TeamPCP 'Mini Shai-Hulud is back' worm (2026-05): steals credentials, propagates to every package the stolen token can publish and attempts persistence. Affected 0.1.4 and 0.1.5 only. Source: Google Open Source Security (OSV MAL-2026-3605), StepSecurity, Socket Threat Research and Aikido (TanStack compromise), GitHub Advisory Database GHSA-6pwg-cfc3-f685."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentwork-cli",
+    "version": "0.1.5",
     "advisory": "Compromised as a node of the TeamPCP 'Mini Shai-Hulud is back' worm (2026-05): steals credentials, propagates to every package the stolen token can publish and attempts persistence. Affected 0.1.4 and 0.1.5 only. Source: Google Open Source Security (OSV MAL-2026-3605), StepSecurity, Socket Threat Research and Aikido (TanStack compromise), GitHub Advisory Database GHSA-6pwg-cfc3-f685."
   },
   {
@@ -1032,7 +1038,13 @@
   {
     "ecosystem": "vscode",
     "name": "aquasecurityofficial.trivy-vulnerability-scanner",
-    "version_range": ">=1.8.12, <=1.8.13",
+    "version": "1.8.12",
+    "advisory": "Compromised Open VSX releases of Aqua's Trivy extension (TeamPCP, 2026-02-27 and 02-28; 1.8.11 and earlier are clean on every channel, both bad versions now removed): the payload invoked whichever local AI coding agent was installed (claude, codex, gemini, copilot, kiro-cli) with permission-bypass flags to collect credentials and host details, with 1.8.13 exfiltrating to a GitHub repo via the victim's gh CLI. Only these two versions are flagged. Source: Aqua Security advisory GHSA-8mr6-gf9x-j8qg / CVE-2026-28353, Socket Threat Research, The Hacker News."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "aquasecurityofficial.trivy-vulnerability-scanner",
+    "version": "1.8.13",
     "advisory": "Compromised Open VSX releases of Aqua's Trivy extension (TeamPCP, 2026-02-27 and 02-28; 1.8.11 and earlier are clean on every channel, both bad versions now removed): the payload invoked whichever local AI coding agent was installed (claude, codex, gemini, copilot, kiro-cli) with permission-bypass flags to collect credentials and host details, with 1.8.13 exfiltrating to a GitHub repo via the victim's gh CLI. Only these two versions are flagged. Source: Aqua Security advisory GHSA-8mr6-gf9x-j8qg / CVE-2026-28353, Socket Threat Research, The Hacker News."
   },
   {

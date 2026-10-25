@@ -154,9 +154,9 @@ fn cited_ids_are_well_formed() {
 }
 
 /// `advisory_severity` is optional; when present it is one of four lowercase words and
-/// sits on a vulnerable-range row (a malware row is Critical by kind). The loader ignores
-/// it today (grading by advisory severity is queued), so this test is what keeps the data
-/// clean until it is read.
+/// sits on a vulnerable-range row (a malware row is Critical by kind). A vulnerable-range
+/// match is graded at it (tests/advisory_severity.rs), so a typo here would silently fall
+/// back to Critical.
 #[test]
 fn advisory_severity_values_are_valid() {
     let mut with = 0;

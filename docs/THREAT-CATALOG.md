@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog (version `2026-10-25`) currently contains 305 entries
+that is automatically checked during every scan. The catalog (version `2026-10-25.2`) currently contains 307 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -36,9 +36,10 @@ A package compromised at several non-adjacent releases gets one exact-version ro
 release (`@memtensor/memos-cloud-openclaw-plugin` 0.1.21 / 0.1.23 / 0.1.25): the matcher
 has no `||` alternation, and the clean releases in between must not match. Malicious
 releases stay exact-version rows even when they are consecutive (`agentic-awesome-skills`,
-20 rows; `opencode-skills-collection`, 21 rows): a row's kind is read from its shape, so a
+20 rows; `opencode-skills-collection`, 21 rows; `agentwork-cli` 0.1.4 and 0.1.5; the Trivy
+extension 1.8.12 and 1.8.13; Cyberhaven 24.10.4): a row's kind is read from its shape, so a
 `version_range` row would be reported as a "Vulnerable ... package version" (and downgraded
-to High in a dormant npx cache) instead of "Known-bad".
+in a dormant npx cache) instead of "Known-bad".
 
 ### Version-scheme resets
 
@@ -136,8 +137,7 @@ Left out during the 2026-10-25 refresh:
 - **`mcp-ripgrep`** CVE-2026-113378: the CNA marks its existence as disputed and no fixed
   release exists.
 - **Optional rows not taken**: `mcp-server-fetch` GHSA-3jqg-r5pp-rmp2 (low: robots.txt not
-  rechecked after redirects; a match is graded Critical until grading reads
-  `advisory_severity`), `mcp-contextforge-gateway` CVE-2026-8355 (authenticated SSRF,
+  rechecked after redirects; deferred), `mcp-contextforge-gateway` CVE-2026-8355 (authenticated SSRF,
   server-side), `@aborruso/ckan-mcp-server` CVE-2026-76894 (low), `@lumen-labs-dev/whisper-node`
   0.5.1 (speech bindings, not an agent surface), and the kam193 `2026-10-voice-synthesis-profiles`
   and `2026-10-emberlytts` PyPI loader campaigns (about 45 AI-audio-themed names with an
@@ -151,12 +151,13 @@ The catalog is compiled into the binary at build time from
 optional version constraint, and an advisory string citing the source.
 
 A vulnerable-range row may also carry `advisory_severity` (`critical`, `high`, `medium` or
-`low`): the highest severity among the advisories the row cites, as the advisory states it.
-It is data only for now: the loader ignores the field and every match is graded as
-described below. Grading a vulnerable range by its advisory severity is a queued change
-(it needs `advisory_severity` on `ExposureEntry` in `src/models.rs`, read by
-`exposure_finding` in `src/analysis.rs`). Malware rows do not carry it: GitHub stamps every
-malware record critical, and a malicious release is Critical by kind. A row spanning
+`low`): the highest severity among the advisories the row cites, as the advisory states it,
+on the GitHub Advisory Database scale (from the CVSS score: critical 9.0-10.0, high
+7.0-8.9, medium 4.0-6.9, low 0.1-3.9; [About CVSS
+levels](https://docs.github.com/en/code-security/security-advisories/working-with-global-security-advisories-from-the-github-advisory-database/about-the-github-advisory-database#about-cvss-levels)).
+A match is graded at that severity (see below); a user catalog may also write GitHub's API
+spelling `moderate` for medium. Malware rows do not carry it, and it is ignored there:
+GitHub stamps every malware record critical, and a malicious release is Critical by kind. A row spanning
 versions where only some advisories apply still carries the highest (the
 server-filesystem date row is `high` for its EscapeRoute part, though 2025.7.1 and later
 releases have only medium and low advisories).
@@ -169,10 +170,13 @@ exposure findings in all output formats.
 
 A row that names an exact version, or no version, is a malicious release: its match is
 Critical ("Known-bad"). A row with a `version_range` is a vulnerable version, and its
-match is Critical ("Vulnerable ... package version") in an active install. When it is
+match in an active install is graded at the row's `advisory_severity` (Critical, High,
+Medium or Low, with the title saying so: "Vulnerable npm package version (advisory
+severity: high)"), or Critical, as before, for a row without one. When it is
 found only in an npx cache (`~/.npm/_npx/<hash>/`, code `npx` fetched once and runs again
 only when the same `npx` line is re-run) and no enabled configured or plugin MCP server
-launches the package the cache was fetched for, it is High, titled "Vulnerable MCP SDK
+launches the package the cache was fetched for, it is one step lower (never below Low; High
+for a row without a severity), titled "Vulnerable MCP SDK
 version in npx cache (dormant unless re-run)" for the `@modelcontextprotocol/*` SDK
 packages, and names that package (from the cache's `package.json` `_npx.packages`, else its
 `dependencies`). The finding's evidence keeps the catalog row's range and the advisory IDs.
@@ -405,7 +409,8 @@ or, for a vulnerable range, with the optional severity:
    (`MISSING`). It compares versions the way the matcher does (numeric core, pre-release
    ignored) and exits 1 when anything is listed. On the 2026-10-25 catalog it lists
    `hermes-agent` (PyPI is stale at 0.19.0 below the git-only fix 0.21.1, as the row says)
-   and `agentwork-cli` (unpublished by npm, a worm node); on the 2026-10-22 catalog it also
+   and `agentwork-cli` (unpublished by npm, a worm node; from 2026-10-25.2 its rows are
+   exact versions, which the check skips); on the 2026-10-22 catalog it also
    listed `@modelcontextprotocol/server-filesystem` `<2025.7.1` against latest 2.0.1.
 
 To contribute additional entries, please open a PR with:
@@ -460,6 +465,11 @@ To contribute additional entries, please open a PR with:
   - Left out, with reasons: see "Deliberately not catalogued" (vLLM and other server-side
     frameworks, Goose with no fixed version, Junie with no runtime key, ZCode and dsh with no
     primary source, the disputed mcp-ripgrep record, the inferred trigger.dev mapping).
+- **2026-10-25.2** (305 to 307 rows; no advisory added). The three compromised-release rows
+  that were ranges become one exact-version row per malicious release, so they match as
+  malware (Critical "Known-bad", never downgraded as a dormant vulnerable version):
+  `agentwork-cli` 0.1.4 and 0.1.5, the Trivy VS Code extension 1.8.12 and 1.8.13, and the
+  Cyberhaven Chrome extension 24.10.4. Grading now reads `advisory_severity`.
 
 ## License
 

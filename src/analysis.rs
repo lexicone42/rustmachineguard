@@ -3048,6 +3048,9 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                      prefix: &str,
                      note: Option<&str>,
                      f: &mut Vec<Finding>| {
+        if let Some(g) = fail_open_guard_finding(h, &scope, location, prefix) {
+            f.push(g);
+        }
         match hook_severity(&scope, h) {
             None => {}
             Some(HookGrade::Finding(severity)) => {
@@ -3145,6 +3148,56 @@ fn collect_hook_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             evidence: first.map(|(_, c)| c),
         });
     }
+}
+
+/// A hook that runs `destructive_command_guard` (dcg) below 0.6.6, a PreToolUse safety
+/// hook with a known fail-open bug: CVE-2026-77474 / GHSA-4cfr-w3v5-w5j5 (GitHub CNA,
+/// CVSS 3.1 7.1; NVD affected "< 0.6.6", fixed in v0.6.6). A crafted command (a
+/// destructive command followed by nested or unclosed `$(`) hangs the guard, the agent
+/// treats the hung hook as allow, and the command runs. Medium when the install path
+/// states an affected version (the guard still blocks ordinary commands; the bypass
+/// needs a crafted one), Low when no version is stated, none at or above the fix or when
+/// nothing runs the hook. Separate from the hook ladder, which grades what the hook can
+/// do, not whether a guard can be bypassed.
+fn fail_open_guard_finding(
+    h: &crate::models::AgentHook,
+    scope: &HookScope,
+    location: &str,
+    prefix: &str,
+) -> Option<Finding> {
+    use crate::scanners::hook_sources::{FAIL_OPEN_GUARD_FIX, FailOpenGuard, fail_open_guard};
+    if *scope == HookScope::Inactive {
+        return None;
+    }
+    let plugin = matches!(scope, HookScope::PluginOfficial | HookScope::PluginThirdParty { .. });
+    let (major, minor, patch) = FAIL_OPEN_GUARD_FIX;
+    let fix = format!("{major}.{minor}.{patch}");
+    let (severity, title, how) = match fail_open_guard(h, location, plugin)? {
+        FailOpenGuard::Affected(v) => (
+            Severity::Medium,
+            format!(
+                "{prefix}Safety hook with a known fail-open bug (CVE-2026-77474): a hanging guard lets the command through — destructive_command_guard {v}; update to {fix} or later (`dcg update`)"
+            ),
+            format!("version {v} read from the install path"),
+        ),
+        FailOpenGuard::Unknown => (
+            Severity::Low,
+            format!(
+                "{prefix}Safety hook of a known fail-open class (CVE-2026-77474), version unknown: destructive_command_guard below {fix} lets a command through when the guard hangs; check `dcg --version` and update to {fix} or later"
+            ),
+            "the install path states no version (the binary is not run)".to_string(),
+        ),
+    };
+    Some(Finding {
+        severity,
+        category: "Hook".into(),
+        title,
+        location: location.to_string(),
+        evidence: Some(format!(
+            "{}; advisories: CVE-2026-77474, GHSA-4cfr-w3v5-w5j5 (fixed in {fix}); {how}",
+            h.command
+        )),
+    })
 }
 
 /// The user's own hook or settings file that is a symlink into another agent's
@@ -4317,6 +4370,13 @@ pub fn exposure_finding(report: &ScanReport, e: &crate::models::ExposureFinding)
         format!(" (fetched with {})", e.cache_parent.join(", "))
     };
     let dormant = e.cache.is_some() && !npx_cache_is_active(report, e);
+    // A vulnerable range is graded at its advisory's severity (GitHub's scale, from the
+    // CVSS score: critical 9.0-10.0, high 7.0-8.9, medium 4.0-6.9, low 0.1-3.9); a row
+    // without one keeps Critical. A dormant npx cache is one step below that, never below
+    // Low. A malware row is Critical by kind.
+    let advisory = e.matched_range.as_ref().and_then(|_| advisory_severity_of(e));
+    let base = advisory.unwrap_or(Severity::Critical);
+    let stated = advisory.map_or(String::new(), |s| format!(" (advisory severity: {})", s.label()));
     let (severity, title) = match (&e.matched_range, dormant) {
         (Some(_), true) => {
             let what = if e.name.starts_with("@modelcontextprotocol/") {
@@ -4325,17 +4385,17 @@ pub fn exposure_finding(report: &ScanReport, e: &crate::models::ExposureFinding)
                 format!("Vulnerable {} package version", e.ecosystem)
             };
             (
-                Severity::High,
+                one_step_below(base),
                 format!(
-                    "{what} in npx cache (dormant unless re-run): {} {}{parent}",
+                    "{what}{stated} in npx cache (dormant unless re-run): {} {}{parent}",
                     e.name, e.version
                 ),
             )
         }
         (Some(_), false) => (
-            Severity::Critical,
+            base,
             format!(
-                "Vulnerable {} package version: {} {}{parent}",
+                "Vulnerable {} package version{stated}: {} {}{parent}",
                 e.ecosystem, e.name, e.version
             ),
         ),
@@ -4350,6 +4410,28 @@ pub fn exposure_finding(report: &ScanReport, e: &crate::models::ExposureFinding)
         title,
         location: e.found_in.clone(),
         evidence: Some(evidence),
+    }
+}
+
+/// The severity a vulnerable-range finding's catalog row states (`advisory_severity`),
+/// or None when the row has none or an unknown word. GitHub's API spells medium
+/// "moderate", so a user catalog copied from it is read the same way.
+fn advisory_severity_of(e: &crate::models::ExposureFinding) -> Option<Severity> {
+    match e.advisory_severity.as_deref()?.trim().to_ascii_lowercase().as_str() {
+        "critical" => Some(Severity::Critical),
+        "high" => Some(Severity::High),
+        "medium" | "moderate" => Some(Severity::Medium),
+        "low" => Some(Severity::Low),
+        _ => None,
+    }
+}
+
+/// One grade lower, never below Low.
+fn one_step_below(s: Severity) -> Severity {
+    match s {
+        Severity::Critical => Severity::High,
+        Severity::High => Severity::Medium,
+        Severity::Medium | Severity::Low => Severity::Low,
     }
 }
 

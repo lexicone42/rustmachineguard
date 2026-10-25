@@ -1054,6 +1054,153 @@ pub fn is_event_push(h: &AgentHook) -> bool {
         && h.patterns.iter().all(|p| p == "data exfiltration pattern")
 }
 
+/// The release of `destructive_command_guard` (dcg) that fixes CVE-2026-77474
+/// (GHSA-4cfr-w3v5-w5j5, Dicklesworthstone/destructive_command_guard; NVD lists "< 0.6.6"
+/// affected, GitHub CNA CVSS 3.1 7.1 high): nested or unclosed `$(` / `$((` in a command
+/// drove the PreToolUse guard into exponential-time scanning, and because agents fail
+/// open when a PreToolUse hook hangs or times out, the destructive command ran.
+pub const FAIL_OPEN_GUARD_FIX: (u64, u64, u64) = (0, 6, 6);
+
+/// The guard's crate and package spellings. The binary is `dcg`.
+const FAIL_OPEN_GUARD_NAMES: &[&str] = &["destructive_command_guard", "destructive-command-guard"];
+
+/// What [`fail_open_guard`] recognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailOpenGuard {
+    /// A version below [`FAIL_OPEN_GUARD_FIX`], read from the install path.
+    Affected(String),
+    /// The guard, at a version the install path does not state (`~/.local/bin/dcg`, a
+    /// bare `dcg` on PATH). The binary is never run to ask.
+    Unknown,
+}
+
+/// The lowercase file name of a path-shaped word without a `.exe`/`.py`/`.sh`/`.js`
+/// extension.
+fn guard_stem(word: &str) -> String {
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word).to_ascii_lowercase();
+    for ext in [".exe", ".py", ".sh", ".js", ".mjs"] {
+        if let Some(stem) = base.strip_suffix(ext) {
+            return stem.to_string();
+        }
+    }
+    base
+}
+
+/// An interpreter or package runner whose argument names the program it runs
+/// (`python3 guard.py`, `npx destructive-command-guard`), unlike `echo` or `grep`.
+fn launches_script(prog: &str) -> bool {
+    let p = prog.to_ascii_lowercase();
+    p.starts_with("python")
+        || matches!(
+            p.as_str(),
+            "node"
+                | "bun"
+                | "deno"
+                | "bash"
+                | "sh"
+                | "zsh"
+                | "dash"
+                | "npx"
+                | "bunx"
+                | "pnpx"
+                | "uv"
+                | "uvx"
+                | "pipx"
+                | "ruby"
+                | "perl"
+                | "pwsh"
+        )
+}
+
+/// A version-shaped path component (`0.6.5`, `v0.6.5`, `0.6.5-rc1`): its numeric core,
+/// at least major.minor.
+fn version_core(c: &str) -> Option<((u64, u64, u64), String)> {
+    let c = c.strip_prefix('v').unwrap_or(c);
+    let end = c.find(|ch: char| ch != '.' && !ch.is_ascii_digit()).unwrap_or(c.len());
+    let core = c[..end].trim_end_matches('.');
+    let parts: Vec<u64> = core.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    if !(2..=4).contains(&parts.len()) || (end < c.len() && !c[end..].starts_with(['-', '+'])) {
+        return None;
+    }
+    let v = (parts[0], parts[1], parts.get(2).copied().unwrap_or(0));
+    Some((v, core.to_string()))
+}
+
+/// The guard's version as an install path states it: a component named for it followed
+/// by a version component (`Cellar/dcg/0.6.5/bin/dcg`, a plugin cache
+/// `plugins/cache/<marketplace>/destructive-command-guard/0.6.5/`), or one component
+/// holding both (`/nix/store/<hash>-destructive_command_guard-0.6.5/bin/dcg`).
+fn guard_version_in_path(path: &str) -> Option<((u64, u64, u64), String)> {
+    let comps: Vec<String> = path.split(['/', '\\']).map(|c| c.to_ascii_lowercase()).collect();
+    for (i, c) in comps.iter().enumerate() {
+        for name in FAIL_OPEN_GUARD_NAMES.iter().copied().chain(["dcg"]) {
+            if c == name {
+                if let Some(v) = comps.get(i + 1).and_then(|n| version_core(n)) {
+                    return Some(v);
+                }
+                continue;
+            }
+            let Some(at) = c.find(name) else { continue };
+            let starts = at == 0 || c.as_bytes()[at - 1] == b'-';
+            let rest = &c[at + name.len()..];
+            if starts
+                && let Some(r) = rest.strip_prefix(['-', '_', '@'])
+                && let Some(v) = version_core(r)
+            {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Whether a command hook runs `destructive_command_guard`, a PreToolUse safety hook with
+/// a known fail-open bug below 0.6.6 (CVE-2026-77474, see [`FAIL_OPEN_GUARD_FIX`]). It is
+/// recognised by its program (`dcg`, `destructive_command_guard`), a script of that name
+/// handed to an interpreter, or, for a plugin's hook (`plugin`), a plugin install path
+/// named `destructive-command-guard`. The version comes from the program's path, then
+/// the hook file's path (`location`); a stated version at or above the fix is None.
+/// Lexical only: nothing is run or read.
+pub fn fail_open_guard(h: &AgentHook, location: &str, plugin: bool) -> Option<FailOpenGuard> {
+    if !is_command_kind(&h.kind) || h.disabled {
+        return None;
+    }
+    let long = |w: &str| FAIL_OPEN_GUARD_NAMES.contains(&guard_stem(w).as_str());
+    let mut paths: Vec<String> = Vec::new();
+    for (a, b, _) in shell_segments(&h.command) {
+        let words = shell_words(&h.command[a..b]);
+        let (k, prog) = segment_program(&words);
+        if k >= words.len() {
+            continue;
+        }
+        if guard_stem(&prog) == "dcg" || long(&prog) {
+            paths.push(words[k].clone());
+        } else if launches_script(&prog)
+            && let Some(w) = words[k + 1..].iter().find(|w| long(w))
+        {
+            paths.push(w.clone());
+        }
+    }
+    if let Some(w) = h.args.iter().find(|w| long(w)) {
+        paths.push(w.clone());
+    }
+    let plugin_named = plugin
+        && location
+            .split(['/', '\\'])
+            .any(|c| FAIL_OPEN_GUARD_NAMES.contains(&c.to_ascii_lowercase().as_str()));
+    if paths.is_empty() && !plugin_named {
+        return None;
+    }
+    if plugin {
+        paths.push(location.to_string());
+    }
+    match paths.iter().find_map(|p| guard_version_in_path(p)) {
+        Some((v, _)) if v >= FAIL_OPEN_GUARD_FIX => None,
+        Some((_, shown)) => Some(FailOpenGuard::Affected(shown)),
+        None => Some(FailOpenGuard::Unknown),
+    }
+}
+
 /// Whether an http hook's host is the running agent's own vendor API: for a hook the
 /// question is whether the vendor that already receives every tool event gets them
 /// again, not whether the host is some provider's API (the base-URL model counts

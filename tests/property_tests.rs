@@ -1114,6 +1114,7 @@ fn version_range_matches_vulnerable_and_skips_patched() {
         version: None,
         version_range: Some("<1.4.3".into()),
         advisory: Some("a".into()),
+        advisory_severity: None,
     };
     assert!(version_matches(&entry, Some("1.4.2")), "vulnerable version matches");
     assert!(
@@ -1141,6 +1142,7 @@ fn version_range_pads_partial_versions() {
         version: None,
         version_range: Some(">=1.0, <2.0".into()),
         advisory: None,
+        advisory_severity: None,
     };
     assert!(version_matches(&entry, Some("1.5")), "'1.5' pads to 1.5.0 and matches");
     assert!(version_matches(&entry, Some("v1.0")), "leading v is stripped");
@@ -1157,6 +1159,7 @@ fn exact_version_still_takes_precedence() {
         version: Some("1.82.7".into()),
         version_range: None,
         advisory: None,
+        advisory_severity: None,
     };
     assert!(version_matches(&entry, Some("1.82.7")));
     assert!(
@@ -3268,7 +3271,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        305,
+        307,
         "catalog size changed — update this pin and the counts quoted in README.md \
          and docs/THREAT-CATALOG.md"
     );
@@ -4487,6 +4490,7 @@ fn version_range_compares_prerelease_core() {
         version: None,
         version_range: Some("<0.1.2".into()),
         advisory: None,
+        advisory_severity: None,
     };
     assert!(
         version_matches(&entry, Some("0.1.1-rc.2")),
@@ -4510,6 +4514,7 @@ fn version_range_compares_prerelease_core() {
         version: None,
         version_range: Some(">=4.0.0, <4.1.2".into()),
         advisory: None,
+        advisory_severity: None,
     };
     assert!(
         version_matches(&py, Some("4.0.0a1")),
@@ -4524,6 +4529,7 @@ fn version_range_compares_prerelease_core() {
         version: Some("1.0.0-beta.1".into()),
         version_range: None,
         advisory: None,
+        advisory_severity: None,
     };
     assert!(version_matches(&exact, Some("1.0.0-beta.1")));
     assert!(!version_matches(&exact, Some("1.0.0")));

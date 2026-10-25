@@ -1123,6 +1123,12 @@ pub struct ExposureEntry {
     pub version_range: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisory: Option<String>,
+    /// The highest severity the cited advisories state ("critical" | "high" | "medium" |
+    /// "low"), on vulnerable-range rows only. A matching vulnerable range is graded at
+    /// this severity; a row without it is graded Critical. Ignored on malware rows (an
+    /// exact `version`, or no constraint), which are Critical by kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_severity: Option<String>,
 }
 
 /// A matched exposure finding.
@@ -1147,6 +1153,10 @@ pub struct ExposureFinding {
     /// (not a malware row that names an exact version or every version).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_range: Option<String>,
+    /// The catalog row's `advisory_severity` when the match is a vulnerable version range
+    /// (lowercased; absent for malware rows, rows without it and older reports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_severity: Option<String>,
     /// "npx cache" when `found_in` is inside `~/.npm/_npx/<hash>/`: code npx fetched
     /// once, which runs again only when the same `npx` line is re-run.
     #[serde(default, skip_serializing_if = "Option::is_none")]

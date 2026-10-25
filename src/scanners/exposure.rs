@@ -66,6 +66,7 @@ impl ExposureCatalog {
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: config_path.to_string(),
                 matched_range: matched_range(entry),
+                advisory_severity: matched_severity(entry),
                 ..Default::default()
             });
         }
@@ -93,6 +94,7 @@ impl ExposureCatalog {
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: found_in.to_string(),
                 matched_range: matched_range(entry),
+                advisory_severity: matched_severity(entry),
                 ..Default::default()
             })
             .collect()
@@ -118,6 +120,7 @@ impl ExposureCatalog {
                 advisory: entry.advisory.clone().unwrap_or_default(),
                 found_in: found_in.to_string(),
                 matched_range: matched_range(entry),
+                advisory_severity: matched_severity(entry),
                 ..Default::default()
             });
         }
@@ -184,6 +187,17 @@ fn matched_range(entry: &ExposureEntry) -> Option<String> {
         return None;
     }
     entry.version_range.clone()
+}
+
+/// The row's `advisory_severity`, lowercased, when its `version_range` is what matched
+/// (see [`matched_range`]); a malware row's is ignored.
+fn matched_severity(entry: &ExposureEntry) -> Option<String> {
+    matched_range(entry)?;
+    entry
+        .advisory_severity
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
 }
 
 /// The npx cache directory (`<home>/.npm/_npx/<hash>`) holding `found_in`, if any.
