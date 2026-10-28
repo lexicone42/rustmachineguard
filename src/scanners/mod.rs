@@ -4346,10 +4346,10 @@ pub const MAX_CHILD_OUTPUT: usize = 8 * 1024 * 1024;
 mod capped_output_tests {
     use super::*;
 
-    /// The child wait is event-driven, not polled. Ten `/bin/true` runs through the
-    /// shared runner and ten through the version probe each finish in well under the
-    /// old tick totals (10 x 20 ms and 10 x 50 ms); the bounds leave room for a loaded
-    /// CI runner but not for a poll loop. (Found by the OpenTelemetry trace: every exec
+    /// The child wait is event-driven, not polled. The fastest of ten `/bin/true` runs
+    /// through the shared runner, and through the version probe, finishes well under the
+    /// old ticks (20 ms and 50 ms); the bounds leave room for a loaded CI runner but not
+    /// for a poll loop. (Found by the OpenTelemetry trace: every exec
     /// span lasted an exact multiple of its tick.)
     #[test]
     fn child_waits_do_not_poll() {
@@ -4358,25 +4358,35 @@ mod capped_output_tests {
             .into_iter()
             .find(|p| std::path::Path::new(p).exists())
             .expect("a true binary");
+        // A polled wait never returns before its first tick, so even its FASTEST run is
+        // at least the tick; an event-driven one returns in a few ms. Bounding the fastest
+        // of ten runs, rather than their total, still fails a poll loop every time but no
+        // longer fails a loaded machine where a few spawns are slow.
         let t = std::time::Duration::from_secs(5);
-        let start = std::time::Instant::now();
-        for _ in 0..10 {
+        let fastest = |f: &mut dyn FnMut()| {
+            (0..10)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    f();
+                    start.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let runner = fastest(&mut || {
             let mut c = child_command(truth);
             assert!(output_with_timeout(&mut c, t).is_some());
-        }
-        let runner = start.elapsed();
-        let start = std::time::Instant::now();
-        for _ in 0..10 {
+        });
+        let probe = fastest(&mut || {
             let _ = get_binary_version(truth);
-        }
-        let probe = start.elapsed();
+        });
         assert!(
-            runner < std::time::Duration::from_millis(150),
-            "runner polled: 10 runs took {runner:?}"
+            runner < std::time::Duration::from_millis(15),
+            "runner polled (20 ms tick): fastest of 10 runs took {runner:?}"
         );
         assert!(
-            probe < std::time::Duration::from_millis(350),
-            "version probe polled: 10 runs took {probe:?}"
+            probe < std::time::Duration::from_millis(40),
+            "version probe polled (50 ms tick): fastest of 10 runs took {probe:?}"
         );
     }
 

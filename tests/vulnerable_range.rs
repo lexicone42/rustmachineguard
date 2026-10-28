@@ -160,9 +160,17 @@ fn git_tracks(path: &Path) -> bool {
 #[test]
 fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     let dir = build_vulnerable_machine();
+    // The primary home and the cwd are an empty fixture: the scan reads only the planted
+    // machine, never the developer's real HOME or checkout (which made the run as slow as
+    // a real scan and its result depend on that machine).
+    let empty_home = std::env::temp_dir().join(format!("rmg-vuln-range-home-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&empty_home);
+    fs::create_dir_all(&empty_home).unwrap();
 
     // Run the actual shipped binary against the vulnerable machine.
     let output = Command::new(env!("CARGO_BIN_EXE_rmguard"))
+        .env("HOME", &empty_home)
+        .current_dir(&empty_home)
         .args([
             "--search-dirs",
             dir.to_str().unwrap(),
@@ -285,6 +293,7 @@ fn rmguard_catches_every_planted_issue_on_a_vulnerable_machine() {
     }
 
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&empty_home);
 }
 
 /// The --fail-on CI gate: a machine with Critical findings exits 3 (2 until 2026-10-25,

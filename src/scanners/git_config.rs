@@ -135,7 +135,7 @@ fn walk_projects(
     let ran = crate::scanners::telemetry::par_map(scheduled, jobs, |(i, dir, inner)| {
         let (mut o, mut stats) = (Vec::new(), WalkStats::default());
         if let Some(inner) = &inner {
-            scan_nested_repos(dir, inner, &mut o, &mut stats, max_dirs);
+            scan_nested_repos(dir, inner, &mut o, &mut stats, max_dirs, jobs);
         } else {
             stats.skipped = 1;
         }
@@ -368,6 +368,17 @@ pub(crate) const PRUNE_BY_NAME: &[&str] = &[
 /// all legal tracked filenames), and git auto-discovers it from the cwd. Its config is
 /// attacker-authored in a way the project's own `.git/config` is not.
 ///
+/// Breadth-first (perf 6c; depth-first before), so shallow directories come first, with
+/// listings read ahead on up to `jobs - 1` helpers ([`crate::scanners::prefetch`]) in
+/// that order; every budget, descent and git decision is still made here, in that order.
+/// The order matters only to a project that reaches its budget: the set of directories a
+/// walk charges is fixed by the tree (each directory's descent depends on its own listing
+/// only), so a walk is exhausted in either order or in neither, and one that is not lists
+/// the same directories. One that is lists the shallowest `max_dirs` now, where the
+/// depth-first walk listed whichever subtree came last in the file system's listing order.
+/// Findings are sorted by path (stable: one git dir's keys keep git's order), so their
+/// order does not depend on the walk's either.
+///
 /// At most `max_dirs` directories are listed (`--walk-budget`, default
 /// [`DEFAULT_WALK_BUDGET`](crate::scanners::telemetry::DEFAULT_WALK_BUDGET)); a walk that
 /// reaches it stops and marks the scanner `truncated`.
@@ -377,7 +388,119 @@ fn scan_nested_repos(
     out: &mut Vec<GitAutorunConfig>,
     stats: &mut WalkStats,
     max_dirs: usize,
+    jobs: usize,
 ) {
+    use crate::scanners::prefetch::with_prefetch;
+    let first = out.len();
+    let own_git = root.join(".git");
+    let list = |dir: &Path, cancel: &std::sync::atomic::AtomicBool| list_git_dir(dir, inner_projects, cancel);
+    with_prefetch(jobs, NESTED_READ_AHEAD * jobs, list, |pf| {
+        let mut budget = max_dirs.max(1);
+        let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+        while let Some(dir) = queue.pop_front() {
+            // Budget is spent per directory LISTED, never per file: charging it per entry
+            // let a few thousand junk files exhaust the walk before it reached a buried git
+            // dir -- an attacker-controllable way to hide from the CVE-2026-45033 check.
+            if budget == 0 {
+                stats.budget_exhausted = true;
+                crate::scanners::telemetry::mark_truncated();
+                return;
+            }
+            budget -= 1;
+            let l = match pf.get(&dir) {
+                Ok(l) => l,
+                Err(e) => {
+                    crate::scanners::note_read_dir_error(&dir, &e);
+                    continue;
+                }
+            };
+            stats.dirs += 1;
+            stats.entries += l.entries;
+            stats.pruned += l.pruned;
+            if l.cut {
+                stats.dirs_cut += 1;
+                crate::scanners::telemetry::mark_truncated();
+            }
+            // git's own test (setup.c is_git_directory): HEAD plus objects/ and refs/
+            // directories. That is what makes git treat a cwd as a bare repo and read its
+            // config -- the CVE-2026-45033 shape. Two plain files named config and HEAD are
+            // NOT a git dir, and the first version of this walk treated them as one and
+            // stopped descending: an attacker could hide a whole subtree, or the whole
+            // project, behind two empty files.
+            // git also validates HEAD's CONTENT (validate_headref): a symref or an object
+            // id. A junk HEAD is not a git dir to git, so reporting it would be a false
+            // positive from a scanner whose whole design is to not cry wolf.
+            let is_git_dir =
+                l.has_head && l.has_objects && l.has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
+            if dir == own_git {
+                continue; // the project's own .git is handled by scan_repo_local
+            }
+            if is_git_dir {
+                stats.repos += 1;
+            }
+            if is_git_dir && l.has_config {
+                let cfg = dir.join("config");
+                if config_needs_git(&cfg)
+                    && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
+                {
+                    collect(&text, &dir, "nested-repo", true, out);
+                }
+            }
+            if !is_git_dir && dir != root && l.markers.iter().any(|m| is_generated_marker(m)) {
+                stats.pruned += 1;
+                continue; // a virtualenv or build cache: nothing in it was shipped by the repo
+            }
+            // Keep descending through a nested git dir too -- a decoy with a boring config
+            // must not hide a real payload underneath it -- but not into its object store,
+            // which fans out 256 ways and is not somewhere an agent cds into.
+            for (name, path) in l.children {
+                if is_git_dir && name == "objects" {
+                    continue;
+                }
+                // Only `budget` more directories are listed, and one more queued is
+                // enough to end the walk exhausted: what is queued past that would never
+                // be listed, so it is neither kept nor read ahead.
+                if queue.len() > budget {
+                    break;
+                }
+                pf.hint(&path);
+                queue.push_back(path);
+            }
+        }
+    });
+    out[first..].sort_by(|a, b| a.path.cmp(&b.path));
+}
+
+/// Listings read ahead of one project's nested walk per helper thread (bounded: a walk
+/// that stops at its budget drops what it read ahead), as the nested rules walk.
+const NESTED_READ_AHEAD: usize = 32;
+
+/// What [`scan_nested_repos`] keeps of one directory listing.
+struct GitListing {
+    /// Entries read: at most [`MAX_DIR_ENTRIES`].
+    entries: u64,
+    /// The listing stopped at [`MAX_DIR_ENTRIES`].
+    cut: bool,
+    has_config: bool,
+    has_head: bool,
+    has_objects: bool,
+    has_refs: bool,
+    /// `pyvenv.cfg` / `CACHEDIR.TAG` regular files (validated by the walk).
+    markers: Vec<PathBuf>,
+    /// Subdirectories to descend into (not symlinks, not pruned), in listing order.
+    children: Vec<(std::ffi::OsString, PathBuf)>,
+    /// Subdirectories pruned by name or as another walked project.
+    pruned: u64,
+}
+
+/// List one directory for [`scan_nested_repos`]. Runs on a prefetch helper: notes no
+/// telemetry (the walk notes a read error, a cut and the counts when it takes the
+/// listing) and reads nothing but the listing and, for a symlink, its target's type.
+fn list_git_dir(
+    dir: &Path,
+    inner_projects: &[&PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<GitListing> {
     /// A directory holding one of these, VALID, was produced by a tool, not committed:
     /// `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's `venv`,
     /// https://docs.python.org/3/library/venv.html), `CACHEDIR.TAG` marks cargo's target/
@@ -390,122 +513,80 @@ fn scan_nested_repos(
     /// itself does not hide it; planting a VALID one in an ancestor does, which is the same
     /// adversarial floor as exhausting the directory budget.
     const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
-    let own_git = root.join(".git");
-    let mut budget = max_dirs.max(1);
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        // Budget is spent per directory LISTED, never per file: charging it per entry
-        // let a few thousand junk files exhaust the walk before it reached a buried git
-        // dir -- an attacker-controllable way to hide from the CVE-2026-45033 check.
-        if budget == 0 {
-            stats.budget_exhausted = true;
-            crate::scanners::telemetry::mark_truncated();
-            return;
+    let entries = std::fs::read_dir(dir)?;
+    let mut l = GitListing {
+        entries: 0,
+        cut: false,
+        has_config: false,
+        has_head: false,
+        has_objects: false,
+        has_refs: false,
+        markers: Vec::new(),
+        children: Vec::new(),
+        pruned: 0,
+    };
+    // One listing answers both questions -- "is this a git dir?" and "what do I
+    // descend into?" -- using the entry type the listing already carries. The
+    // previous version stat'ed every entry and then stat'ed config and HEAD again
+    // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
+    for (listed, entry) in entries.flatten().enumerate() {
+        if listed == MAX_DIR_ENTRIES {
+            l.cut = true;
+            break;
         }
-        budget -= 1;
-        let Ok(entries) = crate::scanners::probe_read_dir(&dir) else {
+        // A walk that stopped no longer wants this listing: give up early.
+        if listed % 1024 == 1023 && cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        l.entries += 1;
+        let Ok(kind) = entry.file_type() else {
             continue;
         };
-        stats.dirs += 1;
-        // One listing answers both questions -- "is this a git dir?" and "what do I
-        // descend into?" -- using the entry type the listing already carries. The
-        // previous version stat'ed every entry and then stat'ed config and HEAD again
-        // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
-        let (mut has_config, mut has_head, mut has_objects, mut has_refs) = (false, false, false, false);
-        let mut markers: Vec<std::path::PathBuf> = Vec::new();
-        let mut children = Vec::new();
-        for (listed, entry) in entries.flatten().enumerate() {
-            if listed == MAX_DIR_ENTRIES {
-                stats.dirs_cut += 1;
-                crate::scanners::telemetry::mark_truncated();
-                break;
+        let name = entry.file_name();
+        // A symlink reports itself here, not its target. Resolve it for the FILE
+        // checks -- `config -> ../real-config` is how a payload hid from the first
+        // version of this walk -- but never descend through a symlinked directory.
+        // git's is_git_directory uses stat(), which follows symlinks, so a symlinked
+        // objects/ or refs/ satisfies it -- and therefore must satisfy us. Resolve the
+        // target type for the CRITERION; the descent decision below is separate and
+        // never follows a symlinked directory.
+        let (is_file, is_dir) = if kind.is_symlink() {
+            match std::fs::metadata(entry.path()) {
+                Ok(m) => (m.is_file(), m.is_dir()),
+                Err(_) => (false, false),
             }
-            stats.entries += 1;
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            let name = entry.file_name();
-            // A symlink reports itself here, not its target. Resolve it for the FILE
-            // checks -- `config -> ../real-config` is how a payload hid from the first
-            // version of this walk -- but never descend through a symlinked directory.
-            // git's is_git_directory uses stat(), which follows symlinks, so a symlinked
-            // objects/ or refs/ satisfies it -- and therefore must satisfy us. Resolve the
-            // target type for the CRITERION; the descent decision below is separate and
-            // never follows a symlinked directory.
-            let (is_file, is_dir) = if kind.is_symlink() {
-                match std::fs::metadata(entry.path()) {
-                    Ok(m) => (m.is_file(), m.is_dir()),
-                    Err(_) => (false, false),
-                }
-            } else {
-                (kind.is_file(), kind.is_dir())
-            };
-            // A symlink named HEAD counts here whatever its target: git never opens the
-            // target, it reads the link text, and head_is_valid() decides below.
-            if name == "HEAD" && (is_file || kind.is_symlink()) {
-                has_head = true;
-            } else if is_file {
-                if name == "config" {
-                    has_config = true;
-                } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
-                    markers.push(entry.path());
-                }
-            } else if is_dir {
-                if name == "objects" {
-                    has_objects = true;
-                } else if name == "refs" {
-                    has_refs = true;
-                }
-                // A symlinked directory is never descended through (above), and is not
-                // counted as pruned.
-                if !kind.is_symlink() {
-                    let path = entry.path();
-                    if PRUNE_BY_NAME.iter().any(|p| name == *p) || inner_projects.iter().any(|p| **p == path) {
-                        stats.pruned += 1;
-                    } else {
-                        children.push((name, path));
-                    }
+        } else {
+            (kind.is_file(), kind.is_dir())
+        };
+        // A symlink named HEAD counts here whatever its target: git never opens the
+        // target, it reads the link text, and head_is_valid() decides below.
+        if name == "HEAD" && (is_file || kind.is_symlink()) {
+            l.has_head = true;
+        } else if is_file {
+            if name == "config" {
+                l.has_config = true;
+            } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
+                l.markers.push(entry.path());
+            }
+        } else if is_dir {
+            if name == "objects" {
+                l.has_objects = true;
+            } else if name == "refs" {
+                l.has_refs = true;
+            }
+            // A symlinked directory is never descended through (above), and is not
+            // counted as pruned.
+            if !kind.is_symlink() {
+                let path = entry.path();
+                if PRUNE_BY_NAME.iter().any(|p| name == *p) || inner_projects.iter().any(|p| **p == path) {
+                    l.pruned += 1;
+                } else {
+                    l.children.push((name, path));
                 }
             }
-        }
-        // git's own test (setup.c is_git_directory): HEAD plus objects/ and refs/
-        // directories. That is what makes git treat a cwd as a bare repo and read its
-        // config -- the CVE-2026-45033 shape. Two plain files named config and HEAD are
-        // NOT a git dir, and the first version of this walk treated them as one and
-        // stopped descending: an attacker could hide a whole subtree, or the whole
-        // project, behind two empty files.
-        // git also validates HEAD's CONTENT (validate_headref): a symref or an object
-        // id. A junk HEAD is not a git dir to git, so reporting it would be a false
-        // positive from a scanner whose whole design is to not cry wolf.
-        let is_git_dir = has_head && has_objects && has_refs && dir != root && head_is_valid(&dir.join("HEAD"));
-        if dir == own_git {
-            continue; // the project's own .git is handled by scan_repo_local
-        }
-        if is_git_dir {
-            stats.repos += 1;
-        }
-        if is_git_dir && has_config {
-            let cfg = dir.join("config");
-            if config_needs_git(&cfg)
-                && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
-            {
-                collect(&text, &dir, "nested-repo", true, out);
-            }
-        }
-        if !is_git_dir && dir != root && markers.iter().any(|m| is_generated_marker(m)) {
-            stats.pruned += 1;
-            continue; // a virtualenv or build cache: nothing in it was shipped by the repo
-        }
-        // Keep descending through a nested git dir too -- a decoy with a boring config
-        // must not hide a real payload underneath it -- but not into its object store,
-        // which fans out 256 ways and is not somewhere an agent cds into.
-        for (name, path) in children {
-            if is_git_dir && name == "objects" {
-                continue;
-            }
-            stack.push(path);
         }
     }
+    Ok(l)
 }
 
 /// The first bytes of a valid `CACHEDIR.TAG` (https://bford.info/cachedir/): "The cache
@@ -613,14 +694,28 @@ pub fn attack_shape(value: &str) -> Option<String> {
 /// platform scan.
 pub fn scan_nested_repos_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) {
     let max_dirs = crate::scanners::telemetry::walk_budget();
-    scan_nested_repos(root, &[], out, &mut WalkStats::default(), max_dirs);
+    scan_nested_repos(
+        root,
+        &[],
+        out,
+        &mut WalkStats::default(),
+        max_dirs,
+        crate::scanners::telemetry::helper_jobs(),
+    );
 }
 
 /// [`scan_nested_repos_for_test`] that also returns the walk's (directories listed,
 /// directories pruned) counts.
 pub fn nested_walk_counts_for_test(root: &Path, out: &mut Vec<GitAutorunConfig>) -> (u64, u64) {
     let mut stats = WalkStats::default();
-    scan_nested_repos(root, &[], out, &mut stats, crate::scanners::telemetry::walk_budget());
+    scan_nested_repos(
+        root,
+        &[],
+        out,
+        &mut stats,
+        crate::scanners::telemetry::walk_budget(),
+        crate::scanners::telemetry::helper_jobs(),
+    );
     (stats.dirs, stats.pruned)
 }
 
@@ -716,9 +811,72 @@ mod dir_entry_cap_tests {
             std::fs::write(flat.join(format!("t{i}.png")), b"").unwrap();
         }
         let (mut out, mut stats) = (Vec::new(), WalkStats::default());
-        scan_nested_repos(&root, &[], &mut out, &mut stats, 25_000);
+        scan_nested_repos(&root, &[], &mut out, &mut stats, 25_000, 1);
         assert_eq!(stats.dirs_cut, 1, "{stats:?}");
         assert!(stats.entries <= (MAX_DIR_ENTRIES + 10) as u64, "{stats:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Perf 6c: the breadth-first walk keeps the budget's meaning at its edge. A root with
+    /// 30 subdirectories is 31 directories to list: at a budget of 31 the walk lists them
+    /// all and is not exhausted; at 30 it lists 30 and is; at 5 (the queue is kept to what
+    /// the budget can still list) it lists 5 and is. The same at `jobs` 1 and 4.
+    #[test]
+    fn the_budget_edge_is_the_same_breadth_first_at_any_jobs() {
+        let root = std::env::temp_dir().join(format!("rmg-gc-edge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for i in 0..30 {
+            std::fs::create_dir_all(root.join(format!("d{i:02}"))).unwrap();
+        }
+        for (budget, dirs, exhausted) in [(31, 31, false), (30, 30, true), (5, 5, true)] {
+            for jobs in [1, 4] {
+                let (mut out, mut stats) = (Vec::new(), WalkStats::default());
+                scan_nested_repos(&root, &[], &mut out, &mut stats, budget, jobs);
+                assert_eq!(stats.dirs, dirs, "budget {budget} jobs {jobs}: {stats:?}");
+                assert_eq!(stats.budget_exhausted, exhausted, "budget {budget} jobs {jobs}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Perf 6c: findings within one project come back sorted by path whatever order the
+    /// walk met them in; one git dir's several keys keep git's own order.
+    #[test]
+    fn nested_findings_are_sorted_by_path_keys_in_git_order() {
+        let root = std::env::temp_dir().join(format!("rmg-gc-sort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["z/deep/er/pay", "m/pay", "a/x/pay", "b"] {
+            let g = root.join(rel);
+            std::fs::create_dir_all(g.join("objects")).unwrap();
+            std::fs::create_dir_all(g.join("refs")).unwrap();
+            std::fs::write(g.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            std::fs::write(
+                g.join("config"),
+                "[core]\n\tsshCommand = \"./s.sh\"\n\tfsmonitor = \"./f.sh\"\n",
+            )
+            .unwrap();
+        }
+        for jobs in [1, 4] {
+            let (mut out, mut stats) = (Vec::new(), WalkStats::default());
+            scan_nested_repos(&root, &[], &mut out, &mut stats, 25_000, jobs);
+            let got: Vec<(String, String)> = out
+                .iter()
+                .map(|c| {
+                    let rel = c.path.strip_prefix(&format!("{}/", root.display())).unwrap_or(&c.path);
+                    (rel.to_string(), c.key.clone())
+                })
+                .collect();
+            let want: Vec<(String, String)> = ["a/x/pay", "b", "m/pay", "z/deep/er/pay"]
+                .iter()
+                .flat_map(|p| {
+                    [
+                        (p.to_string(), "core.sshcommand".to_string()),
+                        (p.to_string(), "core.fsmonitor".to_string()),
+                    ]
+                })
+                .collect();
+            assert_eq!(got, want, "jobs {jobs}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

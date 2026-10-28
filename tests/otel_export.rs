@@ -431,6 +431,14 @@ mod enabled {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    /// Read and drop whatever the peer sends until it closes (or 10 s pass), then close.
+    fn hold_until_peer_closes(mut s: std::net::TcpStream) {
+        let _ = s.set_nonblocking(false);
+        let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+        let mut buf = [0u8; 4096];
+        while matches!(s.read(&mut buf), Ok(n) if n > 0) {}
+    }
+
     /// Received (request path, body) pairs.
     type Bodies = Vec<(String, Vec<u8>)>;
 
@@ -2577,13 +2585,12 @@ mod enabled {
                 match listener.accept() {
                     Ok((mut s, _)) => {
                         let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
-                        // Hold the socket briefly, as the unit-test twin does, so the
-                        // client reads the plaintext reply (a TLS error) rather than
-                        // racing an RST (which would categorize as "could not connect").
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_millis(200));
-                            drop(s);
-                        });
+                        // Hold the socket until the client hangs up (at most 10 s), as the
+                        // unit-test twin does, so the client reads the plaintext reply (a
+                        // TLS error) rather than racing an RST (which would categorize as
+                        // "could not connect"). A fixed 200 ms hold loses that race when
+                        // the client was slower than that under load.
+                        std::thread::spawn(move || hold_until_peer_closes(s));
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }

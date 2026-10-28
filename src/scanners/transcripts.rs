@@ -592,11 +592,12 @@ mod tests {
     use std::fs;
 
     /// A throwaway directory under the system temp dir, removed on drop. Named by the
-    /// caller so parallel tests don't collide.
+    /// caller so parallel tests don't collide, and by the pid so two test processes
+    /// sharing a TMPDIR (two checkouts, two `cargo test` runs) don't either.
     struct TmpDir(std::path::PathBuf);
     impl TmpDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!("rmguard-transcripts-{name}"));
+            let p = std::env::temp_dir().join(format!("rmguard-transcripts-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&p);
             fs::create_dir_all(&p).unwrap();
             TmpDir(p)

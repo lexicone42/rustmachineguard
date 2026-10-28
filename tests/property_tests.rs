@@ -6627,12 +6627,27 @@ fn grandchild_servers_die_with_the_probe() {
     assert!(r.success, "{:?}", r.error);
     let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_string();
     let _ = std::fs::remove_dir_all(&dir);
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let alive = std::process::Command::new("kill")
-        .args(["-0", &pid])
-        .status()
-        .unwrap()
-        .success();
+    // Killed with its group, the sleeper is a zombie until init (or a subreaper) reaps it,
+    // and `kill -0` succeeds on a zombie: a fixed 200 ms wait fails whenever reaping is
+    // slower than that. Poll for up to 5 s, counting a zombie as dead; a survivor never
+    // becomes one (`sleep 30`).
+    let gone = |pid: &str| {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success();
+        let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| s.rsplit_once(')').map(|(_, rest)| rest.trim_start().starts_with('Z')))
+            .unwrap_or(false);
+        !alive || zombie
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !gone(&pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let alive = !gone(&pid);
     if alive {
         let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
     }

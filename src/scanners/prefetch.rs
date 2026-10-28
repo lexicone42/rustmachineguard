@@ -1,9 +1,9 @@
 //! Directory listings read ahead of a walk on helper threads, consumed in the walk's own
 //! order.
 //!
-//! A breadth-first walk (the rules scanner's nested-instruction-file walk) decides what
-//! to list next, and when to stop, one directory at a time, from what
-//! it has listed so far: its budget and its results depend on that order. [`with_prefetch`]
+//! A breadth-first walk (the rules scanner's nested-instruction-file walk, the gitconfig
+//! scanner's nested-repository walk) decides what to list next, and when to stop, one
+//! directory at a time, from what it has listed so far: its budget and its results depend on that order. [`with_prefetch`]
 //! keeps the walk exactly as it is and only moves the listing itself, the system calls,
 //! onto helpers: the walk [`hint`](Prefetch::hint)s each directory it has queued, helpers
 //! list hinted directories ahead of it, oldest hint first (the order a breadth-first walk

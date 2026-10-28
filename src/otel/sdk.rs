@@ -863,7 +863,12 @@ mod tests {
         let server = std::thread::spawn(move || {
             if let Ok((mut s, _)) = plain.accept() {
                 let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n");
-                std::thread::sleep(Duration::from_millis(200));
+                // Held until the client hangs up (at most 10 s), not a fixed 200 ms: a
+                // client slower than that would read an RST instead of the plaintext reply.
+                use std::io::Read;
+                let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+                let mut buf = [0u8; 4096];
+                while matches!(s.read(&mut buf), Ok(n) if n > 0) {}
             }
         });
         let e = agent
