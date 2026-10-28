@@ -319,7 +319,7 @@ fn scan_serena_initial_prompt(dir: &Path, user: bool, results: &mut Vec<RulesFil
     let Some(content) = read_bounded_nofollow(&path, None) else {
         return;
     };
-    let Ok(doc) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content) else {
+    let Some(doc) = crate::scanners::yaml::to_json(&content) else {
         return;
     };
     let Some(prompt) = doc.get("initial_prompt").and_then(|v| v.as_str()) else {

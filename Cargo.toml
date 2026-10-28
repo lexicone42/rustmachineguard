@@ -31,7 +31,9 @@ glob = "0.3"
 which = "8"
 whoami = "2"
 base64 = "0.23"
-serde_yaml_ng = "0.10"
+# Pure safe Rust (`#![forbid(unsafe_code)]`); replaced serde_yaml_ng, whose libyaml
+# translation (unsafe-libyaml) is unmaintained (RUSTSEC-2024-0449). Limits: src/scanners/yaml.rs.
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
 toml = "1"
 sha2 = "0.11.0"
 libc = "0.2.186"

@@ -1857,8 +1857,7 @@ fn sanitize_url(url: &str) -> String {
 /// Convert a YAML config to the canonical JSON value so ONE parser handles every
 /// format — names, package identity, env inline secrets, transport, the lot.
 pub fn yaml_to_json(content: &str) -> Option<serde_json::Value> {
-    let yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(content).ok()?;
-    serde_json::to_value(&yaml_value).ok()
+    crate::scanners::yaml::to_json(content)
 }
 
 /// Convert a TOML config (Codex `~/.codex/config.toml`) to the canonical JSON value.

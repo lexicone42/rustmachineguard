@@ -1208,7 +1208,7 @@ fn frontmatter_hook_map(fm: &str) -> Option<serde_json::Value> {
     if fm.len() > MAX_FRONTMATTER {
         return None;
     }
-    let mut v = serde_yaml_ng::from_str::<serde_json::Value>(fm).ok()?;
+    let mut v = crate::scanners::yaml::to_json(fm)?;
     v.get_mut("hooks").map(serde_json::Value::take)
 }
 
@@ -2508,12 +2508,12 @@ pub fn parse_allowed_tools(frontmatter: &str) -> Vec<String> {
     if frontmatter.len() > MAX_FRONTMATTER {
         return out;
     }
-    match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(frontmatter) {
+    match crate::scanners::yaml::parse(frontmatter) {
         Ok(v) => {
             let Some(val) = v.get("allowed-tools") else { return out };
             match val {
-                serde_yaml_ng::Value::String(s) => tokenize_tools(s, &mut out),
-                serde_yaml_ng::Value::Sequence(seq) => {
+                serde_json::Value::String(s) => tokenize_tools(s, &mut out),
+                serde_json::Value::Array(seq) => {
                     for item in seq {
                         if let Some(s) = item.as_str() {
                             tokenize_tools(s, &mut out);

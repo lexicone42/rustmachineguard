@@ -37,6 +37,7 @@ pub mod transcript_content;
 pub mod transcripts;
 pub mod vibe;
 pub mod vscode_tasks;
+pub mod yaml;
 
 use crate::platform::PlatformInfo;
 use std::time::Duration;
