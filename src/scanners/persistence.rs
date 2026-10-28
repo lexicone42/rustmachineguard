@@ -161,61 +161,112 @@ impl Scanner for PersistenceScanner {
         let home = platform.home_dir();
         let mut out = Vec::new();
 
+        // Each check family runs under its own `persistence.check` span (a closed
+        // `rmguard.persistence.check` label), so the trace says where the time goes.
+        let check = |family: &'static str| {
+            crate::otel::span("persistence.check", || {
+                vec![crate::otel::Attr::str(crate::otel::Key::PersistenceCheck, family)]
+            })
+        };
+
         // Python startup hooks in every site-packages root the package scanner knows
         // (system, user, project venvs, uv tools, pipx, agent venvs, uv pythons), each
         // listed once by its real path.
-        for root in crate::scanners::python_packages::python_roots(platform) {
-            scan_site_packages(&root.path, &mut out);
+        {
+            let _s = check("python_roots");
+            let roots = crate::scanners::python_packages::python_roots(platform);
+            drop(_s);
+            let _s = check("python_startup");
+            for root in roots {
+                scan_site_packages(&root.path, &mut out);
+            }
         }
 
         // Project-rooted shapes.
         let projects = {
+            let _s = check("project_list");
             // Another scan home, or an ancestor of one, is not this pass's project (its own
             // pass reads it); this pass's own home stays when it is the cwd or registered.
             let scope = platform.pass_scope();
-            scope.excluding_other_scan_homes(
+            let mut seen_projects = std::collections::HashSet::new();
+            let mut projects = scope.excluding_other_scan_homes(
                 scope.with_cwd(
                     crate::scanners::python_packages::project_dirs(&home.join(".claude.json")).unwrap_or_default(),
                 ),
                 &home,
-            )
+            );
+            projects.retain(|p| seen_projects.insert(p.clone()));
+            projects
         };
-        let mut seen_projects = std::collections::HashSet::new();
+        // Family by family over every project, each project's findings kept in its own
+        // slots and joined in the old per-project order (planted binaries, loader
+        // staging, committed symlinks, project IOCs): the report is the same as the
+        // project-by-project loop produced.
+        let mut per_project: Vec<[Vec<PersistenceArtifact>; 4]> = projects.iter().map(|_| Default::default()).collect();
         let path_searches_cwd = path_searches_cwd(std::env::var_os("PATH").as_deref());
-        for proj in projects {
-            if !seen_projects.insert(proj.clone()) {
-                continue;
+        {
+            let _s = check("planted_binaries");
+            for (proj, slots) in projects.iter().zip(per_project.iter_mut()) {
+                scan_planted_binaries(proj, path_searches_cwd, &mut slots[0]);
             }
-            scan_planted_binaries(&proj, path_searches_cwd, &mut out);
-            scan_loader_staging(&proj, &mut out);
-            scan_committed_symlinks(&proj, &home, &mut out);
-            for (rel, campaign) in PROJECT_IOC_PATHS {
-                let p = proj.join(rel);
+        }
+        {
+            let _s = check("loader_staging");
+            for (proj, slots) in projects.iter().zip(per_project.iter_mut()) {
+                scan_loader_staging(proj, &mut slots[1]);
+            }
+        }
+        {
+            let _s = check("committed_symlinks");
+            let found = committed_symlinks_all(&projects, &home);
+            for (slots, f) in per_project.iter_mut().zip(found) {
+                slots[2] = f;
+            }
+        }
+        {
+            let _s = check("project_iocs");
+            for (proj, slots) in projects.iter().zip(per_project.iter_mut()) {
+                for (rel, campaign) in PROJECT_IOC_PATHS {
+                    let p = proj.join(rel);
+                    if crate::scanners::probe_exists(&p) {
+                        slots[3].push(ioc(&p, proj, campaign, is_git_tracked(&p)));
+                    }
+                }
+            }
+        }
+        out.extend(per_project.into_iter().flat_map(|slots| slots.into_iter().flatten()));
+
+        // Known campaign artifacts under HOME and in /tmp.
+        {
+            let _s = check("home_iocs");
+            for (rel, campaign) in HOME_IOC_PATHS {
+                let p = home.join(rel);
                 if crate::scanners::probe_exists(&p) {
-                    out.push(ioc(&p, &proj, campaign, is_git_tracked(&p)));
+                    out.push(ioc(&p, &home, campaign, false));
+                }
+            }
+            for (abs, campaign) in ABS_IOC_PATHS {
+                let p = PathBuf::from(abs);
+                if crate::scanners::probe_exists(&p) {
+                    out.push(ioc(&p, Path::new("/"), campaign, false));
                 }
             }
         }
 
-        // Known campaign artifacts under HOME and in /tmp.
-        for (rel, campaign) in HOME_IOC_PATHS {
-            let p = home.join(rel);
-            if crate::scanners::probe_exists(&p) {
-                out.push(ioc(&p, &home, campaign, false));
-            }
-        }
-        for (abs, campaign) in ABS_IOC_PATHS {
-            let p = PathBuf::from(abs);
-            if crate::scanners::probe_exists(&p) {
-                out.push(ioc(&p, Path::new("/"), campaign, false));
-            }
-        }
-
         // Agent launch surface and leftovers under the agent's own directories.
-        scan_url_handlers(&home, &mut out);
+        {
+            let _s = check("url_handlers");
+            scan_url_handlers(&home, &mut out);
+        }
         let claude = platform.claude_config_dir();
-        scan_agent_bin(&claude.join("bin"), &home, &mut out);
-        scan_dangling_plugin_records(&claude, &mut out);
+        {
+            let _s = check("agent_bin");
+            scan_agent_bin(&claude.join("bin"), &home, &mut out);
+        }
+        {
+            let _s = check("dangling_plugins");
+            scan_dangling_plugin_records(&claude, &mut out);
+        }
 
         let mut seen = std::collections::HashSet::new();
         out.retain(|a| seen.insert((a.kind.clone(), a.path.clone())));
@@ -338,6 +389,9 @@ fn scan_url_handlers(home: &Path, out: &mut Vec<PersistenceArtifact>) {
 /// Entries looked at in the agent's bin directory, and the hashing bound.
 const MAX_BIN_ENTRIES: usize = 200;
 const MAX_HASH_BYTES: usize = 64 * 1024 * 1024;
+/// Files hashed at once in `~/.claude/bin`: bounds the memory held to this many times
+/// [`MAX_HASH_BYTES`].
+const MAX_HASH_JOBS: usize = 4;
 
 /// Executables in `~/.claude/bin/`: Claude Code keeps plugins under plugins/cache, so a
 /// file here was put by a plugin's script or by hand, is outside any plugin cache, and
@@ -349,14 +403,20 @@ fn scan_agent_bin(dir: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
     };
     let mut files: Vec<PathBuf> = entries.flatten().take(MAX_BIN_ENTRIES).map(|e| e.path()).collect();
     files.sort();
-    for path in files {
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
+    let owner = crate::scanners::home_owner_uid(home);
+    // Hashing (up to 64 MiB a file, held in memory while hashed) is the cost here: one
+    // file per task on at most [`MAX_HASH_JOBS`] of the scan's helper threads, results in
+    // name order whichever finishes first.
+    let jobs = crate::scanners::telemetry::helper_jobs().min(MAX_HASH_JOBS);
+    let infos = crate::scanners::telemetry::par_map(files, jobs, |path| {
+        let meta = std::fs::symlink_metadata(&path).ok()?;
         if !meta.is_file() || !is_executable(&meta) {
-            continue;
+            return None;
         }
-        let info = agent_bin_info(&path, &meta, crate::scanners::home_owner_uid(home));
+        let info = agent_bin_info(&path, &meta, owner);
+        Some((path, info))
+    });
+    for (path, info) in infos.into_iter().flatten() {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -765,12 +825,47 @@ fn scan_loader_staging(proj: &Path, out: &mut Vec<PersistenceArtifact>) {
 
 // ── Committed symlinks that escape the repository ─────────────────────────────
 
+/// [`scan_committed_symlinks`] for every project, findings per project in `projects`
+/// order.
+fn committed_symlinks_all(projects: &[PathBuf], home: &Path) -> Vec<Vec<PersistenceArtifact>> {
+    projects
+        .iter()
+        .map(|proj| {
+            let mut o = Vec::new();
+            scan_committed_symlinks(proj, home, &mut o);
+            o
+        })
+        .collect()
+}
+
+/// The closed `rmguard.persistence.check` values, in run order.
+pub const CHECK_FAMILIES: &[&str] = &[
+    "python_roots",
+    "python_startup",
+    "project_list",
+    "planted_binaries",
+    "loader_staging",
+    "committed_symlinks",
+    "project_iocs",
+    "home_iocs",
+    "url_handlers",
+    "agent_bin",
+    "dangling_plugins",
+];
+
 /// `git ls-files -s` lists every tracked entry with its mode; mode 120000 is a symlink.
 /// The link target is what git stores, so a clone reproduces it byte for byte. We
 /// resolve the target lexically against the link's directory and ask whether it stays
 /// inside the repository; an absolute target or one that climbs out is the trap.
 fn scan_committed_symlinks(proj: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
     if !crate::scanners::probe_dir(&proj.join(".git")) {
+        return;
+    }
+    // Only a mode-120000 entry can produce a finding. When the index itself says it has
+    // none, `git ls-files -s` would list nothing this loop keeps: skip the spawn. Any
+    // doubt (unreadable, too big, split or sparse index, an unknown version, mode or
+    // required extension, a layout that does not add up) spawns git as before.
+    if index_has_no_symlinks(&proj.join(".git").join("index")) {
         return;
     }
     let mut cmd = crate::scanners::hardened_git();
@@ -813,6 +908,140 @@ fn scan_committed_symlinks(proj: &Path, home: &Path, out: &mut Vec<PersistenceAr
             bin: None,
         });
     }
+}
+
+/// Index files read for the symlink pre-check; a bigger one is left to git.
+const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
+
+/// Whether the git index at `index` positively lists no symlink (mode 120000) entry
+/// ([`index_symlink_free`]); false when unsure. Read without following a link, bounded.
+fn index_has_no_symlinks(index: &Path) -> bool {
+    let Some(bytes) = crate::scanners::read_head_bytes_nofollow(index, MAX_INDEX_BYTES + 1) else {
+        return false;
+    };
+    bytes.len() <= MAX_INDEX_BYTES && index_symlink_free(&bytes) == Some(true)
+}
+
+/// Parse a git index (gitformat-index(5): "DIRC", version 2, 3 or 4, entries, then
+/// extensions and the trailing checksum) far enough to see every entry's mode.
+/// `Some(true)`: every entry was parsed, none is a symlink, and the layout adds up
+/// exactly, for a SHA-1 index and not for a SHA-256 one. `Some(false)`: an entry is a
+/// symlink. `None`: anything else, the caller's cue to ask git: a truncated or
+/// inconsistent file, a split index (`link`: entries live in another file), a sparse
+/// index (`sdir`: directory entries stand for whole trees), any other required
+/// (lower-case) extension, or a mode git does not write for a file entry.
+pub fn index_symlink_free(b: &[u8]) -> Option<bool> {
+    match (parse_index_modes(b, 20), parse_index_modes(b, 32)) {
+        (Some(sym), None) => Some(!sym),
+        _ => None,
+    }
+}
+
+/// [`index_symlink_free`] with an object-id length of `oid` bytes: Some(any symlink entry)
+/// when the whole file parses with that length, else None.
+fn parse_index_modes(b: &[u8], oid: usize) -> Option<bool> {
+    let be32 = |at: usize| -> Option<u32> {
+        let s = b.get(at..at.checked_add(4)?)?;
+        Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    };
+    if b.get(0..4)? != b"DIRC" {
+        return None;
+    }
+    let version = be32(4)?;
+    if !(2..=4).contains(&version) {
+        return None;
+    }
+    let count = be32(8)? as usize;
+    let mut at = 12usize;
+    let mut prev_path_len = 0usize;
+    let mut symlink = false;
+    for _ in 0..count {
+        // ctime, mtime (8 each), dev, ino, mode, uid, gid, size (4 each), then the
+        // object id and the 16-bit flags.
+        let mode = be32(at.checked_add(24)?)?;
+        let flags_at = at.checked_add(40)?.checked_add(oid)?;
+        let f = b.get(flags_at..flags_at.checked_add(2)?)?;
+        let flags = u16::from_be_bytes([f[0], f[1]]);
+        let mut path_at = flags_at + 2;
+        if flags & 0x4000 != 0 {
+            if version < 3 {
+                return None;
+            }
+            path_at = path_at.checked_add(2)?;
+        }
+        match mode {
+            0o100644 | 0o100755 | 0o160000 => {}
+            0o120000 => symlink = true,
+            _ => return None,
+        }
+        if version == 4 {
+            // A varint: how many bytes to drop from the previous path, then the rest of
+            // this path, NUL-terminated; no padding.
+            let (strip, used) = index_varint(b.get(path_at..)?)?;
+            if strip > prev_path_len as u64 {
+                return None;
+            }
+            let rest_at = path_at.checked_add(used)?;
+            let nul = b.get(rest_at..)?.iter().position(|&c| c == 0)?;
+            prev_path_len = prev_path_len - strip as usize + nul;
+            at = rest_at.checked_add(nul)?.checked_add(1)?;
+        } else {
+            // The path (its length in the low 12 flag bits unless it is 0xFFF or more),
+            // NUL-padded to a multiple of 8 counted from the entry's start, at least one NUL.
+            let named = (flags & 0x0FFF) as usize;
+            let len = if named < 0x0FFF {
+                named
+            } else {
+                b.get(path_at..)?.iter().position(|&c| c == 0)?
+            };
+            let end = path_at.checked_add(len)?;
+            if *b.get(end)? != 0 {
+                return None;
+            }
+            let size = (end - at).checked_add(8)? & !7;
+            let next = at.checked_add(size)?;
+            if next > b.len() || b[end..next].iter().any(|&c| c != 0) {
+                return None;
+            }
+            at = next;
+        }
+    }
+    // Extensions: a 4-byte signature and a 4-byte size each, then the checksum (`oid`
+    // bytes) and nothing after it.
+    loop {
+        let left = b.len().checked_sub(at)?;
+        if left == oid {
+            return Some(symlink);
+        }
+        let sig = b.get(at..at.checked_add(4)?)?;
+        if !sig[0].is_ascii_uppercase() {
+            return None; // `link`, `sdir` or an unknown required extension
+        }
+        let size = be32(at + 4)? as usize;
+        at = at.checked_add(8)?.checked_add(size)?;
+        if at > b.len() {
+            return None;
+        }
+    }
+}
+
+/// git's offset varint (varint.c `decode_varint`): (value, bytes used), None on overflow
+/// or a truncated buffer.
+fn index_varint(b: &[u8]) -> Option<(u64, usize)> {
+    let mut i = 0;
+    let mut c = *b.get(i)?;
+    i += 1;
+    let mut val = u64::from(c & 0x7f);
+    while c & 0x80 != 0 {
+        val = val.checked_add(1)?;
+        if val >> 57 != 0 {
+            return None;
+        }
+        c = *b.get(i)?;
+        i += 1;
+        val = (val << 7) | u64::from(c & 0x7f);
+    }
+    Some((val, i))
 }
 
 /// None if the target stays inside the repo; Some(sensitive) if it escapes, where

@@ -507,6 +507,7 @@ fn value(v: V) -> Value {
         V::S(s) => Value::from(s),
         V::I(i) => Value::I64(i),
         V::B(b) => Value::Bool(b),
+        V::Ints(v) => Value::Array(opentelemetry::Array::I64(v)),
     }
 }
 

@@ -6,7 +6,8 @@
 //! * Attribute keys are a closed enum ([`Key`]); there is no free-form key.
 //! * Attribute values are built only through [`Attr`]'s constructors, and none of them
 //!   accepts runtime text: strings are `&'static str` (a scanner label, a phase name, an
-//!   outcome category), everything else is an integer or a boolean. There is nothing to
+//!   outcome category), everything else is an integer, a short list of integers or a
+//!   boolean. There is nothing to
 //!   sanitize because nothing a scan read can be passed in; a `String` does not
 //!   compile:
 //!
@@ -179,6 +180,18 @@ pub enum Key {
     FindingsLow,
     OtelInstanceIdSet,
     CatalogVersion,
+    /// The agent family a `settings.hooks` span reads (`claude-code`, `cursor`, ...).
+    Agent,
+    /// The check family a `persistence.check` span runs (`python_startup`, ...).
+    PersistenceCheck,
+    /// Projects a nested walk listed.
+    WalkProjects,
+    /// Projects whose walk stopped at its directory budget.
+    WalkProjectsExhausted,
+    /// The largest per-project directory counts of a walk, descending (counts only).
+    WalkTopDirs,
+    /// Projects skipped because they were already walked (or the same directory).
+    WalkSkipped,
 }
 
 impl Key {
@@ -240,6 +253,12 @@ impl Key {
         Key::FindingsLow,
         Key::OtelInstanceIdSet,
         Key::CatalogVersion,
+        Key::Agent,
+        Key::PersistenceCheck,
+        Key::WalkProjects,
+        Key::WalkProjectsExhausted,
+        Key::WalkTopDirs,
+        Key::WalkSkipped,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -304,6 +323,12 @@ impl Key {
             Key::FindingsLow => "rmguard.findings.low",
             Key::OtelInstanceIdSet => "rmguard.otel.instance_id_set",
             Key::CatalogVersion => "rmguard.catalog.version",
+            Key::Agent => "rmguard.agent",
+            Key::PersistenceCheck => "rmguard.persistence.check",
+            Key::WalkProjects => "rmguard.walk.projects",
+            Key::WalkProjectsExhausted => "rmguard.walk.projects_exhausted",
+            Key::WalkTopDirs => "rmguard.walk.top_dirs",
+            Key::WalkSkipped => "rmguard.walk.skipped",
         }
     }
 }
@@ -318,7 +343,12 @@ enum V {
     S(&'static str),
     I(i64),
     B(bool),
+    /// A short list of counts (never text): at most [`MAX_INTS`] values.
+    Ints(Vec<i64>),
 }
+
+/// Values kept in an int-list attribute ([`Attr::ints`]).
+pub const MAX_INTS: usize = 8;
 
 impl Attr {
     /// A compile-time string: a fixed category, phase name or outcome.
@@ -330,6 +360,12 @@ impl Attr {
     }
     pub fn bool(key: Key, value: bool) -> Attr {
         Attr(key, V::B(value))
+    }
+    /// A list of counts, cut to the first [`MAX_INTS`]: integers only, so it carries no
+    /// text either.
+    pub fn ints(key: Key, mut values: Vec<i64>) -> Attr {
+        values.truncate(MAX_INTS);
+        Attr(key, V::Ints(values))
     }
     /// A scanner label (`mcp`, `packages`, ...): a string literal at every call site.
     pub fn scanner(label: &'static str) -> Attr {
@@ -827,6 +863,7 @@ mod tests {
             V::S(s) => s.to_string(),
             V::I(i) => i.to_string(),
             V::B(b) => b.to_string(),
+            V::Ints(v) => format!("{v:?}"),
         }
     }
 
@@ -958,7 +995,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 57, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 63, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are exported only as the closed `rmguard.exec.program` set, never the open process.executable.name"

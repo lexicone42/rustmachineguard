@@ -75,6 +75,10 @@ impl Scanner for GitConfigScanner {
                     Attr::int(Key::WalkPruned, stats.pruned as i64),
                     Attr::int(Key::Repos, stats.repos as i64),
                     Attr::bool(Key::WalkBudgetExhausted, stats.budget_exhausted),
+                    Attr::int(Key::WalkProjects, stats.projects as i64),
+                    Attr::int(Key::WalkProjectsExhausted, stats.projects_exhausted as i64),
+                    Attr::ints(Key::WalkTopDirs, stats.top_dirs.clone()),
+                    Attr::int(Key::WalkSkipped, stats.skipped as i64),
                 ]
             });
             nested
@@ -87,11 +91,15 @@ impl Scanner for GitConfigScanner {
     }
 }
 
+/// One project of [`walk_projects`]: its index in `dirs`, the directory, and the other
+/// walked projects inside it (None: not walked).
+type WalkTask<'a> = (usize, &'a PathBuf, Option<Vec<&'a PathBuf>>);
+
 /// The nested walk of every project in `dirs` that is in `walkable`, on up to `jobs`
 /// threads ([`par_map`](crate::scanners::telemetry::par_map)), one project per task, each
 /// with its own budget of `max_dirs` directories (`--walk-budget`) and its own
-/// [`WalkStats`]. Findings come back per
-/// project in `dirs` order and the stats are summed in that order, so neither depends on
+/// [`WalkStats`], projects holding the most other projects started first. Findings come
+/// back per project in `dirs` order and the stats are summed in that order, so neither depends on
 /// which project finished first; `jobs` 1 is the sequential loop.
 fn walk_projects(
     dirs: &[PathBuf],
@@ -99,26 +107,61 @@ fn walk_projects(
     jobs: usize,
     max_dirs: usize,
 ) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
-    let per_project = crate::scanners::telemetry::par_map(dirs.iter().collect(), jobs, |dir: &PathBuf| {
+    // Another walked project inside a project is walked on its own (with its own
+    // budget): its subtree is skipped there. A project recovered from ~/.claude/projects
+    // is often the parent of registered ones (`~/work` above `~/work/app`), whose walk
+    // would otherwise re-list every child project and stop at the budget.
+    let tasks: Vec<WalkTask> = dirs
+        .iter()
+        .enumerate()
+        .map(|(i, dir)| {
+            let inner = walkable
+                .contains(dir)
+                .then(|| walkable.iter().filter(|w| *w != dir && w.starts_with(dir)).collect());
+            (i, dir, inner)
+        })
+        .collect();
+    // Started biggest-first: a project holding other projects is usually the largest
+    // tree (a workspace directory), and started last it alone would set the walk's wall
+    // time. Results go back to `dirs` order below, so the order run never shows.
+    let mut order: Vec<usize> = (0..tasks.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(tasks[i].2.as_ref().map_or(0, Vec::len)));
+    let mut slots: Vec<Option<WalkTask>> = tasks.into_iter().map(Some).collect();
+    let scheduled: Vec<_> = order
+        .iter()
+        .map(|&i| slots[i].take().expect("each task once"))
+        .collect();
+    let ran = crate::scanners::telemetry::par_map(scheduled, jobs, |(i, dir, inner)| {
         let (mut o, mut stats) = (Vec::new(), WalkStats::default());
-        if walkable.contains(dir) {
-            // Another walked project inside this one is walked on its own (with its own
-            // budget): skip its subtree here. A project recovered from ~/.claude/projects
-            // is often the parent of registered ones (`~/work` above `~/work/app`), whose
-            // walk would otherwise re-list every child project and stop at the budget.
-            let inner: Vec<&PathBuf> = walkable.iter().filter(|w| *w != dir && w.starts_with(dir)).collect();
-            scan_nested_repos(dir, &inner, &mut o, &mut stats, max_dirs);
+        if let Some(inner) = &inner {
+            scan_nested_repos(dir, inner, &mut o, &mut stats, max_dirs);
+        } else {
+            stats.skipped = 1;
         }
-        (o, stats)
+        (i, (o, stats))
     });
+    let mut per_project: Vec<Option<(Vec<GitAutorunConfig>, WalkStats)>> = (0..dirs.len()).map(|_| None).collect();
+    for (i, r) in ran {
+        per_project[i] = Some(r);
+    }
+    let per_project = per_project.into_iter().map(|r| r.expect("every project ran"));
     let mut total = WalkStats::default();
+    let mut dir_counts: Vec<i64> = Vec::new();
     let nested = per_project
         .into_iter()
         .map(|(o, s)| {
             total.add(&s);
+            if s.dirs > 0 {
+                total.projects += 1;
+                total.projects_exhausted += u64::from(s.budget_exhausted);
+                dir_counts.push(s.dirs as i64);
+            }
             o
         })
         .collect();
+    dir_counts.sort_unstable_by(|a, b| b.cmp(a));
+    dir_counts.truncate(TOP_DIRS);
+    total.top_dirs = dir_counts;
     (nested, total)
 }
 
@@ -137,7 +180,19 @@ struct WalkStats {
     pruned: u64,
     /// A project's walk stopped at its directory budget.
     budget_exhausted: bool,
+    /// Projects walked (at least one directory listed), and how many of them stopped at
+    /// the budget: set on the total only.
+    projects: u64,
+    projects_exhausted: u64,
+    /// Projects not walked: a scan home, or an ancestor of one.
+    skipped: u64,
+    /// The largest per-project directory counts, descending, at most [`TOP_DIRS`]:
+    /// counts only, never which project.
+    top_dirs: Vec<i64>,
 }
+
+/// Per-project directory counts kept on the `gitconfig.nested_walk` span.
+const TOP_DIRS: usize = 5;
 
 impl WalkStats {
     /// Fold one project's counts into the total.
@@ -147,6 +202,7 @@ impl WalkStats {
         self.repos += o.repos;
         self.pruned += o.pruned;
         self.budget_exhausted |= o.budget_exhausted;
+        self.skipped += o.skipped;
     }
 }
 
@@ -752,6 +808,67 @@ mod walk_projects_tests {
         assert_eq!(f4[0].len(), 0);
         assert_eq!(f4[1].len(), 2, "small project findings: {:?}", f4[1]);
         assert!(f4[1][0].contains("small-") && f4[1][1].contains("small-"));
+    }
+
+    /// Perf 6a: a workspace project holding the others, registered LAST, is started
+    /// first (it is the biggest walk) and still reported last; its walk skips the inner
+    /// projects (each walked once, on its own); the per-project counts on the span are
+    /// the walked projects' directory counts, largest first, and the unwalked project is
+    /// counted as skipped. The same at `jobs` 1 and 4.
+    #[test]
+    fn workspace_project_runs_first_reports_last_and_skips_inner_projects() {
+        let b = base("workspace");
+        let ws = b.join("ws");
+        let mut dirs: Vec<PathBuf> = (0..3).map(|i| ws.join(format!("app{i}"))).collect();
+        for (i, d) in dirs.iter().enumerate() {
+            for j in 0..(5 + i * 5) {
+                std::fs::create_dir_all(d.join(format!("src/m{j}"))).unwrap();
+            }
+            plant(d, "vendor/a", &format!("app{i}"));
+        }
+        for j in 0..40 {
+            std::fs::create_dir_all(ws.join(format!("notes/n{j}"))).unwrap();
+        }
+        plant(&ws, "notes/n7/pay", "ws");
+        let home_like = b.join("homeish");
+        std::fs::create_dir_all(&home_like).unwrap();
+        dirs.push(home_like.clone());
+        dirs.push(ws.clone());
+        let walkable: Vec<PathBuf> = dirs.iter().filter(|d| **d != home_like).cloned().collect();
+        let mut runs = Vec::new();
+        for jobs in [1, 4] {
+            let (n, s) = walk_projects(&dirs, &walkable, jobs, DEFAULT_WALK_BUDGET);
+            runs.push((findings(&n), s));
+        }
+        let alone: Vec<u64> = dirs[..3]
+            .iter()
+            .map(|d| {
+                walk_projects(std::slice::from_ref(d), std::slice::from_ref(d), 1, DEFAULT_WALK_BUDGET)
+                    .1
+                    .dirs
+            })
+            .collect();
+        let _ = std::fs::remove_dir_all(&b);
+        assert_eq!(runs[0], runs[1], "jobs 1 vs jobs 4");
+        let (f, s) = &runs[0];
+        assert_eq!(f.len(), 5);
+        for (i, per) in f.iter().take(3).enumerate() {
+            assert_eq!(per.len(), 1, "app{i}: {per:?}");
+            assert!(per[0].contains(&format!("app{i}.sh")));
+        }
+        assert!(f[3].is_empty(), "the unwalked project");
+        assert_eq!(f[4].len(), 1, "the workspace's own buried repo only: {:?}", f[4]);
+        assert!(f[4][0].contains("ws.sh"));
+        assert_eq!(s.repos, 4, "each buried repo found once");
+        assert_eq!(s.projects, 4);
+        assert_eq!(s.projects_exhausted, 0);
+        assert_eq!(s.skipped, 1);
+        let ws_dirs = s.dirs - alone.iter().sum::<u64>();
+        let mut want: Vec<i64> = alone.iter().map(|&d| d as i64).chain([ws_dirs as i64]).collect();
+        want.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(s.top_dirs, want);
+        // The workspace walk: ws, notes, 40 notes/n*, the payload's dirs: not the apps.
+        assert!(ws_dirs < 50, "the inner projects were walked again: {ws_dirs}");
     }
 
     /// The default budget is 25,000 directories per project (coverage over speed), and

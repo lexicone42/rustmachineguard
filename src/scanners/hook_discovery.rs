@@ -203,30 +203,72 @@ pub(crate) fn scan(
     // A scan home (or an ancestor of one) registered as a project is a user's own
     // configuration, read below with the user ladder (or by that home's own pass); it is
     // not walked again as repository content.
+    let projects = {
+        let _s = crate::otel::span("settings.hook_projects", Vec::new);
+        hook_projects(platform, home, project_dirs)
+    };
+
+    // One span per agent family; `rmguard.agent` is a closed label.
+    let family = |agent: &'static str| {
+        crate::otel::span("settings.hooks", || {
+            vec![crate::otel::Attr::str(crate::otel::Key::Agent, agent)]
+        })
+    };
+    {
+        let _s = family("claude-code");
+        claude(home, &projects, out);
+    }
+    {
+        let _s = family("cursor");
+        cursor(home, out);
+    }
+    {
+        let _s = family("codex");
+        codex(platform, home, &projects, out);
+    }
+    {
+        let _s = family("copilot");
+        copilot(home, &projects, out);
+    }
+    {
+        let _s = family("gemini");
+        gemini(home, &projects, out);
+    }
+    {
+        let _s = family("devin");
+        devin(home, &projects, claude_json, out);
+    }
+    {
+        let _s = family("opencode");
+        opencode(home, &projects, out);
+    }
+    {
+        let _s = family("kiro");
+        kiro(home, &projects, out);
+    }
+}
+
+/// The projects the hook walk reads: `project_dirs` without scan homes (or ancestors of
+/// one), the same directory listed twice (compared canonically) kept once, each with
+/// its containment root.
+fn hook_projects(platform: &dyn PlatformInfo, home: &Path, project_dirs: &[PathBuf]) -> Vec<Project> {
     let mut projects: Vec<Project> = Vec::new();
+    // Each kept project's real path, resolved once: comparing every new directory with
+    // every kept one used to canonicalize the kept ones again each time (n² resolutions).
+    let mut kept_real: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for d in project_dirs {
         if platform.pass_scope().is_scan_home_or_ancestor(d) {
             continue;
         }
         let real = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
-        if projects
-            .iter()
-            .any(|p| std::fs::canonicalize(&p.dir).unwrap_or_else(|_| p.dir.clone()) == real)
-        {
+        if kept_real.contains(&real) {
             continue;
         }
+        kept_real.insert(real);
         let root = crate::scanners::skills::project_containment_root(d, home);
         projects.push(Project { dir: d.clone(), root });
     }
-
-    claude(home, &projects, out);
-    cursor(home, out);
-    codex(platform, home, &projects, out);
-    copilot(home, &projects, out);
-    gemini(home, &projects, out);
-    devin(home, &projects, claude_json, out);
-    opencode(home, &projects, out);
-    kiro(home, &projects, out);
+    projects
 }
 
 // ── Claude Code ─────────────────────────────────────────────────────────────────

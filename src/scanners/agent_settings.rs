@@ -15,86 +15,128 @@ impl Scanner for AgentSettingsScanner {
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
         let home = platform.home_dir();
         let mut results = Vec::new();
+        // Permission rules are classified after every file is read, all at once
+        // (`settings.permission_rules`): (row index, rules to classify).
+        let mut pending: Vec<(usize, PendingRules)> = Vec::new();
         crate::scanners::hook_sources::reset_scan_budget();
 
-        // User-global Claude Code settings.
-        parse_settings(
-            &home.join(".claude").join("settings.json"),
-            "user-global",
-            "claude-code",
-            &home,
-            &mut results,
-        );
+        // Each discovery family under its own span (closed names, no attributes from
+        // disk), so the trace says where the scanner's time goes.
+        {
+            let _s = crate::otel::span("settings.claude_files", Vec::new);
+            // User-global Claude Code settings.
+            parse_settings(
+                &home.join(".claude").join("settings.json"),
+                "user-global",
+                "claude-code",
+                &home,
+                &mut results,
+                &mut pending,
+            );
 
-        // The user's own ~/.claude/settings.local.json, wherever the scan runs: Devin CLI
-        // reads it at user level (docs.devin.ai/cli/extensibility/hooks/overview, fetched
-        // 2026-10-23), so it is not only the "local" file of a session run from HOME.
-        parse_settings(
-            &home.join(".claude").join("settings.local.json"),
-            "user-local",
-            "claude-code",
-            &home,
-            &mut results,
-        );
+            // The user's own ~/.claude/settings.local.json, wherever the scan runs: Devin CLI
+            // reads it at user level (docs.devin.ai/cli/extensibility/hooks/overview, fetched
+            // 2026-10-23), so it is not only the "local" file of a session run from HOME.
+            parse_settings(
+                &home.join(".claude").join("settings.local.json"),
+                "user-local",
+                "claude-code",
+                &home,
+                &mut results,
+                &mut pending,
+            );
+        }
 
         // Managed (organization) settings: highest precedence, machine-wide.
-        parse_managed_settings(
-            &crate::scanners::system_path(platform.managed_settings_dir()),
-            &home,
-            &mut results,
-        );
+        {
+            let _s = crate::otel::span("settings.managed", Vec::new);
+            parse_managed_settings(
+                &crate::scanners::system_path(platform.managed_settings_dir()),
+                &home,
+                &mut results,
+                &mut pending,
+            );
+        }
 
         // Project-scoped settings from known projects + (in the primary pass) the current
         // directory. ~/.claude.json is read once: its `projects` keys, and its `hooks` for
         // Devin CLI. A scan home (or an ancestor of one) is not a project: run from HOME,
         // the "project" would be the user's own ~/.claude, read above (its
         // settings.local.json as "user-local"), and another pass's HOME is that pass's.
-        let claude_json =
-            read_bounded(&home.join(".claude.json")).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
-        let scope = platform.pass_scope();
-        let project_dirs = scope.excluding_scan_homes(
-            scope.with_cwd(claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default()),
-        );
-        for dir in &project_dirs {
-            parse_settings(
-                &dir.join(".claude").join("settings.json"),
-                "project",
-                "claude-code",
-                &home,
-                &mut results,
+        let (claude_json, project_dirs) = {
+            let mut s = crate::otel::span("settings.project_list", Vec::new);
+            let claude_json = read_bounded(&home.join(".claude.json"))
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+            let scope = platform.pass_scope();
+            let project_dirs = scope.excluding_scan_homes(
+                scope.with_cwd(claude_json.as_ref().and_then(extract_project_dirs).unwrap_or_default()),
             );
-            parse_settings(
-                &dir.join(".claude").join("settings.local.json"),
-                "local",
-                "claude-code",
-                &home,
-                &mut results,
-            );
+            s.set(|| {
+                vec![crate::otel::Attr::int(
+                    crate::otel::Key::WalkProjects,
+                    project_dirs.len() as i64,
+                )]
+            });
+            (claude_json, project_dirs)
+        };
+        {
+            let _s = crate::otel::span("settings.project_files", Vec::new);
+            for dir in &project_dirs {
+                parse_settings(
+                    &dir.join(".claude").join("settings.json"),
+                    "project",
+                    "claude-code",
+                    &home,
+                    &mut results,
+                    &mut pending,
+                );
+                parse_settings(
+                    &dir.join(".claude").join("settings.local.json"),
+                    "local",
+                    "claude-code",
+                    &home,
+                    &mut results,
+                    &mut pending,
+                );
+            }
         }
 
         // Cursor's control plane: same risks, different filenames and schema.
-        parse_cursor_settings(
-            &home.join(".cursor").join("hooks.json"),
-            "user-global",
-            &home,
-            &mut results,
-        );
-        parse_cursor_settings(
-            &home.join(".cursor").join("cli-config.json"),
-            "user-global",
-            &home,
-            &mut results,
-        );
-        for dir in &project_dirs {
-            parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &home, &mut results);
-            parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &home, &mut results);
+        {
+            let _s = crate::otel::span("settings.cursor", Vec::new);
+            parse_cursor_settings(
+                &home.join(".cursor").join("hooks.json"),
+                "user-global",
+                &home,
+                &mut results,
+            );
+            parse_cursor_settings(
+                &home.join(".cursor").join("cli-config.json"),
+                "user-global",
+                &home,
+                &mut results,
+            );
+            for dir in &project_dirs {
+                parse_cursor_settings(&dir.join(".cursor").join("hooks.json"), "project", &home, &mut results);
+                parse_cursor_settings(&dir.join(".cursor").join("cli.json"), "project", &home, &mut results);
+            }
         }
 
         // Hook files of every other surface: Claude Code plugins, mods and skills-dir
         // plugins, Cursor enterprise and local plugins, Codex, Copilot CLI, Gemini CLI,
-        // Devin Desktop and CLI, OpenCode and Kiro.
+        // Devin Desktop and CLI, OpenCode and Kiro (one `settings.hooks` span per agent).
         crate::scanners::hook_discovery::scan(platform, &home, &project_dirs, claude_json.as_ref(), &mut results);
 
+        // Every Claude Code file's permission rules, classified and rendered at once: the
+        // CPU-heavy part of this scanner (a long-lived settings.local.json carries hundreds
+        // of allow rules, each redacted for display).
+        {
+            let mut s = crate::otel::span("settings.permission_rules", Vec::new);
+            let n = resolve_permission_rules(&mut results, pending, crate::scanners::telemetry::helper_jobs());
+            s.set(|| vec![crate::otel::Attr::int(crate::otel::Key::Items, n as i64)]);
+        }
+
+        let _finish = crate::otel::span("settings.finish", Vec::new);
         // Dedupe by path with the directory canonicalized: projects + cwd can overlap, and
         // the cwd under a symlinked HOME (macOS /var) names ~/.claude/settings.json again.
         let mut seen = std::collections::HashSet::new();
@@ -128,22 +170,89 @@ fn extract_project_dirs(parsed: &serde_json::Value) -> Option<Vec<PathBuf>> {
     )
 }
 
-fn parse_settings(path: &Path, source: &str, framework: &str, scan_home: &Path, out: &mut Vec<AgentSettings>) {
-    if let Some(s) = parse_settings_file_in(path, source, framework, Some(scan_home)) {
+/// Parse one Claude Code settings file into `out`, its permission rules left for
+/// [`resolve_permission_rules`] (queued in `pending` with the row's index).
+fn parse_settings(
+    path: &Path,
+    source: &str,
+    framework: &str,
+    scan_home: &Path,
+    out: &mut Vec<AgentSettings>,
+    pending: &mut Vec<(usize, PendingRules)>,
+) {
+    if let Some((s, rules)) = parse_settings_file_deferred(path, source, framework, Some(scan_home)) {
+        if let Some(r) = rules {
+            pending.push((out.len(), r));
+        }
         out.push(s);
     }
+}
+
+/// One settings file's permission rules, to be classified once every file is read.
+pub(crate) struct PendingRules {
+    permissions: serde_json::Value,
+    source: String,
+    path: PathBuf,
+    home: PathBuf,
+}
+
+/// Fill each pending row's `permission_rules` exactly as [`parse_settings_file_in`] would
+/// have: every file is classified (cheap, pure), then every distinct text to show is
+/// rendered once ([`show_rule`], which redacts: the expensive part), on up to `jobs`
+/// threads ([`par_map`](crate::scanners::telemetry::par_map)). Rendering is a pure
+/// function of the text, so neither the sharing nor the threads can change a row; the
+/// rows keep their order. Returns the number of rules kept.
+fn resolve_permission_rules(rows: &mut [AgentSettings], pending: Vec<(usize, PendingRules)>, jobs: usize) -> usize {
+    let graded: Vec<(usize, Vec<GradedRule>)> = pending
+        .iter()
+        .map(|(i, p)| {
+            (
+                *i,
+                grade_permission_rules(Some(&p.permissions), &p.source, &p.path, &p.home),
+            )
+        })
+        .collect();
+    let mut texts: Vec<String> = Vec::new();
+    {
+        let mut seen = std::collections::HashSet::new();
+        for g in graded.iter().flat_map(|(_, g)| g) {
+            for t in g.shown_texts() {
+                if seen.insert(t) {
+                    texts.push(t.to_string());
+                }
+            }
+        }
+    }
+    let rendered = crate::scanners::telemetry::par_map(texts.iter().map(String::as_str).collect(), jobs, show_rule);
+    let shown: std::collections::HashMap<String, String> = texts.into_iter().zip(rendered).collect();
+    let mut kept = 0;
+    for (i, g) in graded {
+        let rules: Vec<crate::models::PermissionRule> = g
+            .into_iter()
+            .map(|r| r.render(|t| shown.get(t).cloned().unwrap_or_else(|| show_rule(t))))
+            .collect();
+        kept += rules.len();
+        rows[i].permission_rules = rules;
+    }
+    kept
 }
 
 /// Managed settings: `managed-settings.json`, then `managed-settings.d/*.json` in
 /// alphabetical order (hidden and non-.json names skipped), each its own entry with
 /// source "managed". code.claude.com/docs/en/settings (managed settings).
-fn parse_managed_settings(dir: &Path, scan_home: &Path, out: &mut Vec<AgentSettings>) {
+fn parse_managed_settings(
+    dir: &Path,
+    scan_home: &Path,
+    out: &mut Vec<AgentSettings>,
+    pending: &mut Vec<(usize, PendingRules)>,
+) {
     parse_settings(
         &dir.join("managed-settings.json"),
         "managed",
         "claude-code",
         scan_home,
         out,
+        pending,
     );
     let drop_in = dir.join("managed-settings.d");
     if !crate::scanners::probe_dir(&drop_in) {
@@ -159,7 +268,7 @@ fn parse_managed_settings(dir: &Path, scan_home: &Path, out: &mut Vec<AgentSetti
         .collect();
     names.sort();
     for n in names.iter().take(200) {
-        parse_settings(&drop_in.join(n), "managed", "claude-code", scan_home, out);
+        parse_settings(&drop_in.join(n), "managed", "claude-code", scan_home, out, pending);
     }
 }
 
@@ -627,15 +736,40 @@ pub(crate) fn parse_settings_file_in(
     framework: &str,
     scan_home: Option<&Path>,
 ) -> Option<AgentSettings> {
+    let (mut s, rules) = parse_settings_file_deferred(path, source, framework, scan_home)?;
+    if let Some(p) = rules {
+        s.permission_rules = permission_rules(Some(&p.permissions), &p.source, &p.path, &p.home);
+    }
+    Some(s)
+}
+
+/// [`parse_settings_file_in`] with the permission rules not yet classified: the row has
+/// none, and the rules to classify come back beside it (None when the file has no
+/// `permissions` object or is not Claude Code's).
+fn parse_settings_file_deferred(
+    path: &Path,
+    source: &str,
+    framework: &str,
+    scan_home: Option<&Path>,
+) -> Option<(AgentSettings, Option<PendingRules>)> {
     if !crate::scanners::probe_file(path) {
         return None;
     }
     let content = match read_settings(path, source, scan_home) {
         SettingsRead::Content(c) => c,
-        SettingsRead::Link(l) => return Some(linked_settings(path, source, framework, l)),
+        SettingsRead::Link(l) => return Some((linked_settings(path, source, framework, l), None)),
         SettingsRead::Unreadable => return None,
     };
     let json = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let pending = (framework == "claude-code")
+        .then(|| json.get("permissions"))
+        .flatten()
+        .map(|p| PendingRules {
+            permissions: p.clone(),
+            source: source.to_string(),
+            path: path.to_path_buf(),
+            home: rule_home(path, source, scan_home),
+        });
 
     let mut hooks = extract_hooks(&json, path);
     hooks.extend(crate::scanners::hook_sources::extract_settings_commands(&json, path));
@@ -670,7 +804,7 @@ pub(crate) fn parse_settings_file_in(
     let gateway_overrides = extract_gateway_overrides(&json);
     let inline_secret_env_keys = crate::scanners::mcp::extract_inline_secret_env_keys(json.get("env"));
 
-    Some(AgentSettings {
+    let settings = AgentSettings {
         // Project directory names are attacker-chosen text.
         path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
         source: source.to_string(),
@@ -702,12 +836,8 @@ pub(crate) fn parse_settings_file_in(
             Vec::new()
         },
         skip_dangerous_mode_prompt: flag("skipDangerousModePermissionPrompt"),
-        permission_rules: if framework == "claude-code" {
-            let home = rule_home(path, source, scan_home);
-            permission_rules(permissions, source, path, &home)
-        } else {
-            Vec::new()
-        },
+        // Filled from `pending` by the caller.
+        permission_rules: Vec::new(),
         disable_auto_mode: framework == "claude-code"
             && permissions
                 .and_then(|p| p.get("disableAutoMode"))
@@ -723,7 +853,8 @@ pub(crate) fn parse_settings_file_in(
         } else {
             None
         },
-    })
+    };
+    Some((settings, pending))
 }
 
 /// The documented `environment` slot names (code.claude.com/docs/en/auto-mode-config.md,
@@ -879,6 +1010,57 @@ fn permission_rules(
     settings_path: &Path,
     home: &Path,
 ) -> Vec<crate::models::PermissionRule> {
+    grade_permission_rules(permissions, source, settings_path, home)
+        .into_iter()
+        .map(|r| r.render(show_rule))
+        .collect()
+}
+
+/// One kept rule, classified but not yet rendered for display.
+struct GradedRule<'a> {
+    list: &'static str,
+    raw: &'a str,
+    class: Option<&'static str>,
+    detail: Option<String>,
+}
+
+impl<'a> GradedRule<'a> {
+    /// An MCP server name and an inert rule's resolved path come from the rule's text
+    /// and are shown like it; every other detail is rmguard's own closed text.
+    fn raw_detail(&self) -> bool {
+        matches!(self.class, Some(RULE_MCP_SERVER | RULE_INERT_PATH))
+    }
+
+    /// The texts [`Self::render`] passes through `show`.
+    fn shown_texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.raw).chain(self.detail.as_deref().filter(|_| self.raw_detail()))
+    }
+
+    /// The stored rule, with `show` the [`show_rule`] rendering of a text.
+    fn render(self, show: impl Fn(&str) -> String) -> crate::models::PermissionRule {
+        let raw_detail = self.raw_detail();
+        crate::models::PermissionRule {
+            list: self.list.to_string(),
+            rule: show(self.raw),
+            detail: self.detail.map(|d| {
+                if raw_detail {
+                    show(&d)
+                } else {
+                    crate::scanners::sanitize_display(&d, 400)
+                }
+            }),
+            class: self.class.map(str::to_string),
+        }
+    }
+}
+
+/// The kept rules of [`permission_rules`], in its order, before rendering.
+fn grade_permission_rules<'a>(
+    permissions: Option<&'a serde_json::Value>,
+    source: &str,
+    settings_path: &Path,
+    home: &Path,
+) -> Vec<GradedRule<'a>> {
     let mut out = Vec::new();
     let Some(p) = permissions else { return out };
     for list in ["allow", "ask", "deny"] {
@@ -916,23 +1098,14 @@ fn permission_rules(
                 continue;
             }
             let (class, detail) = match c {
-                Some((cl, d)) => (Some(cl.to_string()), d),
+                Some((cl, d)) => (Some(cl), d),
                 None => (None, None),
             };
-            // An MCP server name and an inert rule's resolved path come from the rule's
-            // text and are shown like it; every other detail is rmguard's own closed text.
-            let raw_detail = matches!(class.as_deref(), Some(RULE_MCP_SERVER | RULE_INERT_PATH));
-            out.push(crate::models::PermissionRule {
-                list: list.to_string(),
-                rule: show_rule(raw),
-                detail: detail.map(|d| {
-                    if raw_detail {
-                        show_rule(&d)
-                    } else {
-                        crate::scanners::sanitize_display(&d, 400)
-                    }
-                }),
+            out.push(GradedRule {
+                list,
+                raw,
                 class,
+                detail,
             });
         }
     }
@@ -2499,5 +2672,68 @@ mod tests {
             1,
             "non-strings skipped"
         );
+    }
+
+    /// Perf 6a: the scanner classifies every file's rules after reading them all and
+    /// renders each distinct text once on helper threads. Each row must get exactly the
+    /// rules [`permission_rules`] gives that file alone, at any thread count.
+    #[test]
+    fn deferred_permission_rules_match_inline_classification() {
+        let shared: Vec<String> = (0..30).map(|i| format!("Bash(cargo test -p c{i}:*)")).collect();
+        let mut files = Vec::new();
+        for (n, source) in ["user-global", "user-local", "project", "local", "managed"]
+            .iter()
+            .enumerate()
+        {
+            let mut allow = shared.clone();
+            allow.extend((0..(60 + n * 70)).map(|i| format!("Bash(tool{n}_{i}:*)")));
+            allow.extend(
+                [
+                    "Bash(python3:*)",
+                    "Bash(rm -rf:*)",
+                    "Read(~/.ssh/**)",
+                    "Read(/home/u/.aws/credentials)",
+                    "Write(/x)",
+                    "mcp__github",
+                    "mcp__github__*",
+                    "Bash(curl -H 'Authorization: Bearer ghp_Zq9CanaryUnitTokenAbCdEfGhIjKlMnOpQr12' x:*)",
+                ]
+                .map(String::from),
+            );
+            let perms = serde_json::json!({"allow": allow, "ask": ["Bash(git push:*)"], "deny": shared});
+            let path = PathBuf::from(format!("/h/p{n}/.claude/settings.json"));
+            files.push((perms, source.to_string(), path));
+        }
+        let home = PathBuf::from("/h");
+        let inline: Vec<Vec<crate::models::PermissionRule>> = files
+            .iter()
+            .map(|(p, s, path)| permission_rules(Some(p), s, path, &home))
+            .collect();
+        assert!(inline.iter().any(|r| r.len() >= MAX_RULES_PER_LIST), "a capped list");
+        for jobs in [1, 2, 4, 8] {
+            let mut rows: Vec<AgentSettings> = (0..files.len() + 1).map(|_| AgentSettings::default()).collect();
+            // Row 0 has no rules (a file without `permissions`): it must stay empty.
+            let pending = files
+                .iter()
+                .enumerate()
+                .map(|(i, (p, s, path))| {
+                    (
+                        i + 1,
+                        PendingRules {
+                            permissions: p.clone(),
+                            source: s.clone(),
+                            path: path.clone(),
+                            home: home.clone(),
+                        },
+                    )
+                })
+                .collect();
+            let kept = resolve_permission_rules(&mut rows, pending, jobs);
+            assert!(rows[0].permission_rules.is_empty());
+            for (i, want) in inline.iter().enumerate() {
+                assert_eq!(&rows[i + 1].permission_rules, want, "file {i} at jobs {jobs}");
+            }
+            assert_eq!(kept, inline.iter().map(Vec::len).sum::<usize>());
+        }
     }
 }

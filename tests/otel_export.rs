@@ -1097,6 +1097,194 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Perf 6a: settings, persistence and gitconfig explain their time. Every discovery
+    /// family of `settings` has its own span (one `settings.hooks` per agent, a closed
+    /// `rmguard.agent`), every check family of `persistence` a `persistence.check` (a
+    /// closed `rmguard.persistence.check`), and `gitconfig.nested_walk` carries the
+    /// per-project counts (`rmguard.walk.projects`, `rmguard.walk.projects_exhausted`,
+    /// `rmguard.walk.skipped`, and `rmguard.walk.top_dirs`, an int list). The committed
+    /// symlink check spawns git only for the repository whose index lists a symlink.
+    #[test]
+    fn otel_settings_persistence_gitconfig_families() {
+        let home = temp_home("families");
+        let git = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("HOME", dir)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let mut have_git = true;
+        let mut projects = Vec::new();
+        for (name, symlink) in [("withlink", true), ("plain", false)] {
+            let p = home.join(name);
+            write(&p.join("README"), "x\n");
+            if symlink {
+                std::os::unix::fs::symlink("../../elsewhere", p.join("out")).unwrap();
+            }
+            have_git &= git(&p, &["init", "-q"])
+                && git(&p, &["config", "user.email", "t@example.com"])
+                && git(&p, &["config", "user.name", "t"])
+                && git(&p, &["add", "-A"])
+                && git(&p, &["commit", "-q", "-m", "i"]);
+            write(
+                &p.join(".claude/settings.local.json"),
+                r#"{"permissions":{"allow":["Bash(python3:*)","Bash(make:*)","Read(~/.ssh/**)"],"deny":["Bash(rm:*)"]}}"#,
+            );
+            projects.push(p);
+        }
+        let reg: serde_json::Map<String, serde_json::Value> = projects
+            .iter()
+            .map(|p| (p.to_string_lossy().into_owned(), serde_json::json!({})))
+            .collect();
+        write(
+            &home.join(".claude.json"),
+            &serde_json::json!({ "projects": reg }).to_string(),
+        );
+
+        let collector = Collector::start();
+        let mut cmd = rmguard(&home, Some(collector.port), &["--otel", "--format", "json"]);
+        cmd.current_dir(&home);
+        let (out, _) = run(cmd);
+        let bodies = collector.finish();
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        let report = json(&out);
+        let all = spans(&traces(&bodies));
+        let by_id: HashMap<&[u8], &Span> = all.iter().map(|s| (s.span_id.as_slice(), s)).collect();
+        let parent = |s: &Span| by_id.get(s.parent_span_id.as_slice()).copied();
+        let one = |n: &str| {
+            let v: Vec<&Span> = all.iter().filter(|s| s.name == n).collect();
+            assert_eq!(v.len(), 1, "spans named {n}");
+            v[0]
+        };
+        let children =
+            |p: &Span| -> Vec<&Span> { all.iter().filter(|s| s.parent_span_id == p.span_id).collect::<Vec<_>>() };
+
+        // settings: each family once, in order, all direct children of the scanner span.
+        let settings = one("scanner.settings");
+        let kids: Vec<&str> = children(settings)
+            .iter()
+            .filter(|s| !s.name.starts_with("exec."))
+            .map(|s| s.name.as_str())
+            .collect();
+        for n in [
+            "settings.claude_files",
+            "settings.managed",
+            "settings.project_list",
+            "settings.project_files",
+            "settings.cursor",
+            "settings.hook_projects",
+            "settings.permission_rules",
+            "settings.finish",
+        ] {
+            assert_eq!(kids.iter().filter(|k| **k == n).count(), 1, "{n} in {kids:?}");
+        }
+        let agents: Vec<String> = children(settings)
+            .iter()
+            .filter(|s| s.name == "settings.hooks")
+            .map(|s| attr_str(&s.attributes, "rmguard.agent").expect("agent label"))
+            .collect();
+        assert_eq!(
+            agents,
+            [
+                "claude-code",
+                "cursor",
+                "codex",
+                "copilot",
+                "gemini",
+                "devin",
+                "opencode",
+                "kiro"
+            ],
+            "one settings.hooks per agent family, closed labels"
+        );
+        assert_eq!(
+            attr_int(&one("settings.project_list").attributes, "rmguard.walk.projects"),
+            Some(2)
+        );
+        let rules: usize = report["agent_settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["permission_rules"].as_array().map_or(0, Vec::len))
+            .sum();
+        assert_eq!(rules, 8, "two files, four rules each");
+        assert_eq!(
+            attr_int(&one("settings.permission_rules").attributes, "rmguard.items"),
+            Some(rules as i64)
+        );
+
+        // persistence: one span per check family, the closed table, in order.
+        let persistence = one("scanner.persistence");
+        let checks: Vec<&Span> = all.iter().filter(|s| s.name == "persistence.check").collect();
+        for c in &checks {
+            assert_eq!(parent(c).map(|p| p.span_id.clone()), Some(persistence.span_id.clone()));
+        }
+        let families: Vec<String> = checks
+            .iter()
+            .map(|s| attr_str(&s.attributes, "rmguard.persistence.check").expect("family"))
+            .collect();
+        assert_eq!(families, rustmachineguard::scanners::persistence::CHECK_FAMILIES);
+        let symlink_check = checks
+            .iter()
+            .find(|s| attr_str(&s.attributes, "rmguard.persistence.check").as_deref() == Some("committed_symlinks"))
+            .unwrap();
+        let symlink_execs = children(symlink_check)
+            .iter()
+            .filter(|s| s.name.starts_with("exec."))
+            .count();
+        if have_git && std::path::Path::new("/usr/bin/git").exists() {
+            // The plain repository's index lists no symlink: no git for it.
+            assert_eq!(symlink_execs, 1, "git ls-files -s only where the index has a symlink");
+            let found: Vec<&serde_json::Value> = report["persistence_artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| a["kind"] == "escaping-symlink")
+                .collect();
+            assert_eq!(found.len(), 1, "{found:?}");
+        }
+
+        // gitconfig: per-project walk counts, counts only.
+        let nw = one("gitconfig.nested_walk");
+        let a = &nw.attributes;
+        assert_eq!(attr_int(a, "rmguard.walk.projects"), Some(2));
+        assert_eq!(attr_int(a, "rmguard.walk.projects_exhausted"), Some(0));
+        assert_eq!(attr_int(a, "rmguard.walk.skipped"), Some(1), "the cwd is the scan home");
+        let top: Vec<i64> = match attr(a, "rmguard.walk.top_dirs") {
+            Some(any_value::Value::ArrayValue(arr)) => arr
+                .values
+                .iter()
+                .map(|v| match &v.value {
+                    Some(any_value::Value::IntValue(i)) => *i,
+                    other => panic!("top_dirs holds a non-int {other:?}"),
+                })
+                .collect(),
+            other => panic!("top_dirs is not an int list: {other:?}"),
+        };
+        assert_eq!(top.len(), 2);
+        assert!(top.windows(2).all(|w| w[0] >= w[1]), "descending: {top:?}");
+        assert_eq!(
+            top.iter().sum::<i64>(),
+            attr_int(a, "rmguard.walk.dirs").unwrap(),
+            "every walked project's count"
+        );
+
+        // Nothing from disk: the new labels are closed, the lists are counts.
+        let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
+        for needle in [home.to_string_lossy().as_bytes(), b"withlink", b"elsewhere", b"python3"] {
+            assert!(
+                !raw.windows(needle.len()).any(|w| w == needle),
+                "{:?} reached the collector",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// P3: with the phases run on worker threads (`--jobs 4`) the span tree keeps its
     /// documented shape: every `scanner.*` span is a child of its own `phase.*` span,
     /// and every `exec.*` span is under a scanner span with nothing but that scanner's
