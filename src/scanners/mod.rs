@@ -27,6 +27,7 @@ pub mod package_configs;
 pub mod persistence;
 pub mod playwright_mcp;
 pub mod plugin_lsp;
+pub(crate) mod prefetch;
 pub mod python_packages;
 pub mod rules_files;
 pub mod settings_scripts;
@@ -2782,10 +2783,15 @@ type TrackedCell = std::sync::Arc<std::sync::OnceLock<(TrackedSet, std::sync::Ar
 
 struct GitTrackCache {
     repos: std::collections::HashMap<std::path::PathBuf, TrackedCell>,
+    /// Time taken by finished listings.
     spent: std::time::Duration,
+    /// Allowances of listings running now.
+    reserved: std::time::Duration,
 }
 
 static GIT_TRACK_CACHE: std::sync::Mutex<Option<GitTrackCache>> = std::sync::Mutex::new(None);
+/// Signalled when a running listing gives its allowance back.
+static GIT_TRACK_RELEASED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// List a repository's index once: `git ls-files -z` through [`hardened_git`], under the
 /// per-call timeout and the scan's remaining budget.
@@ -2794,18 +2800,28 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
         return None;
     }
     // The listing's whole allowance is reserved from the budget before the spawn and
-    // the time actually taken charged after it, so scanners listing different repositories
-    // at the same time (`--jobs`) cannot together run past the budget. Run one at a
-    // time, the sum is what the old spend-after accounting gave.
+    // the time actually taken charged after it, so listings of different repositories
+    // running at the same time (`--jobs`) cannot together run past the budget. A listing
+    // whose allowance does not fit beside the running ones WAITS for one to finish rather
+    // than being refused: refused, its repository was "unknown" for the whole scan only
+    // because five listings happened to overlap (every row of it reported untracked at
+    // --jobs 6, tracked at --jobs 1). Only time actually spent ends the budget, so the
+    // answer is the one the one-at-a-time loop gives.
     let allowed = {
         let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let cache = guard.get_or_insert_with(|| GitTrackCache {
-            repos: Default::default(),
-            spent: Default::default(),
-        });
-        let allowed = GIT_TRACKED_TIMEOUT.min(GIT_TRACKED_BUDGET.saturating_sub(cache.spent));
-        cache.spent += allowed;
-        allowed
+        loop {
+            let cache = guard.get_or_insert_with(|| GitTrackCache {
+                repos: Default::default(),
+                spent: Default::default(),
+                reserved: Default::default(),
+            });
+            let want = GIT_TRACKED_TIMEOUT.min(GIT_TRACKED_BUDGET.saturating_sub(cache.spent));
+            if want.is_zero() || cache.spent + cache.reserved + want <= GIT_TRACKED_BUDGET {
+                cache.reserved += want;
+                break want;
+            }
+            guard = GIT_TRACK_RELEASED.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
     };
     if allowed.is_zero() {
         telemetry::note_read(root, "git budget spent");
@@ -2818,8 +2834,10 @@ fn list_tracked(root: &std::path::Path) -> TrackedSet {
     {
         let mut guard = GIT_TRACK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = guard.as_mut() {
-            c.spent = c.spent.saturating_sub(allowed) + started.elapsed();
+            c.reserved = c.reserved.saturating_sub(allowed);
+            c.spent += started.elapsed();
         }
+        GIT_TRACK_RELEASED.notify_all();
     }
     let out = out.filter(|o| o.status.success())?;
     Some(
@@ -2854,6 +2872,7 @@ pub fn git_tracked_state(path: &std::path::Path) -> Option<bool> {
         let cache = guard.get_or_insert_with(|| GitTrackCache {
             repos: Default::default(),
             spent: Default::default(),
+            reserved: Default::default(),
         });
         cache.repos.entry(root.clone()).or_default().clone()
     };
@@ -3212,15 +3231,22 @@ fn probe_kind(path: &std::path::Path, want: fn(&std::fs::Metadata) -> bool, othe
 pub fn probe_read_dir<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<std::fs::ReadDir> {
     let r = std::fs::read_dir(path.as_ref());
     if let Err(e) = &r {
-        telemetry::note_probe(path.as_ref(), false);
-        if telemetry::trace_enabled() {
-            eprintln!(
-                "trace: read_dir {} -> {e}",
-                sanitize_display(&path.as_ref().display().to_string(), 512)
-            );
-        }
+        note_read_dir_error(path.as_ref(), e);
     }
     r
+}
+
+/// What [`probe_read_dir`] notes for a directory that could not be listed: a missing
+/// path, and the error under `--trace`. For a walk whose listings were read by a
+/// [`prefetch`] helper, noted when the walk consumes the listing.
+pub(crate) fn note_read_dir_error(path: &std::path::Path, e: &std::io::Error) {
+    telemetry::note_probe(path, false);
+    if telemetry::trace_enabled() {
+        eprintln!(
+            "trace: read_dir {} -> {e}",
+            sanitize_display(&path.display().to_string(), 512)
+        );
+    }
 }
 
 pub fn probe_exists(path: &std::path::Path) -> bool {

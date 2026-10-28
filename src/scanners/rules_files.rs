@@ -86,9 +86,14 @@ const DANGEROUS_PATTERNS: &[(&str, &str, &str)] = &[
 impl Scanner for RulesFilesScanner {
     type Output = Vec<RulesFile>;
 
+    /// Families in their own spans, each reading files into [`Pending`] rows; the rows are
+    /// then joined in the old order (per root: named files, Serena memories, agent memory,
+    /// Serena prompt; then the home; then nested files per walked project; then auto
+    /// memory), deduplicated by shown path, analysed (`rules.analysis`) and looked up in
+    /// git (`rules.git_tracked`). The report is the one the interleaved single pass gave.
     fn scan(&self, platform: &dyn PlatformInfo) -> Self::Output {
+        use crate::otel::{Attr, Key};
         let home = platform.home_dir();
-        let mut results = Vec::new();
 
         // Every project of this pass: registered in ~/.claude.json, recovered from
         // ~/.claude/projects/ names, and (primary pass) the working directory; never a
@@ -97,87 +102,328 @@ impl Scanner for RulesFilesScanner {
         let registered = extract_project_dirs(&home.join(".claude.json")).unwrap_or_default();
         let all = scope.with_cwd(registered);
         let projects = scope.excluding_scan_homes(all.clone());
-        for dir in &projects {
-            scan_directory_for_rules(dir, false, &mut results);
-        }
+        // The projects' own files, then the home itself (its memory directories are user
+        // scope).
+        let roots: Vec<(&Path, bool)> = projects
+            .iter()
+            .map(|d| (d.as_path(), false))
+            .chain([(home.as_path(), true)])
+            .collect();
 
-        // The home directory itself (its memory directories are user scope).
-        scan_directory_for_rules(&home, true, &mut results);
+        let named: Vec<Vec<Pending>> = family("rules.project_files", roots.len(), || {
+            roots.iter().map(|(d, _)| named_rules_files(d)).collect()
+        });
+        let serena: Vec<(Vec<Pending>, Vec<Pending>)> = family("rules.serena", roots.len(), || {
+            roots
+                .iter()
+                .map(|&(d, user)| {
+                    let mut memories = Vec::new();
+                    memory_dir_rows(d, user, &RULES_DIR_NAMES[0], &mut memories);
+                    (memories, serena_initial_prompt(d, user).into_iter().collect())
+                })
+                .collect()
+        });
+        let agent: Vec<Vec<Pending>> = family("rules.agent_memory", roots.len(), || {
+            roots
+                .iter()
+                .map(|&(d, user)| {
+                    let mut rows = Vec::new();
+                    for row in &RULES_DIR_NAMES[1..] {
+                        memory_dir_rows(d, user, row, &mut rows);
+                    }
+                    rows
+                })
+                .collect()
+        });
+        let mut pending: Vec<Pending> = Vec::new();
+        for ((n, (s, prompt)), a) in named.into_iter().zip(serena).zip(agent) {
+            pending.extend(n.into_iter().chain(s).chain(a).chain(prompt));
+        }
 
         // Instruction files in subdirectories, which Claude Code loads when it works there.
         // The home is walked too when Claude Code is run there (it is a registered or
         // recovered project, or the working directory), its own dot-directories excepted.
-        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let own_home = real(&home);
-        let home_is_project = all.iter().any(|d| real(d) == own_home);
-        let roots: std::collections::HashSet<PathBuf> = projects.iter().cloned().collect();
-        let mut walked = std::collections::HashSet::new();
-        let mut walks: Vec<(PathBuf, bool)> = projects
-            .iter()
-            .filter(|d| walked.insert(real(d)))
-            .map(|d| (d.clone(), false))
-            .collect();
-        if home_is_project && walked.insert(own_home) {
-            walks.push((home.clone(), true));
-        }
-        // One project per task on the scan's helper threads; results kept in project order.
-        let jobs = crate::scanners::telemetry::helper_jobs();
-        for rows in crate::scanners::telemetry::par_map(walks, jobs, |(dir, skip_dot)| {
-            let mut rows = Vec::new();
-            scan_nested_rules(&dir, skip_dot, &roots, &mut rows);
-            rows
-        }) {
-            results.extend(rows);
+        {
+            let mut span = crate::otel::span("rules.nested_walk", Vec::new);
+            let (rows, stats) = nested_walks(&home, &all, &projects, crate::scanners::telemetry::helper_jobs());
+            pending.extend(rows);
+            span.set(|| {
+                vec![
+                    Attr::int(Key::WalkProjects, stats.projects as i64),
+                    Attr::int(Key::WalkProjectsExhausted, stats.projects_exhausted as i64),
+                    Attr::int(Key::WalkSkipped, stats.skipped as i64),
+                    Attr::ints(Key::WalkTopDirs, stats.top_dirs.clone()),
+                    Attr::int(Key::WalkDirs, stats.dirs as i64),
+                    Attr::int(Key::WalkEntries, stats.entries as i64),
+                    Attr::int(Key::WalkPruned, stats.pruned as i64),
+                    Attr::int(Key::WalkDirsCut, stats.dirs_cut as i64),
+                    Attr::bool(Key::WalkBudgetExhausted, stats.projects_exhausted > 0),
+                ]
+            });
         }
 
         // Claude Code auto memory of every project this home has run Claude Code in.
-        scan_auto_memory(&platform.claude_config_dir(), &mut results);
+        {
+            let mut span = crate::otel::span("rules.auto_memory", Vec::new);
+            let (rows, projects_seen) = auto_memory_rows(&platform.claude_config_dir());
+            span.set(|| {
+                vec![
+                    Attr::int(Key::WalkProjects, projects_seen as i64),
+                    Attr::int(Key::WalkFiles, rows.len() as i64),
+                ]
+            });
+            pending.extend(rows);
+        }
 
-        // Dedupe by path
+        // Dedupe by shown path (the first row of a path is kept, as before).
         let mut seen = std::collections::HashSet::new();
-        results.retain(|r| seen.insert(r.path.clone()));
+        pending.retain(|r| seen.insert(r.shown_path.clone()));
 
+        let analysed = {
+            let mut span = crate::otel::span("rules.analysis", Vec::new);
+            let bytes: usize = pending.iter().map(|p| p.content.len()).sum();
+            let files = pending.len();
+            let jobs = crate::scanners::telemetry::helper_jobs();
+            let out = crate::scanners::telemetry::par_map(pending, jobs, Pending::analyse);
+            span.set(|| {
+                vec![
+                    Attr::int(Key::ContentFiles, files as i64),
+                    Attr::int(Key::ContentBytes, bytes as i64),
+                ]
+            });
+            out
+        };
+
+        // Each repository is listed once (`git ls-files`, cached per scan). In row order on
+        // this thread: which repositories get the scan's git budget when stalled listings
+        // spend it stays the row order.
+        let mut span = crate::otel::span("rules.git_tracked", Vec::new);
+        let lookups = analysed.len();
+        let results: Vec<RulesFile> = analysed
+            .into_iter()
+            .map(|(mut row, path)| {
+                row.git_tracked = is_git_tracked(&path);
+                row
+            })
+            .collect();
+        span.set(|| vec![Attr::int(Key::GitLookups, lookups as i64)]);
         results
     }
 }
 
-fn scan_directory_for_rules(dir: &Path, user: bool, results: &mut Vec<RulesFile>) {
+/// Run one family of the scan under its own span (`name`, a fixed label) with the number
+/// of roots it looks at and the rows it read.
+fn family<T: FamilyRows>(name: &'static str, roots: usize, f: impl FnOnce() -> Vec<T>) -> Vec<T> {
+    use crate::otel::{Attr, Key};
+    let mut span = crate::otel::span(name, Vec::new);
+    let out = f();
+    let files: usize = out.iter().map(FamilyRows::rows).sum();
+    span.set(|| {
+        vec![
+            Attr::int(Key::WalkProjects, roots as i64),
+            Attr::int(Key::WalkFiles, files as i64),
+        ]
+    });
+    out
+}
+
+/// The rows one root of a family read (for the family span's file count).
+trait FamilyRows {
+    fn rows(&self) -> usize;
+}
+impl FamilyRows for Vec<Pending> {
+    fn rows(&self) -> usize {
+        self.len()
+    }
+}
+impl FamilyRows for (Vec<Pending>, Vec<Pending>) {
+    fn rows(&self) -> usize {
+        self.0.len() + self.1.len()
+    }
+}
+
+/// How a read file is checked ([`Pending::analyse`]).
+enum Check {
+    /// An instruction file: the rules-file pattern checks.
+    Rules,
+    /// A walked memory file ([`push_prompt_file`]'s grading).
+    Memory { serena: bool, user: bool },
+    /// Serena's `initial_prompt`: every pattern check plus injection phrases.
+    SerenaPrompt { user: bool },
+}
+
+/// One file read by a family, waiting for content analysis and its git lookup.
+struct Pending {
+    /// The file opened (the git-tracked lookup's path).
+    path: PathBuf,
+    /// The row's `path`, already shown sanitized (the dedupe key).
+    shown_path: String,
+    file_name: String,
+    /// The text analysed and hashed (for the Serena prompt, the prompt alone).
+    content: String,
+    check: Check,
+    kind: Option<&'static str>,
+    framework: Option<&'static str>,
+    scope: Option<&'static str>,
+}
+
+impl Pending {
+    fn new(path: PathBuf, file_name: String, content: String, check: Check) -> Pending {
+        Pending {
+            // Shown sanitized: a project directory name is attacker-chosen, and an encoded
+            // synced-skill name carries account UUIDs (mask_identifiers).
+            shown_path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
+            path,
+            file_name,
+            content,
+            check,
+            kind: None,
+            framework: None,
+            scope: None,
+        }
+    }
+
+    /// Hash and check the content: the row without its git-tracked state, and the path
+    /// to look that up for.
+    fn analyse(self) -> (RulesFile, PathBuf) {
+        let content = &self.content;
+        let findings = match self.check {
+            Check::Rules => check_dangerous_patterns(content),
+            Check::Memory { serena, user } => {
+                let mut f: Vec<RulesFileFinding> = if serena || !user {
+                    check_dangerous_patterns(content)
+                        .into_iter()
+                        .filter(memory_relevant)
+                        .collect()
+                } else {
+                    hidden_unicode_findings(content)
+                };
+                f.extend(injection_findings(content, user));
+                f
+            }
+            Check::SerenaPrompt { user } => {
+                let mut f = check_dangerous_patterns(content);
+                f.extend(injection_findings(content, user));
+                f
+            }
+        };
+        let row = RulesFile {
+            path: self.shown_path,
+            file_name: self.file_name,
+            sha256: sha256_hex(content),
+            git_tracked: false,
+            size_bytes: content.len(),
+            findings,
+            kind: self.kind.map(Into::into),
+            framework: self.framework.map(Into::into),
+            scope: self.scope.map(Into::into),
+        };
+        (row, self.path)
+    }
+}
+
+/// The [`RULES_FILE_NAMES`] files of one root.
+fn named_rules_files(dir: &Path) -> Vec<Pending> {
+    let mut out = Vec::new();
     for name in RULES_FILE_NAMES {
         let path = dir.join(name);
         if crate::scanners::probe_file(&path)
             && let Some(content) = read_bounded(&path)
         {
-            let hash = sha256_hex(&content);
-            let git_tracked = is_git_tracked(&path);
-            let findings = check_dangerous_patterns(&content);
-
-            results.push(RulesFile {
-                // Shown sanitized: a project directory name is attacker-chosen, and an encoded
-                // synced-skill name carries account UUIDs (mask_identifiers).
-                path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
-                file_name: name.to_string(),
-                sha256: hash,
-                git_tracked,
-                size_bytes: content.len(),
-                findings,
-                ..Default::default()
-            });
+            out.push(Pending::new(path, name.to_string(), content, Check::Rules));
         }
     }
-    let scope = if user { "user" } else { "project" };
-    for (rel, kind, framework) in RULES_DIR_NAMES {
-        let scope = if rel.ends_with("-local") && !user {
-            "local"
-        } else {
-            scope
-        };
-        for (path, shown, real) in walk_memory_dir(dir, Path::new(rel)) {
-            let name = format!("{rel}/{shown}");
-            push_prompt_file(&path, &real, &name, kind, framework, scope, results);
-        }
-    }
-    scan_serena_initial_prompt(dir, user, results);
+    out
 }
+
+/// The files of one [`RULES_DIR_NAMES`] row under `dir`.
+fn memory_dir_rows(dir: &Path, user: bool, row: &(&str, &'static str, &'static str), out: &mut Vec<Pending>) {
+    let (rel, kind, framework) = *row;
+    let scope = if user {
+        "user"
+    } else if rel.ends_with("-local") {
+        "local"
+    } else {
+        "project"
+    };
+    for (path, shown, real) in walk_memory_dir(dir, Path::new(rel)) {
+        let name = format!("{rel}/{shown}");
+        push_prompt_file(&path, &real, &name, kind, framework, scope, out);
+    }
+}
+
+/// Counts for the `rules.nested_walk` span, summed over every project walked.
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+struct NestedStats {
+    /// Directories listed.
+    dirs: u64,
+    /// Directory entries read.
+    entries: u64,
+    /// Subdirectories not entered: `.git`, a dependency or tool tree by name, a home
+    /// dot-directory, another project of the pass, or a directory found to hold a valid
+    /// generated-content marker.
+    pruned: u64,
+    /// Directories whose listing stopped at the per-directory entry cap.
+    dirs_cut: u64,
+    /// The project's walk stopped at its directory or entry budget.
+    budget_exhausted: bool,
+    /// Set on the total only: projects walked, how many stopped at a budget, projects of
+    /// the pass not walked (a scan home or an ancestor of one, or the same directory as
+    /// one already walked), and the largest per-project directory counts.
+    projects: u64,
+    projects_exhausted: u64,
+    skipped: u64,
+    top_dirs: Vec<i64>,
+}
+
+/// The nested walk of every project of the pass (and the home when it is one), one
+/// project per task on up to `jobs` threads, rows and counts joined in project order.
+fn nested_walks(home: &Path, all: &[PathBuf], projects: &[PathBuf], jobs: usize) -> (Vec<Pending>, NestedStats) {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let own_home = real(home);
+    let home_is_project = all.iter().any(|d| real(d) == own_home);
+    let roots: std::collections::HashSet<PathBuf> = projects.iter().cloned().collect();
+    let mut walked = std::collections::HashSet::new();
+    let mut walks: Vec<(PathBuf, bool)> = projects
+        .iter()
+        .filter(|d| walked.insert(real(d)))
+        .map(|d| (d.clone(), false))
+        .collect();
+    if home_is_project && walked.insert(own_home) {
+        walks.push((home.to_path_buf(), true));
+    }
+    let skipped = all.len().saturating_sub(walks.len()) as u64;
+    let mut total = NestedStats {
+        skipped,
+        ..Default::default()
+    };
+    let mut rows = Vec::new();
+    let mut dir_counts = Vec::new();
+    for (r, s) in crate::scanners::telemetry::par_map(walks, jobs, |(dir, skip_dot)| {
+        let mut rows = Vec::new();
+        let mut stats = NestedStats::default();
+        scan_nested_rules(&dir, skip_dot, &roots, jobs, &mut rows, &mut stats);
+        (rows, stats)
+    }) {
+        rows.extend(r);
+        total.dirs += s.dirs;
+        total.entries += s.entries;
+        total.pruned += s.pruned;
+        total.dirs_cut += s.dirs_cut;
+        if s.dirs > 0 {
+            total.projects += 1;
+            total.projects_exhausted += u64::from(s.budget_exhausted);
+            dir_counts.push(s.dirs as i64);
+        }
+    }
+    dir_counts.sort_unstable_by(|a, b| b.cmp(a));
+    dir_counts.truncate(TOP_DIRS);
+    total.top_dirs = dir_counts;
+    (rows, total)
+}
+
+/// Per-project directory counts kept on the `rules.nested_walk` span.
+const TOP_DIRS: usize = 5;
 
 /// Instruction files read from a project's SUBDIRECTORIES. Claude Code: "Claude also
 /// discovers `CLAUDE.md` and `CLAUDE.local.md` files in subdirectories under your current
@@ -202,7 +448,7 @@ const BASE_NESTED_ENTRIES: usize = 200_000;
 const MAX_NESTED_DIR_ENTRIES: usize = 20_000;
 
 /// Read the [`NESTED_RULES_NAMES`] files of `root`'s subdirectories (not of `root` itself,
-/// read by [`scan_directory_for_rules`]), breadth-first so shallow directories come first,
+/// read by [`named_rules_files`]), breadth-first so shallow directories come first,
 /// at most [`NESTED_DEPTH`] levels down, at most the scaled [`BASE_NESTED_DIRS`]
 /// directories and [`BASE_NESTED_ENTRIES`] entries listed, and [`MAX_NESTED_DIR_ENTRIES`]
 /// entries of one directory (the scanner is marked truncated past any of them). Pruned as the gitconfig
@@ -218,90 +464,145 @@ fn scan_nested_rules(
     root: &Path,
     skip_dot_dirs: bool,
     others: &std::collections::HashSet<PathBuf>,
-    results: &mut Vec<RulesFile>,
+    jobs: usize,
+    results: &mut Vec<Pending>,
+    stats: &mut NestedStats,
 ) {
+    use crate::scanners::prefetch::with_prefetch;
     use std::collections::VecDeque;
     let cap = crate::scanners::telemetry::walk_cap(BASE_NESTED_DIRS, crate::scanners::telemetry::walk_budget());
     let entry_cap =
         crate::scanners::telemetry::walk_cap(BASE_NESTED_ENTRIES, crate::scanners::telemetry::walk_budget());
-    let mut listed = 0usize;
-    let mut entries_seen = 0usize;
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
-    while let Some((dir, depth)) = queue.pop_front() {
-        if listed >= cap || entries_seen >= entry_cap {
-            crate::scanners::telemetry::mark_truncated();
-            return;
+    // Listings are read ahead on helpers ([`crate::scanners::prefetch`]), in this walk's
+    // own breadth-first order; every decision below is still made here, in that order.
+    with_prefetch(jobs, NESTED_READ_AHEAD * jobs, list_nested_dir, |pf| {
+        let mut listed = 0usize;
+        let mut entries_seen = 0usize;
+        let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
+        while let Some((dir, depth)) = queue.pop_front() {
+            if listed >= cap || entries_seen >= entry_cap {
+                stats.budget_exhausted = true;
+                crate::scanners::telemetry::mark_truncated();
+                return;
+            }
+            listed += 1;
+            let listing = match pf.get(&dir) {
+                Ok(l) => l,
+                Err(e) => {
+                    crate::scanners::note_read_dir_error(&dir, &e);
+                    continue;
+                }
+            };
+            stats.dirs += 1;
+            entries_seen += listing.entries;
+            stats.entries += listing.entries as u64;
+            if listing.cut {
+                stats.dirs_cut += 1;
+                crate::scanners::telemetry::mark_truncated();
+            }
+            if depth > 0
+                && listing
+                    .markers
+                    .iter()
+                    .any(|n| crate::scanners::git_config::is_generated_marker(&dir.join(n)))
+            {
+                stats.pruned += 1;
+                continue;
+            }
+            if depth < NESTED_DEPTH {
+                for name in listing.subdirs {
+                    let child = dir.join(&name);
+                    let pruned = name == ".git"
+                        || crate::scanners::git_config::PRUNE_BY_NAME.contains(&name.as_str())
+                        || (skip_dot_dirs && name.starts_with('.'))
+                        || others.contains(&child);
+                    if pruned {
+                        stats.pruned += 1;
+                    } else {
+                        pf.hint(&child);
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+            }
+            // The walk root's own files are the project's, read by named_rules_files.
+            let found = if depth > 0 { listing.found } else { Vec::new() };
+            for name in found {
+                let path = dir.join(&name);
+                let Some(content) = read_bounded_nofollow(&path, None) else {
+                    continue;
+                };
+                let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+                let mut row = Pending::new(
+                    path,
+                    crate::scanners::sanitize_display(&rel, 512),
+                    content,
+                    Check::Rules,
+                );
+                row.scope = Some("project");
+                results.push(row);
+            }
         }
-        listed += 1;
-        let Ok(rd) = crate::scanners::probe_read_dir(&dir) else {
+    });
+}
+
+/// Listings read ahead of the nested walk per helper thread (bounded: a walk that stops
+/// at its budget drops what it read ahead).
+const NESTED_READ_AHEAD: usize = 32;
+
+/// What [`scan_nested_rules`] keeps of one directory listing.
+struct NestedListing {
+    /// Subdirectories (not symlinks), sorted.
+    subdirs: Vec<String>,
+    /// [`NESTED_RULES_NAMES`] regular files, sorted.
+    found: Vec<String>,
+    /// `CACHEDIR.TAG` / `pyvenv.cfg` regular files (checked by the walk).
+    markers: Vec<String>,
+    /// Entries read: at most [`MAX_NESTED_DIR_ENTRIES`].
+    entries: usize,
+    /// The listing stopped at [`MAX_NESTED_DIR_ENTRIES`].
+    cut: bool,
+}
+
+/// List one directory for [`scan_nested_rules`]: only subdirectories and the looked-for
+/// names are kept, so a directory of 350,000 image tiles is read through once, not
+/// collected and sorted, and at most [`MAX_NESTED_DIR_ENTRIES`] of its entries are read.
+/// Runs on a prefetch helper: notes nothing (the walk does, when it takes the listing).
+fn list_nested_dir(dir: &Path, cancel: &std::sync::atomic::AtomicBool) -> std::io::Result<NestedListing> {
+    let rd = std::fs::read_dir(dir)?;
+    let mut l = NestedListing {
+        subdirs: Vec::new(),
+        found: Vec::new(),
+        markers: Vec::new(),
+        entries: 0,
+        cut: false,
+    };
+    for (n, e) in rd.flatten().enumerate() {
+        if n >= MAX_NESTED_DIR_ENTRIES {
+            l.cut = true;
+            break;
+        }
+        // A walk that stopped no longer wants this listing: give up early.
+        if n % 1024 == 1023 && cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        l.entries += 1;
+        let Ok(ft) = e.file_type() else { continue };
+        let Ok(name) = e.file_name().into_string() else {
             continue;
         };
-        // Only subdirectories and the looked-for names are kept from a listing: a directory
-        // of 350,000 image tiles is read through once, not collected and sorted.
-        let mut subdirs: Vec<String> = Vec::new();
-        let mut found: Vec<String> = Vec::new();
-        let mut markers: Vec<String> = Vec::new();
-        for (n, e) in rd.flatten().enumerate() {
-            if n >= MAX_NESTED_DIR_ENTRIES {
-                crate::scanners::telemetry::mark_truncated();
-                break;
+        if ft.is_dir() {
+            l.subdirs.push(name);
+        } else if ft.is_file() {
+            if name == "CACHEDIR.TAG" || name == "pyvenv.cfg" {
+                l.markers.push(name);
+            } else if NESTED_RULES_NAMES.contains(&name.as_str()) {
+                l.found.push(name);
             }
-            entries_seen += 1;
-            let Ok(ft) = e.file_type() else { continue };
-            let Ok(name) = e.file_name().into_string() else {
-                continue;
-            };
-            if ft.is_dir() {
-                subdirs.push(name);
-            } else if ft.is_file() {
-                if name == "CACHEDIR.TAG" || name == "pyvenv.cfg" {
-                    markers.push(name);
-                } else if depth > 0 && NESTED_RULES_NAMES.contains(&name.as_str()) {
-                    found.push(name);
-                }
-            }
-        }
-        if depth > 0
-            && markers
-                .iter()
-                .any(|n| crate::scanners::git_config::is_generated_marker(&dir.join(n)))
-        {
-            continue;
-        }
-        subdirs.sort();
-        found.sort();
-        if depth < NESTED_DEPTH {
-            for name in subdirs {
-                let child = dir.join(&name);
-                let pruned = name == ".git"
-                    || crate::scanners::git_config::PRUNE_BY_NAME.contains(&name.as_str())
-                    || (skip_dot_dirs && name.starts_with('.'))
-                    || others.contains(&child);
-                if !pruned {
-                    queue.push_back((child, depth + 1));
-                }
-            }
-        }
-        for name in found {
-            let path = dir.join(&name);
-            let Some(content) = read_bounded_nofollow(&path, None) else {
-                continue;
-            };
-            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
-            results.push(RulesFile {
-                // Shown sanitized: a project directory name is attacker-chosen, and an encoded
-                // synced-skill name carries account UUIDs (mask_identifiers).
-                path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
-                file_name: crate::scanners::sanitize_display(&rel, 512),
-                sha256: sha256_hex(&content),
-                git_tracked: is_git_tracked(&path),
-                size_bytes: content.len(),
-                findings: check_dangerous_patterns(&content),
-                scope: Some("project".into()),
-                ..Default::default()
-            });
         }
     }
+    l.subdirs.sort();
+    l.found.sort();
+    Ok(l)
 }
 
 /// Serena's project prompt: "the project prompt, i.e. `initial_prompt` in `project.yml`,
@@ -309,40 +610,29 @@ fn scan_nested_rules(
 /// (oraios.github.io/serena/02-usage/050_configuration.html, fetched 2026-10-24). Only
 /// that key is looked at; a row is added when it is non-empty, hashed on the prompt text,
 /// so `--diff` shows it appearing or changing.
-fn scan_serena_initial_prompt(dir: &Path, user: bool, results: &mut Vec<RulesFile>) {
+fn serena_initial_prompt(dir: &Path, user: bool) -> Option<Pending> {
     let path = dir.join(".serena").join("project.yml");
     // `.serena` itself must not be a link (the file is opened without following one).
     if !std::fs::symlink_metadata(dir.join(".serena")).is_ok_and(|m| m.is_dir()) || !crate::scanners::probe_file(&path)
     {
-        return;
+        return None;
     }
-    let Some(content) = read_bounded_nofollow(&path, None) else {
-        return;
-    };
-    let Some(doc) = crate::scanners::yaml::to_json(&content) else {
-        return;
-    };
-    let Some(prompt) = doc.get("initial_prompt").and_then(|v| v.as_str()) else {
-        return;
-    };
+    let content = read_bounded_nofollow(&path, None)?;
+    let doc = crate::scanners::yaml::to_json(&content)?;
+    let prompt = doc.get("initial_prompt").and_then(|v| v.as_str())?;
     if prompt.trim().is_empty() {
-        return;
+        return None;
     }
-    let mut findings = check_dangerous_patterns(prompt);
-    findings.extend(injection_findings(prompt, user));
-    results.push(RulesFile {
-        // Shown sanitized: a project directory name is attacker-chosen, and an encoded
-        // synced-skill name carries account UUIDs (mask_identifiers).
-        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
-        file_name: ".serena/project.yml#initial_prompt".to_string(),
-        sha256: sha256_hex(prompt),
-        git_tracked: is_git_tracked(&path),
-        size_bytes: prompt.len(),
-        findings,
-        kind: Some("prompt-config".into()),
-        framework: Some("serena".into()),
-        scope: Some(if user { "user" } else { "project" }.into()),
-    });
+    let mut row = Pending::new(
+        path,
+        ".serena/project.yml#initial_prompt".to_string(),
+        prompt.to_string(),
+        Check::SerenaPrompt { user },
+    );
+    row.kind = Some("prompt-config");
+    row.framework = Some("serena");
+    row.scope = Some(if user { "user" } else { "project" });
+    Some(row)
 }
 
 /// Claude Code auto memory: "Each project gets its own memory directory at
@@ -351,14 +641,16 @@ fn scan_serena_initial_prompt(dir: &Path, user: bool, results: &mut Vec<RulesFil
 /// topic files are read on demand (code.claude.com/docs/en/memory, fetched 2026-10-24).
 /// Every `<project>` directory is looked at, not only those of projects rmguard can name:
 /// the memory is loaded whenever Claude Code runs there again, whether or not that
-/// project's path can be recovered from its lossy directory name.
-fn scan_auto_memory(claude_dir: &Path, results: &mut Vec<RulesFile>) {
+/// project's path can be recovered from its lossy directory name. Returns the rows and
+/// how many `<project>` directories were looked at.
+fn auto_memory_rows(claude_dir: &Path) -> (Vec<Pending>, usize) {
+    let mut results = Vec::new();
     let projects = claude_dir.join("projects");
     if !crate::scanners::probe_dir(&projects) {
-        return;
+        return (results, 0);
     }
     let Ok(rd) = crate::scanners::probe_read_dir(&projects) else {
-        return;
+        return (results, 0);
     };
     let mut names: Vec<String> = rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
     names.sort();
@@ -368,6 +660,7 @@ fn scan_auto_memory(claude_dir: &Path, results: &mut Vec<RulesFile>) {
         names.truncate(cap);
         crate::scanners::telemetry::mark_truncated();
     }
+    let looked = names.len();
     for name in names {
         // Quietly skip a session directory with no memory: most have none, and a
         // missing `memory/` under each is not a looked-for file worth a count.
@@ -376,9 +669,10 @@ fn scan_auto_memory(claude_dir: &Path, results: &mut Vec<RulesFile>) {
         }
         for (path, shown, real) in walk_memory_dir(&projects, &Path::new(&name).join("memory")) {
             let label = format!("projects/{name}/memory/{shown}");
-            push_prompt_file(&path, &real, &label, "auto-memory", "claude-code", "user", results);
+            push_prompt_file(&path, &real, &label, "auto-memory", "claude-code", "user", &mut results);
         }
     }
+    (results, looked)
 }
 
 /// Read one walked memory file (no-follow, bounded) into a row: hashed and git-tracked
@@ -389,44 +683,35 @@ fn scan_auto_memory(claude_dir: &Path, results: &mut Vec<RulesFile>) {
 /// the code, so "subprocess", `Eval(EvalArgs)` or "base64 ... http" in it is the project
 /// being described (on one machine all 6 such hits in 81 Serena memories were), while a
 /// fetch piped to a shell or a credential file handed to a sender is an attack wherever
-/// it is written.
+/// it is written. (The checks run later, in [`Pending::analyse`].)
 fn push_prompt_file(
     path: &Path,
     real: &Path,
     name: &str,
-    kind: &str,
-    framework: &str,
-    scope: &str,
-    results: &mut Vec<RulesFile>,
+    kind: &'static str,
+    framework: &'static str,
+    scope: &'static str,
+    results: &mut Vec<Pending>,
 ) {
     // `real`: the file must still be exactly where the walk found it (no directory of
     // the chain swapped for a link since).
     let Some(content) = read_bounded_nofollow(path, Some(real)) else {
         return;
     };
-    let user = scope == "user";
-    let mut findings: Vec<RulesFileFinding> = if framework == "serena" || !user {
-        check_dangerous_patterns(&content)
-            .into_iter()
-            .filter(memory_relevant)
-            .collect()
-    } else {
-        hidden_unicode_findings(&content)
+    let check = Check::Memory {
+        serena: framework == "serena",
+        user: scope == "user",
     };
-    findings.extend(injection_findings(&content, user));
-    results.push(RulesFile {
-        // Shown sanitized: a project directory name is attacker-chosen, and an encoded
-        // synced-skill name carries account UUIDs (mask_identifiers).
-        path: crate::scanners::sanitize_display(&path.to_string_lossy(), 512),
-        file_name: crate::scanners::sanitize_display(name, 512),
-        sha256: sha256_hex(&content),
-        git_tracked: is_git_tracked(path),
-        size_bytes: content.len(),
-        findings,
-        kind: Some(kind.into()),
-        framework: Some(framework.into()),
-        scope: Some(scope.into()),
-    });
+    let mut row = Pending::new(
+        path.to_path_buf(),
+        crate::scanners::sanitize_display(name, 512),
+        content,
+        check,
+    );
+    row.kind = Some(kind);
+    row.framework = Some(framework);
+    row.scope = Some(scope);
+    results.push(row);
 }
 
 /// The [`check_dangerous_patterns`] rows kept for a memory file: the Critical ones (a

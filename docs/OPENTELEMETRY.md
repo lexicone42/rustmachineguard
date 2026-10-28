@@ -161,6 +161,15 @@ rmguard.scan                                   (root; one trace per run)
 │   ├── scanner.persistence
 │   │   └── persistence.check                  (one per check family, rmguard.persistence.check)
 │   │       └── exec.output_with_timeout       (committed_symlinks: `git ls-files -s`, only where the index lists a symlink)
+│   ├── scanner.rules
+│   │   ├── rules.project_files                (each project's and the home's named instruction files)
+│   │   ├── rules.serena                       (.serena/memories walks and project.yml initial_prompt)
+│   │   ├── rules.agent_memory                 (.claude/agent-memory{,-local} walks)
+│   │   ├── rules.nested_walk                  (CLAUDE.md / AGENTS.md / GEMINI.md in project subdirectories)
+│   │   ├── rules.auto_memory                  (~/.claude/projects/*/memory)
+│   │   ├── rules.analysis                     (hash, pattern, injection and hidden-Unicode checks)
+│   │   └── rules.git_tracked                  (tracked state of every row)
+│   │       └── exec.git_tracked
 │   └── scanner.gitconfig
 │       ├── gitconfig.repos                    (every project's own .git/config)
 │       │   └── exec.output_with_timeout       (`git config --list`)
@@ -257,6 +266,23 @@ project that holds other walked projects (a workspace directory recovered from
 `~/.claude/projects`) skips their subtrees, each walked once on its own, and is started
 first, since it is usually the biggest walk; findings still come back in project order.
 
+`rules` has a span per family (above). The families only read: `rules.project_files`,
+`rules.serena`, `rules.agent_memory` and `rules.auto_memory` carry `rmguard.walk.projects`
+(roots looked at: the projects and the home; for auto memory, `~/.claude/projects`
+directories) and `rmguard.walk.files` (files read). `rules.nested_walk` carries the
+gitconfig walk's per-project counts (`rmguard.walk.projects`, `.projects_exhausted`,
+`.skipped`, `.top_dirs`, `.dirs`, `.entries`, `.pruned`, `.budget_exhausted`) and
+`rmguard.walk.dirs_cut`, directories whose listing stopped at the per-directory entry cap
+(20,000; such a directory also marks the scanner truncated). Each project's walk lists
+directories ahead of itself on up to `--jobs - 1` helper threads (a project of 16
+directories or fewer starts none), at most 32 per thread ahead and unconsumed; the walk
+still takes each listing, decides on budgets, pruning and reads in its own breadth-first
+order, on its own thread, so rows, counts and truncation are the same at any `--jobs`.
+Then every file read is checked once in `rules.analysis` (`rmguard.content.files`,
+`rmguard.content.bytes`; on up to `--jobs` threads, rows kept in order) and its tracked
+state looked up in `rules.git_tracked` (`rmguard.git.lookups`; one `git ls-files` per
+repository, in row order). The rows are those the single interleaved pass gave.
+
 `settings` has a span per discovery family (above), one `settings.hooks` per agent
 family with `rmguard.agent` = `claude-code` | `cursor` | `codex` | `copilot` | `gemini` |
 `devin` | `opencode` | `kiro`, and `settings.permission_rules`: every Claude Code file's
@@ -312,7 +338,7 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.inventory.kind` | `rmguard.inventory` | one of the report summary counts (every `*_count` field of `summary`), named without `_count` (`mcp_servers`, `mcp_plugin_servers`, `mcp_connectors`, `agent_hooks`, `agent_hooks_inactive`, `agent_skills`, `ssh_keys`, `env_files`, ...; `Summary::inventory`) |
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
-| `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk); `truncated` in diagnostics |
+| `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk, the rules nested walk); `truncated` in diagnostics |
 | `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` \| `git_check_ignore` |
 | `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs (the round-4 names `cline`, `cn`, `amp`, `junie` and `warp-terminal` are listed so a trace names them, although `cn` and `amp` are versioned from `package.json` and `junie` and `warp-terminal` are never run), model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
@@ -321,20 +347,23 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.walk.kind` | skills.walk | `commands` \| `agents` \| `hooks` \| `codex` \| `skills` \| `plugins` |
 | `rmguard.walk.scope` | skills.walk | `global` \| `project` |
 | `rmguard.walk.root_link` | skills.walk | `plain` (no symlink to the root, or no root) \| `followed` (a linked root that is walked) \| `refused` (a linked root that is inventoried unread) |
-| `rmguard.walk.entries` | skills.walk, gitconfig.nested_walk, transcripts.store | directory entries visited |
-| `rmguard.walk.files` | skills.walk, transcripts.store | skills: files read through the shared reader; transcripts: regular files counted (opened only for two bounded samples: the head of at most 50 session-env / shell-snapshots files read for exported variable names, and the first 1 MiB of at most 200 files of each conversation, history, session and shell-state store read for secret-shaped key names and token-prefix labels) |
+| `rmguard.walk.entries` | skills.walk, gitconfig.nested_walk, rules.nested_walk, transcripts.store | directory entries visited |
+| `rmguard.walk.files` | skills.walk, transcripts.store, rules.project_files, rules.serena, rules.agent_memory, rules.auto_memory | rules: files read; skills: files read through the shared reader; transcripts: regular files counted (opened only for two bounded samples: the head of at most 50 session-env / shell-snapshots files read for exported variable names, and the first 1 MiB of at most 200 files of each conversation, history, session and shell-state store read for secret-shaped key names and token-prefix labels) |
 | `rmguard.walk.bytes_hashed` | skills.walk | bytes of file content hashed for the inventory's sha256 |
 | `rmguard.walk.hooks` | skills.walk | frontmatter hooks found |
-| `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk | bool: a file, entry or directory budget stopped the walk (budgets set by `--walk-budget`) |
+| `rmguard.walk.budget_exhausted` | skills.walk, gitconfig.nested_walk, rules.nested_walk | bool: a file, entry or directory budget stopped the walk (budgets set by `--walk-budget`) |
 | `rmguard.items` | skills.walk, settings.permission_rules | inventory entries the walk produced (before the scanner's dedupe); permission rules kept |
-| `rmguard.walk.dirs` | gitconfig.nested_walk | directories listed, summed over projects |
-| `rmguard.walk.projects` | gitconfig.nested_walk, settings.project_list | projects walked (nested walk); projects in the list (settings) |
-| `rmguard.walk.projects_exhausted` | gitconfig.nested_walk | projects whose walk stopped at the directory budget |
-| `rmguard.walk.skipped` | gitconfig.nested_walk | projects not walked (a scan home or an ancestor of one) |
-| `rmguard.walk.top_dirs` | gitconfig.nested_walk | int list: the largest per-project directory counts, descending, at most 5 (counts only) |
+| `rmguard.walk.dirs` | gitconfig.nested_walk, rules.nested_walk | directories listed, summed over projects |
+| `rmguard.walk.projects` | gitconfig.nested_walk, rules.nested_walk, settings.project_list, rules.project_files, rules.serena, rules.agent_memory, rules.auto_memory | projects walked (nested walks); projects in the list (settings); roots looked at (rules families) |
+| `rmguard.walk.projects_exhausted` | gitconfig.nested_walk, rules.nested_walk | projects whose walk stopped at the directory (or, rules, entry) budget |
+| `rmguard.walk.skipped` | gitconfig.nested_walk, rules.nested_walk | projects not walked (a scan home or an ancestor of one; rules: or the same directory as one already walked) |
+| `rmguard.walk.top_dirs` | gitconfig.nested_walk, rules.nested_walk | int list: the largest per-project directory counts, descending, at most 5 (counts only) |
+| `rmguard.walk.dirs_cut` | rules.nested_walk | directories whose listing stopped at the per-directory entry cap |
+| `rmguard.content.files`, `rmguard.content.bytes` | rules.analysis | files whose content was checked, and their bytes |
+| `rmguard.git.lookups` | rules.git_tracked | rows whose tracked state was looked up |
 | `rmguard.agent` | settings.hooks | `claude-code` \| `cursor` \| `codex` \| `copilot` \| `gemini` \| `devin` \| `opencode` \| `kiro` |
 | `rmguard.persistence.check` | persistence.check | `python_roots` \| `python_startup` \| `project_list` \| `planted_binaries` \| `loader_staging` \| `committed_symlinks` \| `project_iocs` \| `home_iocs` \| `url_handlers` \| `agent_bin` \| `dangling_plugins` |
-| `rmguard.walk.pruned` | gitconfig.nested_walk | directories not descended into as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |
+| `rmguard.walk.pruned` | gitconfig.nested_walk, rules.nested_walk | directories not descended into (rules: also `.git`, a home dot-directory, another project) as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |
 | `rmguard.version.source` | version.read | `package_json` (the version came from the tool's own package.json) \| `dist_info` (from the `METADATA` of the tool's Python distribution in its venv) \| `spawn` (it did not; `<tool> --version` is run) |
 | `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |
 | `rmguard.repos` | gitconfig.repos, gitconfig.nested_walk | projects whose own config was checked; nested git directories found |

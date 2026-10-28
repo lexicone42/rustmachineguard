@@ -192,6 +192,14 @@ pub enum Key {
     WalkTopDirs,
     /// Projects skipped because they were already walked (or the same directory).
     WalkSkipped,
+    /// Directories whose listing stopped at a walk's per-directory entry cap.
+    WalkDirsCut,
+    /// Files whose content a span analysed (hashed and pattern-checked).
+    ContentFiles,
+    /// Bytes of content a span analysed.
+    ContentBytes,
+    /// Paths a span looked up in git's tracked-file listing.
+    GitLookups,
 }
 
 impl Key {
@@ -259,6 +267,10 @@ impl Key {
         Key::WalkProjectsExhausted,
         Key::WalkTopDirs,
         Key::WalkSkipped,
+        Key::WalkDirsCut,
+        Key::ContentFiles,
+        Key::ContentBytes,
+        Key::GitLookups,
     ];
 
     /// The exported key. Generic concepts use the OpenTelemetry semantic-convention
@@ -329,6 +341,10 @@ impl Key {
             Key::WalkProjectsExhausted => "rmguard.walk.projects_exhausted",
             Key::WalkTopDirs => "rmguard.walk.top_dirs",
             Key::WalkSkipped => "rmguard.walk.skipped",
+            Key::WalkDirsCut => "rmguard.walk.dirs_cut",
+            Key::ContentFiles => "rmguard.content.files",
+            Key::ContentBytes => "rmguard.content.bytes",
+            Key::GitLookups => "rmguard.git.lookups",
         }
     }
 }
@@ -995,7 +1011,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 63, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 67, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are exported only as the closed `rmguard.exec.program` set, never the open process.executable.name"

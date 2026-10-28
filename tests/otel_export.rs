@@ -1285,6 +1285,187 @@ mod enabled {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Perf 6b: `rules` explains its time. Each family is its own span under
+    /// `scanner.rules`, in order: `rules.project_files`, `rules.serena`,
+    /// `rules.agent_memory`, `rules.nested_walk` (the gitconfig walk's per-project counts
+    /// plus `rmguard.walk.dirs_cut`), `rules.auto_memory`, `rules.analysis`
+    /// (`rmguard.content.files` / `.bytes`) and `rules.git_tracked` (`rmguard.git.lookups`,
+    /// the only rules span with `exec.git_tracked` children). Counts only.
+    #[test]
+    fn otel_rules_families() {
+        let home = temp_home("rules6b");
+        let p = home.join("work").join("proj");
+        write(&p.join("CLAUDE.md"), "Run the tests before committing.\n");
+        write(&p.join(".serena/memories/arch.md"), "The parser lives in src/.\n");
+        write(&p.join(".serena/project.yml"), "initial_prompt: \"Be brief.\"\n");
+        write(&p.join(".claude/agent-memory/rev/MEMORY.md"), "Reviewer notes.\n");
+        // Enough directories that the walk's read-ahead helpers start (over 16).
+        for i in 0..30 {
+            std::fs::create_dir_all(p.join(format!("pkg/m{i:02}/src"))).unwrap();
+        }
+        write(&p.join("pkg/m07/CLAUDE.md"), "Module notes.\n");
+        write(&p.join("pkg/m21/src/AGENTS.md"), "Agent notes.\n");
+        write(&p.join("node_modules/dep/CLAUDE.md"), "never read\n");
+        write(
+            &home.join(".claude/projects/-work-proj/memory/MEMORY.md"),
+            "- remembered fact\n",
+        );
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&p)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("HOME", &p)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let have_git = git(&["init", "-q"])
+            && git(&["config", "user.email", "t@example.com"])
+            && git(&["config", "user.name", "t"])
+            && git(&["add", "CLAUDE.md", "pkg"])
+            && git(&["commit", "-q", "-m", "i"]);
+        write(
+            &home.join(".claude.json"),
+            &serde_json::json!({ "projects": { p.to_string_lossy(): {} } }).to_string(),
+        );
+
+        let collector = Collector::start();
+        let mut cmd = rmguard(
+            &home,
+            Some(collector.port),
+            &["--otel", "--format", "json", "--jobs", "4"],
+        );
+        cmd.current_dir(&home);
+        let (out, _) = run(cmd);
+        let bodies = collector.finish();
+        assert!(out.status.success(), "exit {:?}; stderr:\n{}", out.status, stderr(&out));
+        let report = json(&out);
+        let all = spans(&traces(&bodies));
+        let one = |n: &str| {
+            let v: Vec<&Span> = all.iter().filter(|s| s.name == n).collect();
+            assert_eq!(v.len(), 1, "spans named {n}");
+            v[0]
+        };
+        let children =
+            |p: &Span| -> Vec<&Span> { all.iter().filter(|s| s.parent_span_id == p.span_id).collect::<Vec<_>>() };
+        let rules = one("scanner.rules");
+        let mut kids = children(rules);
+        kids.sort_by_key(|s| s.start_time_unix_nano);
+        let names: Vec<&str> = kids.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "rules.project_files",
+                "rules.serena",
+                "rules.agent_memory",
+                "rules.nested_walk",
+                "rules.auto_memory",
+                "rules.analysis",
+                "rules.git_tracked"
+            ],
+            "every rules family once, in order, and nothing else directly under the scanner"
+        );
+        let rows = report["rules_files"].as_array().unwrap();
+        let int = |s: &str, k: &str| attr_int(&one(s).attributes, k);
+        // Roots: the project and the home (the cwd is the home, read as the home).
+        for (s, files) in [
+            ("rules.project_files", 1),
+            ("rules.serena", 2),
+            ("rules.agent_memory", 1),
+        ] {
+            assert_eq!(int(s, "rmguard.walk.projects"), Some(2), "{s}");
+            assert_eq!(int(s, "rmguard.walk.files"), Some(files), "{s}");
+        }
+        assert_eq!(int("rules.auto_memory", "rmguard.walk.projects"), Some(1));
+        assert_eq!(int("rules.auto_memory", "rmguard.walk.files"), Some(1));
+
+        let nw = &one("rules.nested_walk").attributes;
+        // The project, and the home (it is the cwd, so Claude Code runs there).
+        assert_eq!(attr_int(nw, "rmguard.walk.projects"), Some(2));
+        assert_eq!(attr_int(nw, "rmguard.walk.projects_exhausted"), Some(0));
+        assert_eq!(attr_int(nw, "rmguard.walk.skipped"), Some(0));
+        assert_eq!(attr_int(nw, "rmguard.walk.dirs_cut"), Some(0));
+        assert!(matches!(
+            attr(nw, "rmguard.walk.budget_exhausted"),
+            Some(any_value::Value::BoolValue(false))
+        ));
+        assert!(
+            attr_int(nw, "rmguard.walk.pruned").unwrap() >= 2,
+            "node_modules and .git"
+        );
+        assert!(attr_int(nw, "rmguard.walk.entries").unwrap() > attr_int(nw, "rmguard.walk.dirs").unwrap());
+        let top: Vec<i64> = match attr(nw, "rmguard.walk.top_dirs") {
+            Some(any_value::Value::ArrayValue(arr)) => arr
+                .values
+                .iter()
+                .map(|v| match &v.value {
+                    Some(any_value::Value::IntValue(i)) => *i,
+                    other => panic!("top_dirs holds a non-int {other:?}"),
+                })
+                .collect(),
+            other => panic!("top_dirs is not an int list: {other:?}"),
+        };
+        assert_eq!(top.len(), 2);
+        assert_eq!(top.iter().sum::<i64>(), attr_int(nw, "rmguard.walk.dirs").unwrap());
+        let nested: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r["file_name"].as_str())
+            .filter(|n| n.starts_with("pkg/"))
+            .collect();
+        assert_eq!(
+            nested,
+            ["pkg/m07/CLAUDE.md", "pkg/m21/src/AGENTS.md"],
+            "breadth-first, node_modules pruned"
+        );
+
+        let bytes: i64 = rows.iter().map(|r| r["size_bytes"].as_i64().unwrap()).sum();
+        assert_eq!(int("rules.analysis", "rmguard.content.files"), Some(rows.len() as i64));
+        assert_eq!(int("rules.analysis", "rmguard.content.bytes"), Some(bytes));
+        let gt = one("rules.git_tracked");
+        assert_eq!(attr_int(&gt.attributes, "rmguard.git.lookups"), Some(rows.len() as i64));
+        // git spawns only under rules.git_tracked.
+        for k in &kids {
+            if k.name != "rules.git_tracked" {
+                assert!(
+                    children(k).iter().all(|c| !c.name.starts_with("exec.")),
+                    "{} spawned",
+                    k.name
+                );
+            }
+        }
+        if have_git && std::path::Path::new("/usr/bin/git").exists() {
+            let execs: Vec<&Span> = children(gt)
+                .into_iter()
+                .filter(|s| s.name == "exec.git_tracked")
+                .collect();
+            assert_eq!(execs.len(), 1, "one ls-files for the one repository");
+            let tracked: Vec<bool> = rows
+                .iter()
+                .filter(|r| r["file_name"] == "CLAUDE.md" || r["file_name"] == "pkg/m07/CLAUDE.md")
+                .map(|r| r["git_tracked"].as_bool().unwrap())
+                .collect();
+            assert_eq!(tracked, [true, true]);
+        }
+
+        let raw: Vec<u8> = bodies.iter().flat_map(|(_, b)| b.iter().copied()).collect();
+        for needle in [
+            home.to_string_lossy().as_bytes(),
+            b"work/proj",
+            b"arch.md",
+            b"MEMORY.md",
+            b"pkg/m07",
+            b"Be brief",
+        ] {
+            assert!(
+                !raw.windows(needle.len()).any(|w| w == needle),
+                "{:?} reached the collector",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// P3: with the phases run on worker threads (`--jobs 4`) the span tree keeps its
     /// documented shape: every `scanner.*` span is a child of its own `phase.*` span,
     /// and every `exec.*` span is under a scanner span with nothing but that scanner's
