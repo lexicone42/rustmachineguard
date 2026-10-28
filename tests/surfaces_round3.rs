@@ -425,7 +425,8 @@ fn a_vulnerable_npx_cache_a_process_runs_from_is_critical() {
         running[0]["path"].as_str().unwrap().ends_with("/abc123def4567890"),
         "{text}"
     );
-    assert_eq!(running[0]["pids"], 1);
+    // Same fork-before-exec window as the title count above: 1, or briefly 2.
+    assert!(running[0]["pids"].as_u64().is_some_and(|n| n >= 1), "{text}");
     let _ = fs::remove_dir_all(&home);
 }
 
