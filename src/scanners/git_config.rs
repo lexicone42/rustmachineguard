@@ -79,6 +79,7 @@ impl Scanner for GitConfigScanner {
                     Attr::int(Key::WalkProjectsExhausted, stats.projects_exhausted as i64),
                     Attr::ints(Key::WalkTopDirs, stats.top_dirs.clone()),
                     Attr::int(Key::WalkSkipped, stats.skipped as i64),
+                    Attr::int(Key::WalkDirsCut, stats.dirs_cut as i64),
                 ]
             });
             nested
@@ -186,6 +187,8 @@ struct WalkStats {
     projects_exhausted: u64,
     /// Projects not walked: a scan home, or an ancestor of one.
     skipped: u64,
+    /// Directories whose listing stopped at [`MAX_DIR_ENTRIES`].
+    dirs_cut: u64,
     /// The largest per-project directory counts, descending, at most [`TOP_DIRS`]:
     /// counts only, never which project.
     top_dirs: Vec<i64>,
@@ -193,6 +196,14 @@ struct WalkStats {
 
 /// Per-project directory counts kept on the `gitconfig.nested_walk` span.
 const TOP_DIRS: usize = 5;
+
+/// Entries read from ONE directory listing before the walk moves on, the same cap the
+/// nested rules walk uses. A git dir has a handful of top-level entries, so the cap never
+/// hides one; what it bounds is a flat data directory (image tiles, frames, datasets) of
+/// hundreds of thousands of files, which on one machine was 12.9M entries and 4.2 s of a
+/// scan once nothing else exhausted the directory budget first. A cut directory marks the
+/// scanner `truncated`: subdirectories listed after the cut are not walked.
+const MAX_DIR_ENTRIES: usize = 20_000;
 
 impl WalkStats {
     /// Fold one project's counts into the total.
@@ -203,6 +214,7 @@ impl WalkStats {
         self.pruned += o.pruned;
         self.budget_exhausted |= o.budget_exhausted;
         self.skipped += o.skipped;
+        self.dirs_cut += o.dirs_cut;
     }
 }
 
@@ -402,7 +414,12 @@ fn scan_nested_repos(
         let (mut has_config, mut has_head, mut has_objects, mut has_refs) = (false, false, false, false);
         let mut markers: Vec<std::path::PathBuf> = Vec::new();
         let mut children = Vec::new();
-        for entry in entries.flatten() {
+        for (listed, entry) in entries.flatten().enumerate() {
+            if listed == MAX_DIR_ENTRIES {
+                stats.dirs_cut += 1;
+                crate::scanners::telemetry::mark_truncated();
+                break;
+            }
             stats.entries += 1;
             let Ok(kind) = entry.file_type() else {
                 continue;
@@ -681,6 +698,29 @@ fn is_bare_gitdir(dir: &Path) -> bool {
     head_is_valid(&dir.join("HEAD"))
         && crate::scanners::probe_dir(&dir.join("objects"))
         && crate::scanners::probe_dir(&dir.join("refs"))
+}
+
+#[cfg(test)]
+mod dir_entry_cap_tests {
+    use super::*;
+
+    /// A flat directory past the cap is cut, counted and marks the walk truncated; the
+    /// cap does not reach a git dir's own handful of entries.
+    #[test]
+    fn a_huge_flat_directory_is_cut_at_the_entry_cap() {
+        let root = std::env::temp_dir().join(format!("rmg-gc-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let flat = root.join("data/tiles");
+        std::fs::create_dir_all(&flat).unwrap();
+        for i in 0..(MAX_DIR_ENTRIES + 50) {
+            std::fs::write(flat.join(format!("t{i}.png")), b"").unwrap();
+        }
+        let (mut out, mut stats) = (Vec::new(), WalkStats::default());
+        scan_nested_repos(&root, &[], &mut out, &mut stats, 25_000);
+        assert_eq!(stats.dirs_cut, 1, "{stats:?}");
+        assert!(stats.entries <= (MAX_DIR_ENTRIES + 10) as u64, "{stats:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
