@@ -38,6 +38,7 @@ pub mod transcript_content;
 pub mod transcripts;
 pub mod vibe;
 pub mod vscode_tasks;
+pub mod walk_index;
 pub mod yaml;
 
 use crate::platform::PlatformInfo;

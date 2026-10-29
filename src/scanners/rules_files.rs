@@ -145,7 +145,13 @@ impl Scanner for RulesFilesScanner {
         // recovered project, or the working directory), its own dot-directories excepted.
         {
             let mut span = crate::otel::span("rules.nested_walk", Vec::new);
-            let (rows, stats) = nested_walks(&home, &all, &projects, crate::scanners::telemetry::helper_jobs());
+            let (rows, stats) = nested_walks(
+                &home,
+                &all,
+                &projects,
+                crate::scanners::telemetry::helper_jobs(),
+                scope.walk_index(),
+            );
             pending.extend(rows);
             span.set(|| {
                 vec![
@@ -158,6 +164,8 @@ impl Scanner for RulesFilesScanner {
                     Attr::int(Key::WalkPruned, stats.pruned as i64),
                     Attr::int(Key::WalkDirsCut, stats.dirs_cut as i64),
                     Attr::bool(Key::WalkBudgetExhausted, stats.projects_exhausted > 0),
+                    Attr::int(Key::WalkCacheHits, stats.cache_hits as i64),
+                    Attr::int(Key::WalkCacheMisses, stats.cache_misses as i64),
                 ]
             });
         }
@@ -367,6 +375,11 @@ struct NestedStats {
     dirs_cut: u64,
     /// The project's walk stopped at its directory or entry budget.
     budget_exhausted: bool,
+    /// Listings taken from the pass's shared index (read by the gitconfig walk first),
+    /// and read by this walk (perf 6d). They sum to `dirs`. Which walk reached a
+    /// directory first depends on thread timing; nothing else does.
+    cache_hits: u64,
+    cache_misses: u64,
     /// Set on the total only: projects walked, how many stopped at a budget, projects of
     /// the pass not walked (a scan home or an ancestor of one, or the same directory as
     /// one already walked), and the largest per-project directory counts.
@@ -378,7 +391,14 @@ struct NestedStats {
 
 /// The nested walk of every project of the pass (and the home when it is one), one
 /// project per task on up to `jobs` threads, rows and counts joined in project order.
-fn nested_walks(home: &Path, all: &[PathBuf], projects: &[PathBuf], jobs: usize) -> (Vec<Pending>, NestedStats) {
+fn nested_walks(
+    home: &Path,
+    all: &[PathBuf],
+    projects: &[PathBuf],
+    jobs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
+) -> (Vec<Pending>, NestedStats) {
+    use crate::scanners::walk_index::{Consumer, RootRule};
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let own_home = real(home);
     let home_is_project = all.iter().any(|d| real(d) == own_home);
@@ -393,6 +413,24 @@ fn nested_walks(home: &Path, all: &[PathBuf], projects: &[PathBuf], jobs: usize)
         walks.push((home.to_path_buf(), true));
     }
     let skipped = all.len().saturating_sub(walks.len()) as u64;
+    // What this walk may list, for the index to drop what it will never ask for: at most
+    // NESTED_DEPTH levels down, never under `.git`, a name pruned by name, a name that is
+    // not UTF-8, or (the home) a dot-directory.
+    index.register(
+        Consumer::Rules,
+        walks
+            .iter()
+            .map(|(d, skip_dot)| {
+                let rule = RootRule {
+                    max_depth: Some(NESTED_DEPTH),
+                    skip_git: true,
+                    skip_dot: *skip_dot,
+                    utf8_only: true,
+                };
+                (d.clone(), rule)
+            })
+            .collect::<Vec<_>>(),
+    );
     let mut total = NestedStats {
         skipped,
         ..Default::default()
@@ -402,7 +440,7 @@ fn nested_walks(home: &Path, all: &[PathBuf], projects: &[PathBuf], jobs: usize)
     for (r, s) in crate::scanners::telemetry::par_map(walks, jobs, |(dir, skip_dot)| {
         let mut rows = Vec::new();
         let mut stats = NestedStats::default();
-        scan_nested_rules(&dir, skip_dot, &roots, jobs, &mut rows, &mut stats);
+        scan_nested_rules(&dir, skip_dot, &roots, jobs, index, &mut rows, &mut stats);
         (rows, stats)
     }) {
         rows.extend(r);
@@ -410,16 +448,40 @@ fn nested_walks(home: &Path, all: &[PathBuf], projects: &[PathBuf], jobs: usize)
         total.entries += s.entries;
         total.pruned += s.pruned;
         total.dirs_cut += s.dirs_cut;
+        total.cache_hits += s.cache_hits;
+        total.cache_misses += s.cache_misses;
         if s.dirs > 0 {
             total.projects += 1;
             total.projects_exhausted += u64::from(s.budget_exhausted);
             dir_counts.push(s.dirs as i64);
         }
     }
+    index.done(Consumer::Rules);
     dir_counts.sort_unstable_by(|a, b| b.cmp(a));
     dir_counts.truncate(TOP_DIRS);
     total.top_dirs = dir_counts;
     (rows, total)
+}
+
+/// Perf 6d test hook: [`nested_walks`] on a given index. Returns the rows (shown path,
+/// name, content), the summed counts without the cache counts, and (hits, misses).
+#[cfg(test)]
+pub(crate) fn walk_for_index_test(
+    home: &Path,
+    all: &[PathBuf],
+    projects: &[PathBuf],
+    jobs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
+) -> (Vec<String>, String, (u64, u64)) {
+    let (rows, mut s) = nested_walks(home, all, projects, jobs, index);
+    let cache = (s.cache_hits, s.cache_misses);
+    assert_eq!(cache.0 + cache.1, s.dirs, "every listing is a hit or a miss");
+    (s.cache_hits, s.cache_misses) = (0, 0);
+    let rows = rows
+        .iter()
+        .map(|r| format!("{} | {} | {}", r.shown_path, r.file_name, r.content))
+        .collect();
+    (rows, format!("{s:?}"), cache)
 }
 
 /// Per-project directory counts kept on the `rules.nested_walk` span.
@@ -465,17 +527,24 @@ fn scan_nested_rules(
     skip_dot_dirs: bool,
     others: &std::collections::HashSet<PathBuf>,
     jobs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
     results: &mut Vec<Pending>,
     stats: &mut NestedStats,
 ) {
     use crate::scanners::prefetch::with_prefetch;
+    use crate::scanners::walk_index::{Consumer, WalkCtx};
     use std::collections::VecDeque;
+    let ctx = std::sync::Arc::new(WalkCtx::new(index, Consumer::Rules, root));
     let cap = crate::scanners::telemetry::walk_cap(BASE_NESTED_DIRS, crate::scanners::telemetry::walk_budget());
     let entry_cap =
         crate::scanners::telemetry::walk_cap(BASE_NESTED_ENTRIES, crate::scanners::telemetry::walk_budget());
     // Listings are read ahead on helpers ([`crate::scanners::prefetch`]), in this walk's
     // own breadth-first order; every decision below is still made here, in that order.
-    with_prefetch(jobs, NESTED_READ_AHEAD * jobs, list_nested_dir, |pf| {
+    let list = {
+        let ctx = std::sync::Arc::clone(&ctx);
+        move |dir: &Path, cancel: &std::sync::atomic::AtomicBool| list_nested_dir(dir, cancel, &ctx)
+    };
+    with_prefetch(jobs, NESTED_READ_AHEAD * jobs, list, |pf| {
         let mut listed = 0usize;
         let mut entries_seen = 0usize;
         let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
@@ -494,6 +563,11 @@ fn scan_nested_rules(
                 }
             };
             stats.dirs += 1;
+            if listing.cached {
+                stats.cache_hits += 1;
+            } else {
+                stats.cache_misses += 1;
+            }
             entries_seen += listing.entries;
             stats.entries += listing.entries as u64;
             if listing.cut {
@@ -543,6 +617,7 @@ fn scan_nested_rules(
             }
         }
     });
+    ctx.finish();
 }
 
 /// Listings read ahead of the nested walk per helper thread (bounded: a walk that stops
@@ -561,43 +636,48 @@ struct NestedListing {
     entries: usize,
     /// The listing stopped at [`MAX_NESTED_DIR_ENTRIES`].
     cut: bool,
+    /// Taken from the shared index rather than read by this walk.
+    cached: bool,
 }
 
 /// List one directory for [`scan_nested_rules`]: only subdirectories and the looked-for
 /// names are kept, so a directory of 350,000 image tiles is read through once, not
 /// collected and sorted, and at most [`MAX_NESTED_DIR_ENTRIES`] of its entries are read.
-/// Runs on a prefetch helper: notes nothing (the walk does, when it takes the listing).
-fn list_nested_dir(dir: &Path, cancel: &std::sync::atomic::AtomicBool) -> std::io::Result<NestedListing> {
-    let rd = std::fs::read_dir(dir)?;
+/// The listing comes from the pass's shared index when the gitconfig walk read it first
+/// ([`crate::scanners::walk_index`]), else from the file system. Runs on a prefetch
+/// helper: notes nothing (the walk does, when it takes the listing).
+fn list_nested_dir(
+    dir: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    ctx: &crate::scanners::walk_index::WalkCtx,
+) -> std::io::Result<NestedListing> {
+    use crate::scanners::walk_index::{Got, Kind};
     let mut l = NestedListing {
         subdirs: Vec::new(),
         found: Vec::new(),
         markers: Vec::new(),
         entries: 0,
         cut: false,
+        cached: false,
     };
-    for (n, e) in rd.flatten().enumerate() {
-        if n >= MAX_NESTED_DIR_ENTRIES {
-            l.cut = true;
-            break;
-        }
-        // A walk that stopped no longer wants this listing: give up early.
-        if n % 1024 == 1023 && cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        l.entries += 1;
-        let Ok(ft) = e.file_type() else { continue };
-        let Ok(name) = e.file_name().into_string() else {
+    // Cancelled part-way: the walk returned and drops this listing unread.
+    let Some((listing, got)) = ctx.get(dir, cancel)? else {
+        return Ok(l);
+    };
+    l.cached = got == Got::Hit;
+    let (entries, cut, kept) = listing.capped(MAX_NESTED_DIR_ENTRIES);
+    l.entries = entries;
+    l.cut = cut;
+    // A symlink is neither (its own type, not its target's, as the listing reports it).
+    for k in kept {
+        let Some(name) = k.name.to_str() else {
             continue;
         };
-        if ft.is_dir() {
-            l.subdirs.push(name);
-        } else if ft.is_file() {
-            if name == "CACHEDIR.TAG" || name == "pyvenv.cfg" {
-                l.markers.push(name);
-            } else if NESTED_RULES_NAMES.contains(&name.as_str()) {
-                l.found.push(name);
-            }
+        match k.kind {
+            Kind::Dir => l.subdirs.push(name.to_owned()),
+            Kind::File if name == "CACHEDIR.TAG" || name == "pyvenv.cfg" => l.markers.push(name.to_owned()),
+            Kind::File if NESTED_RULES_NAMES.contains(&name) => l.found.push(name.to_owned()),
+            _ => {}
         }
     }
     l.subdirs.sort();

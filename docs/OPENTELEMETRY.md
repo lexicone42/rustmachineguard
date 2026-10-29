@@ -246,8 +246,10 @@ or `spawn`.
 
 `gitconfig` runs in two passes so the trace can tell its two costs apart: every
 project's own `.git/config` (`gitconfig.repos`), then the walk for git directories
-buried inside each project (`gitconfig.nested_walk`). The findings are joined back in
-the old per-project order, so the report is unchanged. The projects are walked side by
+buried inside each project (`gitconfig.nested_walk`). The findings are joined back per
+project in project order (each project's repo-local findings, then its nested ones), and
+within one project's nested walk in path order (since perf 6c; one git dir's keys keep
+git's order), so neither the walk's order nor the file system's listing order shows. The projects are walked side by
 side on up to `--jobs` threads, each with its own directory budget (`--walk-budget`,
 default 25,000 directories listed per project) and counts; the span's counts are the
 per-project counts summed in project order, and `rmguard.walk.budget_exhausted` is true
@@ -265,6 +267,11 @@ truncated walk shows whether one big tree or many medium ones spent the budget. 
 project that holds other walked projects (a workspace directory recovered from
 `~/.claude/projects`) skips their subtrees, each walked once on its own, and is started
 first, since it is usually the biggest walk; findings still come back in project order.
+`rmguard.walk.dirs_cut` counts directories whose listing stopped at the per-directory
+entry cap (20,000), as in the rules walk. `rmguard.walk.cache_hits` and
+`rmguard.walk.cache_misses` (perf 6d) say how many of the walk's listings it took from
+the pass's shared listing index, read there by the rules nested walk first, and how many
+it read itself (they sum to `rmguard.walk.dirs`); see the rules paragraph below.
 
 `rules` has a span per family (above). The families only read: `rules.project_files`,
 `rules.serena`, `rules.agent_memory` and `rules.auto_memory` carry `rmguard.walk.projects`
@@ -273,11 +280,21 @@ directories) and `rmguard.walk.files` (files read). `rules.nested_walk` carries 
 gitconfig walk's per-project counts (`rmguard.walk.projects`, `.projects_exhausted`,
 `.skipped`, `.top_dirs`, `.dirs`, `.entries`, `.pruned`, `.budget_exhausted`) and
 `rmguard.walk.dirs_cut`, directories whose listing stopped at the per-directory entry cap
-(20,000; such a directory also marks the scanner truncated). Each project's walk lists
-directories ahead of itself on up to `--jobs - 1` helper threads (a project of 16
-directories or fewer starts none), at most 32 per thread ahead and unconsumed; the walk
-still takes each listing, decides on budgets, pruning and reads in its own breadth-first
-order, on its own thread, so rows, counts and truncation are the same at any `--jobs`.
+(20,000; such a directory also marks the scanner truncated). Each project's walk has
+directories listed ahead of itself by one helper pool of `--jobs - 1` threads shared by
+every walk running at once, of both nested walks (since perf 6d; before, each project's
+walk started its own `--jobs - 1`); a project of 16 directories or fewer asks for none,
+and at most 32 per `--jobs` are ahead and unconsumed per walk. The two nested walks also
+share one listing index per home pass: whichever reaches a directory first lists it,
+and the other takes that listing (`rmguard.walk.cache_hits`) instead of listing the
+directory again (`rmguard.walk.cache_misses`; the two sum to `rmguard.walk.dirs`). A
+listing keeps only what the walks look at (subdirectory names and a few file names) and
+is dropped once the other walk has taken it or never will; at most 8 MiB is held. Which
+walk got to a directory first is thread timing, so those two counts vary between runs;
+nothing else does. Each walk still takes each listing, decides on budgets, pruning and
+reads in its own breadth-first order, on its own thread, and charges its budget for a
+listing it took from the index as for one it read, so rows, counts and truncation are
+the same at any `--jobs`.
 Then every file read is checked once in `rules.analysis` (`rmguard.content.files`,
 `rmguard.content.bytes`; on up to `--jobs` threads, rows kept in order) and its tracked
 state looked up in `rules.git_tracked` (`rmguard.git.lookups`; one `git ls-files` per
@@ -358,7 +375,9 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.walk.projects_exhausted` | gitconfig.nested_walk, rules.nested_walk | projects whose walk stopped at the directory (or, rules, entry) budget |
 | `rmguard.walk.skipped` | gitconfig.nested_walk, rules.nested_walk | projects not walked (a scan home or an ancestor of one; rules: or the same directory as one already walked) |
 | `rmguard.walk.top_dirs` | gitconfig.nested_walk, rules.nested_walk | int list: the largest per-project directory counts, descending, at most 5 (counts only) |
-| `rmguard.walk.dirs_cut` | rules.nested_walk | directories whose listing stopped at the per-directory entry cap |
+| `rmguard.walk.dirs_cut` | gitconfig.nested_walk, rules.nested_walk | directories whose listing stopped at the per-directory entry cap |
+| `rmguard.walk.cache_hits` | gitconfig.nested_walk, rules.nested_walk | listings taken from the pass's shared listing index (read by the other nested walk first); varies with thread timing |
+| `rmguard.walk.cache_misses` | gitconfig.nested_walk, rules.nested_walk | listings the walk read itself; with `cache_hits`, sums to `rmguard.walk.dirs` |
 | `rmguard.content.files`, `rmguard.content.bytes` | rules.analysis | files whose content was checked, and their bytes |
 | `rmguard.git.lookups` | rules.git_tracked | rows whose tracked state was looked up |
 | `rmguard.agent` | settings.hooks | `claude-code` \| `cursor` \| `codex` \| `copilot` \| `gemini` \| `devin` \| `opencode` \| `kiro` |

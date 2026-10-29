@@ -194,6 +194,10 @@ pub enum Key {
     WalkSkipped,
     /// Directories whose listing stopped at a walk's per-directory entry cap.
     WalkDirsCut,
+    /// Listings a nested walk took from the pass's shared listing index.
+    WalkCacheHits,
+    /// Listings a nested walk read itself (and left in the index for the other walk).
+    WalkCacheMisses,
     /// Files whose content a span analysed (hashed and pattern-checked).
     ContentFiles,
     /// Bytes of content a span analysed.
@@ -268,6 +272,8 @@ impl Key {
         Key::WalkTopDirs,
         Key::WalkSkipped,
         Key::WalkDirsCut,
+        Key::WalkCacheHits,
+        Key::WalkCacheMisses,
         Key::ContentFiles,
         Key::ContentBytes,
         Key::GitLookups,
@@ -342,6 +348,8 @@ impl Key {
             Key::WalkTopDirs => "rmguard.walk.top_dirs",
             Key::WalkSkipped => "rmguard.walk.skipped",
             Key::WalkDirsCut => "rmguard.walk.dirs_cut",
+            Key::WalkCacheHits => "rmguard.walk.cache_hits",
+            Key::WalkCacheMisses => "rmguard.walk.cache_misses",
             Key::ContentFiles => "rmguard.content.files",
             Key::ContentBytes => "rmguard.content.bytes",
             Key::GitLookups => "rmguard.git.lookups",
@@ -1011,7 +1019,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 67, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 69, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are exported only as the closed `rmguard.exec.program` set, never the open process.executable.name"

@@ -203,6 +203,12 @@ fn rmguard(home: &Path, args: &[&str]) -> serde_json::Value {
         .env("PATH", "/usr/bin:/bin")
         .current_dir(home)
         .args(["--format", "json"])
+        // Machine-wide scanners read LIVE state (running containers, processes,
+        // listeners) that can change between two scans compared here; skipped.
+        .args([
+            "--skip",
+            "ai,frameworks,node,containers,ide,notebooks,listeners,liveness",
+        ])
         .args(args)
         .output()
         .expect("run rmguard");

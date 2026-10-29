@@ -67,7 +67,7 @@ impl Scanner for GitConfigScanner {
             let mut span = crate::otel::span("gitconfig.nested_walk", Vec::new);
             let jobs = crate::scanners::telemetry::helper_jobs();
             let max_dirs = crate::scanners::telemetry::walk_budget();
-            let (nested, stats) = walk_projects(&dirs, &walkable, jobs, max_dirs);
+            let (nested, stats) = walk_projects_with(&dirs, &walkable, jobs, max_dirs, scope.walk_index());
             span.set(|| {
                 vec![
                     Attr::int(Key::WalkEntries, stats.entries as i64),
@@ -80,6 +80,8 @@ impl Scanner for GitConfigScanner {
                     Attr::ints(Key::WalkTopDirs, stats.top_dirs.clone()),
                     Attr::int(Key::WalkSkipped, stats.skipped as i64),
                     Attr::int(Key::WalkDirsCut, stats.dirs_cut as i64),
+                    Attr::int(Key::WalkCacheHits, stats.cache_hits as i64),
+                    Attr::int(Key::WalkCacheMisses, stats.cache_misses as i64),
                 ]
             });
             nested
@@ -102,12 +104,26 @@ type WalkTask<'a> = (usize, &'a PathBuf, Option<Vec<&'a PathBuf>>);
 /// [`WalkStats`], projects holding the most other projects started first. Findings come
 /// back per project in `dirs` order and the stats are summed in that order, so neither depends on
 /// which project finished first; `jobs` 1 is the sequential loop.
+#[cfg(test)]
 fn walk_projects(
     dirs: &[PathBuf],
     walkable: &[PathBuf],
     jobs: usize,
     max_dirs: usize,
 ) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
+    walk_projects_with(dirs, walkable, jobs, max_dirs, &Default::default())
+}
+
+/// [`walk_projects`] sharing listings with the pass's other walks through `index`
+/// ([`crate::scanners::walk_index`]).
+fn walk_projects_with(
+    dirs: &[PathBuf],
+    walkable: &[PathBuf],
+    jobs: usize,
+    max_dirs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
+) -> (Vec<Vec<GitAutorunConfig>>, WalkStats) {
+    use crate::scanners::walk_index::{Consumer, RootRule};
     // Another walked project inside a project is walked on its own (with its own
     // budget): its subtree is skipped there. A project recovered from ~/.claude/projects
     // is often the parent of registered ones (`~/work` above `~/work/app`), whose walk
@@ -122,6 +138,22 @@ fn walk_projects(
             (i, dir, inner)
         })
         .collect();
+    // What this walk may list, for the index to drop what it will never ask for: under
+    // each walked project, anything not pruned by name (no depth limit).
+    let rule = RootRule {
+        max_depth: None,
+        skip_git: false,
+        skip_dot: false,
+        utf8_only: false,
+    };
+    index.register(
+        Consumer::GitConfig,
+        tasks
+            .iter()
+            .filter(|t| t.2.is_some())
+            .map(|t| (t.1.clone(), rule))
+            .collect::<Vec<_>>(),
+    );
     // Started biggest-first: a project holding other projects is usually the largest
     // tree (a workspace directory), and started last it alone would set the walk's wall
     // time. Results go back to `dirs` order below, so the order run never shows.
@@ -135,12 +167,13 @@ fn walk_projects(
     let ran = crate::scanners::telemetry::par_map(scheduled, jobs, |(i, dir, inner)| {
         let (mut o, mut stats) = (Vec::new(), WalkStats::default());
         if let Some(inner) = &inner {
-            scan_nested_repos(dir, inner, &mut o, &mut stats, max_dirs, jobs);
+            scan_nested_repos_with(dir, inner, &mut o, &mut stats, max_dirs, jobs, index);
         } else {
             stats.skipped = 1;
         }
         (i, (o, stats))
     });
+    index.done(Consumer::GitConfig);
     let mut per_project: Vec<Option<(Vec<GitAutorunConfig>, WalkStats)>> = (0..dirs.len()).map(|_| None).collect();
     for (i, r) in ran {
         per_project[i] = Some(r);
@@ -189,6 +222,11 @@ struct WalkStats {
     skipped: u64,
     /// Directories whose listing stopped at [`MAX_DIR_ENTRIES`].
     dirs_cut: u64,
+    /// Listings taken from the pass's shared index (read by the rules walk first), and
+    /// read by this walk (perf 6d). They sum to `dirs`. Which walk reached a directory
+    /// first depends on thread timing; nothing else does.
+    cache_hits: u64,
+    cache_misses: u64,
     /// The largest per-project directory counts, descending, at most [`TOP_DIRS`]:
     /// counts only, never which project.
     top_dirs: Vec<i64>,
@@ -215,6 +253,8 @@ impl WalkStats {
         self.budget_exhausted |= o.budget_exhausted;
         self.skipped += o.skipped;
         self.dirs_cut += o.dirs_cut;
+        self.cache_hits += o.cache_hits;
+        self.cache_misses += o.cache_misses;
     }
 }
 
@@ -369,7 +409,7 @@ pub(crate) const PRUNE_BY_NAME: &[&str] = &[
 /// attacker-authored in a way the project's own `.git/config` is not.
 ///
 /// Breadth-first (perf 6c; depth-first before), so shallow directories come first, with
-/// listings read ahead on up to `jobs - 1` helpers ([`crate::scanners::prefetch`]) in
+/// listings read ahead by the shared `jobs - 1` helpers ([`crate::scanners::prefetch`]) in
 /// that order; every budget, descent and git decision is still made here, in that order.
 /// The order matters only to a project that reaches its budget: the set of directories a
 /// walk charges is fixed by the tree (each directory's descent depends on its own listing
@@ -390,10 +430,31 @@ fn scan_nested_repos(
     max_dirs: usize,
     jobs: usize,
 ) {
+    scan_nested_repos_with(root, inner_projects, out, stats, max_dirs, jobs, &Default::default());
+}
+
+/// [`scan_nested_repos`] taking listings from, and leaving them in, the pass's shared
+/// `index` ([`crate::scanners::walk_index`]): a listing taken there is exactly the one this
+/// walk's own read would have returned, and costs the same budget.
+fn scan_nested_repos_with(
+    root: &Path,
+    inner_projects: &[&PathBuf],
+    out: &mut Vec<GitAutorunConfig>,
+    stats: &mut WalkStats,
+    max_dirs: usize,
+    jobs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
+) {
     use crate::scanners::prefetch::with_prefetch;
+    use crate::scanners::walk_index::{Consumer, WalkCtx};
     let first = out.len();
     let own_git = root.join(".git");
-    let list = |dir: &Path, cancel: &std::sync::atomic::AtomicBool| list_git_dir(dir, inner_projects, cancel);
+    let ctx = std::sync::Arc::new(WalkCtx::new(index, Consumer::GitConfig, root));
+    let inner: Vec<PathBuf> = inner_projects.iter().map(|p| (*p).clone()).collect();
+    let list = {
+        let ctx = std::sync::Arc::clone(&ctx);
+        move |dir: &Path, cancel: &std::sync::atomic::AtomicBool| list_git_dir(dir, &inner, cancel, &ctx)
+    };
     with_prefetch(jobs, NESTED_READ_AHEAD * jobs, list, |pf| {
         let mut budget = max_dirs.max(1);
         let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
@@ -417,6 +478,11 @@ fn scan_nested_repos(
             stats.dirs += 1;
             stats.entries += l.entries;
             stats.pruned += l.pruned;
+            if l.cached {
+                stats.cache_hits += 1;
+            } else {
+                stats.cache_misses += 1;
+            }
             if l.cut {
                 stats.dirs_cut += 1;
                 crate::scanners::telemetry::mark_truncated();
@@ -468,6 +534,7 @@ fn scan_nested_repos(
             }
         }
     });
+    ctx.finish();
     out[first..].sort_by(|a, b| a.path.cmp(&b.path));
 }
 
@@ -491,15 +558,20 @@ struct GitListing {
     children: Vec<(std::ffi::OsString, PathBuf)>,
     /// Subdirectories pruned by name or as another walked project.
     pruned: u64,
+    /// Taken from the shared index rather than read by this walk.
+    cached: bool,
 }
 
 /// List one directory for [`scan_nested_repos`]. Runs on a prefetch helper: notes no
 /// telemetry (the walk notes a read error, a cut and the counts when it takes the
-/// listing) and reads nothing but the listing and, for a symlink, its target's type.
+/// listing) and reads nothing but the listing (from the pass's shared index or the file
+/// system, [`crate::scanners::walk_index`]) and, for a symlink with a name the git-dir
+/// test or the marker check looks at, its target's type.
 fn list_git_dir(
     dir: &Path,
-    inner_projects: &[&PathBuf],
+    inner_projects: &[PathBuf],
     cancel: &std::sync::atomic::AtomicBool,
+    ctx: &crate::scanners::walk_index::WalkCtx,
 ) -> std::io::Result<GitListing> {
     /// A directory holding one of these, VALID, was produced by a tool, not committed:
     /// `pyvenv.cfg` marks a virtualenv (written at a venv's top by Python's `venv`,
@@ -513,7 +585,7 @@ fn list_git_dir(
     /// itself does not hide it; planting a VALID one in an ancestor does, which is the same
     /// adversarial floor as exhausting the directory budget.
     const GENERATED_MARKERS: &[&str] = &["pyvenv.cfg", "CACHEDIR.TAG"];
-    let entries = std::fs::read_dir(dir)?;
+    use crate::scanners::walk_index::{Got, Kind};
     let mut l = GitListing {
         entries: 0,
         cut: false,
@@ -524,25 +596,24 @@ fn list_git_dir(
         markers: Vec::new(),
         children: Vec::new(),
         pruned: 0,
+        cached: false,
     };
+    // Cancelled part-way: the walk returned and drops this listing unread.
+    let Some((listing, got)) = ctx.get(dir, cancel)? else {
+        return Ok(l);
+    };
+    l.cached = got == Got::Hit;
+    let (entries, cut, kept) = listing.capped(MAX_DIR_ENTRIES);
+    l.entries = entries as u64;
+    l.cut = cut;
     // One listing answers both questions -- "is this a git dir?" and "what do I
     // descend into?" -- using the entry type the listing already carries. The
     // previous version stat'ed every entry and then stat'ed config and HEAD again
     // per directory: three extra syscalls a dir, over ~130k dirs on one machine.
-    for (listed, entry) in entries.flatten().enumerate() {
-        if listed == MAX_DIR_ENTRIES {
-            l.cut = true;
-            break;
-        }
-        // A walk that stopped no longer wants this listing: give up early.
-        if listed % 1024 == 1023 && cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        l.entries += 1;
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        let name = entry.file_name();
+    // Only directories and the names in `walk_index::KEPT_NAMES` are kept in a listing:
+    // nothing below looks at any other file.
+    for k in kept {
+        let name = k.name;
         // A symlink reports itself here, not its target. Resolve it for the FILE
         // checks -- `config -> ../real-config` is how a payload hid from the first
         // version of this walk -- but never descend through a symlinked directory.
@@ -550,23 +621,24 @@ fn list_git_dir(
         // objects/ or refs/ satisfies it -- and therefore must satisfy us. Resolve the
         // target type for the CRITERION; the descent decision below is separate and
         // never follows a symlinked directory.
-        let (is_file, is_dir) = if kind.is_symlink() {
-            match std::fs::metadata(entry.path()) {
+        let is_link = k.kind == Kind::Symlink;
+        let (is_file, is_dir) = match k.kind {
+            Kind::Symlink => match std::fs::metadata(dir.join(name)) {
                 Ok(m) => (m.is_file(), m.is_dir()),
                 Err(_) => (false, false),
-            }
-        } else {
-            (kind.is_file(), kind.is_dir())
+            },
+            Kind::File => (true, false),
+            Kind::Dir => (false, true),
         };
         // A symlink named HEAD counts here whatever its target: git never opens the
         // target, it reads the link text, and head_is_valid() decides below.
-        if name == "HEAD" && (is_file || kind.is_symlink()) {
+        if name == "HEAD" && (is_file || is_link) {
             l.has_head = true;
         } else if is_file {
             if name == "config" {
                 l.has_config = true;
             } else if GENERATED_MARKERS.iter().any(|m| name == *m) {
-                l.markers.push(entry.path());
+                l.markers.push(dir.join(name));
             }
         } else if is_dir {
             if name == "objects" {
@@ -576,12 +648,12 @@ fn list_git_dir(
             }
             // A symlinked directory is never descended through (above), and is not
             // counted as pruned.
-            if !kind.is_symlink() {
-                let path = entry.path();
-                if PRUNE_BY_NAME.iter().any(|p| name == *p) || inner_projects.iter().any(|p| **p == path) {
+            if !is_link {
+                let path = dir.join(name);
+                if PRUNE_BY_NAME.iter().any(|p| name == *p) || inner_projects.contains(&path) {
                     l.pruned += 1;
                 } else {
-                    l.children.push((name, path));
+                    l.children.push((name.to_os_string(), path));
                 }
             }
         }
@@ -688,6 +760,28 @@ pub fn attack_shape(value: &str) -> Option<String> {
         return Some("value runs a script from inside the repository".to_string());
     }
     None
+}
+
+/// Perf 6d test hook: [`walk_projects_with`] on a given index. Returns the findings (as
+/// JSON, per project), the summed counts without the cache counts (their only
+/// timing-dependent part), and the (hits, misses) pair.
+#[cfg(test)]
+pub(crate) fn walk_for_index_test(
+    dirs: &[PathBuf],
+    walkable: &[PathBuf],
+    jobs: usize,
+    max_dirs: usize,
+    index: &std::sync::Arc<crate::scanners::walk_index::WalkIndex>,
+) -> (Vec<Vec<String>>, String, (u64, u64)) {
+    let (nested, mut s) = walk_projects_with(dirs, walkable, jobs, max_dirs, index);
+    let cache = (s.cache_hits, s.cache_misses);
+    assert_eq!(cache.0 + cache.1, s.dirs, "every listing is a hit or a miss");
+    (s.cache_hits, s.cache_misses) = (0, 0);
+    let findings = nested
+        .iter()
+        .map(|o| o.iter().map(|c| serde_json::to_string(c).unwrap()).collect())
+        .collect();
+    (findings, format!("{s:?}"), cache)
 }
 
 /// Test hook for the nested-repo walk, which is otherwise reachable only through a full

@@ -22,6 +22,9 @@ pub struct PassScope {
     /// ([`recover_projects`]), computed once on first use and shared by every scanner
     /// of the pass (a fresh cell whenever the homes change).
     recovered: Arc<OnceLock<Recovered>>,
+    /// Directory listings shared by this pass's nested walks (the gitconfig and rules
+    /// scanners'): see [`crate::scanners::walk_index`].
+    walk_index: Arc<crate::scanners::walk_index::WalkIndex>,
 }
 
 /// The result of [`recover_projects`].
@@ -44,6 +47,7 @@ impl PassScope {
             cwd_project: std::env::current_dir().ok(),
             scan_homes: vec![home_entry(home)],
             recovered: Arc::default(),
+            walk_index: Arc::default(),
         }
     }
 
@@ -54,6 +58,7 @@ impl PassScope {
             cwd_project: None,
             scan_homes: vec![home_entry(home)],
             recovered: Arc::default(),
+            walk_index: Arc::default(),
         }
         .with_scan_homes(others)
     }
@@ -68,7 +73,13 @@ impl PassScope {
         }
         // Recovery excludes every scan home: recompute with the new set.
         self.recovered = Arc::default();
+        self.walk_index = Arc::default();
         self
+    }
+
+    /// This pass's shared listing index ([`crate::scanners::walk_index`]).
+    pub fn walk_index(&self) -> &Arc<crate::scanners::walk_index::WalkIndex> {
+        &self.walk_index
     }
 
     /// The working directory when this is the primary pass, else None.

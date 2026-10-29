@@ -49,6 +49,13 @@ fn rmguard(home: &Path, args: &[&str]) -> serde_json::Value {
         .env("RMGUARD_TEST_SYSTEM_ROOT", home.join("sysroot"))
         .current_dir(home)
         .args(["--format", "json"])
+        // Machine-wide scanners read LIVE state (running containers, processes,
+        // listeners), which can change between this test's two scans; the walk under test
+        // is home-rooted, so they are skipped to keep the comparison to fixture data.
+        .args([
+            "--skip",
+            "ai,frameworks,node,containers,ide,notebooks,listeners,liveness",
+        ])
         .args(args)
         .output()
         .expect("run rmguard");

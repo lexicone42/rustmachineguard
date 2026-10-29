@@ -1298,7 +1298,8 @@ mod enabled {
     /// `rules.agent_memory`, `rules.nested_walk` (the gitconfig walk's per-project counts
     /// plus `rmguard.walk.dirs_cut`), `rules.auto_memory`, `rules.analysis`
     /// (`rmguard.content.files` / `.bytes`) and `rules.git_tracked` (`rmguard.git.lookups`,
-    /// the only rules span with `exec.git_tracked` children). Counts only.
+    /// the only rules span with `exec.git_tracked` children). Counts only. Since 6d both
+    /// nested walks carry `rmguard.walk.cache_hits` / `.cache_misses`.
     #[test]
     fn otel_rules_families() {
         let home = temp_home("rules6b");
@@ -1416,6 +1417,25 @@ mod enabled {
         };
         assert_eq!(top.len(), 2);
         assert_eq!(top.iter().sum::<i64>(), attr_int(nw, "rmguard.walk.dirs").unwrap());
+        // Perf 6d: the pass's two nested walks share listings. Each walk's listings are
+        // taken from the shared index or read by it (the two counts sum to its dirs), and
+        // every directory of the project's rules walk is one the gitconfig walk lists too
+        // (none is deeper than four levels, under .git or pruned by name), so each was
+        // read once and taken once: the hits of both walks sum to the project's rules
+        // dirs (the larger walk; the home walk's are the rules walk's alone). Which walk
+        // got there first is thread timing; the sum is not.
+        let gw = &one("gitconfig.nested_walk").attributes;
+        for w in [nw, gw] {
+            assert_eq!(
+                attr_int(w, "rmguard.walk.cache_hits").unwrap() + attr_int(w, "rmguard.walk.cache_misses").unwrap(),
+                attr_int(w, "rmguard.walk.dirs").unwrap()
+            );
+        }
+        assert_eq!(
+            attr_int(nw, "rmguard.walk.cache_hits").unwrap() + attr_int(gw, "rmguard.walk.cache_hits").unwrap(),
+            top[0],
+            "each shared directory read once"
+        );
         let nested: Vec<&str> = rows
             .iter()
             .filter_map(|r| r["file_name"].as_str())
