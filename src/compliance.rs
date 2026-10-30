@@ -143,7 +143,7 @@ pub const CONTROLS: &[Control] = &[
         id: "ASI04",
         title: "Agentic Supply Chain",
         coverage: Coverage::Covered,
-        how: "Threat catalog (exact + version-range), registry provenance verification, exposure matching across MCP/extensions, plugin pins that are not commits, skill files symlinked out of their bundle, and declarative IDE extensions that carry code.",
+        how: "Threat catalog (exact + version-range), registry provenance verification, exposure matching across MCP/extensions, plugin pins that are not commits, skill files symlinked out of their bundle, declarative IDE extensions that carry code, and project package-manager configs that redirect dependency resolution or relax TLS.",
         finding_categories: &[
             "Exposure",
             "Registry",
@@ -153,6 +153,7 @@ pub const CONTROLS: &[Control] = &[
             "Plugin pin",
             "Skill symlink",
             "Extension code",
+            "Package registry",
         ],
     },
     Control {

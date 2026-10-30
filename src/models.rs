@@ -458,11 +458,31 @@ pub struct BrowserExtension {
     pub profile: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct PackageConfigAudit {
     pub manager: String,
     pub config_path: String,
     pub findings: Vec<PackageConfigFinding>,
+    /// `project` for a package-manager config inside a project (graded); absent for the
+    /// user and machine configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Project configs: whether git tracks the file (None: not established).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_tracked: Option<bool>,
+    /// Project configs: the NAMES of settings that hold a literal registry credential
+    /// (`_authToken for npm.pkg.github.com`, `npmAuthToken`, `token`, `URL userinfo`).
+    /// A `${VAR}` reference is not a credential. Never a value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_keys: Vec<String>,
+    /// Project configs: hosts (host only) the file points dependency resolution at that
+    /// are not the ecosystem's default registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registry_hosts: Vec<String>,
+    /// Project configs: settings that turn off TLS verification or allow plain HTTP
+    /// (`strict-ssl=false`, `enableStrictSsl: false`, `allow-insecure-host`, ...).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tls_disabled: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

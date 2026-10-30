@@ -86,7 +86,7 @@ RSA, ECDSA, Ed25519/OpenSSH with passphrase detection. Every key is a row in `ss
 
 *Cloud provider credentials.*
 
-AWS (profiles, SSO), GCP (ADC, service accounts), Azure (tokens, subscriptions)
+AWS (profiles, SSO), GCP (ADC, service accounts), Azure (tokens, subscriptions). No secret value is kept: `~/.aws/credentials` and `~/.aws/config` are streamed a line at a time through a fixed window and only `[section]` names are kept; each `~/.config/gcloud/*.json` is classified from its first 4 KiB, read without following a link, by a small tokenizer that stops at the top-level `"type"` value (Google writes it first, ahead of `private_key`). A file whose `"type"` is not in that head, or a linked one, is counted as an unclassified JSON file rather than read further; `application_default_credentials.json` is reported by name and not opened.
 
 ### Container Tools
 
@@ -111,6 +111,8 @@ Chrome/Firefox extension inventory with known-malicious matching; localized (`__
 *Registry/install hijacks.*
 
 `.npmrc`, pip, bun, yarn config — custom and lookalike registries (matched on the parsed host, not a substring), disabled SSL, auth tokens
+
+Project configs (every registered project, and the working directory): `.npmrc` (npm, and pnpm, which has no `.pnpmrc`), `.yarnrc` (Yarn classic), `.yarnrc.yml` (Yarn berry: `npmRegistryServer`, `npmAuthToken`, `npmAuthIdent`, `npmScopes`, `npmRegistries`, `enableStrictSsl`, `unsafeHttpWhitelist`), `bunfig.toml` (`[install] registry` and `[install.scopes]`, string or table with `token`/`password`), `uv.toml` and `[tool.uv]` in `pyproject.toml` (`index-url`, `extra-index-url`, `[[index]] url`, `find-links`, `allow-insecure-host`, and the same under `pip`), a project venv's `pip.conf` (`.venv/` or `venv/` with a `pyvenv.cfg`; pip has no other project-local file), and `.cargo/config.toml` or `.cargo/config` (`[source.crates-io] replace-with`, `[registries.<name>] index` and `token`). Read with the no-follow repository reader (a file linked out of the project is not opened). Recorded: registry hosts (host only), credential setting NAMES (`_authToken for npm.pkg.github.com`, `npmAuthToken`, `install.registry.token`, `registries.corp.token`, `index-url URL userinfo`; a `${VAR}` / `$VAR` reference is not a credential), TLS relaxations, and `always-auth` / `ignore-scripts` notes. Graded: a credential in a git-tracked file is Critical (Secret leak); in an untracked file High (readable by every tool in the tree); a registry override to a non-default host, or relaxed TLS, is Medium. A declared Cargo registry (used only by dependencies that name it) and a vendored `replace-with` directory are inventory. Floor: npm's and Cargo's parent-directory lookup above the project root is not followed. Sources: [npmrc](https://docs.npmjs.com/cli/v10/configuring-npm/npmrc), [pnpm .npmrc](https://pnpm.io/npmrc), [yarnrc (classic)](https://classic.yarnpkg.com/en/docs/yarnrc), [.yarnrc.yml](https://yarnpkg.com/configuration/yarnrc), [bunfig](https://bun.sh/docs/runtime/bunfig), [uv settings](https://docs.astral.sh/uv/reference/settings/), [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/), [Cargo config](https://doc.rust-lang.org/cargo/reference/config.html).
 
 ### Rules Files
 

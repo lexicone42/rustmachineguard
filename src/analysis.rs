@@ -95,6 +95,7 @@ pub const FINDING_CATEGORIES: &[&str] = &[
     "Secret hygiene",
     "MCP inventory",
     "Network listener",
+    "Package registry",
 ];
 
 /// `category` as its [`FINDING_CATEGORIES`] entry, or `other` for a string outside the
@@ -247,6 +248,12 @@ pub fn guidance(category: &str) -> Guidance {
             why: "Agents follow these files as authoritative instructions, so a poisoned rules file is prompt injection that persists across every session.",
             fix: "Review the matched pattern shown below and the surrounding instruction; remove anything that directs the agent to run untrusted code or exfiltrate data.",
             reference: "EAA-004 (instruction/memory poisoning)",
+        },
+        "Package registry" => Guidance {
+            what: "A package-manager config inside a project (.npmrc, .yarnrc, .yarnrc.yml, bunfig.toml, uv.toml or [tool.uv] in pyproject.toml, a virtual environment's pip.conf, .cargo/config.toml) points dependency resolution at a non-default registry host, relaxes TLS verification, or holds a registry credential in an untracked file (rmguard records setting names and hosts only, never a value; a ${VAR} reference is not a credential).",
+            why: "These files apply to every install run in the tree, so whoever controls the repository chooses where packages come from: an override is the setup for dependency confusion or a malicious mirror, and strict-ssl=false / allow-insecure-host lets anyone on the network substitute packages. A credential in the working tree is readable by every tool and agent working there and is one `git add` from being committed.",
+            fix: "Keep registry credentials out of project files: use a ${NPM_TOKEN}-style reference, the user config (~/.npmrc, ~/.yarnrc.yml, ~/.cargo/credentials.toml) or the tool's credential helper. Confirm a project registry override is your organisation's registry, and remove strict-ssl=false, enableStrictSsl: false, unsafeHttpWhitelist, allow-insecure-host and trusted-host.",
+            reference: "npm npmrc · pnpm npmrc · yarnrc.yml · bunfig · uv settings · Cargo config · ASI04",
         },
         "Registry" => Guidance {
             what: "An MCP server package is either one edit away from a registered name (possible typosquat) or is deprecated in the official MCP registry.",
@@ -2207,6 +2214,85 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 category: "Credential".into(),
                 title: format!("{} config stores an API key inline ({})", c.provider, c.credential_type),
                 location: c.path.clone(),
+                evidence: None,
+            });
+        }
+    }
+
+    // Project package-manager configs (npm/pnpm .npmrc, Yarn, Bun, uv, a venv's pip.conf,
+    // Cargo). Graded on what the file says, by setting NAME: a literal credential (a
+    // `${VAR}` reference is not one) committed to the repository is Critical; one in an
+    // untracked file is High, since every tool and agent working in the tree can read it;
+    // a registry override to a non-default host or relaxed TLS is Medium (the repository
+    // decides where dependencies come from). User and machine configs are not graded here.
+    for a in report
+        .package_config_audits
+        .iter()
+        .filter(|a| a.scope.as_deref() == Some("project"))
+    {
+        let file = std::path::Path::new(&a.config_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !a.credential_keys.is_empty() {
+            let names = a.credential_keys.join(", ");
+            let (severity, category, title) = match a.git_tracked {
+                Some(true) => (
+                    Severity::Critical,
+                    "Secret leak",
+                    format!(
+                        "{} {file} holds a registry credential committed to the repository ({names})",
+                        a.manager
+                    ),
+                ),
+                Some(false) => (
+                    Severity::High,
+                    "Package registry",
+                    format!(
+                        "{} {file} holds a registry credential in the working tree, readable by every tool run there ({names})",
+                        a.manager
+                    ),
+                ),
+                None => (
+                    Severity::High,
+                    "Package registry",
+                    format!(
+                        "{} {file} holds a registry credential ({names}); whether git tracks it could not be established",
+                        a.manager
+                    ),
+                ),
+            };
+            f.push(Finding {
+                severity,
+                category: category.into(),
+                title,
+                location: a.config_path.clone(),
+                evidence: None,
+            });
+        }
+        if !a.registry_hosts.is_empty() {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Package registry".into(),
+                title: format!(
+                    "{} {file} points dependency resolution at {} (the repository chooses the registry: dependency confusion or a malicious mirror)",
+                    a.manager,
+                    a.registry_hosts.join(", ")
+                ),
+                location: a.config_path.clone(),
+                evidence: None,
+            });
+        }
+        if !a.tls_disabled.is_empty() {
+            f.push(Finding {
+                severity: Severity::Medium,
+                category: "Package registry".into(),
+                title: format!(
+                    "{} {file} relaxes TLS for package downloads ({})",
+                    a.manager,
+                    a.tls_disabled.join(", ")
+                ),
+                location: a.config_path.clone(),
                 evidence: None,
             });
         }
@@ -5019,7 +5105,7 @@ mod finding_category_tests {
         }
         let variable_sites = src.matches("category: category.into()").count();
         assert_eq!(
-            variable_sites, 2,
+            variable_sites, 3,
             "a new Finding takes its category from a variable: make sure the literals feeding it are \
              in FINDING_CATEGORIES, then update this count"
         );

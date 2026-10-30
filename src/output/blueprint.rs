@@ -703,7 +703,7 @@ fn capec_for_category(category: &str) -> Option<(u32, &'static str, &'static str
             "Malicious Software Download",
             "Causing the victim to fetch and run attacker-controlled code at startup.",
         ),
-        "Exposure" | "Plugin pin" | "Extension code" => (
+        "Exposure" | "Plugin pin" | "Extension code" | "Package registry" => (
             437,
             "Supply Chain",
             "Compromise introduced through a dependency or package the victim trusts.",
