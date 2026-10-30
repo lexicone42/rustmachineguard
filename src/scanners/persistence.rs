@@ -142,6 +142,24 @@ const HOME_IOC_PATHS: &[(&str, &str)] = &[
         ".apex/agent/mcp.json",
         "Apex Accelerator backdoored coding agent, REF8801 (2026-10)",
     ),
+    // Trojanized `anthropic.claude-code` 2.1.313 served by the Cursor Marketplace on
+    // 2026-10-29: Cursor, cursor.com/blog/claude-code-extension-security-notice (the
+    // LaunchAgent), and OpenSourceMalware, opensourcemalware.com/blog/trojanized-claude-
+    // code-extension-plants-persistent-ssh-backdoor (the LaunchAgent plus `~/.config/.smt`
+    // and `.smtk` on macOS and Linux). Apple's own `com.apple.sysmond` is a system
+    // LaunchDaemon, never a per-user LaunchAgent.
+    (
+        ".config/.smt",
+        "trojanized Claude Code extension 2.1.313 via the Cursor Marketplace (2026-10-29)",
+    ),
+    (
+        ".config/.smtk",
+        "trojanized Claude Code extension 2.1.313 via the Cursor Marketplace (2026-10-29)",
+    ),
+    (
+        "Library/LaunchAgents/com.apple.sysmond.plist",
+        "trojanized Claude Code extension 2.1.313 via the Cursor Marketplace (2026-10-29)",
+    ),
 ];
 /// Absolute paths (not under HOME) the same campaigns leave behind.
 const ABS_IOC_PATHS: &[(&str, &str)] = &[(
@@ -251,6 +269,12 @@ impl Scanner for PersistenceScanner {
                     out.push(ioc(&p, Path::new("/"), campaign, false));
                 }
             }
+        }
+
+        // The user's crontab, where the October 2026 extension backdoor persists on Linux.
+        {
+            let _s = check("crontab");
+            scan_crontab(&home, &mut out);
         }
 
         // Agent launch surface and leftovers under the agent's own directories.
@@ -534,6 +558,95 @@ fn scan_dangling_plugin_records(claude: &Path, out: &mut Vec<PersistenceArtifact
 
 fn show(p: &Path) -> String {
     sanitize_display(&p.to_string_lossy(), 512)
+}
+
+// ── User crontab ──────────────────────────────────────────────────────────────────────
+
+/// Where cron keeps a user's crontab: Debian/Ubuntu, RHEL/Fedora/Arch (cronie), macOS and
+/// the BSDs. Usually root-only (the Debian spool directory is 1730 root:crontab), so for
+/// an unprivileged scan this is a documented floor: nothing is read and nothing is
+/// reported. `crontab -l` is never spawned.
+const CRONTAB_DIRS: &[&str] = &[
+    "/var/spool/cron/crontabs",
+    "/var/spool/cron",
+    "/usr/lib/cron/tabs",
+    "/var/at/tabs",
+];
+
+/// `@reboot` entries of the home owner's crontab that start the October 2026 extension
+/// backdoor (a command naming `.smt`, the persistence script OpenSourceMalware lists for
+/// Linux) or an SSH reverse tunnel (`ssh` / `autossh` with `-R` and `-N`, the payload's
+/// `ssh -N -R '*:0:localhost:22'` shape). OSM gives no exact crontab line, so these are
+/// the command's published parts. Only labels are reported, never the line (a crontab
+/// may carry secrets in its environment lines).
+fn scan_crontab(home: &Path, out: &mut Vec<PersistenceArtifact>) {
+    let uid = crate::scanners::home_owner_uid(home);
+    let Some(user) = crate::scanners::authorized_keys::user_name(uid) else {
+        return;
+    };
+    if user.is_empty() || user.contains('/') {
+        return;
+    }
+    for dir in CRONTAB_DIRS {
+        let path = crate::scanners::system_path(dir).join(&user);
+        // An EACCES on the spool directory reads as "not there": the floor.
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let Some(text) = crate::scanners::read_bounded_nofollow(&path, None) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            if let Some((kind, detail)) = classify_reboot_line(line) {
+                out.push(PersistenceArtifact {
+                    kind: kind.into(),
+                    path: sanitize_display(&format!("{}:{}", path.display(), i + 1), 512),
+                    scope: sanitize_display(&home.to_string_lossy(), 512),
+                    detail: detail.into(),
+                    sensitive_target: kind == "worm-ioc",
+                    ..Default::default()
+                });
+            }
+        }
+        return;
+    }
+}
+
+/// A crontab line's verdict: `("worm-ioc", campaign)` for an `@reboot` command naming
+/// `.smt`, `("reboot-reverse-tunnel", ...)` for an `@reboot` ssh/autossh reverse tunnel.
+pub fn classify_reboot_line(line: &str) -> Option<(&'static str, &'static str)> {
+    let t = line.trim();
+    let cmd = t.strip_prefix("@reboot")?;
+    if !cmd.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    if cmd.contains("/.smt") || words.iter().any(|w| w.trim_matches(['"', '\'']).ends_with(".smt")) {
+        return Some((
+            "worm-ioc",
+            "trojanized Claude Code extension 2.1.313 via the Cursor Marketplace (2026-10-29): @reboot crontab entry",
+        ));
+    }
+    let ssh = words.iter().any(|w| {
+        let w = w.trim_matches(['"', '\'']);
+        let base = w.rsplit('/').next().unwrap_or(w);
+        base == "ssh" || base == "autossh"
+    });
+    let flag = |f: char| {
+        words.iter().any(|w| {
+            w.starts_with('-')
+                && !w.starts_with("--")
+                && w[1..].chars().all(|c| c.is_ascii_alphanumeric())
+                && w.contains(f)
+        })
+    };
+    if ssh && flag('R') && flag('N') {
+        return Some((
+            "reboot-reverse-tunnel",
+            "@reboot crontab entry starts an SSH reverse tunnel (ssh -N -R)",
+        ));
+    }
+    None
 }
 
 fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> PersistenceArtifact {
@@ -848,6 +961,7 @@ pub const CHECK_FAMILIES: &[&str] = &[
     "committed_symlinks",
     "project_iocs",
     "home_iocs",
+    "crontab",
     "url_handlers",
     "agent_bin",
     "dangling_plugins",

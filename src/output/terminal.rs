@@ -292,12 +292,19 @@ fn render_inner(report: &ScanReport) -> String {
         for (ide, exts) in &by_ide {
             out.push_str(&format!("  {} ({}):\n", ide.bold(), exts.len()));
             for ext in exts {
+                let platform = ext
+                    .target_platform
+                    .as_deref()
+                    .map_or(String::new(), |p| format!(" [{p}]"));
+                let obsolete = if ext.obsolete { " (obsolete, files on disk)" } else { "" };
                 out.push_str(&format!(
-                    "    {} {}.{} {}\n",
+                    "    {} {}.{} {}{}{}\n",
                     "·".dimmed(),
                     ext.publisher.dimmed(),
                     ext.name,
                     ext.version.dimmed(),
+                    platform.dimmed(),
+                    obsolete.dimmed(),
                 ));
             }
         }
@@ -1447,6 +1454,42 @@ fn surfaces_section(report: &ScanReport) -> String {
                 s.bin.format,
                 s.bin.mode
             ));
+        }
+        out.push('\n');
+    }
+    if !v.authorized_keys.is_empty() {
+        section_header(&mut out, "SSH Authorized Keys");
+        for f in &v.authorized_keys {
+            let state = if let Some(t) = &f.symlink {
+                format!("symlink to {t}, not read")
+            } else if f.unreadable {
+                "unreadable".to_string()
+            } else {
+                format!("{} key(s)", f.key_count)
+            };
+            let mode = f.mode.as_deref().map_or(String::new(), |m| format!(", mode {m}"));
+            out.push_str(&format!("  {} {} ({state}{mode})\n", "→".bold(), f.path.dimmed()));
+            for k in &f.keys {
+                let opts = if k.options.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", k.options.join(","))
+                };
+                let flag = if k.known_attacker_key.is_some() {
+                    " KNOWN ATTACKER KEY".red().to_string()
+                } else if k.backdoor_comment.is_some() {
+                    " backdoor comment".red().to_string()
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "    {} {} {} {}{opts}{flag}\n",
+                    "·".dimmed(),
+                    k.key_type,
+                    k.fingerprint.dimmed(),
+                    k.comment.as_deref().unwrap_or("(no comment)"),
+                ));
+            }
         }
         out.push('\n');
     }

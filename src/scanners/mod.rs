@@ -3,6 +3,7 @@ pub mod agents_more;
 pub mod ai_credentials;
 pub mod ai_frameworks;
 pub mod ai_tools;
+pub mod authorized_keys;
 pub mod browser_extensions;
 pub mod cloud_credentials;
 pub mod container_tools;

@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog (version `2026-10-25.3`) currently contains 307 entries
+that is automatically checked during every scan. The catalog (version `2026-10-30`) currently contains 320 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -38,8 +38,13 @@ has no `||` alternation, and the clean releases in between must not match. Malic
 releases stay exact-version rows even when they are consecutive (`agentic-awesome-skills`,
 20 rows; `opencode-skills-collection`, 21 rows; `agentwork-cli` 0.1.4 and 0.1.5; the Trivy
 extension 1.8.12 and 1.8.13; Cyberhaven 24.10.4): a row's kind is read from its shape, so a
-`version_range` row would be reported as a "Vulnerable ... package version" (and downgraded
-in a dormant npx cache) instead of "Known-bad".
+plain `version_range` row would be reported as a "Vulnerable ... package version" (and
+downgraded in a dormant npx cache) instead of "Known-bad". The one exception is a run of
+consecutive bad releases with no clean release in between and none after it, which may be
+one range row marked `"malware": true` (`@zaip-ai/cli` `>=6.4.0, <=7.4.0`, every release
+after the last clean 6.3.0): its match is "Known-bad", Critical, like an exact row. A range
+row in a user catalog that carries no `advisory_severity` and cites an OpenSSF `MAL-YYYY-N`
+id is read as malware the same way.
 
 ### Version-scheme resets
 
@@ -168,8 +173,14 @@ claude.ai connectors are inventory only), IDE extension, and browser extension i
 against the catalog, and so is every installed npm and PyPI package. Matches appear as
 exposure findings in all output formats.
 
-A row that names an exact version, or no version, is a malicious release: its match is
-Critical ("Known-bad"). A row with a `version_range` is a vulnerable version, and its
+A row that names an exact version, or no version, or a range row marked `"malware": true`,
+is a malicious release: its match is Critical ("Known-bad"). An IDE extension version that
+VS Code's root `.obsolete` file lists (superseded or uninstalled, directory not yet
+deleted) still matches, Critical, titled "(superseded, files still on disk)": the code ran
+when it was loaded. IDE extension versions come from the manifest's `version` (when
+well-formed) or the directory name with VS Code's target-platform suffix
+(`-darwin-arm64`, `-linux-x64`, ...) removed, so an exact-version row matches a
+platform-specific build. A row with a `version_range` is a vulnerable version, and its
 match in an active install is graded at the row's `advisory_severity` (Critical, High,
 Medium or Low, with the title saying so: "Vulnerable npm package version (advisory
 severity: high)"), or Critical, as before, for a row without one. When it is
@@ -332,6 +343,9 @@ technique. Each detection also names its source in a comment at the code.
 | Rules file (nested instruction files) | `rules` | code.claude.com/docs/en/memory.md, fetched 2026-10-24 (subdirectory `CLAUDE.md`/`CLAUDE.local.md` load "once Claude reads, writes, or edits another file in that subdirectory"; a subdirectory's `AGENTS.md` when it has no `CLAUDE.md`); google-gemini/gemini-cli docs/cli/gemini-md.md (JIT `GEMINI.md` "in that directory and its ancestors up to a trusted root", and workspace `GEMINI.md`) |
 | Permissions, Plugin marketplace, Secret exposure (Mistral Vibe) | `vibe`, `ai` | mistralai/mistral-vibe README and docs/acp-setup.md; docs.mistral.ai/vibe/code/cli/configuration-reference.md (`[[mcp_servers]]`, `tools.<name>.permission` "always"/"ask"/"never", `enable_telemetry`, `session_logging.save_dir`, `~/.vibe/.env`, `enable_auto_update` "has no effect" in current versions); installed 2.5.0 source for `auto_approve` (every tool call executes without asking), `enable_auto_update` (runs the upgrade command), `trusted_folders.toml` keys and `vibehistory`, all fetched 2026-10-24. `bypass_tool_permissions` is inventoried, not graded |
 | Persistence (settings-command scripts) | `statusline` | code.claude.com/docs/en/statusline.md, fetched 2026-10-24 ("runs any shell script you configure"; `/statusline` "generates a script file in `~/.claude/`"): the script it names under `~/.claude/` is identified like `~/.claude/bin` executables and graded High only when group/other-writable or not owned by the user |
+| Exposure (platform-specific extension builds, superseded versions) | `extensions` | VS Code source at microsoft/vscode 2780fc5: `ExtensionKey.toString()` names an install `${id}-${version}` plus `-${targetPlatform}` (src/vs/platform/extensionManagement/common/extensionManagementUtil.ts, lines 30-57), the closed `TargetPlatform` enum (src/vs/platform/extensions/common/extensions.ts, lines 394-413), and the single root `.obsolete` file of removed extension keys (`withRemovedExtensions`, src/vs/platform/extensionManagement/node/extensionManagementService.ts, lines 822-855). Found by the 2026-10-30 assessment of the trojanized Claude Code extension, whose per-platform builds Cursor lists by hash |
+| Persistence (known attacker SSH key, backdoor key comment, writable authorized_keys) | `authkeys` | Cursor, Claude Code extension security notice (cursor.com/blog/claude-code-extension-security-notice, 2026-10-29): fingerprint `SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk`, comment `svc-telemetry`, "Check for the svc-telemetry key in SSH authorized_keys"; OpenSourceMalware (opensourcemalware.com/blog/trojanized-claude-code-extension-plants-persistent-ssh-backdoor, 2026-10-30): the same key (Ed25519), appended to `~/.ssh/authorized_keys`, no `sshd_config` change. Fingerprint format: OpenSSH `ssh-keygen -l` (`SHA256:` + unpadded base64); file format and options: sshd(8) "AUTHORIZED_KEYS FILE FORMAT"; `AuthorizedKeysFile` tokens: sshd_config(5) |
+| Persistence (`~/.config/.smt`, `.smtk`, `com.apple.sysmond` LaunchAgent, `@reboot` crontab) | `persistence` | Cursor (the LaunchAgent) and OpenSourceMalware (the LaunchAgent, `~/.config/.smt` and `.smtk` on macOS and Linux, a Linux `@reboot` crontab entry whose exact line is not published, the `ssh -N -R '*:0:localhost:22'` tunnel), both above. The crontab spool is read only when readable (usually root-only: a floor) |
 | Network listener (shell bridges beyond loopback) | `listeners`, `envfiles` | Linux procfs, proc_net_tcp(5)/proc(5) man pages (LISTEN is state `0A`; addresses are `%08X` words in host byte order; `/proc/<pid>/fd` links read `socket:[<inode>]`; `task/<tid>/children` needs `CONFIG_PROC_CHILDREN`, so the parent pid in `stat` is the fallback). Web-terminal programs by name, from each project's README: ttyd (github.com/tsl0922/ttyd), gotty (github.com/yudai/gotty, github.com/sorenisanerd/gotty), wetty (github.com/butlerx/wetty), shellinabox (github.com/shellinabox/shellinabox, daemon `shellinaboxd`), webssh (github.com/huashengdun/webssh, `wssh`), sshwifty (github.com/nirui/sshwifty); terminal-bridge is the project-local PTY bridge (`tmux new -A -s <name>` behind token/passkey auth) this surface was written against. Floors: a bridge that runs under an interpreter (wetty under `node`, webssh under `python3`) is seen by name only through a child or a PTY master, since the command line is never read; a socket in another network namespace (a container) is not in this namespace's `/proc/net/tcp` |
 | Permissions, MCP auto-approval, Auto-run task, Hook, Secret exposure, Rules file, Transcript exposure (Cline, Roo Code, Continue, Aider, Goose, Zed, Junie, Amp, Warp) | `agents`, `ai` | Vendor docs fetched 2026-10-24/25. Cline: docs.cline.bot (`getting-started/config.md`, `mcp/configuring-mcp-servers`, `customization/cline-rules.md`, `features/auto-approve.md`: "Execute all commands: Run commands requiring approval (requires base toggle)", YOLO "executes whatever it decides without asking permission") and github.com/cline/cline (`AutoApprovalSettings.ts`, `core/storage/disk.ts` hook directories, `state-keys.ts` `hooksEnabled` default true). Roo Code: github.com/RooCodeInc/Roo-Code-Docs (`custom-instructions.md`, `custom-modes.mdx`, `mcp/using-mcp-in-roo.mdx` `alwaysAllow`, `auto-approving-actions.mdx` "Add * to allow all commands") and Roo-Code `globalFileNames.ts` (archived 2026-05). Continue: github.com/continuedev/continue `docs/reference.mdx`, `docs/customize/deep-dives/mcp.mdx`, `docs/cli/tool-permissions.mdx` (`~/.continue/permissions.yaml`), `core/util/paths.ts`. Aider: aider.chat/docs/config (`aider_conf.md`, `options.md`: `yes-always` "Always say yes to every confirmation", `auto-lint` default True) and Aider-AI/aider `aider/args.py`, `aider/onboarding.py` (`~/.aider/oauth-keys.env`). Goose: github.com/aaif-goose/goose (formerly block/goose) `documentation/docs/guides/config-files.md`, `managing-tools/goose-permissions.md` ("`Autonomous Mode` is applied by default"), `logs.md`, `using-goosehints.md`, `crates/goose/src/config/permission.rs`. Zed: zed-industries/zed `docs/src/ai/{mcp,tool-permissions,instructions}.md`, `docs/src/worktree-trust.md`, `crates/agent/src/db.rs`, `crates/paths/src/paths.rs`. Junie: junie.jetbrains.com/docs (`guidelines-and-memory.html`, `junie-cli-mcp-configuration.html`, `junie-cli.html` Brave Mode, `junie-cli-configuration.html`, `action-allowlist-junie-cli.html`). Amp: ampcode.com/docs (`cli/settings`, `customize/mcp`, `tools`: "Amp does not ask for approval before running tools", `customize/plugins`, `customize/agents-md`) and ampcode.com/cli-settings.schema.json. Warp: docs.warp.dev (`terminal/settings/file-locations.md`, `agents/capabilities/mcp.md`, `agents/cli/configuration.md`, `agents/capabilities/rules.md`). VS Code user directories: microsoft/vscode-docs `docs/configure/settings.md`. npm package names and bins: registry.npmjs.org (`cline`, `@continuedev/cli`, `@sourcegraph/amp`) |
 | Permissions, MCP auto-approval, Auto-run task, Secret exposure, Rules file, Transcript exposure, Agent skills (new surfaces of Cursor, Devin, Copilot CLI, Gemini CLI, Codex, Kiro, OpenCode; the shared `.agents/` directory) | `agents`, `skills`, `settings` | Vendor docs fetched 2026-10-30. Cursor: cursor.com/docs `reference/permissions.md` (`terminalAllowlist`, `mcpAllowlist`, "concatenates"), `reference/sandbox.md` ("`insecure_none` disables the sandbox entirely", `networkPolicy.default`), `hooks.md` (team hooks in `~/.cursor/managed/team_<team ID>/hooks/`), `reference/third-party-hooks.md` (Claude Code hooks "on by default"), `skills.md`, `subagents.md`, `rules.md`. Devin: docs.devin.ai `cli/extensibility/mcp/configuration.md`, `cli/reference/configuration/config-file.md` (`permission_mode` "dangerous"), `cli/reference/permissions.md` (Bypass), `cli/extensibility/hooks/overview.md` (`.claude/settings*.json` hooks), `cli/extensibility/rules.md`, `cli/extensibility/skills/overview.md`, `desktop/devin-desktop-faq.md`, `desktop/devin-local/customizations.md`, and the archived docs.windsurf.com Cascade hooks page (web.archive.org/web/20260513194224, `~/.windsurf/transcripts`). Copilot CLI: docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference (`permissions-config.json`, `providers.json` "stored as plain text", `session-state`, `.claude/settings.json` hooks) and /cli-command-reference (`defaultPermissionMode` "allow-all", LSP `lspServers`, skills and agents directories). Gemini CLI: github.com/google-gemini/gemini-cli `docs/reference/policy-engine.md` (`toolName = "*"`, `decision`, `modes`, "Workspace tier ... non-functional"), `docs/core/subagents.md`, `docs/core/remote-agents.md` (`!command` auth), `docs/cli/skills.md` (`.agents/skills` alias). Codex: learn.chatgpt.com/docs (formerly developers.openai.com/codex) `config-file/config-reference.md`, `agent-configuration/rules.md` ("`decision` (defaults to `allow`)"), `agent-configuration/subagents.md`, `enterprise/managed-configuration.md`, `build-skills.md`, `custom-prompts.md` (deprecated). Kiro: kiro.dev/docs `permissions.md` (workspace rules under `~/.kiro/workspace-roots/`, `capability: all`), `sandbox.md`, `mcp/configuration.md` (`autoApprove` `"*"`), `powers/create.md`, `custom-agents/configuration-reference.md`, `reference/settings.md`, `configuration.md`. OpenCode: github.com/anomalyco/opencode `packages/web/src/content/docs/{config,permissions,agents,custom-tools,skills,rules}.mdx` ("Most permissions default to `allow`", `"permission": "allow"`, managed `/etc/opencode/`). Amp: ampcode.com/docs/customize/skills (`.agents/skills`, skill `mcp.json`). Goose: github.com/aaif-goose/goose `documentation/docs/guides/context-engineering/using-skills.md` (`.agents/skills`, `~/.agents/plugins`) |
@@ -373,6 +387,8 @@ or, for a vulnerable range, with the optional severity:
   (`GHSA-xxxx-xxxx-xxxx`, never a short `GHSA-xxxx`), so the finding's evidence lists them
 - `advisory_severity` (optional, vulnerable-range rows only): `critical`, `high`, `medium`
   or `low`, the highest the cited advisories state
+- `"malware": true` (optional, range rows only, never with `advisory_severity`): the range
+  is a run of consecutive malicious releases, reported as "Known-bad"
 - A date-versioned package gets a closed range (`>=first, <=last`), and one row per version
   scheme if it ever changes scheme (see "Version-scheme resets")
 - Bump the catalog version in the same change: `builtin_catalog_version!()` in
@@ -429,11 +445,12 @@ or, for a vulnerable range, with the optional severity:
    as `CVE UNPUBLISHED`: assigned, record not yet public); MAL and PYSEC ids in OSV.
    Vendor ids with no public resolver (JFrog `XRAY-`, codelake `CLR-`, Mistral `MAI-`)
    are listed `NOT CHECKED` unless the row cites a URL, which must answer 200. It exits 1
-   when an id is `UNRESOLVED` or `WITHDRAWN`. On the 2026-10-25.3 catalog (265 distinct ids in 307 rows) every
-   GHSA, MAL and PYSEC id resolves (32 GHSA ids only as repository advisories); six CVEs
+   when an id is `UNRESOLVED` or `WITHDRAWN`. On the 2026-10-30 catalog (282 distinct ids in 320 rows) every
+   GHSA, MAL and PYSEC id resolves; seven CVEs
    are `CVE UNPUBLISHED` (CVE-2026-111768 to -111771 in
    `modelcontextprotocol/typescript-sdk`, CVE-2026-115563 in
-   `modelcontextprotocol/python-sdk`, CVE-2026-88066 in `anthropics/claude-code`); nine
+   `modelcontextprotocol/python-sdk`, CVE-2026-88066 and CVE-2026-88968 in
+   `anthropics/claude-code`); nine
    vendor ids are `NOT CHECKED`; and GHSA-7x36-8jrh-v4pw is `NOTED` (the `hermes-agent`
    row names it as the wrong id it replaced).
 
@@ -510,6 +527,39 @@ To contribute additional entries, please open a PR with:
   advisory id is corrected to GHSA-cc88-9pxf-j2wv, GitHub's record for CVE-2026-71963
   (GHSA-7x36-8jrh-v4pw resolves in neither GitHub nor OSV). The `litellm` rows are
   exact-version malware rows and carry no severity by design.
+
+- **2026-10-30** (307 to 320 rows; 13 added, 2 changed). Window 2026-10-25 to 2026-10-30.
+  - The trojanized Claude Code extension: `vscode` `anthropic.claude-code` `2.1.313`, an
+    exact row (Anthropic never published a 2.1.313: npm, Open VSX and the GitHub releases
+    go from 2.1.312 to 2.1.314). Served only by the Cursor Marketplace on 2026-10-29; it
+    plants an SSH key and a reverse tunnel. Sources: Cursor, Claude Code extension security
+    notice (https://cursor.com/blog/claude-code-extension-security-notice, 2026-10-29), and
+    OpenSourceMalware, the discoverer
+    (https://opensourcemalware.com/blog/trojanized-claude-code-extension-plants-persistent-ssh-backdoor,
+    2026-10-30). The same change added the detections that are not rows: platform-suffixed
+    extension directories, VS Code's root `.obsolete`, authorized_keys fingerprints, and the
+    backdoor's persistence paths and crontab entry (see "Detection techniques" above).
+  - Malicious, from GitHub malware advisories: `@testsecuiitytestme/cache-helper`
+    (GHSA-4g45-28rv-vq9q, MAL-2026-18358; never legitimate, unbounded), `@zaip-ai/cli`
+    `>=6.4.0, <=7.4.0` (GHSA-ffq4-h5jm-8pqr; the first `"malware": true` range row: all
+    seven releases after 6.3.0), `@atlisp/mcp` 1.12.14 (GHSA-65cr-mcfq-59hh), `agentenact`
+    0.2.0 (GHSA-7p7m-8jmq-qp93), `ctf-agent` 0.1.0 (GHSA-2j3v-rjgw-5wgg), and the PyPI
+    `claudeopuseni`, `claudeopusfile` and `claudeopusenifile` infostealers
+    (GHSA-6m96-8rw5-4rhw, GHSA-jgm6-7jxr-97gx, GHSA-8whx-wfhh-6vh5; unbounded). Exact
+    versions are the advisories', checked against the npm registry's remaining releases.
+  - Vulnerable ranges, each with `advisory_severity`: Claude Code `<2.1.251`
+    (CVE-2026-88968 / GHSA-5xjx-9qx6-jcrv, high, a macOS Edit-tool TOCTOU; repository
+    advisory in anthropics/claude-code), `chrome-devtools-mcp` `>=1.1.0, <1.5.0`
+    (GHSA-5hw5-4q87-m6x9 and GHSA-xfxg-8r4q-wj4v, medium; repository advisories in
+    ChromeDevTools/chrome-devtools-mcp), `mcp-sanitizer` `<1.4.0` (GHSA-4mfg-r38w-w8fg, high),
+    `@sylphx/pdf-reader-mcp` `>=2.2.0, <3.0.1` (CVE-2026-62264 / GHSA-q344-5v34-gm84, high).
+  - Changed: the `@modelcontextprotocol/sdk` 1.x and `@modelcontextprotocol/server` 2.x
+    rows now name GHSA-46jr-4wx8-v453, the advisory for CVE-2026-111768 that both already
+    cited. GHSA-jm63-cq47-j5jp was already on the server row.
+  - Not catalogued: the Claude Desktop (Windows) CVE-2026-88066 version (Windows only; the
+    behaviour is covered by the planted-binary check), the ATXP Gemini CLI extension
+    (unreviewed; not an ecosystem rmguard reads) and the unreviewed MCP-server command
+    injections published 2026-10-27 (not triaged in this window).
 
 ## License
 

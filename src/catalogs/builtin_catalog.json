@@ -126,7 +126,7 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/sdk",
     "version_range": "<1.32.0",
-    "advisory": "MCP TypeScript SDK 1.x: CVE-2025-66414 (DNS rebinding, fixed 1.24.0), CVE-2026-25536 (cross-client data leak, fixed 1.26.0), CVE-2026-104850 / GHSA-6qxp-vccf-f47h (CVSS 7.5: OAuth client sent stored refresh tokens and client secrets to whichever authorization server the MCP server named, fixed 1.31.0), GHSA-f897-62hf-6gxq (no request-body or batch size limit, fixed 1.30.1), and four October 2026 advisories fixed in 1.32.0: CVE-2026-111767 (experimental tasks not bound to their session), CVE-2026-111768 (one in-limit request exhausts server memory), CVE-2026-111769 (cross-origin redirects re-send custom headers and bodies), CVE-2026-111771 (bearer tokens issued for another service accepted). Fixed: 1.32.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters Aviral2642, AlexMelanFromRingo, Gal3m, JosephDoUrden, Igfray, OriginalKazdov, lwebmedia; cipher-creator; root-Brainoverflow; nickelsec; gdegrange), vulnerablemcp.info. Verified against primary sources 2026-10-22.",
+    "advisory": "MCP TypeScript SDK 1.x: CVE-2025-66414 (DNS rebinding, fixed 1.24.0), CVE-2026-25536 (cross-client data leak, fixed 1.26.0), CVE-2026-104850 / GHSA-6qxp-vccf-f47h (CVSS 7.5: OAuth client sent stored refresh tokens and client secrets to whichever authorization server the MCP server named, fixed 1.31.0), GHSA-f897-62hf-6gxq (no request-body or batch size limit, fixed 1.30.1), and four October 2026 advisories fixed in 1.32.0: CVE-2026-111767 (experimental tasks not bound to their session), CVE-2026-111768 / GHSA-46jr-4wx8-v453 (one in-limit request exhausts server memory), CVE-2026-111769 (cross-origin redirects re-send custom headers and bodies), CVE-2026-111771 (bearer tokens issued for another service accepted). Fixed: 1.32.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters Aviral2642, AlexMelanFromRingo, Gal3m, JosephDoUrden, Igfray, OriginalKazdov, lwebmedia; cipher-creator; root-Brainoverflow; nickelsec; gdegrange), vulnerablemcp.info. Verified against primary sources 2026-10-22.",
     "advisory_severity": "high"
   },
   {
@@ -882,7 +882,7 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server",
     "version_range": ">=2.0.0, <2.3.0",
-    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111770 / GHSA-jm63-cq47-j5jp (shared transport/server instances delivered one HTTP client's messages to another), CVE-2026-111768 (memory exhaustion), CVE-2026-111771 (bearer tokens for another service accepted), all fixed 2.3.0; GHSA-f897-62hf-6gxq (no body-size limit) fixed 2.1.0. Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters DavidCarliez, legitu1337 and others). Verified against primary sources 2026-10-22.",
+    "advisory": "MCP TypeScript SDK v2 split package: CVE-2026-111770 / GHSA-jm63-cq47-j5jp (shared transport/server instances delivered one HTTP client's messages to another), CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion), CVE-2026-111771 (bearer tokens for another service accepted), all fixed 2.3.0; GHSA-f897-62hf-6gxq (no body-size limit) fixed 2.1.0. Fixed: 2.3.0. Source: modelcontextprotocol/typescript-sdk advisories (reporters DavidCarliez, legitu1337 and others). Verified against primary sources 2026-10-22.",
     "advisory_severity": "high"
   },
   {
@@ -1722,5 +1722,84 @@
     "name": "opencode-skills-collection",
     "version": "4.1.20",
     "advisory": "OpenCode plugin that downloads agent skills: release 4.1.20 is one of 21 releases (4.0.56 to 4.1.20) flagged by GitHub malware advisory GHSA-9855-prwc-mfp2 (OSV MAL-2026-18193); npm removed the versions (19 of the 21; 4.1.7 and 4.1.16 were still downloadable on 2026-10-25); cause not published. Clean releases 4.1.2, 4.1.5, 4.1.15 and 4.1.22 are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "vscode",
+    "name": "anthropic.claude-code",
+    "version": "2.1.313",
+    "advisory": "Trojanized Claude Code extension served only by the Cursor Marketplace on 2026-10-29 (about 02:27 to 13:35 PT, up to 5,000 installs; not on the VS Code Marketplace, Open VSX or npm). Anthropic never published a 2.1.313 (npm, Open VSX and the GitHub releases go from 2.1.312 to 2.1.314), so the version identifies the malicious build. A loader prepended to extension.js runs when the editor loads the extension: it appends an ssh-ed25519 key commented svc-telemetry (SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk) to ~/.ssh/authorized_keys, persists through ~/.config/.smt and .smtk plus the LaunchAgent ~/Library/LaunchAgents/com.apple.sysmond.plist (macOS), an @reboot crontab entry (Linux) or the SysMon scheduled task (Windows), and opens a reverse SSH tunnel to tunnel@134.209.82[.]225 (beacon on port 8099). A leftover 2.1.313 directory means the payload ran. Treat the host as compromised: isolate it, remove the key, the persistence and the tunnel, and rotate credentials and sessions from a trusted machine. Clean release: 2.1.314. Sources: Cursor, Claude Code extension security notice (cursor.com/blog/claude-code-extension-security-notice, 2026-10-29); OpenSourceMalware, Trojanized Claude Code extension plants persistent SSH backdoor (opensourcemalware.com/blog/trojanized-claude-code-extension-plants-persistent-ssh-backdoor, 2026-10-30)."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@testsecuiitytestme/cache-helper",
+    "advisory": "Malicious package (every release, 1.0.1 to 1.0.7): a Shai-Hulud-style loader whose strings show writes to .claude/settings.json hooks, .cursor rules, .mcp.json, CLAUDE.md and copilot-instructions.md, so it spreads through Claude Code and Cursor configuration. Removed from npm. GHSA-4g45-28rv-vq9q (critical, 2026-10-28), OSV MAL-2026-18358. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@zaip-ai/cli",
+    "version_range": ">=6.4.0, <=7.4.0",
+    "advisory": "Hijacked releases of the zaip-ai CLI: every release from 6.4.0 to 7.4.0 (6.4.0, 6.5.0, 7.0.0, 7.1.0, 7.2.0, 7.3.0, 7.4.0; consecutive, so one malware range row) is malware per GitHub malware advisory GHSA-ffq4-h5jm-8pqr (critical, 2026-10-28); npm removed them and 6.3.0 is the latest clean release. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages.",
+    "malware": true
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@atlisp/mcp",
+    "version": "1.12.14",
+    "advisory": "MCP server for the @lisp AutoCAD toolkit: release 1.12.14 is malware per GitHub malware advisory GHSA-65cr-mcfq-59hh (critical, 2026-10-28); npm removed it. Releases before and after it (1.12.13, 1.12.15 and later) are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agentenact",
+    "version": "0.2.0",
+    "advisory": "Agent package: release 0.2.0 is malware per GitHub malware advisory GHSA-7p7m-8jmq-qp93 (critical, 2026-10-27); npm removed it. Earlier releases (0.0.1 to 0.1.1) are not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "ctf-agent",
+    "version": "0.1.0",
+    "advisory": "Agent package: release 0.1.0 is malware per GitHub malware advisory GHSA-2j3v-rjgw-5wgg (critical, 2026-10-26); npm removed it. The 0.0.0-stage placeholder is not flagged. Source: GitHub Advisory Database / npm Security, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "claudeopuseni",
+    "advisory": "Malicious package impersonating Claude Opus (every release, 0.1.0 and 0.1.1): an infostealer hidden in a bundled image. GHSA-6m96-8rw5-4rhw (critical, 2026-10-26); removed from PyPI. Source: GitHub Advisory Database, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "claudeopusfile",
+    "advisory": "Malicious package impersonating Claude Opus (every release, 0.1.1 and 0.1.2): an infostealer hidden in a bundled image. GHSA-jgm6-7jxr-97gx (critical, 2026-10-26); removed from PyPI. Source: GitHub Advisory Database, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "claudeopusenifile",
+    "advisory": "Malicious package impersonating Claude Opus (release 0.1.3, its only one): an infostealer hidden in a bundled image. GHSA-8whx-wfhh-6vh5 (critical, 2026-10-26); removed from PyPI. Source: GitHub Advisory Database, OpenSSF malicious-packages."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "claude-code",
+    "version_range": "<2.1.251",
+    "advisory": "CVE-2026-88968 (GHSA-5xjx-9qx6-jcrv, high): on macOS the Edit tool validated its target with point-in-time path and symlink resolution, so code running in Claude Code's Bash sandbox (a malicious repository or dependency script) could swap an in-workspace parent directory for a symlink after the check and have the unsandboxed Edit overwrite a user-writable file outside the workspace (TOCTOU). Fixed: 2.1.251. Reporter: Sunder Singh. Source: anthropics/claude-code security advisory, published 2026-10-26.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "chrome-devtools-mcp",
+    "version_range": ">=1.1.0, <1.5.0",
+    "advisory": "Two Chrome DevTools MCP advisories fixed by 1.5.0: GHSA-5hw5-4q87-m6x9 (medium: MCP roots bypass, an extension-rewritten symlink output path let a write land outside the client's roots; affected 1.1.0 to 1.4.0) and GHSA-xfxg-8r4q-wj4v (medium, CVSS 4.7: service-worker-initiated fetches bypassed the global URL allowlist and blocklist; affected 1.2.0 to 1.4.0). Fixed: 1.5.0. Source: ChromeDevTools/chrome-devtools-mcp security advisories, published 2026-10-22.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "mcp-sanitizer",
+    "version_range": "<1.4.0",
+    "advisory": "GHSA-4mfg-r38w-w8fg (high, CVSS 8.2): the URL sanitizer let localhost and IPv6 loopback through when written with an explicit port or in brackets, an SSRF bypass for every MCP server relying on it. Fixed: 1.4.0. Source: GitHub Advisory Database (reviewed, 2026-10-28), starman69/mcp-sanitizer.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@sylphx/pdf-reader-mcp",
+    "version_range": ">=2.2.0, <3.0.1",
+    "advisory": "CVE-2026-62264 (GHSA-q344-5v34-gm84, high, CVSS 7.5): the HTTP transport accepted unauthenticated requests even with MCP_API_KEY configured. Affected: 2.2.0 to 3.0.0. Fixed: 3.0.1. Source: GitHub Advisory Database (reviewed, 2026-10-29).",
+    "advisory_severity": "high"
   }
 ]

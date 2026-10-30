@@ -52,6 +52,7 @@ const KEYS: &[&str] = &[
     "version_range",
     "advisory",
     "advisory_severity",
+    "malware",
 ];
 const SEVERITIES: &[&str] = &["critical", "high", "medium", "low"];
 
@@ -77,6 +78,22 @@ fn every_row_has_the_documented_shape() {
             "row {i} ({}) has both version and version_range; version wins and the range is dead",
             r["name"]
         );
+        // `malware: true` marks a range row of consecutive malicious releases; on an
+        // exact-version or unbounded row it would say nothing, and a malware row has no
+        // advisory severity (it is Critical by kind).
+        if let Some(m) = obj.get("malware") {
+            assert_eq!(
+                m,
+                &Value::Bool(true),
+                "row {i} ({}): malware is only ever true",
+                r["name"]
+            );
+            assert!(
+                obj.contains_key("version_range") && !obj.contains_key("advisory_severity"),
+                "row {i} ({}): malware belongs on a range row without advisory_severity",
+                r["name"]
+            );
+        }
         if let Some(rng) = obj.get("version_range") {
             let rng = rng.as_str().expect("version_range is a string");
             assert!(

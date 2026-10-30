@@ -1115,6 +1115,7 @@ fn version_range_matches_vulnerable_and_skips_patched() {
         version_range: Some("<1.4.3".into()),
         advisory: Some("a".into()),
         advisory_severity: None,
+        malware: false,
     };
     assert!(version_matches(&entry, Some("1.4.2")), "vulnerable version matches");
     assert!(
@@ -1143,6 +1144,7 @@ fn version_range_pads_partial_versions() {
         version_range: Some(">=1.0, <2.0".into()),
         advisory: None,
         advisory_severity: None,
+        malware: false,
     };
     assert!(version_matches(&entry, Some("1.5")), "'1.5' pads to 1.5.0 and matches");
     assert!(version_matches(&entry, Some("v1.0")), "leading v is stripped");
@@ -1160,6 +1162,7 @@ fn exact_version_still_takes_precedence() {
         version_range: None,
         advisory: None,
         advisory_severity: None,
+        malware: false,
     };
     assert!(version_matches(&entry, Some("1.82.7")));
     assert!(
@@ -3271,7 +3274,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        307,
+        320,
         "catalog size changed — update this pin and the count quoted in \
          docs/THREAT-CATALOG.md (README.md and docs/COVERAGE.md state no count)"
     );
@@ -4491,6 +4494,7 @@ fn version_range_compares_prerelease_core() {
         version_range: Some("<0.1.2".into()),
         advisory: None,
         advisory_severity: None,
+        malware: false,
     };
     assert!(
         version_matches(&entry, Some("0.1.1-rc.2")),
@@ -4515,6 +4519,7 @@ fn version_range_compares_prerelease_core() {
         version_range: Some(">=4.0.0, <4.1.2".into()),
         advisory: None,
         advisory_severity: None,
+        malware: false,
     };
     assert!(
         version_matches(&py, Some("4.0.0a1")),
@@ -4530,6 +4535,7 @@ fn version_range_compares_prerelease_core() {
         version_range: None,
         advisory: None,
         advisory_severity: None,
+        malware: false,
     };
     assert!(version_matches(&exact, Some("1.0.0-beta.1")));
     assert!(!version_matches(&exact, Some("1.0.0")));
@@ -5990,7 +5996,7 @@ fn json_report_lists_every_scanner_in_diagnostics() {
     let skip = "ssh,cloud,browser,extensions,containers,notebooks,ide,frameworks,ai,node,\
                 transcripts,marketplaces,gitconfig,pypkgs,npmpkgs,packages,rules,skills,persistence,\
                 settings,aicreds,envfiles,vscodetasks,shell,jbplugins,lsp,liveness,playwright,vibe,statusline,listeners,\
-                agents";
+                agents,authkeys";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rmguard"))
         .args(["--format", "json", "--skip", skip])
         .env("HOME", &home)
@@ -6016,10 +6022,10 @@ fn json_report_lists_every_scanner_in_diagnostics() {
         .filter_map(|d| d["scanner"].as_str())
         .collect();
     assert_eq!(ran, vec!["mcp"], "exactly the one un-skipped scanner ran: {ran:?}");
-    // 32 --skip labels plus the two opt-in phases that were not requested.
+    // 33 --skip labels plus the two opt-in phases that were not requested.
     assert_eq!(
         skipped.len(),
-        34,
+        35,
         "every --skip label and opt-in phase is recorded: {skipped:?}"
     );
     assert!(skipped.contains(&"ssh") && skipped.contains(&"npmpkgs"));

@@ -35,15 +35,15 @@ fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeE
     let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
         return results;
     };
+    // VS Code keeps ONE `.obsolete` file at the extensions root (not one per extension):
+    // a JSON object keyed by `ExtensionKey.toString()` of each superseded or uninstalled
+    // version whose directory has not been deleted yet. Its rows stay in the inventory,
+    // marked, because a leftover directory still proves the code was installed and ran.
+    let obsolete = read_obsolete_keys(ext_dir);
 
     for entry in entries.flatten() {
         let path = entry.path();
         if !crate::scanners::probe_dir(&path) {
-            continue;
-        }
-
-        // Skip obsolete extensions
-        if crate::scanners::probe_exists(&path.join(".obsolete")) {
             continue;
         }
 
@@ -52,14 +52,19 @@ fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeE
             None => continue,
         };
 
-        // Format: publisher.name-version
-        if let Some((id, version)) = parse_extension_dir_name(dir_name) {
+        // Format: publisher.name-version[-targetPlatform]
+        if let Some((id, dir_version, target_platform)) = parse_extension_dir_name_platform(dir_name) {
             let (publisher, name) = match id.split_once('.') {
                 Some((p, n)) => (p.to_string(), n.to_string()),
                 None => ("unknown".to_string(), id.clone()),
             };
 
             let manifest = read_manifest_claims(&path);
+            // The manifest's version when it is well-formed (VS Code names the directory
+            // from it: `ExtensionKey.create` takes `manifest.version`), else the one in
+            // the directory name with its platform suffix removed.
+            let version = manifest.version.clone().unwrap_or(dir_version);
+            let is_obsolete = obsolete.contains(&dir_name.to_ascii_lowercase());
             let native_addons = if manifest.declarative_claim {
                 find_native_addons(&path)
             } else {
@@ -80,6 +85,8 @@ fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeE
                 declarative_claim: manifest.declarative_claim,
                 native_addons,
                 path: crate::scanners::sanitize_display(&path.display().to_string(), 512),
+                target_platform: target_platform.map(str::to_string),
+                obsolete: is_obsolete,
             });
         }
     }
@@ -113,6 +120,9 @@ pub struct ManifestClaims {
     pub contributes_theme: bool,
     pub contributes_commands: bool,
     pub declarative_claim: bool,
+    /// `version`, when it is a well-formed `X.Y.Z` version (an optional `-pre`/`+build`
+    /// tail), at most 64 bytes.
+    pub version: Option<String>,
 }
 
 /// The extension's package.json, read only when it is a regular file (not a symlink) whose
@@ -187,13 +197,90 @@ pub fn manifest_claims(pkg: &serde_json::Value) -> ManifestClaims {
     } else {
         contributes.is_some_and(|c| !c.is_empty() && c.keys().all(|k| DECLARATIVE_CONTRIBUTES.contains(&k.as_str())))
     };
+    let version = pkg
+        .get("version")
+        .and_then(|v| v.as_str())
+        .filter(|v| is_well_formed_version(v))
+        .map(str::to_string);
     ManifestClaims {
         categories,
         code_entry_points,
         contributes_theme,
         contributes_commands,
         declarative_claim,
+        version,
     }
+}
+
+/// `X.Y.Z` (digits), optionally followed by a `-` or `+` tail of ASCII letters, digits,
+/// `.` and `-`; at most 64 bytes. Anything else in a manifest's `version` is ignored and
+/// the directory name's version is used.
+pub fn is_well_formed_version(v: &str) -> bool {
+    if v.is_empty() || v.len() > 64 {
+        return false;
+    }
+    let core_end = v.find(['-', '+']).unwrap_or(v.len());
+    let (core, tail) = v.split_at(core_end);
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && tail
+            .chars()
+            .skip(1)
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && tail.len() != 1
+}
+
+/// VS Code's target platforms, the closed `TargetPlatform` enum in
+/// `src/vs/platform/extensions/common/extensions.ts`
+/// (<https://github.com/microsoft/vscode/blob/2780fc5eac21547e7342a172d7fcd557fc8ef05a/src/vs/platform/extensions/common/extensions.ts#L394-L413>).
+/// `unknown` and `undefined` are never written into a directory name.
+pub const VSCODE_TARGET_PLATFORMS: &[&str] = &[
+    "win32-x64",
+    "win32-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-armhf",
+    "alpine-x64",
+    "alpine-arm64",
+    "darwin-x64",
+    "darwin-arm64",
+    "web",
+    "universal",
+];
+
+/// Most `.obsolete` keys read from one extensions root.
+const MAX_OBSOLETE_KEYS: usize = 10_000;
+
+/// The extension directory names (lowercased) VS Code's root `.obsolete` file marks as
+/// removed: keys whose value is `true`. VS Code reads and rewrites this one file at
+/// `<extensions root>/.obsolete` (`withRemovedExtensions` in
+/// `src/vs/platform/extensionManagement/node/extensionManagementService.ts`,
+/// <https://github.com/microsoft/vscode/blob/2780fc5eac21547e7342a172d7fcd557fc8ef05a/src/vs/platform/extensionManagement/node/extensionManagementService.ts#L822-L855>),
+/// keyed by `ExtensionKey.toString()`, which is the directory name. Read bounded and
+/// without following a symlink; a missing or malformed file marks nothing.
+pub fn read_obsolete_keys(ext_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    let path = ext_dir.join(".obsolete");
+    if !crate::scanners::probe_exists(&path) {
+        return Default::default();
+    }
+    crate::scanners::read_bounded_nofollow(&path, None)
+        .map(|t| parse_obsolete(&t))
+        .unwrap_or_default()
+}
+
+/// The keys of a `.obsolete` JSON object whose value is `true`, lowercased.
+pub fn parse_obsolete(text: &str) -> std::collections::HashSet<String> {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Default::default();
+    };
+    map.into_iter()
+        .filter(|(_, v)| v.as_bool() == Some(true))
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .take(MAX_OBSOLETE_KEYS)
+        .collect()
 }
 
 /// Native `.node` addons (by magic bytes, not just extension) inside an extension
@@ -233,8 +320,36 @@ pub fn find_native_addons(dir: &std::path::Path) -> Vec<String> {
     found
 }
 
-/// Parse "publisher.name-1.2.3" into ("publisher.name", "1.2.3").
+/// Parse "publisher.name-1.2.3" into ("publisher.name", "1.2.3"). A platform-specific
+/// install, "publisher.name-1.2.3-darwin-arm64", parses to the same pair: the version
+/// never carries the target platform (see [`parse_extension_dir_name_platform`]).
 pub fn parse_extension_dir_name(name: &str) -> Option<(String, String)> {
+    parse_extension_dir_name_platform(name).map(|(id, version, _)| (id, version))
+}
+
+/// Parse a VS Code-family extension directory name into (id, version, target platform).
+///
+/// VS Code names an installed extension's directory `ExtensionKey.toString()`:
+/// `${id}-${version}` plus `-${targetPlatform}` for a platform-specific build
+/// (`src/vs/platform/extensionManagement/common/extensionManagementUtil.ts`,
+/// <https://github.com/microsoft/vscode/blob/2780fc5eac21547e7342a172d7fcd557fc8ef05a/src/vs/platform/extensionManagement/common/extensionManagementUtil.ts#L30-L57>).
+/// The suffix is split off only when it is one of the closed [`VSCODE_TARGET_PLATFORMS`],
+/// so a pre-release tail (`1.2.3-beta`) stays part of the version. Before this, the
+/// version of `anthropic.claude-code-2.1.313-linux-x64` read `2.1.313-linux-x64`, and no
+/// exact-version catalog row could match a platform-specific build.
+pub fn parse_extension_dir_name_platform(name: &str) -> Option<(String, String, Option<&'static str>)> {
+    let (id, version) = split_id_version(name)?;
+    for p in VSCODE_TARGET_PLATFORMS {
+        if let Some(v) = version.strip_suffix(p).and_then(|v| v.strip_suffix('-'))
+            && !v.is_empty()
+        {
+            return Some((id, v.to_string(), Some(p)));
+        }
+    }
+    Some((id, version, None))
+}
+
+fn split_id_version(name: &str) -> Option<(String, String)> {
     // Find the last hyphen followed by a digit (start of version)
     let mut split_pos = None;
     for (i, _) in name.match_indices('-') {

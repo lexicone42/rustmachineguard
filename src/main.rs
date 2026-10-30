@@ -173,6 +173,7 @@ const VALID_SKIP: &[&str] = &[
     "node",
     "shell",
     "ssh",
+    "authkeys",
     "cloud",
     "containers",
     "notebooks",
@@ -446,6 +447,14 @@ fn home_jobs<'a>(plat: &'a dyn PlatformInfo, skip: &[&str]) -> Vec<Job<'a>> {
             Some(plat.home_dir()),
             move || scanners::ssh_keys::SshKeysScanner.scan(plat),
             |r, v| r.ssh_keys.extend(v),
+        ));
+    }
+    if !skip.contains(&"authkeys") {
+        list.push(job(
+            "authkeys",
+            Some(plat.home_dir()),
+            move || scanners::authorized_keys::scan(plat),
+            |r, v| r.surfaces.authorized_keys.extend(v),
         ));
     }
     if !skip.contains(&"cloud") {
@@ -1038,9 +1047,15 @@ fn main() {
         }
         for ext in &report.ide_extensions {
             let id = format!("{}.{}", ext.publisher, ext.name);
-            report
-                .exposure_findings
-                .extend(catalog.check_extension("vscode", &id, &ext.version, &ext.ide_type));
+            report.exposure_findings.extend(
+                catalog
+                    .check_extension("vscode", &id, &ext.version, &ext.ide_type)
+                    .into_iter()
+                    .map(|mut f| {
+                        f.obsolete = ext.obsolete;
+                        f
+                    }),
+            );
         }
         for ext in &report.browser_extensions {
             report.exposure_findings.extend(

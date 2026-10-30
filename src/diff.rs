@@ -185,6 +185,14 @@ pub fn diff_reports(baseline: &Value, current: &Value) -> ScanDiff {
             "listener",
             &["serves_shell"],
         ),
+        // A login key appearing in authorized_keys is drift like a new hook.
+        diff_array_section(
+            "SSH Authorized Keys",
+            collect_authorized_keys(baseline),
+            collect_authorized_keys(current),
+            "key",
+            &["options", "comment"],
+        ),
         diff_array_section(
             "Agent Output Dirs",
             collect_output_dirs(baseline),
@@ -339,6 +347,24 @@ fn collect_listeners(report: &Value) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// authorized_keys keys, one row per (file, fingerprint): a key added or removed, or its
+/// options or comment changed. The key blob is not in the report.
+fn collect_authorized_keys(report: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in get_array(report, "authorized_keys") {
+        let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+        for k in f.get("keys").and_then(|v| v.as_array()).into_iter().flatten() {
+            let fp = k.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("?");
+            out.push(serde_json::json!({
+                "key": format!("{path} {fp}"),
+                "options": k.get("options").cloned().unwrap_or(Value::Null),
+                "comment": k.get("comment").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+    out
 }
 
 /// Agent output directories (`.playwright-mcp/`) with their git state as one word, the

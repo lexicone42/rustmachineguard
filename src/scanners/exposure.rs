@@ -181,12 +181,36 @@ fn eq_case_insensitive(a: &str, b: &str) -> bool {
 }
 
 /// The row's `version_range` when it is what matched: a vulnerable-version row, not a
-/// malware row (an exact `version`, or no constraint at all, names malicious releases).
+/// malware row (an exact `version`, or no constraint at all, names malicious releases;
+/// so does a range row marked `malware`, see [`is_malware_row`]).
 fn matched_range(entry: &ExposureEntry) -> Option<String> {
-    if entry.version.is_some() {
+    if entry.version.is_some() || is_malware_row(entry) {
         return None;
     }
     entry.version_range.clone()
+}
+
+/// A row that names malicious releases, not a vulnerable version range: an exact
+/// `version`, no version constraint at all, `"malware": true`, or (for a user catalog
+/// converted from OSV) a range row with no `advisory_severity` whose advisory cites an
+/// OpenSSF malicious-packages id (`MAL-YYYY-N`, issued only for malware). Such a match is
+/// "Known-bad", Critical by kind, never "Vulnerable ... version".
+pub fn is_malware_row(entry: &ExposureEntry) -> bool {
+    if entry.malware || entry.version.is_some() || entry.version_range.is_none() {
+        return true;
+    }
+    entry.advisory_severity.is_none() && entry.advisory.as_deref().is_some_and(cites_mal_id)
+}
+
+/// The text cites an OpenSSF malicious-packages id: `MAL-` + a 4-digit year + `-` + digits.
+fn cites_mal_id(text: &str) -> bool {
+    text.match_indices("MAL-").any(|(i, _)| {
+        let before_ok = i == 0 || !text.as_bytes()[i - 1].is_ascii_alphanumeric();
+        let rest = &text[i + 4..];
+        let year = rest.get(..4).is_some_and(|y| y.bytes().all(|b| b.is_ascii_digit()));
+        let num = rest.get(4..5) == Some("-") && rest[5..].bytes().next().is_some_and(|b| b.is_ascii_digit());
+        before_ok && year && num
+    })
 }
 
 /// The row's `advisory_severity`, lowercased, when its `version_range` is what matched

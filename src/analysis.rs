@@ -261,9 +261,9 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP ASI03 (identity & authentication)",
         },
         "Persistence" => Guidance {
-            what: "A file that runs code without being invoked: a Python `.pth` whose line begins with `import` or a `sitecustomize.py` in site-packages (executed on every interpreter start), a JavaScript loader staged inside a project's .vscode/ or .claude/ directory, or a path a known worm leaves behind (the tensorlake hostage-token monitor, the EtherDuck launch agents).",
+            what: "A file that runs code without being invoked: a Python `.pth` whose line begins with `import` or a `sitecustomize.py` in site-packages (executed on every interpreter start), a JavaScript loader staged inside a project's .vscode/ or .claude/ directory, or a path a known worm leaves behind (the tensorlake hostage-token monitor, the EtherDuck launch agents, the trojanized Claude Code extension's `~/.config/.smt` and `com.apple.sysmond` launch agent); or a login backdoor: a published attacker key, or a key with a campaign's comment, in `~/.ssh/authorized_keys`.",
             why: "This is how the 2026 package compromises survive remediation: litellm 1.107.0's implant kept running after `pip uninstall` and inside every MCP server launched with that interpreter, and the ChainDrop loader is re-planted by the hook/task pair whenever one half is removed. The tensorlake monitor wipes the home directory if the stolen GitHub token is revoked, so order of cleanup matters.",
-            fix: "Read the file shown below before touching anything. A startup hook no installed distribution claims should be removed along with whatever dropped it; for the gh-token-monitor artifacts, remove the monitor service BEFORE rotating the GitHub token. Reinstall the interpreter environment if an unclaimed hook ran.",
+            fix: "Read the file shown below before touching anything. A startup hook no installed distribution claims should be removed along with whatever dropped it; for the gh-token-monitor artifacts, remove the monitor service BEFORE rotating the GitHub token. Reinstall the interpreter environment if an unclaimed hook ran. For an attacker key in authorized_keys: treat the host as compromised (isolate it, remove the key, the persistence files and any reverse tunnel, then rotate credentials and sessions from a trusted machine).",
             reference: "EAA-003 (lifecycle persistence) · litellm 1.107.0 · tensorlake 0.5.144",
         },
         "Binary planting" => Guidance {
@@ -581,6 +581,75 @@ fn ssh_key_group(path: &str) -> &str {
 /// independent of the order the scanner found the keys in. No-passphrase is the only
 /// per-key SSH class today; another class (a key other users can read, say) would be
 /// one more entry in `classes` and merge the same way.
+/// authorized_keys grading. A published attacker key (by fingerprint) is Critical; a key
+/// whose comment is one a campaign wrote (`svc-telemetry`) but whose fingerprint is not
+/// on the list is High (the comment is attacker-chosen, so a variant build's key would
+/// carry it); a file (or its directory) writable by group or other is High (another local
+/// user can add a login key; sshd's StrictModes refuses such a file, so the keys in it
+/// may not work, but the permission is still wrong). Every other key is inventory: a
+/// developer machine legitimately has authorized keys.
+pub fn authorized_keys_findings(files: &[crate::models::AuthorizedKeysFile]) -> Vec<Finding> {
+    let mut f = Vec::new();
+    for file in files {
+        for k in &file.keys {
+            let comment = k.comment.as_deref().unwrap_or("(none)");
+            let evidence = format!(
+                "line {}: {} {} comment {comment}{}",
+                k.line,
+                k.key_type,
+                k.fingerprint,
+                if k.options.is_empty() {
+                    String::new()
+                } else {
+                    format!(", options {}", k.options.join(","))
+                }
+            );
+            if let Some(campaign) = &k.known_attacker_key {
+                f.push(Finding {
+                    severity: Severity::Critical,
+                    category: "Persistence".into(),
+                    title: format!(
+                        "Known attacker SSH key in authorized_keys ({campaign}): whoever holds it can log in as you"
+                    ),
+                    location: file.path.clone(),
+                    evidence: Some(evidence),
+                });
+            } else if let Some(campaign) = &k.backdoor_comment {
+                f.push(Finding {
+                    severity: Severity::High,
+                    category: "Persistence".into(),
+                    title: format!(
+                        "SSH key with the comment used by the October 2026 Claude Code extension backdoor ({comment}); the fingerprint is not the published one ({campaign})"
+                    ),
+                    location: file.path.clone(),
+                    evidence: Some(evidence),
+                });
+            }
+        }
+        if let Some(what) = &file.writable_by {
+            let whose = if what == "directory" {
+                "its directory is"
+            } else {
+                "the file is"
+            };
+            f.push(Finding {
+                severity: Severity::High,
+                category: "Persistence".into(),
+                title: format!(
+                    "authorized_keys can be changed by other local users ({whose} group- or world-writable): anyone with that access can add a login key"
+                ),
+                location: file.path.clone(),
+                evidence: Some(format!(
+                    "mode {}, {} key(s); sshd's StrictModes refuses such a file, but the permission is still wrong",
+                    file.mode.as_deref().unwrap_or("unknown"),
+                    file.key_count
+                )),
+            });
+        }
+    }
+    f
+}
+
 fn ssh_key_findings(keys: &[crate::models::SshKey]) -> Vec<Finding> {
     type Pick = fn(&crate::models::SshKey) -> bool;
     let classes: [(Pick, Severity, &str, &str); 1] = [(
@@ -2050,6 +2119,15 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                     ),
                 )
             }
+            // An `@reboot` crontab entry that opens an SSH reverse tunnel: how the
+            // October 2026 Claude Code extension backdoor exposed the machine's sshd. A
+            // self-made tunnel has this shape too, so it is High, not Critical (an entry
+            // naming the backdoor's `.smt` script is a worm IOC, Critical).
+            "reboot-reverse-tunnel" => (
+                Severity::High,
+                "Persistence",
+                format!("Reverse SSH tunnel started at boot: {}", a.detail),
+            ),
             "dangling-plugin-record" => (
                 Severity::Low,
                 "Persistence",
@@ -2319,6 +2397,8 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
     // on one machine said the same thing nine times). Every key stays its own row in
     // `ssh_keys[]`; the finding lists them.
     f.extend(ssh_key_findings(&report.ssh_keys));
+    // Login keys a campaign planted, and authorized_keys files others can write.
+    f.extend(authorized_keys_findings(&report.surfaces.authorized_keys));
 
     // Dangerous patterns in agent rules/instruction files.
     for rf in &report.rules_files {
@@ -4373,6 +4453,14 @@ pub fn exposure_finding(report: &ScanReport, e: &crate::models::ExposureFinding)
         String::new()
     } else {
         format!(" (fetched with {})", e.cache_parent.join(", "))
+    };
+    // An IDE extension version VS Code's root `.obsolete` file lists: superseded or
+    // uninstalled, but its directory is still there. A malware match stays Critical (the
+    // code ran when the version was loaded); the title says it is no longer current.
+    let parent = if e.obsolete {
+        format!("{parent} (superseded, files still on disk)")
+    } else {
+        parent
     };
     let dormant = e.cache.is_some() && !npx_cache_is_active(report, e);
     // A vulnerable range is graded at its advisory's severity (GitHub's scale, from the

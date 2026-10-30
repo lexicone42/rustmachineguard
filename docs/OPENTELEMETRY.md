@@ -135,6 +135,7 @@ rmguard.scan                                   (root; one trace per run)
 │   │   └── exec.git_tracked                   (`git ls-files --error-unmatch`)
 │   ├── scanner.ssh
 │   │   └── exec.ssh_keygen
+│   ├── scanner.authkeys                       (~/.ssh/authorized_keys{,2}, sshd_config when readable; nothing is run)
 │   ├── scanner.skills
 │   │   └── skills.walk                        (one per walk: commands, agents, hooks,
 │   │                                           codex, skills, plugins; global and per project)
@@ -313,7 +314,8 @@ scanner's time. The rows are what classifying each file alone gives.
 `python_startup` (`.pth` / `sitecustomize` hooks in them) | `project_list` |
 `planted_binaries` | `loader_staging` | `committed_symlinks` | `project_iocs` |
 `home_iocs` (known campaign paths under HOME and /tmp, including their systemd and
-launchd units) | `url_handlers` | `agent_bin` (`~/.claude/bin`, hashed on up to four
+launchd units) | `crontab` (the user's crontab spool file, when readable: usually
+root-only) | `url_handlers` | `agent_bin` (`~/.claude/bin`, hashed on up to four
 helper threads) | `dangling_plugins`. `committed_symlinks` reads each repository's
 `.git/index` (bounded, no-follow, counted in diagnostics) and runs
 `git ls-files -s` only when the index lists a symlink entry or cannot be read with
@@ -381,7 +383,7 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.content.files`, `rmguard.content.bytes` | rules.analysis | files whose content was checked, and their bytes |
 | `rmguard.git.lookups` | rules.git_tracked | rows whose tracked state was looked up |
 | `rmguard.agent` | settings.hooks | `claude-code` \| `cursor` \| `codex` \| `copilot` \| `gemini` \| `devin` \| `opencode` \| `kiro` |
-| `rmguard.persistence.check` | persistence.check | `python_roots` \| `python_startup` \| `project_list` \| `planted_binaries` \| `loader_staging` \| `committed_symlinks` \| `project_iocs` \| `home_iocs` \| `url_handlers` \| `agent_bin` \| `dangling_plugins` |
+| `rmguard.persistence.check` | persistence.check | `python_roots` \| `python_startup` \| `project_list` \| `planted_binaries` \| `loader_staging` \| `committed_symlinks` \| `project_iocs` \| `home_iocs` \| `crontab` \| `url_handlers` \| `agent_bin` \| `dangling_plugins` |
 | `rmguard.walk.pruned` | gitconfig.nested_walk, rules.nested_walk | directories not descended into (rules: also `.git`, a home dot-directory, another project) as generated content, summed over projects: skipped by name (`node_modules`, ...) or holding a `CACHEDIR.TAG` ([Cache Directory Tagging Specification](https://bford.info/cachedir/)) or `pyvenv.cfg`. HOME registered as a project is not walked at all and adds nothing |
 | `rmguard.version.source` | version.read | `package_json` (the version came from the tool's own package.json) \| `dist_info` (from the `METADATA` of the tool's Python distribution in its venv) \| `spawn` (it did not; `<tool> --version` is run) |
 | `rmguard.walk.bytes` | transcripts.store | summed size of the counted files |

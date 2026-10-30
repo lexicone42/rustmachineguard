@@ -231,6 +231,15 @@ pub struct IdeExtension {
     /// IDEs or in several versions; this says which copy a finding is about.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
+    /// The VS Code target platform the directory name carries (`darwin-arm64`,
+    /// `linux-x64`, ... from the closed `TargetPlatform` list), for a platform-specific
+    /// build. Never part of `version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_platform: Option<String>,
+    /// VS Code's root `.obsolete` file lists this directory: the version was superseded or
+    /// uninstalled and its files are still on disk until the editor deletes them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub obsolete: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1084,7 +1093,8 @@ pub struct EnvAgentOverride {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersistenceArtifact {
     /// "python-startup-hook" | "planted-binary" | "escaping-symlink" | "loader-script" |
-    /// "worm-ioc" | "url-handler" | "agent-bin" | "dangling-plugin-record"
+    /// "worm-ioc" | "url-handler" | "agent-bin" | "dangling-plugin-record" |
+    /// "reboot-reverse-tunnel"
     pub kind: String,
     pub path: String,
     /// The site-packages root, project root, or home the artifact was found under.
@@ -1145,6 +1155,12 @@ pub struct ExposureEntry {
     /// exact `version`, or no constraint), which are Critical by kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisory_severity: Option<String>,
+    /// The row names malicious releases even though it carries a `version_range` (a run of
+    /// consecutive bad releases of an otherwise legitimate package): it is reported as
+    /// "Known-bad", Critical, like an exact-version or unbounded malware row. A range row
+    /// whose advisory cites an OpenSSF `MAL-YYYY-N` id is read the same way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub malware: bool,
 }
 
 /// A matched exposure finding.
@@ -1186,6 +1202,11 @@ pub struct ExposureFinding {
     /// only when an active server launches the same spec. Absent in older reports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_specs: Vec<String>,
+    /// IDE extensions only: the matched install is a version VS Code's root `.obsolete`
+    /// file marks as superseded or uninstalled, whose files are still on disk. A malware
+    /// match stays Critical (the code ran when it was loaded); the title says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub obsolete: bool,
 }
 
 /// The kind of Python install root a distribution was found in. A closed set: the
@@ -1544,6 +1565,10 @@ pub struct SurfaceInventory {
     /// Linux `/proc` only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_listeners: Vec<NetworkListener>,
+    /// `~/.ssh/authorized_keys` files: key fingerprints, types, comments and option
+    /// names, never a key blob (`scanners::authorized_keys`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_keys: Vec<AuthorizedKeysFile>,
     /// Configuration sources of the round-4 agents (Cline, Roo Code, Continue, Aider,
     /// Goose, Zed, Junie, Amp, Warp; `scanners::agents_more`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1968,4 +1993,70 @@ pub struct AgentKeyFile {
     pub group_readable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreachable_via: Option<String>,
+}
+
+// ── authorized_keys (`scanners::authorized_keys`) ───────────────────────────────────────
+// Who can log in as this user with a key. Public material only: each key by its OpenSSH
+// SHA-256 fingerprint, type, comment and option names; the base64 blob is decoded in
+// memory to compute the fingerprint and is never stored. Graded in
+// `crate::analysis::authorized_keys_findings`.
+
+/// One authorized_keys file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AuthorizedKeysFile {
+    /// The file, sanitized.
+    pub path: String,
+    /// "default" (`~/.ssh/authorized_keys`, `authorized_keys2`) or "sshd_config" (named
+    /// by a readable sshd_config's `AuthorizedKeysFile`).
+    pub source: String,
+    /// Whether sshd_config could be read to find non-default `AuthorizedKeysFile` paths:
+    /// "read", "unreadable" (root-only, the usual case: only the defaults were read) or
+    /// "absent".
+    pub sshd_config: String,
+    /// Permission bits, e.g. "0600".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// "file" when the file is writable by group or other, "directory" when its
+    /// directory is: another local user can add a login key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writable_by: Option<String>,
+    /// The file is a symlink: its link text, sanitized; the file is not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<String>,
+    /// The file exists but could not be read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
+    /// Key lines in the file.
+    pub key_count: usize,
+    /// Non-comment lines that are not key lines (an SSH1 key, a damaged line).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unparsed_lines: usize,
+    /// The keys (at most 500 per file, plus any IOC match beyond that).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<AuthorizedKey>,
+}
+
+/// One key line of an authorized_keys file. Never the key blob.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct AuthorizedKey {
+    /// 1-based line number.
+    pub line: usize,
+    /// The key type (`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`, certificate types).
+    pub key_type: String,
+    /// `SHA256:` + unpadded base64 of the SHA-256 of the key blob, as `ssh-keygen -l`
+    /// prints it.
+    pub fingerprint: String,
+    /// The comment, token shapes redacted, sanitized (at most 128 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Option names present (`command`, `from`, `no-pty`, `restrict`, ...; `<other>` for
+    /// an unknown one). Values are never kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// The fingerprint is a published attacker key: the campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_attacker_key: Option<String>,
+    /// The comment is one a campaign wrote with its key (`svc-telemetry`): the campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backdoor_comment: Option<String>,
 }
