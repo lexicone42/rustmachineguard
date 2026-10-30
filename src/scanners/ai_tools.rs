@@ -642,18 +642,26 @@ const EXTENSION_AGENTS: &[(&str, &str, &str)] = &[
 const MAX_EXTENSION_ENTRIES: usize = 5_000;
 
 /// One row per [`EXTENSION_AGENTS`] extension installed in an editor's extension
-/// directory (`<publisher.name>-<version>`), named `"<agent> (<editor>)"`, with the version
-/// from the directory name (sanitized). Nothing is run or opened.
+/// directory (`<publisher.name>-<version>`), local or a remote server's
+/// ([`crate::scanners::extensions::remote_server_extension_dirs`]), named
+/// `"<agent> (<editor>)"`, with the version from the directory name (sanitized). A
+/// version VS Code's root `.obsolete` file lists (superseded or uninstalled, its files
+/// not yet deleted) is not an installed agent; VS Code writes no per-extension
+/// `.obsolete` file ([`crate::scanners::extensions::read_obsolete_keys`]). Nothing is run;
+/// only the root `.obsolete` file is opened.
 fn extension_agents(platform: &dyn PlatformInfo) -> Vec<AiTool> {
     use crate::platform::Ide;
     let mut out = Vec::new();
-    for &ide in Ide::ALL.iter().filter(|i| **i != Ide::Zed) {
-        let Some(dir) = platform.ide_extension_dir(ide) else {
-            continue;
-        };
+    let local = Ide::ALL
+        .iter()
+        .filter(|i| **i != Ide::Zed)
+        .filter_map(|&ide| platform.ide_extension_dir(ide).map(|d| (ide.name(), d)));
+    let remote = crate::scanners::extensions::remote_server_extension_dirs(&platform.home_dir());
+    for (editor, dir) in local.chain(remote) {
         let Ok(rd) = crate::scanners::probe_read_dir(&dir) else {
             continue;
         };
+        let obsolete = crate::scanners::extensions::read_obsolete_keys(&dir);
         let mut found: Vec<(String, String, String, PathBuf)> = Vec::new();
         for (n, e) in rd.flatten().enumerate() {
             if n >= MAX_EXTENSION_ENTRIES {
@@ -669,7 +677,7 @@ fn extension_agents(platform: &dyn PlatformInfo) -> Vec<AiTool> {
             let id = id.to_ascii_lowercase();
             if let Some((agent, vendor, _)) = EXTENSION_AGENTS.iter().find(|(_, _, x)| *x == id)
                 && e.file_type().is_ok_and(|t| t.is_dir())
-                && !crate::scanners::probe_exists(&e.path().join(".obsolete"))
+                && !obsolete.contains(&name.to_ascii_lowercase())
             {
                 found.push((agent.to_string(), vendor.to_string(), version, e.path()));
             }
@@ -677,7 +685,7 @@ fn extension_agents(platform: &dyn PlatformInfo) -> Vec<AiTool> {
         found.sort();
         for (agent, vendor, version, path) in found {
             out.push(AiTool {
-                name: format!("{agent} ({})", ide.name()),
+                name: format!("{agent} ({editor})"),
                 vendor,
                 tool_type: AiToolType::Agent,
                 version: Some(crate::scanners::sanitize_display(&version, 64)),

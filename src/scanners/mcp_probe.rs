@@ -1138,6 +1138,8 @@ mod source_scope_tests {
     #[test]
     fn plugin_and_connector_rows_are_not_probed() {
         let row = |source: &str| McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: source.to_string(),
             config_path: "/x".into(),
             vendor: "v".into(),

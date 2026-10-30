@@ -2006,6 +2006,8 @@ fn blueprint_links_mcp_threat_and_marks_plaintext_flow() {
             is_running: true,
         }];
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "c".into(),
@@ -3077,6 +3079,8 @@ fn blueprint_mcp_server_includes_command_args() {
     use rustmachineguard::models::*;
     let report = make_test_report(|r| {
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/test/.mcp.json".into(),
             vendor: "test".into(),
@@ -3455,6 +3459,8 @@ fn mcp_transport_streamable_http_classified_as_http() {
 
 fn mcp_config_with_server(name: &str) -> rustmachineguard::models::McpConfig {
     rustmachineguard::models::McpConfig {
+        read_by: Vec::new(),
+        inputs: Vec::new(),
         config_source: "project".into(),
         config_path: "/p/.mcp.json".into(),
         vendor: "c".into(),
@@ -3612,6 +3618,8 @@ fn blueprint_no_dangling_refs_full_report() {
             is_running: true,
         }];
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "claude".into(),
@@ -3729,6 +3737,8 @@ fn blueprint_flows_have_type_and_destination() {
             is_running: false,
         }];
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "c".into(),
@@ -3803,6 +3813,8 @@ fn blueprint_exposure_matched_to_existing_server() {
     // actor points at the server asset (which exists).
     let report = make_test_report(|r| {
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "c".into(),
@@ -3850,6 +3862,8 @@ fn blueprint_version_enrichment_never_overwrites() {
     // Probe reports version 9.9 but config pins 1.0 → must keep 1.0 (never overwrite).
     let report = make_test_report(|r| {
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "c".into(),
@@ -8063,6 +8077,8 @@ fn mcp_allow_wildcards_fold_plugin_connector_and_observed_names() {
         make_test_report(|r| {
             r.mcp_configs = vec![
                 McpConfig {
+                    read_by: Vec::new(),
+                    inputs: Vec::new(),
                     config_source: MCP_SOURCE_PLUGIN.into(),
                     config_path: "/h/.claude/plugins/cache/o/playwright/1/.mcp.json".into(),
                     vendor: "claude-code".into(),
@@ -8076,6 +8092,8 @@ fn mcp_allow_wildcards_fold_plugin_connector_and_observed_names() {
                     }],
                 },
                 McpConfig {
+                    read_by: Vec::new(),
+                    inputs: Vec::new(),
                     config_source: MCP_SOURCE_CONNECTOR.into(),
                     config_path: "/h/.claude.json (claudeAiMcpEverConnected)".into(),
                     vendor: "claude-code".into(),

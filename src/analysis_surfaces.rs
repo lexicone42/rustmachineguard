@@ -303,6 +303,7 @@ fn agent_name(agent: &str) -> &'static str {
         "codex" => "Codex",
         "kiro" => "Kiro",
         "opencode" => "OpenCode",
+        "vscode" => "VS Code",
         _ => "agent",
     }
 }

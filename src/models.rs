@@ -255,6 +255,15 @@ pub struct McpConfig {
     pub git_tracked: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<McpServerDetail>,
+    /// The agents that load this file, by their own documentation, when more than one
+    /// does (a project's `.mcp.json`: Claude Code, GitHub Copilot CLI and VS Code;
+    /// `~/.copilot/mcp-config.json`: Copilot CLI and VS Code). Closed labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
+    /// VS Code `mcp.json` `inputs`: values VS Code prompts for and keeps in its secret
+    /// storage. Each is `<id> (<type>[, password])`; no value or default is read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
 }
 
 /// Where a server's definition came from when no config file of the user's holds it:

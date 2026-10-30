@@ -11,8 +11,8 @@
 //! read, and is a floor in docs/SECURITY.md.
 
 use super::{
-    AgentsOut, Ctx, MAX_LIST, Read, Scope, claude_shaped_mcp, files_in, key_file, parse, plain_dir, posture,
-    push_posture, read_cfg, rules_dir, rules_row, setting, store,
+    AgentsOut, Ctx, MAX_LIST, McpFile, Read, Scope, claude_shaped_mcp, files_in, key_file, parse, plain_dir, posture,
+    push_posture, read_cfg, rules_dir, rules_row, setting, shaped_mcp, store,
 };
 use crate::models::{AgentPosture, AutoApproveSetting};
 use crate::scanners::sanitize_display;
@@ -56,6 +56,7 @@ pub(super) fn scan(cx: &mut Ctx) {
     cursor(cx);
     devin(cx);
     copilot(cx);
+    vscode_mcp(cx);
     gemini(cx);
     codex(cx);
     kiro(cx);
@@ -154,6 +155,21 @@ fn cursor(cx: &mut Ctx) {
         let dir = proj.join(".cursor");
         cursor_permissions(cx, &dir.join("permissions.json"), Scope::Project, Some(&proj));
         cursor_sandbox(cx, &dir.join("sandbox.json"), Scope::Project, Some(&proj));
+        // "Create `.cursor/mcp.json` in your project for project-specific tools"
+        // (cursor.com/docs/context/mcp, fetched 2026-10-30); `mcpServers`, Claude Desktop
+        // shaped. The user file `~/.cursor/mcp.json` is the MCP scanner's. VS Code reads
+        // this file only when its `chat.mcp.discovery.enabled` source `cursor-workspace`
+        // is turned on ("All other discovery sources are off by default"), so the row
+        // names Cursor alone.
+        claude_shaped_mcp(
+            cx,
+            "cursor",
+            "Cursor (project)",
+            "Anysphere",
+            &dir.join("mcp.json"),
+            Scope::Project,
+            Some(&proj),
+        );
         rules_dir(cx, &proj, ".cursor/rules", "cursor", Scope::Project);
     }
 }
@@ -346,6 +362,17 @@ fn devin_config(cx: &mut Ctx, path: &Path, scope: Scope, proj: Option<&Path>) {
 ///   file are stored as plain text" — a key file, by mode, never opened.
 /// - `~/.copilot/session-state/`: "Each session directory stores an event log
 ///   (`events.jsonl`) and workspace artifacts" — a transcript store.
+/// - MCP (docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers,
+///   fetched 2026-10-30): the user's `~/.copilot/mcp-config.json` (`mcpServers`, servers
+///   with `type` `local`/`stdio`/`http`/`sse`, `command`, `args`, `env`, `url`, `headers`,
+///   `tools`), and the repository's `.github/mcp.json`, which may use "either the
+///   `mcpServers` top-level object ... or the bare top-level format where each key is an
+///   MCP server name". Workspace servers load once the folder is trusted; the project's
+///   `.mcp.json`, which Copilot CLI also loads, is the MCP scanner's row (its `read_by`
+///   names Copilot CLI). VS Code reads `mcp-config.json` too ("Copilot CLI discovery is on
+///   by default", code.visualstudio.com/docs/agents/reference/mcp-configuration), so the
+///   user row names both. `.vscode/mcp.json` "is not read by Copilot CLI". `COPILOT_HOME`
+///   is the scanning user's environment and is not applied to a scanned home (a floor).
 fn copilot(cx: &mut Ctx) {
     let home = cx.home.to_path_buf();
     let dir = home.join(".copilot");
@@ -368,12 +395,146 @@ fn copilot(cx: &mut Ctx) {
         p.key_files.extend(key_file(&dir.join("providers.json")));
         push_posture(cx, p);
         store(cx, "copilot", &dir.join("session-state"), "sessions", true);
+        let file = McpFile {
+            agent: "copilot",
+            source: "Copilot CLI",
+            vendor: "GitHub",
+            read_by: COPILOT_USER_MCP_READERS,
+        };
+        shaped_mcp(
+            cx,
+            &file,
+            &dir.join("mcp-config.json"),
+            Scope::User,
+            None,
+            copilot_mcp_shape,
+        );
     }
     for proj in cx.projects.clone() {
         if plain_dir(&proj, ".github").is_some() {
             copilot_lsp(cx, &proj.join(".github").join("lsp.json"), Scope::Project, Some(&proj));
+            let file = McpFile {
+                agent: "copilot",
+                source: "Copilot CLI (repository)",
+                vendor: "GitHub",
+                read_by: &[],
+            };
+            let path = proj.join(".github").join("mcp.json");
+            shaped_mcp(cx, &file, &path, Scope::Project, Some(&proj), copilot_mcp_shape);
         }
     }
+}
+
+/// The agents that load `~/.copilot/mcp-config.json`.
+const COPILOT_USER_MCP_READERS: &[&str] = &["Copilot CLI", "VS Code"];
+
+/// A Copilot CLI MCP file: the `mcpServers` object, or the bare format (every top-level
+/// object with a `command` or a `url` is a server).
+fn copilot_mcp_shape(v: &Value, _: &mut AgentPosture) -> (Value, Vec<String>) {
+    if v.get("mcpServers").is_some() {
+        return (v.clone(), Vec::new());
+    }
+    let bare: serde_json::Map<String, Value> = v
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(_, c)| c.get("command").is_some() || c.get("url").is_some())
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    (serde_json::json!({ "mcpServers": bare }), Vec::new())
+}
+
+// ── VS Code ────────────────────────────────────────────────────────────────────────────
+
+/// VS Code's own MCP format (code.visualstudio.com/docs/agents/reference/mcp-configuration,
+/// microsoft/vscode-docs `docs/agents/reference/mcp-configuration.md`, fetched 2026-10-30):
+/// "stored in `.vscode/mcp.json` in your workspace or in your user profile. It defines
+/// servers in a top-level `servers` object", with `type`, `command`, `args`, `env`,
+/// `envFile`, `url`, `headers`; and "`inputs`: an optional array of input variable
+/// definitions for sensitive information like API keys", referenced as `${input:<id>}`.
+/// VS Code prompts for an input and keeps the answer in its secret storage: only each
+/// input's `id`, `type` and `password` flag are kept, never a `default` or a value.
+///
+/// Files: the workspace's `.vscode/mcp.json`; the default profile's `User/mcp.json` of VS
+/// Code and VS Code Insiders ([`crate::platform::vscode_user_dirs`]; other profiles live
+/// under `User/profiles/<id>/`, an undocumented layout that is not read, a floor); and a
+/// remote host's "Remote User Configuration", the server's user data directory
+/// `<serverDataFolderName>/data/User/mcp.json` (`USER_DATA_PATH = join(REMOTE_DATA_FOLDER,
+/// 'data')`, microsoft/vscode `src/vs/server/node/server.main.ts` at c6315a9e). The
+/// `mcp.servers` key of the user `settings.json` is the MCP scanner's row. Copilot CLI
+/// does not read `.vscode/mcp.json`, and Cursor documents only `.cursor/mcp.json`, so the
+/// rows name VS Code alone.
+fn vscode_mcp(cx: &mut Ctx) {
+    let home = cx.home.to_path_buf();
+    let users = crate::platform::vscode_user_dirs(&home);
+    for (label, user) in users
+        .iter()
+        .filter(|(l, _)| matches!(*l, "VS Code" | "VS Code Insiders"))
+    {
+        let source = format!("{label} (user)");
+        vscode_mcp_file(cx, &source, &user.join("mcp.json"), Scope::User, None);
+    }
+    for (label, folder) in [
+        ("VS Code", ".vscode-server"),
+        ("VS Code Insiders", ".vscode-server-insiders"),
+    ] {
+        if plain_dir(&home, folder).is_some() {
+            let source = format!("{label} (remote server user)");
+            let path = home.join(folder).join("data").join("User").join("mcp.json");
+            vscode_mcp_file(cx, &source, &path, Scope::User, None);
+        }
+    }
+    for proj in cx.projects.clone() {
+        if plain_dir(&proj, ".vscode").is_some() {
+            let path = proj.join(".vscode").join("mcp.json");
+            vscode_mcp_file(cx, "VS Code (workspace)", &path, Scope::Project, Some(&proj));
+        }
+    }
+}
+
+fn vscode_mcp_file(cx: &mut Ctx, source: &str, path: &Path, scope: Scope, proj: Option<&Path>) {
+    let file = McpFile {
+        agent: "vscode",
+        source,
+        vendor: "Microsoft",
+        read_by: &[],
+    };
+    shaped_mcp(cx, &file, path, scope, proj, vscode_mcp_shape);
+}
+
+/// `servers` as `mcpServers`, and the `inputs` as `<id> (<type>[, password])`.
+fn vscode_mcp_shape(v: &Value, _: &mut AgentPosture) -> (Value, Vec<String>) {
+    let servers = v
+        .get("servers")
+        .filter(|s| s.is_object())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let inputs = v
+        .get("inputs")
+        .and_then(|i| i.as_array())
+        .map(|a| {
+            a.iter()
+                .take(MAX_LIST)
+                .filter_map(|i| {
+                    let id = i.get("id")?.as_str()?;
+                    let kind = i.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                    let password = if i.get("password").and_then(|p| p.as_bool()) == Some(true) {
+                        ", password"
+                    } else {
+                        ""
+                    };
+                    Some(format!(
+                        "{} ({}{password})",
+                        sanitize_display(id, 64),
+                        sanitize_display(kind, 32)
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (serde_json::json!({ "mcpServers": servers }), inputs)
 }
 
 /// `permissions-config.json` approvals that reach every command or every MCP tool.
@@ -462,6 +623,17 @@ fn copilot_lsp(cx: &mut Ctx, path: &Path, scope: Scope, proj: Option<&Path>) {
 ///   output": such a value in a repository's agent file is a command the repository makes
 ///   the agent run (recorded redacted). The files themselves are inventoried by the skills
 ///   scanner.
+/// - MCP (`docs/tools/mcp-server.md`, fetched 2026-10-30): `mcpServers` in the user
+///   `~/.gemini/settings.json` and the project `.gemini/settings.json`. A server has one
+///   of `command` (stdio), `url` ("SSE endpoint URL") or `httpUrl` ("HTTP streaming
+///   endpoint URL"), and `trust`: "When `true`, bypasses all tool call confirmations for
+///   this server" (`mcp-tools`, graded when the repository sets it). `mcp.excluded`:
+///   "Servers in this list will not be connected to" (`enabled: false`), from the same
+///   file or the user's; `mcp.allowed` ("only servers from this list ... will be
+///   connected to") is applied to its own file only, since a narrower list never hides a
+///   repository's server from the grade. Project servers load in a trusted folder; the
+///   system settings file and extensions' `gemini-extension.json` servers are not read
+///   (a floor).
 fn gemini(cx: &mut Ctx) {
     let home = cx.home.to_path_buf();
     if let Some(dir) = plain_dir(&home, ".gemini/policies") {
@@ -476,9 +648,77 @@ fn gemini(cx: &mut Ctx) {
         }
     }
     gemini_agents(cx, &home, Scope::User);
+    // The user file's `mcp.excluded`, applied to the project files too.
+    let user_excluded = std::cell::RefCell::new(Vec::<String>::new());
+    if plain_dir(&home, ".gemini").is_some() {
+        let file = McpFile {
+            agent: "gemini",
+            source: "Gemini CLI",
+            vendor: "Google",
+            read_by: &[],
+        };
+        let path = home.join(".gemini").join("settings.json");
+        shaped_mcp(cx, &file, &path, Scope::User, None, |v, p| {
+            user_excluded
+                .borrow_mut()
+                .extend(super::strings(v.pointer("/mcp/excluded")));
+            gemini_mcp_shape(v, p, &[])
+        });
+    }
+    let user_excluded = user_excluded.into_inner();
     for proj in cx.projects.clone() {
         gemini_agents(cx, &proj, Scope::Project);
+        if plain_dir(&proj, ".gemini").is_some() {
+            let file = McpFile {
+                agent: "gemini",
+                source: "Gemini CLI (project)",
+                vendor: "Google",
+                read_by: &[],
+            };
+            let path = proj.join(".gemini").join("settings.json");
+            shaped_mcp(cx, &file, &path, Scope::Project, Some(&proj), |v, p| {
+                gemini_mcp_shape(v, p, &user_excluded)
+            });
+        }
     }
+}
+
+/// Gemini CLI `mcpServers` in the Claude Desktop shape: `httpUrl` becomes an `http`
+/// `url`, a bare `url` is `sse`; an excluded (or, under this file's `mcp.allowed`, an
+/// unlisted) server is `disabled`; `trust: true` is an `mcp-tools` approval.
+fn gemini_mcp_shape(v: &Value, p: &mut AgentPosture, more_excluded: &[String]) -> (Value, Vec<String>) {
+    let Some(servers) = v.get("mcpServers").and_then(|s| s.as_object()) else {
+        return (Value::Null, Vec::new());
+    };
+    let mut excluded = super::strings(v.pointer("/mcp/excluded"));
+    excluded.extend(more_excluded.iter().cloned());
+    let allowed = v
+        .pointer("/mcp/allowed")
+        .filter(|a| a.is_array())
+        .map(|a| super::strings(Some(a)));
+    let mut out = serde_json::Map::new();
+    for (name, cfg) in servers.iter().take(super::MAX_SERVERS) {
+        let Some(obj) = cfg.as_object() else { continue };
+        let mut o = obj.clone();
+        if o.get("type").is_none() {
+            if let Some(h) = obj.get("httpUrl").cloned() {
+                o.insert("url".into(), h);
+                o.insert("type".into(), "http".into());
+            } else if obj.get("url").is_some() {
+                o.insert("type".into(), "sse".into());
+            }
+        }
+        let shown = sanitize_display(name, 128);
+        let off = excluded.contains(&shown) || allowed.as_ref().is_some_and(|a| !a.contains(&shown));
+        if off {
+            o.insert("disabled".into(), Value::Bool(true));
+        } else if obj.get("trust").and_then(|t| t.as_bool()) == Some(true) && p.auto_approve.len() < MAX_LIST {
+            p.auto_approve
+                .push(setting(&format!("mcpServers.{shown}.trust"), "true", "mcp-tools"));
+        }
+        out.insert(name.clone(), Value::Object(o));
+    }
+    (serde_json::json!({ "mcpServers": out }), Vec::new())
 }
 
 fn gemini_rules(v: &Value, out: &mut Vec<AutoApproveSetting>) {

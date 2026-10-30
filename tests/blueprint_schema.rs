@@ -186,6 +186,8 @@ fn rich_blueprint_conforms() {
             is_running: true,
         }];
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "claude".into(),
@@ -305,6 +307,8 @@ fn shadowing_blueprint_conforms() {
     let report = make_report(|r| {
         for name in ["alpha", "beta"] {
             r.mcp_configs.push(McpConfig {
+                read_by: Vec::new(),
+                inputs: Vec::new(),
                 config_source: "project".into(),
                 config_path: format!("/p/{}/.mcp.json", name),
                 vendor: "claude".into(),
@@ -637,6 +641,8 @@ fn colliding_ids_get_distinct_bom_refs_and_still_validate() {
             skill("/h/.claude/plugins/marketplaces/m/plugins/x/skills/writing-rules/SKILL.md"),
         ];
         let cfg = |path: &str, source: &str| McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: source.into(),
             config_path: path.into(),
             vendor: "claude-code".into(),
@@ -764,6 +770,8 @@ fn blueprint_never_emits_removed_service_constructs() {
     use rustmachineguard::models::*;
     let report = make_report(|r| {
         r.mcp_configs = vec![McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: "project".into(),
             config_path: "/p/.mcp.json".into(),
             vendor: "c".into(),

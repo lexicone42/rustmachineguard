@@ -20,16 +20,48 @@ impl Scanner for ExtensionsScanner {
             }
 
             if let Some(ext_dir) = platform.ide_extension_dir(ide) {
-                results.extend(scan_vscode_style_extensions(&ext_dir, ide));
+                results.extend(scan_vscode_style_extensions(&ext_dir, ide.name()));
             }
+        }
+        for (label, ext_dir) in remote_server_extension_dirs(&platform.home_dir()) {
+            results.extend(scan_vscode_style_extensions(&ext_dir, label));
         }
 
         results
     }
 }
 
-/// Scan VS Code-style extensions (publisher.name-version directory format).
-fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeExtension> {
+/// The extension directories a VS Code-family remote server keeps in the home of the
+/// machine it runs on (SSH host, WSL, dev container), as (`ide_type` label, directory),
+/// those that are directories. The server's data folder is
+/// `join(os.homedir(), product.serverDataFolderName || '.vscode-remote')` and its
+/// extensions directory `join(REMOTE_DATA_FOLDER, 'extensions')` (microsoft/vscode
+/// `src/vs/server/node/server.main.ts` at c6315a9e, lines 41 and 51); VS Code documents
+/// "`rm -rf ~/.vscode-server/extensions` for VS Code stable and/or `rm -rf
+/// ~/.vscode-server-insiders/extensions` for VS Code Insiders" and "The VS Code Server
+/// was previously installed under `~/.vscode-remote`" (microsoft/vscode-docs
+/// `docs/remote/troubleshooting.md`, fetched 2026-10-30). Cursor's and Windsurf's
+/// servers use the same layout under `~/.cursor-server` and `~/.windsurf-server`; neither
+/// vendor documents the folder name (it is the name their servers create). The same
+/// parser and catalog matching apply; the label says the install is a remote server's.
+pub fn remote_server_extension_dirs(home: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
+    const SERVERS: &[(&str, &str)] = &[
+        ("Visual Studio Code (remote server)", ".vscode-server"),
+        ("Visual Studio Code Insiders (remote server)", ".vscode-server-insiders"),
+        ("Visual Studio Code (remote server, legacy)", ".vscode-remote"),
+        ("Cursor (remote server)", ".cursor-server"),
+        ("Windsurf (remote server)", ".windsurf-server"),
+    ];
+    SERVERS
+        .iter()
+        .map(|(label, folder)| (*label, home.join(folder).join("extensions")))
+        .filter(|(_, d)| crate::scanners::probe_dir(d))
+        .collect()
+}
+
+/// Scan VS Code-style extensions (publisher.name-version directory format); `ide_type`
+/// is the row's editor label.
+fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide_type: &str) -> Vec<IdeExtension> {
     let mut results = Vec::new();
 
     let Ok(entries) = crate::scanners::probe_read_dir(ext_dir) else {
@@ -77,7 +109,7 @@ fn scan_vscode_style_extensions(ext_dir: &std::path::Path, ide: Ide) -> Vec<IdeE
                 name: clean(&name),
                 version: clean(&version),
                 publisher: clean(&publisher),
-                ide_type: ide.name().to_string(),
+                ide_type: ide_type.to_string(),
                 categories: manifest.categories,
                 code_entry_points: manifest.code_entry_points,
                 contributes_theme: manifest.contributes_theme,

@@ -234,6 +234,8 @@ fn mcp_config(v: &serde_json::Value, path: &Path) -> Option<McpConfig> {
         }
     }
     Some(McpConfig {
+        read_by: Vec::new(),
+        inputs: Vec::new(),
         config_source: "Mistral Vibe".into(),
         config_path: sanitize_display(&path.to_string_lossy(), 512),
         vendor: "Mistral AI".into(),

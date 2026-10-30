@@ -49,6 +49,8 @@ impl Scanner for McpScanner {
 
             let server_count = server_names.len();
             results.push(McpConfig {
+                read_by: Vec::new(),
+                inputs: Vec::new(),
                 config_source: source,
                 config_path: path.display().to_string(),
                 vendor,
@@ -100,6 +102,14 @@ impl Scanner for McpScanner {
             apply_mcpjson_toggles(&proj, &home, claude_value.as_ref(), &mut servers);
             let server_count = server_names.len();
             results.push(McpConfig {
+                // GitHub Copilot CLI loads a trusted folder's `.mcp.json` ("Workspace
+                // servers—`.mcp.json` and `.github/mcp.json` ... requires the folder to be
+                // trusted", docs.github.com/en/copilot/reference/copilot-cli-reference/
+                // cli-command-reference#mcp-server-loading-priority), and VS Code reads the
+                // "portable Copilot format ... stored in `.mcp.json` at the root of your
+                // workspace" (code.visualstudio.com/docs/agents/reference/mcp-configuration).
+                read_by: PROJECT_MCP_JSON_READERS.iter().map(|s| s.to_string()).collect(),
+                inputs: Vec::new(),
                 config_source: format!("Project MCP ({})", proj.display()),
                 config_path: mcp_json.display().to_string(),
                 vendor: "Project".to_string(),
@@ -115,6 +125,9 @@ impl Scanner for McpScanner {
         results
     }
 }
+
+/// The agents that load a project's `.mcp.json` (see the row built in [`McpScanner`]).
+pub const PROJECT_MCP_JSON_READERS: &[&str] = &["Claude Code", "Copilot CLI", "VS Code"];
 
 /// Approval lists for project `.mcp.json` servers from one settings source.
 #[derive(Default)]
@@ -362,6 +375,8 @@ pub(crate) fn plugin_root_configs(ip: &Path, real_root: &Path, label: &str, enab
             s.enabled = Some(enabled);
         }
         rows.push(McpConfig {
+            read_by: Vec::new(),
+            inputs: Vec::new(),
             config_source: MCP_SOURCE_PLUGIN.to_string(),
             config_path: sanitize_display(&path.to_string_lossy(), 512),
             vendor: format!("Claude Code plugin {label}"),
@@ -456,6 +471,8 @@ pub fn connector_servers(home: &Path, claude_json: &Path, value: Option<&serde_j
         })
         .collect();
     Some(McpConfig {
+        read_by: Vec::new(),
+        inputs: Vec::new(),
         config_source: MCP_SOURCE_CONNECTOR.to_string(),
         // Not the bare `.claude.json` path: that is the user-scope config's row, and rows
         // are deduplicated by path.
@@ -950,6 +967,22 @@ fn reference_shape(v: &str) -> Option<String> {
     if let Some(inner) = v.strip_prefix("${").and_then(|r| r.strip_suffix('}')) {
         if inner.contains(['{', '}', '$']) {
             return None;
+        }
+        // VS Code's and Cursor's `${env:NAME}`, and VS Code's prompted `${input:<id>}`
+        // (code.visualstudio.com/docs/agents/reference/mcp-configuration): references.
+        if let Some(name) = inner.strip_prefix("env:")
+            && ident(name)
+        {
+            return Some(format!("${{env:{name}}}"));
+        }
+        if let Some(id) = inner.strip_prefix("input:")
+            && !id.is_empty()
+            && id.len() <= 128
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        {
+            return Some(format!("${{input:{id}}}"));
         }
         return match inner.split_once(":-") {
             Some((name, default)) if ident(name) => Some(if default.is_empty() {
@@ -2019,6 +2052,11 @@ mod coverage_tests {
             ("ghp_SECRETVALUE", "<redacted>"),
             ("${A}${B}", "<redacted>"),
             ("prefix-${A}", "<redacted>"),
+            ("${env:GITHUB_TOKEN}", "${env:GITHUB_TOKEN}"),
+            ("${input:perplexity-key}", "${input:perplexity-key}"),
+            ("Bearer ${input:api-key}", "Bearer ${input:api-key}"),
+            ("${input:a SECRET}", "<redacted>"),
+            ("${env:SECRET-VALUE}", "<redacted>"),
             ("", "<empty>"),
         ] {
             assert_eq!(value_shape(input), want, "{input}");

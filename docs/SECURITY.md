@@ -121,6 +121,16 @@ Floors of [the new surfaces](COVERAGE.md#new-surfaces-of-covered-agents-and-the-
   `policyPaths` are not graded; workspace `.gemini/policies/` is documented as
   non-functional and is not read; `tools.allowed` and `general.defaultApprovalMode` in
   `settings.json` are not graded here.
+- **MCP files (Copilot, VS Code, Gemini, Cursor projects):** `COPILOT_HOME` is not
+  applied to a scanned home; Copilot CLI's `.mcp.json` / `.github/mcp.json` in directories
+  between the working directory and the repository root are not walked (project roots
+  only), and `disabledMcpServers` in `~/.copilot/settings.json` is not applied; VS Code
+  profiles other than the default (`User/profiles/<id>/mcp.json`, undocumented layout),
+  `envFile` contents, per-server `sandboxEnabled` and the `chat.mcp.discovery.enabled`
+  sources are not read; Gemini CLI's system settings file and extensions'
+  `gemini-extension.json` servers are not read, and `mcp.allowed` from another settings
+  file is not applied. A project `.mcp.json` server awaiting Claude Code approval is
+  graded as inactive even though Copilot CLI loads it in a trusted folder.
 - **Codex:** `/etc/codex/requirements.toml` only restricts and is not graded (its hooks
   are read); execpolicy rules are read lexically, not evaluated as Starlark, and only a
   one-token interpreter pattern is graded; `.agents/plugins/marketplace.json` lists
@@ -152,7 +162,6 @@ Floors of [the new surfaces](COVERAGE.md#new-surfaces-of-covered-agents-and-the-
 - Network listeners: macOS has no `/proc`, so the scanner is skipped with a warning ([Network Listeners](COVERAGE.md#network-listeners-linux)).
 - SSH authorized keys: a root-only `/etc/ssh/sshd_config` (the usual mode) is not read, so a non-default `AuthorizedKeysFile` is missed for an unprivileged scan (rows say `sshd_config: unreadable`); `AuthorizedKeysFile` inside a `Match` block is not evaluated; a symlinked authorized_keys is listed, not read; the attacker-key list holds only published fingerprints ([SSH Authorized Keys](COVERAGE.md#ssh-authorized-keys)).
 - Persistence (October 2026 extension backdoor): the user's crontab spool is usually root-only, so the Linux `@reboot` entry is seen only when rmguard runs with access to it (`crontab -l` is not run); a live reverse SSH tunnel (`ssh -N -R` to the attacker host) is not detected, since process arguments are never read and the tunnel's remote listener is not visible locally; `$TMPDIR/.stk_*` and the Windows scheduled task and Startup entry are not checked ([Persistence Artifacts](COVERAGE.md#persistence-artifacts)).
-- IDE extensions: the `~/.vscode-server` and `~/.cursor-server` remote-extension directories are not scanned.
 - Hooks: prose redaction of prompt text is a heuristic; short passwords after a flag with no secret-shaped name are not recognised; Devin CLI, Devin Desktop and Gemini CLI prompts are `undocumented` and graded as conversation text; a command built in a variable and passed to an exec call is advisory ([Hook surfaces](COVERAGE.md#hook-surfaces)).
 - `/proc` signals: off Linux neither signal is reported; an npx cache moved by `npm_config_cache` is not followed ([Design decisions](#design-decisions)).
 - OpenTelemetry: see [OPENTELEMETRY.md](OPENTELEMETRY.md#known-limits).

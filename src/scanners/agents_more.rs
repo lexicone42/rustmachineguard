@@ -404,6 +404,8 @@ fn mcp_row(
         }
     }
     Some(McpConfig {
+        read_by: Vec::new(),
+        inputs: Vec::new(),
         config_source: source.into(),
         config_path: shown(path),
         vendor: vendor.into(),
@@ -646,12 +648,46 @@ fn claude_shaped_mcp(
     scope: Scope,
     proj: Option<&Path>,
 ) {
-    let mut p = posture(agent, path, scope);
+    let file = McpFile {
+        agent,
+        source,
+        vendor,
+        read_by: &[],
+    };
+    shaped_mcp(cx, &file, path, scope, proj, |v, _| (v.clone(), Vec::new()));
+}
+
+/// Who an MCP file belongs to: the posture `agent`, the row's `config_source` and
+/// `vendor`, and (when more than one agent loads the file) `read_by`.
+struct McpFile<'a> {
+    agent: &'a str,
+    source: &'a str,
+    vendor: &'a str,
+    read_by: &'a [&'a str],
+}
+
+/// An MCP file whose own format `shape` turns into the Claude Desktop shape
+/// (`{"mcpServers": {name: {command, args, env, url, headers, type, disabled}}}`) plus
+/// the file's input ids; `shape` may add approval settings to the posture row. The file
+/// is read with [`read_cfg`] (no link followed out of a project) and its servers go
+/// through the shared parser, so `env` and `headers` are kept by shape only.
+fn shaped_mcp(
+    cx: &mut Ctx,
+    file: &McpFile,
+    path: &Path,
+    scope: Scope,
+    proj: Option<&Path>,
+    shape: impl Fn(&Value, &mut AgentPosture) -> (Value, Vec<String>),
+) {
+    let mut p = posture(file.agent, path, scope);
     match read_cfg(cx, path, scope, proj) {
         Read::Text(t) => {
             if let Some(v) = parse(path, &t) {
-                let (map, disabled, approved) = server_map(&v);
-                if let Some(row) = mcp_row(source, vendor, path, scope, map, &disabled) {
+                let (claude_shaped, inputs) = shape(&v, &mut p);
+                let (map, disabled, approved) = server_map(&claude_shaped);
+                if let Some(mut row) = mcp_row(file.source, file.vendor, path, scope, map, &disabled) {
+                    row.read_by = file.read_by.iter().map(|s| s.to_string()).collect();
+                    row.inputs = inputs;
                     p.mcp_server_count = row.server_count;
                     p.mcp_auto_approved_tools = approved;
                     cx.out.push(AgentsOut::Mcp(row));
