@@ -196,7 +196,7 @@ impl Scanner for PersistenceScanner {
             drop(_s);
             let _s = check("python_startup");
             for root in roots {
-                scan_site_packages(&root.path, &mut out);
+                scan_site_packages(&root.path, root.within.as_deref(), &mut out);
             }
         }
 
@@ -667,7 +667,11 @@ fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> Persiste
 /// Walk one site-packages root for `.pth` import lines and `sitecustomize.py` /
 /// `usercustomize.py`. RECORD files are read only if a hook candidate exists in the
 /// root, so a clean machine pays nothing beyond the directory listing.
-fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
+///
+/// With `within` (a project venv's containment root) the root is repository content: a
+/// `.pth` or RECORD whose real path leaves the project is never read, so a `.pth`
+/// committed as a link cannot put another file's `import` line in the report.
+fn scan_site_packages(root: &Path, within: Option<&Path>, out: &mut Vec<PersistenceArtifact>) {
     let Ok(entries) = crate::scanners::probe_read_dir(root) else {
         return;
     };
@@ -706,7 +710,12 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
             {
                 continue;
             }
-            if let Some(line) = pth_import_line(&path) {
+            let line = match within {
+                Some(w) => crate::scanners::read_head_bytes_within(&path, w, PTH_HEAD_BYTES)
+                    .and_then(|head| pth_import_line_from(&String::from_utf8_lossy(&head))),
+                None => pth_import_line(&path),
+            };
+            if let Some(line) = line {
                 candidates.push((path, "python-startup-hook".into(), format!("{name}: {line}")));
             }
         }
@@ -717,7 +726,7 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
 
     // Which root-level files do installed distributions claim? A hook nothing claims
     // was dropped by something other than an installer.
-    let (claimed_names, all_records_readable) = claimed_root_files(&dist_infos);
+    let (claimed_names, all_records_readable) = claimed_root_files(&dist_infos, within);
     for (path, kind, detail) in candidates {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let lower = name.to_ascii_lowercase();
@@ -747,7 +756,7 @@ fn scan_site_packages(root: &Path, out: &mut Vec<PersistenceArtifact>) {
 /// site module executes any line that begins with `import` (space or tab); everything
 /// else is a sys.path entry. Only the head is read.
 pub fn pth_import_line(path: &Path) -> Option<String> {
-    let head = read_head_bytes(path, 16 * 1024)?;
+    let head = read_head_bytes(path, PTH_HEAD_BYTES)?;
     let text = String::from_utf8_lossy(&head);
     pth_import_line_from(&text)
 }
@@ -762,7 +771,10 @@ pub fn pth_import_line_from(text: &str) -> Option<String> {
 /// Root-level file names (lowercased) listed in every readable RECORD / installed-files
 /// manifest, plus whether every manifest was readable. An unreadable manifest means we
 /// cannot assert "unclaimed", so callers treat that as claimed (conservative).
-fn claimed_root_files(dist_infos: &[PathBuf]) -> (std::collections::HashSet<String>, bool) {
+/// Bytes of a `.pth` file read for its import line.
+const PTH_HEAD_BYTES: usize = 16 * 1024;
+
+fn claimed_root_files(dist_infos: &[PathBuf], within: Option<&Path>) -> (std::collections::HashSet<String>, bool) {
     let mut names = std::collections::HashSet::new();
     let mut all_readable = true;
     for di in dist_infos {
@@ -776,7 +788,11 @@ fn claimed_root_files(dist_infos: &[PathBuf]) -> (std::collections::HashSet<Stri
             // verify; that is normal for egg-info and must not poison the verdict.
             continue;
         }
-        let Some(bytes) = read_head_bytes(&record, MAX_RECORD_BYTES) else {
+        let read = match within {
+            Some(w) => crate::scanners::read_head_bytes_within(&record, w, MAX_RECORD_BYTES),
+            None => read_head_bytes(&record, MAX_RECORD_BYTES),
+        };
+        let Some(bytes) = read else {
             all_readable = false;
             continue;
         };

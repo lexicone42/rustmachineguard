@@ -332,14 +332,14 @@ fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
         // git is guaranteed to look. Neither path checked it before.
         let cfg = dir.join("config");
         if is_bare_gitdir(dir)
-            && config_needs_git(&cfg)
+            && config_needs_git(&cfg, dir) == Some(true)
             && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
         {
             collect(&text, dir, "bare-root", true, out);
         }
         return;
     }
-    if !config_needs_git(&git_dir.join("config")) {
+    if config_needs_git(&git_dir.join("config"), dir) != Some(true) {
         return;
     }
     let gd = git_dir.to_string_lossy().to_string();
@@ -359,8 +359,14 @@ fn scan_repo_local(dir: &Path, out: &mut Vec<GitAutorunConfig>) {
 /// `ext` transport, or an include that could pull one in from elsewhere.
 ///
 /// Anything we cannot read -- a worktree's `.git` FILE, a permissions problem -- is
-/// handed to git anyway: the conservative direction is to spawn.
-fn config_needs_git(cfg: &Path) -> bool {
+/// handed to git anyway: the conservative direction is to spawn (`Some(true)`).
+///
+/// The config is repository content, contained in `root` (the project being walked): one
+/// whose real path leaves it (a nested repo's `config`, or the project's `.git`, committed
+/// or unpacked as a link to a file elsewhere), or that a link lands on a credential or
+/// agent-config file, is `None`: neither read here nor handed to git, whose `--file` /
+/// `--git-dir` would follow the link and put that file's keys in the report.
+fn config_needs_git(cfg: &Path, root: &Path) -> Option<bool> {
     const NEEDLES: &[&str] = &[
         "fsmonitor",
         "hookspath",
@@ -377,11 +383,16 @@ fn config_needs_git(cfg: &Path) -> bool {
         "include",
         "ext",
     ];
-    let Some(text) = crate::scanners::read_bounded(cfg) else {
-        return true;
+    if std::fs::canonicalize(cfg).is_err() {
+        crate::scanners::telemetry::note_read(cfg, "missing");
+        return Some(true);
+    }
+    crate::scanners::contained_real_path(cfg, root)?;
+    let Some(text) = crate::scanners::read_bounded_within(cfg, root) else {
+        return Some(true);
     };
     let lower = text.to_ascii_lowercase();
-    NEEDLES.iter().any(|n| lower.contains(n))
+    Some(NEEDLES.iter().any(|n| lower.contains(n)))
 }
 
 /// Trees skipped BY NAME: dependency and tooling dirs that are where nearly all of
@@ -506,7 +517,7 @@ fn scan_nested_repos_with(
             }
             if is_git_dir && l.has_config {
                 let cfg = dir.join("config");
-                if config_needs_git(&cfg)
+                if config_needs_git(&cfg, root) == Some(true)
                     && let Some(text) = run_git_config(&[], &[format!("--file={}", cfg.display())])
                 {
                     collect(&text, &dir, "nested-repo", true, out);
@@ -829,7 +840,7 @@ mod needs_git_tests {
             "boring",
             "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/x.git\n",
         );
-        assert!(!config_needs_git(&p));
+        assert_eq!(config_needs_git(&p, &std::env::temp_dir()), Some(false));
         let _ = std::fs::remove_file(p);
     }
 
@@ -845,7 +856,7 @@ mod needs_git_tests {
             ("cred", "[credential]\n\thelper = !f() { :; }; f\n"),
         ] {
             let p = tmp(n, body);
-            assert!(config_needs_git(&p), "{n}: {body:?}");
+            assert_eq!(config_needs_git(&p, &std::env::temp_dir()), Some(true), "{n}: {body:?}");
             let _ = std::fs::remove_file(p);
         }
     }
@@ -854,7 +865,13 @@ mod needs_git_tests {
     fn unreadable_config_is_left_to_git() {
         // A worktree's `.git` is a FILE, so `.git/config` does not exist; git resolves
         // the real gitdir itself, and we must not skip it.
-        assert!(config_needs_git(std::path::Path::new("/nonexistent/.git/config")));
+        assert_eq!(
+            config_needs_git(
+                std::path::Path::new("/nonexistent/.git/config"),
+                std::path::Path::new("/nonexistent")
+            ),
+            Some(true)
+        );
     }
 }
 

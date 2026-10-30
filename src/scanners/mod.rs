@@ -3083,6 +3083,86 @@ pub fn read_head_bytes_nofollow(path: &std::path::Path, max_bytes: usize) -> Opt
     Some(buf)
 }
 
+/// The real path of a repository file whose real path stays inside its project.
+/// `root` is the project's containment root
+/// ([`crate::scanners::skills::project_containment_root`]: the enclosing work tree, never
+/// HOME or above it). A file reached through a committed symlink, at the file or at any
+/// directory below `root`, whose real path leaves `root` is refused: never opened, never
+/// parsed into the report. A link that stays in the project (`CLAUDE.md -> AGENTS.md`, a
+/// pnpm `node_modules/x -> .pnpm/x@1/node_modules/x`) is followed, unless it lands on a
+/// credential, key or agent-config path (a project that is the home itself).
+pub fn contained_real_path(path: &std::path::Path, root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let Ok(real) = std::fs::canonicalize(path) else {
+        telemetry::note_read(path, "missing");
+        return None;
+    };
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if !real.starts_with(&real_root) {
+        telemetry::note_read(path, "refused (real path leaves the project)");
+        return None;
+    }
+    let lexical = path.strip_prefix(root).ok().map(|rel| real_root.join(rel));
+    if lexical.as_deref() != Some(real.as_path()) && redirected_to_sensitive(&real) {
+        telemetry::note_read(path, "refused (link to a sensitive path)");
+        return None;
+    }
+    Some(real)
+}
+
+/// A link's resolved target is a credential, key or agent-config file of this user.
+fn redirected_to_sensitive(real: &std::path::Path) -> bool {
+    use crate::scanners::persistence::{is_agent_credential_path, is_sensitive_read_name, is_sensitive_read_target};
+    if is_sensitive_read_name(real) || is_agent_credential_path(real, None) {
+        return true;
+    }
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|h| std::fs::canonicalize(&h).unwrap_or(h))
+        .is_some_and(|h| real.starts_with(&h) && is_sensitive_read_target(real, &h))
+}
+
+/// [`read_bounded`] for a repository file: read only when its real path stays inside the
+/// project ([`contained_real_path`]), opened by that real path without following a link.
+pub fn read_bounded_within(path: &std::path::Path, root: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let real = contained_real_path(path, root)?;
+    let Some((file, len)) = open_regular_nofollow(&real, Some(&real)) else {
+        telemetry::note_read(path, "refused (symlink or not a regular file)");
+        return None;
+    };
+    if len > MAX_CONFIG_SIZE {
+        telemetry::note_read(path, "too large");
+        eprintln!(
+            "warning: skipping {} ({} bytes exceeds {} byte limit)",
+            sanitize_display(&path.display().to_string(), 512),
+            len,
+            MAX_CONFIG_SIZE
+        );
+        return None;
+    }
+    let mut buf = String::new();
+    if file.take(MAX_CONFIG_SIZE).read_to_string(&mut buf).is_err() {
+        telemetry::note_read(path, "unreadable");
+        return None;
+    }
+    telemetry::note_read(path, "ok");
+    Some(buf)
+}
+
+/// [`read_head_bytes`] for a repository file ([`contained_real_path`]).
+pub fn read_head_bytes_within(path: &std::path::Path, root: &std::path::Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let real = contained_real_path(path, root)?;
+    let Some((file, _)) = open_regular_nofollow(&real, Some(&real)) else {
+        telemetry::note_read(path, "refused (symlink or not a regular file)");
+        return None;
+    };
+    telemetry::note_read(path, "ok");
+    let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
+    file.take(max_bytes as u64).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
 /// A machine-wide path (managed settings, system service directories). Debug builds
 /// honour `RMGUARD_TEST_SYSTEM_ROOT`, which re-roots these under a directory so the
 /// end-to-end tests do not read the host's /etc; release builds never do, so the knob

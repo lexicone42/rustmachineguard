@@ -214,18 +214,28 @@ fn apply_mcpjson_toggles(
     servers: &mut [McpServerDetail],
 ) {
     let mut lists = McpjsonApprovals::default();
+    // The project's two files are repository content, read as the settings scanner reads
+    // them (`read_hook_file` with the project as containment): one committed as a link
+    // leaving the project is never opened, so a file elsewhere cannot approve or block a
+    // server. The user's own file is read as it is.
     let files = [
-        proj.join(".claude").join("settings.json"),
-        proj.join(".claude").join("settings.local.json"),
-        home.join(".claude").join("settings.json"),
+        (proj.join(".claude").join("settings.json"), true),
+        (proj.join(".claude").join("settings.local.json"), true),
+        (home.join(".claude").join("settings.json"), false),
     ];
-    for p in &files {
+    for (p, repository) in &files {
         if !crate::scanners::probe_file(p) {
             continue;
         }
-        if let Some(v) =
-            crate::scanners::read_bounded(p).and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        {
+        let text = if *repository {
+            match crate::scanners::agent_settings::read_hook_file(p, "project", Some(proj), Some(proj), Some(home)) {
+                crate::scanners::agent_settings::SettingsRead::Content(c) => Some(c),
+                _ => None,
+            }
+        } else {
+            crate::scanners::read_bounded(p)
+        };
+        if let Some(v) = text.and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok()) {
             lists.add(&v);
         }
     }

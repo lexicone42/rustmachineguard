@@ -111,7 +111,15 @@ impl Scanner for RulesFilesScanner {
             .collect();
 
         let named: Vec<Vec<Pending>> = family("rules.project_files", roots.len(), || {
-            roots.iter().map(|(d, _)| named_rules_files(d)).collect()
+            roots
+                .iter()
+                .map(|&(d, user)| {
+                    // A project's files are repository content, contained in its work tree;
+                    // the home's are the user's own (a dotfiles link is followed).
+                    let within = (!user).then(|| crate::scanners::skills::project_containment_root(d, &home));
+                    named_rules_files(d, within.as_deref())
+                })
+                .collect()
         });
         let serena: Vec<(Vec<Pending>, Vec<Pending>)> = family("rules.serena", roots.len(), || {
             roots
@@ -330,13 +338,21 @@ impl Pending {
     }
 }
 
-/// The [`RULES_FILE_NAMES`] files of one root.
-fn named_rules_files(dir: &Path) -> Vec<Pending> {
+/// The [`RULES_FILE_NAMES`] files of one root. With `within` (a project's containment
+/// root) the root is a repository: a file whose real path leaves it (`CLAUDE.md` committed
+/// as a link to a file elsewhere) is never opened, while a link inside the project
+/// (`CLAUDE.md -> AGENTS.md`) is read as before. Without it (the home) a dotfiles link is
+/// followed.
+fn named_rules_files(dir: &Path, within: Option<&Path>) -> Vec<Pending> {
     let mut out = Vec::new();
     for name in RULES_FILE_NAMES {
         let path = dir.join(name);
+        let read = |p: &Path| match within {
+            Some(root) => crate::scanners::read_bounded_within(p, root),
+            None => read_bounded(p),
+        };
         if crate::scanners::probe_file(&path)
-            && let Some(content) = read_bounded(&path)
+            && let Some(content) = read(&path)
         {
             out.push(Pending::new(path, name.to_string(), content, Check::Rules));
         }

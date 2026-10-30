@@ -37,7 +37,9 @@ impl Scanner for VsCodeTasksScanner {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            parse_tasks(&path, &mut out);
+            // Repository content: read only while its real path stays in the project.
+            let root = crate::scanners::skills::project_containment_root(&dir, &home);
+            parse_tasks(&path, &root, &mut out);
         }
         out
     }
@@ -59,11 +61,14 @@ fn extract_project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
     )
 }
 
-fn parse_tasks(path: &Path, out: &mut Vec<VsCodeTask>) {
+/// Parse one project's `.vscode/tasks.json`. It is repository content: a `tasks.json`
+/// (or a `.vscode`) committed as a link whose real path leaves `root` is never opened
+/// ([`crate::scanners::read_bounded_within`]).
+fn parse_tasks(path: &Path, root: &Path, out: &mut Vec<VsCodeTask>) {
     if !crate::scanners::probe_file(path) {
         return;
     }
-    let Some(content) = read_bounded(path) else {
+    let Some(content) = crate::scanners::read_bounded_within(path, root) else {
         return;
     };
     // tasks.json permits comments and trailing commas (JSONC). serde_json rejects both,

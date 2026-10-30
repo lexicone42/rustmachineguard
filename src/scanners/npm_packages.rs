@@ -41,13 +41,13 @@ impl Scanner for NpmPackagesScanner {
         // dormant cache code (High) instead of Critical. Each npx cache directory is its
         // own class: whether one is active depends on the package it was fetched for.
         let mut uniq = std::collections::HashSet::new();
-        for (root, class) in node_modules_roots(platform) {
+        for (root, class, within) in node_modules_roots(platform) {
             if !seen.insert(root.clone()) {
                 continue;
             }
             let mut budget = MAX_PACKAGES_PER_ROOT;
             let mut found = Vec::new();
-            scan_root(&root, &mut found, &mut budget);
+            scan_root(&root, within.as_deref(), &mut found, &mut budget);
             out.extend(
                 found
                     .into_iter()
@@ -70,7 +70,12 @@ enum RootClass {
     NpxCache(PathBuf),
 }
 
-fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> {
+/// Each root with its class and, for a project's `node_modules`, the project's real
+/// containment root ([`crate::scanners::skills::project_containment_root`]): a project's
+/// tree is repository content, and nothing whose real path leaves that root is listed or
+/// read ([`scan_root`]). Global and npx-cache roots are the user's or the system's own
+/// installs and are read as they are (an `npm link` into a global prefix is normal there).
+fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass, Option<PathBuf>)> {
     let home = platform.home_dir();
     let mut roots = Vec::new();
 
@@ -88,7 +93,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> 
         "/usr/local/lib64/node_modules",
         "/opt/homebrew/lib/node_modules",
     ] {
-        roots.push((PathBuf::from(base), RootClass::Global));
+        roots.push((PathBuf::from(base), RootClass::Global, None));
     }
     // Per-user global prefixes, one per package manager.
     for rel in [
@@ -100,7 +105,7 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> 
         ".config/yarn/global/node_modules",
         ".local/share/pnpm/global/5/node_modules",
     ] {
-        roots.push((home.join(rel), RootClass::Global));
+        roots.push((home.join(rel), RootClass::Global, None));
     }
     // `npx <pkg>` without a local install lands in the npx cache, one hashed dir per
     // package set, which is where a documented `npx @deepseek-ai/dsh web` or an
@@ -109,13 +114,13 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> 
         let mut caches: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
         caches.sort();
         for c in caches {
-            roots.push((c.join("node_modules"), RootClass::NpxCache(c)));
+            roots.push((c.join("node_modules"), RootClass::NpxCache(c), None));
         }
     }
     // nvm keeps one global root per installed Node version.
     if let Ok(entries) = crate::scanners::probe_read_dir(home.join(".nvm/versions/node")) {
         for e in entries.flatten() {
-            roots.push((e.path().join("lib/node_modules"), RootClass::Global));
+            roots.push((e.path().join("lib/node_modules"), RootClass::Global, None));
         }
     }
     // Project-local installs in registered project roots and (primary pass) the cwd.
@@ -129,11 +134,13 @@ fn node_modules_roots(platform: &dyn PlatformInfo) -> Vec<(PathBuf, RootClass)> 
         )
     };
     for proj in projects {
-        roots.push((proj.join("node_modules"), RootClass::Project));
+        let root = crate::scanners::skills::project_containment_root(&proj, &home);
+        let within = std::fs::canonicalize(&root).unwrap_or(root);
+        roots.push((proj.join("node_modules"), RootClass::Project, Some(within)));
     }
     // A `lib64 -> lib` link would list the same tree twice: one root per real path.
     let mut real = std::collections::HashSet::new();
-    roots.retain(|(p, _)| {
+    roots.retain(|(p, _, _)| {
         crate::scanners::probe_dir(p) && real.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
     });
     roots
@@ -159,7 +166,20 @@ fn project_dirs(claude_json: &Path) -> Option<Vec<PathBuf>> {
 /// fields sit at the top of these files; a bounded head is enough.
 const IDENTITY_HEAD_BYTES: usize = 64 * 1024;
 
-fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
+/// A directory of a project tree may be listed: its real path stays inside `within` (the
+/// project's real containment root). Always true for a global or cache root.
+fn listable(dir: &Path, within: Option<&Path>) -> bool {
+    within.is_none_or(|w| std::fs::canonicalize(dir).is_ok_and(|r| r.starts_with(w)))
+}
+
+/// List one `node_modules`. With `within` (a project's tree) a directory reached through
+/// a link leaving the project (`node_modules -> ~/x`, `node_modules/a -> /elsewhere`) is
+/// not listed, and a `package.json` is read only by a real path inside the project: the
+/// package keeps its row by its directory name, with version "unknown".
+fn scan_root(root: &Path, within: Option<&Path>, out: &mut Vec<NpmPackage>, budget: &mut usize) {
+    if !listable(root, within) {
+        return;
+    }
     let Ok(entries) = crate::scanners::probe_read_dir(root) else {
         return;
     };
@@ -176,11 +196,13 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
         // direct dependencies as symlinks, so without this a pnpm project's transitive
         // dependencies (where an injected malicious dep lives) were never enumerated.
         if dir_name == ".pnpm" {
-            if let Ok(store) = crate::scanners::probe_read_dir(&p) {
+            if listable(&p, within)
+                && let Ok(store) = crate::scanners::probe_read_dir(&p)
+            {
                 for s in store.flatten() {
                     let nm = s.path().join("node_modules");
                     if crate::scanners::probe_dir(&nm) {
-                        scan_root(&nm, out, budget);
+                        scan_root(&nm, within, out, budget);
                     }
                 }
             }
@@ -199,6 +221,9 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
         }
         // A scope directory holds packages one level down: @scope/name.
         if dir_name.starts_with('@') {
+            if !listable(&p, within) {
+                continue;
+            }
             let Ok(scoped) = crate::scanners::probe_read_dir(&p) else {
                 continue;
             };
@@ -211,16 +236,22 @@ fn scan_root(root: &Path, out: &mut Vec<NpmPackage>, budget: &mut usize) {
                 let Some(leaf) = sp.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                push_package(&sp, &format!("{dir_name}/{leaf}"), out, budget);
+                push_package(&sp, &format!("{dir_name}/{leaf}"), within, out, budget);
             }
             continue;
         }
         *budget -= 1;
-        push_package(&p, dir_name, out, budget);
+        push_package(&p, dir_name, within, out, budget);
     }
 }
 
-fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, budget: &mut usize) {
+fn push_package(
+    dir: &Path,
+    installed_name: &str,
+    within: Option<&Path>,
+    out: &mut Vec<NpmPackage>,
+    budget: &mut usize,
+) {
     // The DIRECTORY name is the installed identity: npm resolves `require("x")` by
     // directory, and that is what a typosquat is installed as. Taking the name from
     // package.json let an attacker garble or pad the file and vanish from the catalog
@@ -228,7 +259,12 @@ fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, bud
     if !is_valid_npm_name(installed_name) {
         return;
     }
-    let parsed = parse_package_json_name_version(&dir.join("package.json"));
+    let manifest = dir.join("package.json");
+    let parsed = match within {
+        Some(w) => crate::scanners::read_head_bytes_within(&manifest, w, IDENTITY_HEAD_BYTES)
+            .and_then(|head| parse_package_json_head(&head)),
+        None => parse_package_json_name_version(&manifest),
+    };
     let version = parsed
         .as_ref()
         .map(|(_, v)| v.clone())
@@ -259,7 +295,7 @@ fn push_package(dir: &Path, installed_name: &str, out: &mut Vec<NpmPackage>, bud
     // node_modules/<parent>/node_modules/<child>. Same budget.
     let nested = dir.join("node_modules");
     if crate::scanners::probe_dir(&nested) {
-        scan_root(&nested, out, budget);
+        scan_root(&nested, within, out, budget);
     }
 }
 
@@ -308,7 +344,12 @@ pub fn is_valid_version(v: &str) -> bool {
 /// the report would hand a malicious package a channel into the operator's console.
 pub fn parse_package_json_name_version(path: &Path) -> Option<(String, String)> {
     let head = crate::scanners::read_head_bytes(path, IDENTITY_HEAD_BYTES)?;
-    let head = String::from_utf8_lossy(&head);
+    parse_package_json_head(&head)
+}
+
+/// [`parse_package_json_name_version`] on a head already read.
+fn parse_package_json_head(head: &[u8]) -> Option<(String, String)> {
+    let head = String::from_utf8_lossy(head);
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&head) {
         let name = parsed.get("name")?.as_str()?.trim();
         let version = parsed.get("version")?.as_str()?.trim();

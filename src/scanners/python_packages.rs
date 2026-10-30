@@ -37,6 +37,10 @@ pub(crate) struct PythonRoot {
     pub path: PathBuf,
     pub kind: PackageRootKind,
     pub name: Option<String>,
+    /// A project venv's real containment root: the root is repository content, and a file
+    /// in it whose real path leaves the project is never read (METADATA here, `.pth` and
+    /// RECORD in the persistence scanner). None for every root that is not a project's.
+    pub within: Option<PathBuf>,
 }
 
 impl Scanner for PythonPackagesScanner {
@@ -91,6 +95,7 @@ pub(crate) fn python_roots(platform: &dyn PlatformInfo) -> Vec<PythonRoot> {
             path,
             kind,
             name: name.map(|n| crate::scanners::sanitize_display(n, 128)),
+            within: None,
         });
     };
 
@@ -122,9 +127,21 @@ pub(crate) fn python_roots(platform: &dyn PlatformInfo) -> Vec<PythonRoot> {
         )
     };
     for proj in projects {
+        let root = crate::scanners::skills::project_containment_root(&proj, &home);
+        let within = std::fs::canonicalize(&root).unwrap_or(root);
         for venv in [".venv", "venv", "env", ".env"] {
-            for p in sorted_dirs(&proj.join(venv).join("lib")) {
-                push(&mut roots, p.join("site-packages"), PackageRootKind::Project, None);
+            // A venv committed as a link out of the project (`.venv -> ~/x`) is not listed.
+            let lib = proj.join(venv).join("lib");
+            if std::fs::canonicalize(&lib).is_ok_and(|r| !r.starts_with(&within)) {
+                continue;
+            }
+            for p in sorted_dirs(&lib) {
+                roots.push(PythonRoot {
+                    path: p.join("site-packages"),
+                    kind: PackageRootKind::Project,
+                    name: None,
+                    within: Some(within.clone()),
+                });
             }
         }
     }
@@ -202,8 +219,12 @@ pub(crate) fn python_roots(platform: &dyn PlatformInfo) -> Vec<PythonRoot> {
     // One row per real directory, first kind wins. Not found: dropped.
     let mut seen = std::collections::HashSet::new();
     roots.retain(|r| {
-        crate::scanners::probe_dir(&r.path)
-            && seen.insert(std::fs::canonicalize(&r.path).unwrap_or_else(|_| r.path.clone()))
+        let real = std::fs::canonicalize(&r.path).unwrap_or_else(|_| r.path.clone());
+        // A project root whose real path leaves the project (`site-packages -> ~/x`).
+        if r.within.as_ref().is_some_and(|w| !real.starts_with(w)) {
+            return false;
+        }
+        crate::scanners::probe_dir(&r.path) && seen.insert(real)
     });
     roots
 }
@@ -386,7 +407,11 @@ fn scan_root(root: &PythonRoot, out: &mut Vec<PythonPackage>) {
             .and_then(|(stem, _)| stem.rsplit_once('-'))
             .map(|(n, v)| (n.to_string(), v.to_string()))
             .filter(|(_, v)| v.chars().next().is_some_and(|c| c.is_ascii_digit()));
-        let ident = from_dir.or_else(|| parse_metadata_name_version(&meta));
+        let ident = from_dir.or_else(|| match &root.within {
+            Some(w) => crate::scanners::read_head_bytes_within(&meta, w, METADATA_HEAD_BYTES)
+                .and_then(|head| parse_metadata_head(&head)),
+            None => parse_metadata_name_version(&meta),
+        });
         if let Some((name, version)) = ident
             && crate::scanners::npm_packages::is_valid_npm_name(&name)
             && crate::scanners::npm_packages::is_valid_version(&version)
@@ -410,8 +435,16 @@ fn scan_root(root: &PythonRoot, out: &mut Vec<PythonPackage>) {
 pub fn parse_metadata_name_version(path: &Path) -> Option<(String, String)> {
     // A bounded head, never a size refusal: a METADATA padded past 1 MiB used to make
     // the distribution vanish from the inventory. The headers are at the top.
-    let head = crate::scanners::read_head_bytes(path, 64 * 1024)?;
-    let content = String::from_utf8_lossy(&head).into_owned();
+    let head = crate::scanners::read_head_bytes(path, METADATA_HEAD_BYTES)?;
+    parse_metadata_head(&head)
+}
+
+/// Bytes of a METADATA / PKG-INFO head read for an identity.
+const METADATA_HEAD_BYTES: usize = 64 * 1024;
+
+/// [`parse_metadata_name_version`] on a head already read.
+fn parse_metadata_head(head: &[u8]) -> Option<(String, String)> {
+    let content = String::from_utf8_lossy(head).into_owned();
     let mut name = None;
     let mut version = None;
     for line in content.lines() {
