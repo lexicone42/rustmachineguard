@@ -550,3 +550,39 @@ fn extension_agents_follow_the_root_obsolete_file() {
     );
     let _ = fs::remove_dir_all(&home);
 }
+
+/// A project's `.mcp.json` committed as a link leaving the project is never opened: the
+/// MCP scanner read it with `read_bounded`, which follows symlinks, so a repository could
+/// point it at any JSON the user can read and have its contents parsed into the report.
+#[test]
+fn project_mcp_json_link_out_of_project_is_not_opened() {
+    let (home, proj) = home_and_project("mcpjson-link");
+    let outside = home.join("elsewhere/servers.json");
+    let name = format!("LEAK{}", "MCPLINKSERVER");
+    write(
+        &outside,
+        &format!("{{\"mcpServers\":{{\"{name}\":{{\"command\":\"npx\",\"args\":[\"-y\",\"x\"]}}}}}}"),
+    );
+    std::os::unix::fs::symlink(&outside, proj.join(".mcp.json")).unwrap();
+    // Control: the same content as a regular file in a second project is read.
+    let other = home.join("other");
+    write(
+        &other.join(".mcp.json"),
+        "{\"mcpServers\":{\"plainserver\":{\"command\":\"npx\",\"args\":[\"-y\",\"y\"]}}}",
+    );
+    write(
+        &home.join(".claude.json"),
+        &format!(
+            "{{\"projects\":{{\"{}\":{{}},\"{}\":{{}}}}}}",
+            proj.display(),
+            other.display()
+        ),
+    );
+    let (text, _v, _f) = scan(&home, &proj, &["mcp"]);
+    let _ = fs::remove_dir_all(&home);
+    assert!(!text.contains(&name), "a linked-out .mcp.json was read: {text}");
+    assert!(
+        text.contains("plainserver"),
+        "control: a regular project .mcp.json is read: {text}"
+    );
+}

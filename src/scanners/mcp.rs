@@ -88,8 +88,19 @@ impl Scanner for McpScanner {
             if !crate::scanners::probe_file(&mcp_json) {
                 continue;
             }
-            let Some(proj_content) = crate::scanners::read_bounded(&mcp_json) else {
-                continue;
+            // Repository content: read the way every other project file is
+            // (`read_hook_file` with the project as containment). A `.mcp.json` committed as
+            // a link leaving the project is never opened; `read_bounded` followed it, so a
+            // repository could point it at any file the user can read.
+            let proj_content = match crate::scanners::agent_settings::read_hook_file(
+                &mcp_json,
+                "project",
+                Some(&proj),
+                Some(&proj),
+                Some(&home),
+            ) {
+                crate::scanners::agent_settings::SettingsRead::Content(c) => c,
+                _ => continue,
             };
             let Ok(pv) = serde_json::from_str::<serde_json::Value>(&proj_content) else {
                 continue;
