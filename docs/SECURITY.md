@@ -59,7 +59,7 @@ next to the behaviour they limit in [COVERAGE.md](COVERAGE.md); the longer lists
 
 Floors (documented but not read):
 - Claude Code: inline hooks in a marketplace entry (`marketplace.json` `plugins[].hooks`), link-mode and local-path plugins (an `installPath` outside the cache), `~/.claude/dev-mods` session mods, `CLAUDE_CODE_PLUGIN_CACHE_DIR` relocation, plugin monitors, and data flows inside a mod that use no process call (`$.fs.read` of a credential then `$.http.fetch`).
-- Cursor: team hooks (cloud-distributed, not on disk as configuration) and installed marketplace plugins (their on-disk location is not documented).
+- Cursor: team hooks are listed by file name from `~/.cursor/managed/team_<id>/hooks/` (the desktop app's local copy) and not parsed; installed marketplace plugins (their on-disk location is not documented).
 - Codex: intermediate project config layers between the repository root and the cwd, `commandWindows` (not pattern-checked), and plugin activation in `config.toml` `[plugins."p@m"] enabled` (every cached plugin's graded version is treated as active).
 - Copilot CLI: `COPILOT_HOME` relocation, Windows registry policies, and agent-scoped hooks in custom-agent frontmatter.
 - Gemini CLI: `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the `hooksConfig.disabled` per-hook list.
@@ -83,8 +83,8 @@ Floors: what is inventoried but not graded, or not read:
   `.continueignore` file is not read.
 - **Aider:** a `read` or `load` path outside the project, and `.aider.tags.cache.v*`, are
   listed or ignored, not read. `env-file` is not read.
-- **Goose:** `GOOSE_MODE` from the environment, `GOOSE_PATH_ROOT`, recipes, plugins and
-  hooks under `.agents/`, and `~/.local/state/goose/logs` (LLM request logs) are not read.
+- **Goose:** `GOOSE_MODE` from the environment, `GOOSE_PATH_ROOT`, recipes, plugin
+  hooks under `.agents/` (plugin skills are walked, see `.agents/` above), and `~/.local/state/goose/logs` (LLM request logs) are not read.
 - **Zed:** the Rules Library (an LMDB file) is not read. The threads database is counted
   and sampled as bytes.
 - **Junie:** the IDE plugin's Brave Mode, allowlist and global MCP live in IDE settings
@@ -97,6 +97,52 @@ Floors: what is inventoried but not graded, or not read:
   rules and MCP servers, and the state database are not read.
 - **All agents:** environment-variable relocations (`CLINE_DIR`, `CONTINUE_GLOBAL_DIR`,
   `JUNIE_HOME`, `XDG_*`) are the scanning user's own and are not applied.
+
+### New surfaces of covered agents
+
+Floors of [the new surfaces](COVERAGE.md#new-surfaces-of-covered-agents-and-the-shared-agents-directory)
+(documented but not read, or read but not graded):
+
+- **Cursor:** Run Modes chosen in the UI ("Run Everything") and the team dashboard's
+  Auto-review configuration are not on disk as documented files. `permissions.json`
+  `autoRun` steering text is not read. `sandbox.json` path lists are not graded.
+- **Devin:** where Devin Desktop stores its Allow/Deny/Ask lists and the legacy Cascade
+  auto-execution level (`~/.codeium/user_settings.pb`, a binary protobuf) is not
+  documented; neither is read. `local_tools_bypass_permissions` is not graded (its reach
+  is not documented). `~/.codeium/windsurf/memories/global_rules.md` is not in current
+  documentation and is not read. Ancestor `.devin/` directories between the repository
+  root and the cwd are not walked.
+- **Copilot CLI:** `allowedUrls`, `askUser`, `sandbox.*` and `statusLine.command` in
+  `settings.json`, `localModel.args` in `providers.json` (never opened), plugin LSP files,
+  and custom-agent `mcp-servers` frontmatter are not read. The repository settings files
+  document no permission key, so only their hooks are read (settings scanner).
+- **Gemini CLI:** the administrator's policy directory (`/etc/gemini-cli/policies`) and
+  `policyPaths` are not graded; workspace `.gemini/policies/` is documented as
+  non-functional and is not read; `tools.allowed` and `general.defaultApprovalMode` in
+  `settings.json` are not graded here.
+- **Codex:** `/etc/codex/requirements.toml` only restricts and is not graded (its hooks
+  are read); execpolicy rules are read lexically, not evaluated as Starlark, and only a
+  one-token interpreter pattern is graded; `.agents/plugins/marketplace.json` lists
+  plugin sources and is not read (installed plugins are read under `~/.codex/plugins`);
+  `/etc/codex/skills` is not walked; nested `.agents/skills` between the cwd and the
+  repository root are not walked.
+- **Kiro:** `sandbox.json` is opt-in (off without it) and a project file "can only
+  tighten" the global one, and `cli.json` documents no approval key: neither is read.
+  Markdown custom agents, `/etc/kiro/managed-settings.json` (deny and ask only) and the
+  IDE's `kiroAgent.agentAutonomy` are not read. Hooks or steering inside a power are not
+  documented.
+- **OpenCode:** the remote `.well-known/opencode` configuration has no documented local
+  copy; `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG_CONTENT` are the
+  scanning user's environment and are not applied; macOS MDM plists are not read;
+  `external_directory` and `doom_loop` permissions are not graded; tool files are listed,
+  not read.
+- **`.agents/`:** an agent counts as a reader only when its configuration home exists
+  (an agent installed but never run is not listed). Skill frontmatter `mcpServers` (Amp)
+  is not parsed. AGENTS.md is read by the rules scanner and is not attributed (nearly
+  every agent reads it).
+- **Other agents' skills:** Claude Code's dynamic context, `allowed-tools` grants and
+  frontmatter hooks are not graded for them (Copilot CLI documents `allowed-tools: "*"`;
+  not graded).
 
 ### Floors stated elsewhere
 

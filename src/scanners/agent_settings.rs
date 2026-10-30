@@ -141,6 +141,7 @@ impl Scanner for AgentSettingsScanner {
         // the cwd under a symlinked HOME (macOS /var) names ~/.claude/settings.json again.
         let mut seen = std::collections::HashSet::new();
         results.retain(|r| seen.insert(crate::scanners::skills::dedupe_key(Path::new(&r.path))));
+        attribute_claude_hooks(&home, &mut results);
         // The user's own notification hook is graded like the http hook to its host (Low);
         // its inventory marker says so too, not DANGEROUS (review of b9cda85).
         for r in results
@@ -194,6 +195,22 @@ pub(crate) struct PendingRules {
     source: String,
     path: PathBuf,
     home: PathBuf,
+}
+
+/// The other agents that run a Claude Code settings file's hooks
+/// ([`crate::scanners::dot_agents::claude_settings_readers`]), on every Claude Code row
+/// with hooks; each source's readers are looked up once.
+fn attribute_claude_hooks(home: &Path, rows: &mut [AgentSettings]) {
+    let mut cache: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for r in rows
+        .iter_mut()
+        .filter(|r| r.framework == "claude-code" && !r.hooks.is_empty())
+    {
+        let readers = cache
+            .entry(r.source.clone())
+            .or_insert_with(|| crate::scanners::dot_agents::claude_settings_readers(home, &r.source));
+        r.read_by = readers.clone();
+    }
 }
 
 /// Fill each pending row's `permission_rules` exactly as [`parse_settings_file_in`] would
@@ -853,6 +870,7 @@ fn parse_settings_file_deferred(
         } else {
             None
         },
+        read_by: Vec::new(),
     };
     Some((settings, pending))
 }

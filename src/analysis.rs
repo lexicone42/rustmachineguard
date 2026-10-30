@@ -4207,6 +4207,11 @@ fn server_origin(report: &ScanReport, cfg: &crate::models::McpConfig, s: &crate:
 /// version. Marketplace clones and orphaned versions of plugins that are not installed
 /// stay in the inventory but do not load, so they supply no capability.
 fn skill_loads(skill: &crate::models::AgentSkill) -> bool {
+    // Another agent's skills (Cursor, Copilot, the shared `.agents/`, ...) are not in
+    // the Claude Code session whose connected capabilities this surface sums.
+    if crate::scanners::skills::foreign_framework(&skill.framework) {
+        return false;
+    }
     match &skill.provenance {
         None => true,
         Some(p) => p.marketplace.is_none() || p.active || p.synced,

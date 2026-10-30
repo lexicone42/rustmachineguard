@@ -296,6 +296,13 @@ fn agent_name(agent: &str) -> &'static str {
         "junie" => "Junie",
         "amp" => "Amp",
         "warp" => "Warp",
+        "cursor" => "Cursor",
+        "devin" => "Devin",
+        "copilot" => "Copilot CLI",
+        "gemini" => "Gemini CLI",
+        "codex" => "Codex",
+        "kiro" => "Kiro",
+        "opencode" => "OpenCode",
         _ => "agent",
     }
 }
@@ -317,9 +324,22 @@ fn agent_name(agent: &str) -> &'static str {
 ///   default): Medium "Hook"; the user's own hooks are inventory;
 /// - an API-key file other users or the group can read: the Mistral Vibe `.env` rule.
 ///
+/// - a sandbox turned off (Codex `danger-full-access`, Cursor `insecure_none`:
+///   `sandbox-off`): Low in the user's own configuration (commands still ask unless
+///   approved), Medium in a repository file; a sandbox opened to all network traffic
+///   (`sandbox-network`): Low from a repository, inventory in the user's own file;
+/// - a command a repository file makes the agent start by itself (Copilot CLI
+///   `.github/lsp.json` language servers, a Gemini CLI subagent's `!command` auth value):
+///   Medium "Auto-run task";
+/// - an administrator's file (`scope: managed`: Codex `managed_config.toml`, OpenCode's
+///   managed directory, Cursor team hooks): inventory.
+///
 /// File edits, browser use and per-tool lists are inventory.
 fn agent_posture_findings(report: &ScanReport, f: &mut Vec<Finding>) {
     for p in &report.surfaces.agent_postures {
+        if p.scope == "managed" {
+            continue;
+        }
         let name = agent_name(&p.agent);
         let repo = p.scope == "project";
         for a in &p.auto_approve {
@@ -328,10 +348,19 @@ fn agent_posture_findings(report: &ScanReport, f: &mut Vec<Finding>) {
                 "shell-commands" => "shell commands run without asking",
                 "untrusted-projects" => "every folder is trusted: project MCP servers and settings load without asking",
                 "mcp-tools" if repo => "MCP tools run without asking",
+                "sandbox-off" => "the sandbox is turned off: approved commands run with full access",
+                "sandbox-network" if repo => "the sandbox allows all outbound network traffic",
                 _ => continue,
             };
             let mcp = a.reach == "mcp-tools";
-            let (severity, note) = if mcp {
+            let sandbox = a.reach.starts_with("sandbox-");
+            let (severity, note) = if sandbox {
+                match (a.reach.as_str(), repo) {
+                    ("sandbox-off", true) => (Severity::Medium, " (set by the repository)"),
+                    (_, true) => (Severity::Low, " (set by the repository)"),
+                    _ => (Severity::Low, ""),
+                }
+            } else if mcp {
                 (Severity::Medium, " (set by the repository)")
             } else if a.default {
                 (Severity::Low, " (product default)")
@@ -361,11 +390,16 @@ fn agent_posture_findings(report: &ScanReport, f: &mut Vec<Finding>) {
             });
         }
         if repo && !p.auto_run_commands.is_empty() {
+            let when = match p.agent.as_str() {
+                "copilot" => "starts a language server command once the folder is trusted",
+                "gemini" => "makes a subagent run a shell command for its credentials",
+                _ => "runs a command after every edit",
+            };
             f.push(Finding {
                 severity: Severity::Medium,
                 category: "Auto-run task".into(),
                 title: format!(
-                    "{name}: the repository's config runs a command after every edit ({})",
+                    "{name}: the repository's config {when} ({})",
                     p.auto_run_commands.join("; ")
                 ),
                 location: p.path.clone(),

@@ -128,7 +128,7 @@ Hooks of every type (command, exec-form `args`, http, prompt, agent, MCP tool, i
 
 *Cline, Roo Code, Continue, Aider, Goose, Zed, JetBrains Junie, Amp, Warp.*
 
-Their MCP servers (`mcp_configs`, source = the agent), rules and instruction files (`rules_files`, `framework` = the agent, with scope), history stores (`transcripts`), and one `agent_postures` row per configuration source: approval settings, commands run after edits, hook executables, hot-load paths, key files by mode. See [More agents](#more-agents-cline-roo-code-continue-aider-goose-zed-junie-amp-warp)
+Their MCP servers (`mcp_configs`, source = the agent), rules and instruction files (`rules_files`, `framework` = the agent, with scope), history stores (`transcripts`), and one `agent_postures` row per configuration source: approval settings, commands run after edits, hook executables, hot-load paths, key files by mode. See [More agents](#more-agents-cline-roo-code-continue-aider-goose-zed-junie-amp-warp). The same scanner reads the newer configuration files of Cursor, Devin, GitHub Copilot CLI, Gemini CLI, Codex, Kiro and OpenCode (permission, sandbox and policy files, LSP launch commands, execpolicy rules, custom agents) and the MCP files of a skill in the shared `.agents/` directory: see [New surfaces of covered agents](#new-surfaces-of-covered-agents-and-the-shared-agents-directory)
 
 ### AI Credentials
 
@@ -588,6 +588,69 @@ File edits, browser use, MCP tools a user pre-approves, and per-tool lists are i
 
 Floors of these agents (what is inventoried but not graded, or not read) are listed in
 [SECURITY.md](SECURITY.md#more-agents).
+
+## New surfaces of covered agents, and the shared `.agents/` directory
+
+Agents whose hooks and MCP files were already read (see [Hook surfaces](#hook-surfaces))
+keep more configuration than that. Each file below is read as the `agents` scanner reads
+the others (through the bounded no-follow reader; a repository file that links out of its
+project is recorded and not opened; credential files by mode only), from the vendor's own
+documentation fetched 2026-10-30. Rows: `agent_postures` (`agent` = `cursor`, `devin`,
+`copilot`, `gemini`, `codex`, `kiro`, `opencode`), `mcp_configs`, `rules_files`,
+`transcripts`; skill and subagent directories are walked by the skills scanner
+(`agent_skills`, `framework` = `cursor`, `cursor-agent`, `copilot`, `copilot-agent`,
+`gemini`, `gemini-agent`, `kiro`, `kiro-power`, `opencode`, `devin`, `devin-agent`,
+`agents`, `agents-plugin`, `agents-subagent`). Another agent's skill or subagent file is
+inventoried (hash, capabilities, link judgement) without Claude Code's load-time
+semantics: `!`cmd`` dynamic context, `allowed-tools` grants and frontmatter `hooks:` are
+not graded for it, and it does not feed the Claude Code toxic-flow surface.
+
+| Agent | Read | Graded | Sources |
+|---|---|---|---|
+| Cursor | `~/.cursor/permissions.json` and `.cursor/permissions.json` (`terminalAllowlist`, `mcpAllowlist`; the two are concatenated); `~/.cursor/sandbox.json` and `.cursor/sandbox.json`; team hooks in `~/.cursor/managed/team_<id>/hooks/` (listed, managed); `.cursor/rules/`; skills `.cursor/skills/`, `~/.cursor/skills/`; subagents `.cursor/agents/`, `~/.cursor/agents/` | a terminal allowlist entry that is an interpreter (`bash`, `python3:*`) or `*`: shell commands; `mcpAllowlist` `*:*`: MCP tools (repository only); `type: "insecure_none"` ("disables the sandbox entirely"): sandbox off; `networkPolicy.default: "allow"`: open network (repository only) | [permissions](https://cursor.com/docs/reference/permissions.md), [sandbox](https://cursor.com/docs/reference/sandbox.md), [hooks](https://cursor.com/docs/hooks.md), [skills](https://cursor.com/docs/skills.md), [subagents](https://cursor.com/docs/subagents.md), [rules](https://cursor.com/docs/rules.md) |
+| Devin (Desktop, Devin Local, CLI) | `~/.config/devin/mcp_config.json`, `.devin/mcp_config.json`, `.devin/mcp_config.local.json`, `~/.codeium/mcp_config.json`, `mcpServers` in `~/.config/devin/config.json` (before v3000.3); `~/.config/devin/config.json` and `.devin/config{,.local}.json` `permission_mode`, `permissions.allow`; rules `.devin/rules/`, `.devin/global_rules.md`, `~/.devin/rules/`, `~/.devin/global_rules.md`, `~/.config/devin/AGENTS.md`, `.windsurf/rules/`; workflows `.devin/workflows/`, `.windsurf/workflows/`, `~/.codeium/windsurf/global_workflows/`; skills `.devin/skills/`, `.windsurf/skills/`, `~/.config/devin/skills/`, `~/.codeium/windsurf/skills/`; subagents `.devin/agents/`, `~/.config/devin/agents/`; `~/.windsurf/transcripts/` | `permission_mode: "dangerous"` (Bypass: "all tool calls are auto-approved", user config only): every action; `permissions.allow` `Exec(<interpreter>)` or `Exec(*)`: shell commands | [MCP](https://docs.devin.ai/cli/extensibility/mcp/configuration.md), [config file](https://docs.devin.ai/cli/reference/configuration/config-file.md), [permissions](https://docs.devin.ai/cli/reference/permissions.md), [rules](https://docs.devin.ai/cli/extensibility/rules.md), [skills](https://docs.devin.ai/cli/extensibility/skills/overview.md), [Desktop FAQ](https://docs.devin.ai/desktop/devin-desktop-faq.md), [archived Cascade hooks page](http://web.archive.org/web/20260513194224/https://docs.windsurf.com/windsurf/cascade/hooks) (transcripts) |
+| GitHub Copilot CLI | `~/.copilot/settings.json` `defaultPermissionMode`; `~/.copilot/permissions-config.json` `tool_approvals`; `~/.copilot/lsp-config.json` and `.github/lsp.json` `lspServers`; `~/.copilot/providers.json` by mode; `~/.copilot/session-state/`; skills `.github/skills/`, `~/.copilot/skills/`; custom agents `.github/agents/`, `~/.copilot/agents/` | `defaultPermissionMode: "allow-all"`: every action; a saved `commandIdentifiers` approval `<interpreter>:*`: shell commands; `kind: "mcp"` with `toolName: null`: MCP tools (inventory, the user's own); a repository's LSP server command ("automatically starts" once the folder is trusted): Medium Auto-run task; a readable `providers.json` ("stored as plain text"): Secret exposure | [config directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference), [command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) |
+| Gemini CLI | `~/.gemini/policies/*.toml` `[[rule]]`; subagents `.gemini/agents/*.md`, `~/.gemini/agents/*.md` (the `auth` block); skills `.gemini/skills/`, `~/.gemini/skills/` | `toolName = "*"`, `decision = "allow"` with no `modes`: every action; `run_shell_command` allowed with no `commandPrefix`, `commandRegex` or `argsPattern`: shell commands; `mcpName = "*"` / `toolName = "mcp_*"`: MCP tools (inventory); a repository subagent's `!command` auth value ("Execute a shell command"): Medium Auto-run task | [policy engine](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/policy-engine.md), [subagents](https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md), [remote agents](https://github.com/google-gemini/gemini-cli/blob/main/docs/core/remote-agents.md), [skills](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/skills.md) |
+| Codex | `~/.codex/config.toml`, `.codex/config.toml`, `/etc/codex/managed_config.toml` (managed: inventory) `sandbox_mode`, `default_permissions`, `approval_policy`; execpolicy `~/.codex/rules/*.rules`, `.codex/rules/*.rules` (`prefix_rule`, read lexically); custom agents `~/.codex/agents/*.toml`, `.codex/agents/*.toml` (rules rows) | `danger-full-access` (or `:danger-full-access`) with `approval_policy = "never"`: every action; `danger-full-access` alone: sandbox off; a `prefix_rule` whose one-token pattern is an interpreter, with `decision = "allow"` or no decision ("defaults to `allow`"): shell commands | [config reference](https://learn.chatgpt.com/docs/config-file/config-reference.md), [rules](https://learn.chatgpt.com/docs/agent-configuration/rules.md), [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents.md), [managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration.md) |
+| Kiro | `~/.kiro/settings/permissions.yaml` and `~/.kiro/workspace-roots/<hash>/permissions.yaml` (`rules`); custom agents `~/.kiro/agents/*.json`, `.kiro/agents/*.json` (`permissions`); `~/.kiro/settings/mcp.json`, `.kiro/settings/mcp.json` (`autoApprove` counted); installed powers `~/.kiro/powers/installed/<name>/mcp.json` and their skills; skills `.kiro/skills/`, `~/.kiro/skills/` | `capability: all` allowed with no `match`: every action; `shell` allowed with no `match`: shell commands; `mcp`: MCP tools; `autoApprove` in a repository's `mcp.json`: Medium MCP auto-approval | [permissions](https://kiro.dev/docs/permissions.md), [MCP configuration](https://kiro.dev/docs/mcp/configuration.md), [custom agents](https://kiro.dev/docs/custom-agents/configuration-reference.md), [powers](https://kiro.dev/docs/powers/create.md), [configuration](https://kiro.dev/docs/configuration.md) |
+| OpenCode | `~/.config/opencode/opencode.json{,c}`, a project's `opencode.json{,c}`, managed `/etc/opencode/` (macOS `/Library/Application Support/opencode/`; inventory) `permission` and `agent.<name>.permission`; `agents/`, `modes/`, `commands/` (and singular names) in `.opencode/` and `~/.config/opencode/` (rules rows); `tools/` (listed); skills `.opencode/skills/`, `~/.config/opencode/skills/` | `"permission": "allow"` or `"*": "allow"`: every action; `bash: "allow"` (or `{"*": "allow"}`): shell commands; "Most permissions default to `allow`": a user config that sets no `bash` permission is a Low product default | [config](https://opencode.ai/docs/config/), [permissions](https://opencode.ai/docs/permissions/), [agents](https://opencode.ai/docs/agents/), [custom tools](https://opencode.ai/docs/custom-tools/), [skills](https://opencode.ai/docs/skills/) |
+
+The ladder is the one above, with two additions for sandboxes: a sandbox turned off is
+Low in the user's own file (each command still asks unless approved) and Medium from a
+repository; a sandbox opened to all network traffic is Low from a repository and
+inventory in the user's own file. An administrator's file (`scope: managed`) is
+inventory.
+
+**The shared `.agents/` directory** belongs to no single agent, so it is walked once
+(`scanners::dot_agents`): `.agents/skills/` in each project and `~/.agents/skills/`
+(`framework: agents`), `~/.agents/plugins/<plugin>/` (`agents-plugin`, Goose's installed
+plugins), `.agents/agents/` (`agents-subagent`, Devin), and each skill's `mcp.json` (Amp:
+"Skills can define MCP servers through either an `mcp.json` file or the `mcpServers` field
+in frontmatter"; MCP rows `Amp skill (...)`). Every row carries `read_by`: the agents whose
+documentation says they load that directory and that have a configuration home on this
+machine (`~/.codex`, `~/.gemini`, `~/.copilot`, `~/.cursor`, `~/.config/opencode`,
+`~/.config/amp`, `~/.config/goose`, `~/.config/devin` or `~/.devin`; existence only).
+Documented readers of `.agents/skills`: Codex, Gemini CLI, Copilot CLI, Cursor, OpenCode,
+Amp, Goose and Devin ([Codex](https://learn.chatgpt.com/docs/build-skills.md),
+[Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/skills.md),
+[Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
+[Cursor](https://cursor.com/docs/skills.md), [OpenCode](https://opencode.ai/docs/skills/),
+[Amp](https://ampcode.com/docs/customize/skills),
+[Goose](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/context-engineering/using-skills.md),
+[Devin](https://docs.devin.ai/cli/extensibility/skills/overview.md)). Kiro documents
+`.kiro/skills` only and Claude Code does not read `.agents/`.
+
+**Claude Code hooks run by other agents.** A Claude Code settings file's hooks are run by
+Cursor (`.claude/settings.local.json`, `.claude/settings.json`, `~/.claude/settings.json`;
+"on by default", [third-party hooks](https://cursor.com/docs/reference/third-party-hooks.md)),
+GitHub Copilot CLI (the repository's `.claude/settings.json` and `settings.local.json`,
+[config directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference))
+and Devin CLI / Devin Local (all four, [hooks](https://docs.devin.ai/cli/extensibility/hooks/overview.md)).
+Each Claude Code `agent_settings` row with hooks lists in `read_by` those of them with a
+configuration home on this machine; the terminal report shows "hooks also run by". The
+grade of a hook does not change: it was already graded as the repository's or the user's.
+
+Floors of these surfaces are listed in [SECURITY.md](SECURITY.md#new-surfaces-of-covered-agents).
 
 ## Temporal & cross-server analysis
 

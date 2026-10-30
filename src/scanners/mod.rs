@@ -6,6 +6,7 @@ pub mod ai_tools;
 pub mod browser_extensions;
 pub mod cloud_credentials;
 pub mod container_tools;
+pub mod dot_agents;
 pub mod env_files;
 pub mod exposure;
 pub mod extensions;

@@ -278,6 +278,9 @@ impl Scanner for SkillsScanner {
             });
         }
 
+        // Other agents' skill and subagent directories, and the shared `.agents/`.
+        other_agent_walks(&home, &project_dirs, &ctx, &mut results);
+
         // Dedupe by scope and path, with the DIRECTORY canonicalized (not the file: two
         // links to one target are two skills). HOME and its ancestors are never walked as
         // a project (PassScope::excluding_scan_homes), so a global and a project entry with
@@ -1110,10 +1113,18 @@ fn finish_skill(
         sha256,
         hashed,
         capabilities,
-        dynamic_commands,
-        unrestricted_bash,
-        hooks_map,
+        mut dynamic_commands,
+        mut unrestricted_bash,
+        mut hooks_map,
     } = a;
+    // Dynamic context (`!`cmd``), `allowed-tools` grants and frontmatter `hooks:` are
+    // Claude Code's semantics; another agent's skill or subagent file is inventoried
+    // (hash, capabilities, link judgement) without them.
+    if foreign_framework(framework) {
+        dynamic_commands.clear();
+        unrestricted_bash = false;
+        hooks_map = None;
+    }
     let FileJob {
         path,
         name,
@@ -1165,6 +1176,181 @@ fn finish_skill(
         unrestricted_bash,
         provenance,
         hooks,
+        read_by: Vec::new(),
+    }
+}
+
+/// Skill and subagent walks of agents other than Claude Code ([`other_agent_walks`]):
+/// their files are inventoried without Claude Code's load-time semantics.
+pub(crate) fn foreign_framework(framework: &str) -> bool {
+    OTHER_AGENT_WALKS.iter().any(|w| w.framework == framework)
+        || matches!(framework, "agents" | "agents-plugin" | "agents-subagent")
+}
+
+/// One skill or subagent directory of another agent: relative to HOME (`user`) and to a
+/// project (`project`), the framework label, and whether it holds subagent files
+/// (markdown, one level) rather than skill bundles.
+struct OtherWalk {
+    user: &'static [&'static str],
+    project: &'static [&'static str],
+    framework: &'static str,
+    subagents: bool,
+}
+
+/// Skill and subagent directories of the agents covered elsewhere (fetched 2026-10-30):
+///
+/// - Cursor: skills "`.cursor/skills/`, `~/.cursor/skills/`"; subagents "`.cursor/agents/`",
+///   "`~/.cursor/agents/`" (cursor.com/docs/skills.md, /subagents.md).
+/// - GitHub Copilot CLI: skills `.github/skills/`, `~/.copilot/skills/`; custom agents
+///   `.github/agents/`, `~/.copilot/agents/` (`*.agent.md`; docs.github.com
+///   copilot-cli-reference/cli-command-reference).
+/// - Gemini CLI: skills `.gemini/skills/`, `~/.gemini/skills/`; subagents
+///   `.gemini/agents/*.md`, `~/.gemini/agents/*.md` (gemini-cli `docs/cli/skills.md`,
+///   `docs/core/subagents.md`).
+/// - Kiro: "| Skills | `~/.kiro/skills/` | `.kiro/skills/` |"; installed powers
+///   `~/.kiro/powers/installed/<name>/` with `skills/*/SKILL.md` (kiro.dev/docs
+///   configuration.md, powers/create.md).
+/// - OpenCode: `.opencode/skills/`, `~/.config/opencode/skills/` (opencode.ai/docs/skills).
+/// - Devin: `.devin/skills/`, `.windsurf/skills/` (legacy), `~/.config/devin/skills/`,
+///   `~/.codeium/windsurf/skills/` ("Global skills"); subagents `.devin/agents/`,
+///   `~/.config/devin/agents/` (docs.devin.ai cli/extensibility/skills/overview.md,
+///   desktop/devin-desktop-faq.md, desktop/devin-local/customizations.md).
+const OTHER_AGENT_WALKS: &[OtherWalk] = &[
+    OtherWalk {
+        user: &[".cursor/skills"],
+        project: &[".cursor/skills"],
+        framework: "cursor",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".cursor/agents"],
+        project: &[".cursor/agents"],
+        framework: "cursor-agent",
+        subagents: true,
+    },
+    OtherWalk {
+        user: &[".copilot/skills"],
+        project: &[".github/skills"],
+        framework: "copilot",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".copilot/agents"],
+        project: &[".github/agents"],
+        framework: "copilot-agent",
+        subagents: true,
+    },
+    OtherWalk {
+        user: &[".gemini/skills"],
+        project: &[".gemini/skills"],
+        framework: "gemini",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".gemini/agents"],
+        project: &[".gemini/agents"],
+        framework: "gemini-agent",
+        subagents: true,
+    },
+    OtherWalk {
+        user: &[".kiro/skills"],
+        project: &[".kiro/skills"],
+        framework: "kiro",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".kiro/powers/installed"],
+        project: &[],
+        framework: "kiro-power",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".config/opencode/skills"],
+        project: &[".opencode/skills"],
+        framework: "opencode",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".config/devin/skills", ".codeium/windsurf/skills"],
+        project: &[".devin/skills", ".windsurf/skills"],
+        framework: "devin",
+        subagents: false,
+    },
+    OtherWalk {
+        user: &[".config/devin/agents"],
+        project: &[".devin/agents"],
+        framework: "devin-agent",
+        subagents: true,
+    },
+];
+
+/// The other agents' skill and subagent directories ([`OTHER_AGENT_WALKS`]) and the
+/// shared `.agents/` directory ([`crate::scanners::dot_agents`]), each row of the latter
+/// attributed to the agents that read it. Bundles are walked by the bundle walker
+/// (bounded, links judged lexically); subagent directories one level, markdown only.
+fn other_agent_walks(
+    home: &Path,
+    project_dirs: &[(PathBuf, PathBuf)],
+    ctx: &PluginContext,
+    results: &mut Vec<AgentSkill>,
+) {
+    for w in OTHER_AGENT_WALKS {
+        let mut roots: Vec<(PathBuf, &'static str, Option<&Path>)> =
+            w.user.iter().map(|r| (home.join(r), "global", None)).collect();
+        for (root, dir) in project_dirs {
+            roots.extend(w.project.iter().map(|r| (dir.join(r), "project", Some(root.as_path()))));
+        }
+        for (path, scope, root) in roots {
+            if !crate::scanners::probe_dir(&path) {
+                continue;
+            }
+            if w.subagents {
+                walk_span("agents", scope, results, |r| {
+                    scan_skill_dir(&path, w.framework, scope, root, ctx, r)
+                });
+            } else {
+                walk_span("skills", scope, results, |r| {
+                    scan_skill_bundles(&path, w.framework, scope, root, ctx, r)
+                });
+            }
+        }
+    }
+    let projects: Vec<PathBuf> = project_dirs.iter().map(|(_, d)| d.clone()).collect();
+    let roots: Vec<(PathBuf, Option<PathBuf>)> =
+        project_dirs.iter().map(|(r, d)| (d.clone(), Some(r.clone()))).collect();
+    let root_of = |p: &Path| -> Option<PathBuf> {
+        roots
+            .iter()
+            .find(|(d, _)| p.starts_with(d))
+            .and_then(|(_, r)| r.clone())
+    };
+    for (path, framework, scope, surface) in crate::scanners::dot_agents::skill_roots(home, &projects) {
+        if !crate::scanners::probe_dir(&path) {
+            continue;
+        }
+        let before = results.len();
+        let proot = if scope == "project" { root_of(&path) } else { None };
+        walk_span("skills", scope, results, |r| {
+            scan_skill_bundles(&path, framework, scope, proot.as_deref(), ctx, r)
+        });
+        let readers = crate::scanners::dot_agents::readers(home, surface);
+        for r in &mut results[before..] {
+            r.read_by = readers.clone();
+        }
+    }
+    for (path, scope) in crate::scanners::dot_agents::subagent_roots(home, &projects) {
+        if !crate::scanners::probe_dir(&path) {
+            continue;
+        }
+        let before = results.len();
+        let proot = if scope == "project" { root_of(&path) } else { None };
+        walk_span("agents", scope, results, |r| {
+            scan_skill_dir(&path, "agents-subagent", scope, proot.as_deref(), ctx, r)
+        });
+        let readers = crate::scanners::dot_agents::readers(home, crate::scanners::dot_agents::Surface::Subagents);
+        for r in &mut results[before..] {
+            r.read_by = readers.clone();
+        }
     }
 }
 

@@ -643,6 +643,13 @@ fn render_inner(report: &ScanReport) -> String {
                     skill.file_type.dimmed(),
                     caps,
                 ));
+                if !skill.read_by.is_empty() {
+                    out.push_str(&format!(
+                        "      {} read by: {}\n",
+                        "·".dimmed(),
+                        skill.read_by.join(", ")
+                    ));
+                }
                 for h in &skill.hooks {
                     let cmd: String = h.command.chars().take(70).collect();
                     out.push_str(&format!(
@@ -676,6 +683,13 @@ fn render_inner(report: &ScanReport) -> String {
             ));
             if let Some(l) = &s.symlink {
                 out.push_str(&format!("    {} symlink to {}, not read\n", "·".dimmed(), l.target));
+            }
+            if !s.read_by.is_empty() {
+                out.push_str(&format!(
+                    "    {} hooks also run by: {}\n",
+                    "·".dimmed(),
+                    s.read_by.join(", ")
+                ));
             }
             if let Some(ref mode) = s.permission_mode {
                 let m = if mode == "bypassPermissions" {

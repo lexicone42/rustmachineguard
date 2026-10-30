@@ -40,6 +40,8 @@
 //! - Zed: github.com/zed-industries/zed `docs/src/ai/` (`mcp.md`, `tool-permissions.md`,
 //!   `instructions.md`), `docs/src/worktree-trust.md`, `crates/agent/src/db.rs`.
 
+mod primary;
+
 use crate::models::{AgentKeyFile, AgentPosture, AgentTranscriptStore, AutoApproveSetting, McpConfig, RulesFile};
 use crate::platform::PlatformInfo;
 use crate::scanners::agent_settings::{SettingsRead, read_hook_file};
@@ -111,6 +113,9 @@ fn scan_with(home: &Path, projects: Vec<PathBuf>) -> Vec<AgentsOut> {
     junie(&mut cx);
     amp(&mut cx);
     warp(&mut cx);
+    // New configuration surfaces of the agents covered by the other scanners (Cursor,
+    // Devin, Copilot, Gemini, Codex, Kiro, OpenCode), kept in their own module.
+    primary::scan(&mut cx);
     cx.out
 }
 

@@ -516,6 +516,11 @@ pub struct AgentSkill {
     /// Frontmatter `hooks:` (skills, commands and subagent files).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<AgentHook>,
+    /// The agents that load this file, by their own documentation, among those with a
+    /// configuration home on this machine (`scanners::dot_agents`): set for the shared
+    /// `.agents/` directory, which no single agent owns. Closed labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
 }
 
 /// A skill file that is a symbolic link, or a regular file reached through a symlinked
@@ -674,6 +679,11 @@ pub struct AgentSettings {
     /// custom entries are (see [`AutoModeList`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_mode: Option<AutoModeSettings>,
+    /// Claude Code settings files only: the OTHER agents that run this file's hooks, by
+    /// their own documentation, among those with a configuration home on this machine
+    /// (`scanners::dot_agents::claude_settings_readers`). Closed labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
 }
 
 /// A settings file's `autoMode` block. Only the keys the auto-mode-config page documents
@@ -1893,11 +1903,13 @@ impl TranscriptSecretShapes {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AgentPosture {
     /// Closed: `cline`, `roo-code`, `continue`, `aider`, `goose`, `zed`, `junie`, `amp`,
-    /// `warp`.
+    /// `warp`, and the new surfaces of `cursor`, `devin`, `copilot`, `gemini`, `codex`,
+    /// `kiro`, `opencode`.
     pub agent: String,
     /// The file (or directory, for a hook directory) this row describes, sanitized.
     pub path: String,
-    /// "user" (the user's own configuration) or "project" (repository content).
+    /// "user" (the user's own configuration), "project" (repository content) or
+    /// "managed" (an administrator's file: inventory).
     pub scope: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub git_tracked: bool,
@@ -1930,8 +1942,10 @@ pub struct AgentPosture {
     pub symlink: Option<EnvSymlink>,
 }
 
-/// A setting that removes a prompt. `reach` is closed: `all-actions`, `shell-commands`,
-/// `mcp-tools`, `file-edits`, `browser`, `listed-tools`, `untrusted-projects`.
+/// A setting that removes a prompt or a guard. `reach` is closed: `all-actions`,
+/// `shell-commands`, `mcp-tools`, `file-edits`, `browser`, `listed-tools`,
+/// `untrusted-projects`, `sandbox-off` (the command sandbox is turned off),
+/// `sandbox-network` (the sandbox lets all outbound traffic through).
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct AutoApproveSetting {
     /// The key as the agent's documentation names it (a fixed literal).
