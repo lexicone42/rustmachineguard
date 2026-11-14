@@ -1309,13 +1309,20 @@ pub fn extract_inline_secret_env_keys(env: Option<&serde_json::Value>) -> Vec<St
 /// runtimes a server is started with. The value is inspected for its shape only and is
 /// never stored.
 ///
-/// - `NODE_OPTIONS` naming a preload flag (`--import`, `--require`, `-r`, `--loader`,
-///   `--experimental-loader`); a memory or warning flag alone is not reported.
-/// - `npm_config_registry` / `NPM_CONFIG_REGISTRY` / `UV_INDEX_URL` / `UV_DEFAULT_INDEX`
-///   / `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` set to a literal host other than the
-///   public registry.
+/// - `NODE_OPTIONS` (or `npm_config_node_options`) naming a preload flag (`--import`,
+///   `--require`, `-r`, `--loader`, `--experimental-loader`), `--openssl-config` or an
+///   `--inspect*` flag, quoted or with `_` for `-`; a memory or warning flag alone is not
+///   reported. `JAVA_TOOL_OPTIONS` / `JDK_JAVA_OPTIONS` naming a Java agent.
+/// - `npm_config_registry`, a scoped `npm_config_@scope:registry`, `UV_INDEX_URL`,
+///   `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_INDEX`, `PIP_INDEX_URL`,
+///   `PIP_EXTRA_INDEX_URL`, `PIP_FIND_LINKS`: any literal URL in the value that is not
+///   the public registry over https (a URL with userinfo never is).
 /// - `LD_PRELOAD`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `PYTHONSTARTUP`, `BASH_ENV`,
-///   `PERL5OPT`, `RUBYOPT` set to anything.
+///   `PERL5OPT`, `RUBYOPT`, `npm_config_userconfig`, `npm_config_globalconfig`,
+///   `PIP_CONFIG_FILE` set to anything.
+///
+/// Not reported, because ordinary servers set them: `PYTHONPATH`, `NODE_PATH`,
+/// `LD_LIBRARY_PATH`.
 pub fn env_code_loading(env: Option<&serde_json::Value>) -> Vec<String> {
     const ALWAYS: &[&str] = &[
         "LD_PRELOAD",
@@ -1325,16 +1332,56 @@ pub fn env_code_loading(env: Option<&serde_json::Value>) -> Vec<String> {
         "BASH_ENV",
         "PERL5OPT",
         "RUBYOPT",
+        // Another configuration file in place of the user's own (registry, scripts).
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "PIP_CONFIG_FILE",
     ];
     const REGISTRIES: &[&str] = &[
         "NPM_CONFIG_REGISTRY",
         "UV_INDEX_URL",
         "UV_DEFAULT_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "UV_INDEX",
         "PIP_INDEX_URL",
         "PIP_EXTRA_INDEX_URL",
+        "PIP_FIND_LINKS",
     ];
     const PUBLIC_REGISTRIES: &[&str] = &["registry.npmjs.org", "pypi.org", "registry.yarnpkg.com"];
-    const NODE_PRELOAD: &[&str] = &["--import", "--require", "--loader", "--experimental-loader"];
+    // `--inspect*` opens a debugger port that runs code; `--openssl-config` loads an
+    // engine library. Node accepts `_` for `-` in option names and double quotes around
+    // a value in NODE_OPTIONS.
+    const NODE_PRELOAD: &[&str] = &[
+        "--import",
+        "--require",
+        "--loader",
+        "--experimental-loader",
+        "--openssl-config",
+        "--inspect",
+        "--inspect-brk",
+        "--inspect-wait",
+        "--inspect-port",
+    ];
+    let node_options = |value: &str| {
+        value.replace(['"', '\''], "").split_whitespace().any(|w| {
+            let flag = w.split('=').next().unwrap_or(w);
+            flag == "-r" || (flag.starts_with("--") && NODE_PRELOAD.contains(&flag.replace('_', "-").as_str()))
+        })
+    };
+    // Every URL of a (possibly space-separated, possibly `name=url`) index list must be
+    // the public registry over https; `is_official_registry` refuses userinfo and ends
+    // the authority at a backslash, as the installers' URL parsers do.
+    let non_public_index = |value: &str| {
+        value.split_whitespace().any(|item| {
+            let Some(at) = item.find("://") else {
+                return false;
+            };
+            let start = item[..at].rfind('=').map_or(0, |i| i + 1);
+            let url = &item[start..];
+            !url.to_ascii_lowercase().starts_with("https://")
+                || !crate::scanners::is_official_registry(url, PUBLIC_REGISTRIES)
+        })
+    };
     let Some(obj) = env.and_then(|v| v.as_object()) else {
         return Vec::new();
     };
@@ -1349,26 +1396,20 @@ pub fn env_code_loading(env: Option<&serde_json::Value>) -> Vec<String> {
         let upper = key.to_ascii_uppercase();
         let hit = if ALWAYS.contains(&upper.as_str()) {
             true
-        } else if upper == "NODE_OPTIONS" {
+        } else if upper == "NODE_OPTIONS" || upper == "NPM_CONFIG_NODE_OPTIONS" {
+            node_options(value)
+        } else if upper == "JAVA_TOOL_OPTIONS" || upper == "JDK_JAVA_OPTIONS" {
             value.split_whitespace().any(|w| {
-                let flag = w.split('=').next().unwrap_or(w);
-                NODE_PRELOAD.contains(&flag) || flag == "-r"
+                ["-javaagent:", "-agentpath:", "-agentlib:"]
+                    .iter()
+                    .any(|p| w.starts_with(p))
             })
-        } else if REGISTRIES.contains(&upper.as_str()) {
+        } else if REGISTRIES.contains(&upper.as_str())
+            || (upper.starts_with("NPM_CONFIG_@") && upper.ends_with(":REGISTRY"))
+        {
             // A `${VAR}` reference is the user's own environment; only a literal URL
             // in the config chooses the registry for whoever loads the file.
-            let lower = value.to_ascii_lowercase();
-            let host = lower
-                .split_once("://")
-                .map(|(_, rest)| rest)
-                .unwrap_or(&lower)
-                .split(['/', ':', '?', '#'])
-                .next()
-                .unwrap_or("")
-                .rsplit('@')
-                .next()
-                .unwrap_or("");
-            lower.contains("://") && !PUBLIC_REGISTRIES.contains(&host)
+            non_public_index(value)
         } else {
             false
         };

@@ -55,15 +55,11 @@ impl Scanner for SshKeysScanner {
             // 2026-11-14 an extension-less key such as `id_ed25519` was looked up as
             // `id_ed25519..pub`, so its comment was never found.)
             let pub_path = PathBuf::from(format!("{}.pub", path.display()));
-            let comment = crate::scanners::read_bounded(&pub_path).and_then(|c| {
-                // Public key format: type base64 comment
-                let line = c.lines().next().unwrap_or("");
-                let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-                parts
-                    .get(2)
-                    .map(|s| crate::scanners::sanitize_display(&crate::scanners::redact_token_shapes(s.trim()), 128))
-                    .filter(|s| !s.is_empty())
-            });
+            // Read without following a symlink at `<key>.pub`, and only a line that is a
+            // public key gives a comment: a link to (or a file that is) something else
+            // must not have its first line quoted in the report.
+            let comment = crate::scanners::read_bounded_nofollow(&pub_path, None)
+                .and_then(|c| public_key_comment(c.lines().next().unwrap_or("")));
 
             results.push(SshKey {
                 path: path.display().to_string(),
@@ -117,26 +113,44 @@ pub fn tail_len(first_line: &str) -> usize {
 }
 
 /// Read a candidate key's head from a regular file. Nothing past it is read.
+///
+/// A key file may be a symlink (dotfile managers link keys into `~/.ssh`), so the link
+/// is resolved first; the resolved path is then opened no-follow and non-blocking and
+/// must be the regular file that was resolved, so a FIFO or a path swapped between the
+/// two steps is refused instead of read or waited on.
 fn read_key_head(path: &std::path::Path) -> Option<KeyHead> {
     use crate::scanners::telemetry;
-    // Regular files only: opening a FIFO with no writer blocks forever.
-    match std::fs::metadata(path) {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => {
-            telemetry::note_read(path, "not a regular file");
-            return None;
-        }
-        Err(_) => {
-            telemetry::note_read(path, "missing");
-            return None;
-        }
-    }
-    let Ok(file) = std::fs::File::open(path) else {
-        telemetry::note_read(path, "unreadable");
+    let Ok(real) = std::fs::canonicalize(path) else {
+        telemetry::note_read(path, "missing");
+        return None;
+    };
+    let Some((file, _)) = crate::scanners::open_regular_nofollow(&real, Some(&real)) else {
+        telemetry::note_read(path, "refused (not a regular file, or changed)");
         return None;
     };
     telemetry::note_read(path, "ok");
     read_key_head_from(file)
+}
+
+/// The comment of an OpenSSH public key line (`<type> <base64> <comment>`), token shapes
+/// redacted. `None` unless the line is a public key: its type is one OpenSSH writes
+/// (`ssh-*`, `ecdsa-sha2-*`, `sk-*`) and its second field is the base64 of a key blob,
+/// which always starts `AAAA` (the 4-byte length of the type name).
+pub fn public_key_comment(line: &str) -> Option<String> {
+    let mut parts = line.trim().splitn(3, ' ');
+    let (kind, blob, comment) = (parts.next()?, parts.next()?, parts.next()?);
+    let known = ["ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"]
+        .iter()
+        .any(|p| kind.starts_with(p));
+    let b64 = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=');
+    if !known || !blob.starts_with("AAAA") || !blob.bytes().all(b64) {
+        return None;
+    }
+    Some(crate::scanners::sanitize_display(
+        &crate::scanners::redact_token_shapes(comment.trim()),
+        128,
+    ))
+    .filter(|s| !s.is_empty())
 }
 
 /// [`read_key_head`] over any reader, one byte at a time for the first line (so a short
@@ -155,6 +169,12 @@ pub fn read_key_head_from(mut r: impl std::io::Read) -> Option<KeyHead> {
                     return None;
                 }
                 line.push(byte[0]);
+                // Every private key format opens with dashes (`-----BEGIN`, ssh.com's
+                // `---- BEGIN`). A file that does not is not read past its fourth
+                // byte, so a one-line secret kept in `~/.ssh` is not pulled into memory.
+                if line.len() == 4 && line != b"----" {
+                    return None;
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return None,
@@ -186,10 +206,16 @@ pub fn read_key_head_from(mut r: impl std::io::Read) -> Option<KeyHead> {
 /// OpenSSH-format key was handed to `ssh-keygen -y -P ""`, which read and tried to
 /// decrypt the whole key.
 pub fn classify_key(first_line: &str, next: &str) -> (bool, String, PassphraseStatus) {
-    // Traditional PEM: an encrypted key's second line is its `Proc-Type` header.
+    // Not SSH keys, though their labels contain `PRIVATE KEY`: an OpenPGP export.
+    if first_line.contains("PGP ") {
+        return (false, String::new(), PassphraseStatus::Unknown);
+    }
+    // Traditional PEM: an encrypted key's second line is its `Proc-Type` header; an
+    // unencrypted one starts its DER there, and the base64 of a DER SEQUENCE starts `M`.
+    // Anything else is not a state this can name.
     let pem_status = if next.starts_with("Proc") {
         PassphraseStatus::Encrypted
-    } else if next.len() >= 4 {
+    } else if next.len() >= 4 && next.starts_with('M') {
         PassphraseStatus::NoPassphrase
     } else {
         PassphraseStatus::Unknown
@@ -203,6 +229,9 @@ pub fn classify_key(first_line: &str, next: &str) -> (bool, String, PassphraseSt
         (true, "openssh".to_string(), openssh_status(next))
     } else if first_line.contains("DSA PRIVATE KEY") {
         (true, "dsa".to_string(), pem_status)
+    } else if first_line.contains("SSH2 ENCRYPTED PRIVATE KEY") {
+        // ssh.com format: the label says ENCRYPTED for every key, passphrase or not.
+        (true, "unknown".to_string(), PassphraseStatus::Unknown)
     } else if first_line.contains("ENCRYPTED PRIVATE KEY") {
         // PKCS#8 says it in the label.
         (true, "unknown".to_string(), PassphraseStatus::Encrypted)

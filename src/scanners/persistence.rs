@@ -759,15 +759,31 @@ fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<Persistence
         let Some(content) = crate::scanners::read_bounded_within(&path, &root) else {
             continue;
         };
-        // Cheap pre-filter: nearly every workspace file has neither key.
-        if !content.contains("__proto__") && !content.contains("experiments.override.") {
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&crate::scanners::vscode_tasks::strip_jsonc(&content))
-        else {
+        // No text pre-filter: a key can be written with JSON escapes (`\u005f\u005fproto__`),
+        // which only the parser decodes. VS Code's reader also drops a leading BOM.
+        let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+        let parsed = serde_json::from_str::<serde_json::Value>(&crate::scanners::vscode_tasks::strip_jsonc(content));
+        let mut details = Vec::new();
+        let Ok(json) = parsed else {
+            // VS Code's JSONC parser recovers from errors this one rejects, so a file
+            // that does not parse here may still be read there. Reported, at the lower
+            // grade, only when the key is in the text as written.
+            if content.contains("\"__proto__\"") {
+                out.push(PersistenceArtifact {
+                    kind: "workspace-trust-bypass".into(),
+                    path: sanitize_display(&path.to_string_lossy(), 512),
+                    scope: sanitize_display(&proj.to_string_lossy(), 512),
+                    detail: format!(
+                        "`__proto__` in .vscode/{name}, which does not parse as JSON here and may still be read by VS Code (CVE-2026-121662)"
+                    ),
+                    git_tracked: is_git_tracked(&path),
+                    claimed: false,
+                    sensitive_target: false,
+                    bin: None,
+                });
+            }
             continue;
         };
-        let mut details = Vec::new();
         if has_key(&json, "__proto__", 0) {
             details.push((format!("`__proto__` key in .vscode/{name} (CVE-2026-121662)"), true));
         }
@@ -803,7 +819,8 @@ fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<Persistence
 
 /// True if `key` names a member of any object in `v` (bounded depth).
 fn has_key(v: &serde_json::Value, key: &str, depth: usize) -> bool {
-    if depth > 32 {
+    // serde_json refuses input nested deeper than 128, so this bound loses nothing.
+    if depth > 128 {
         return false;
     }
     match v {

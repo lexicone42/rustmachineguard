@@ -2885,7 +2885,6 @@ fn key_head_reader_never_reads_past_the_header() {
         ("-----BEGIN DSA PRIVATE KEY-----", 4),
         ("-----BEGIN PRIVATE KEY-----", 0),
         ("-----BEGIN ENCRYPTED PRIVATE KEY-----", 0),
-        ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a public key line", 0),
     ] {
         for eol in ["\n", "\r\n"] {
             let text = format!("{first}{eol}{body}");
@@ -2898,6 +2897,10 @@ fn key_head_reader_never_reads_past_the_header() {
     }
     // A long first line is not a key file, and reading stops at the cap.
     let long = "K".repeat(4096);
+    let mut r = Counting(long.as_bytes(), 0);
+    assert!(read_key_head_from(&mut r).is_none());
+    assert_eq!(r.1, 4, "not dashes: dropped after four bytes");
+    let long = "-".repeat(4096);
     let mut r = Counting(long.as_bytes(), 0);
     assert!(read_key_head_from(&mut r).is_none());
     assert!(r.1 <= 65, "{}", r.1);

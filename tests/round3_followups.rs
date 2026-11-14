@@ -258,7 +258,7 @@ fn vibe_version_falls_back_to_the_spawn_when_the_dist_info_does_not_answer() {
 // ── T2: SSH keys without a passphrase, one finding per home ─────────────────────────────
 
 fn key(path: &Path, header: &str) {
-    write(path, &format!("-----BEGIN {header}-----\nFAKEKEYBODY\n"));
+    write(path, &format!("-----BEGIN {header}-----\nMIIFAKEKEYBODY\n"));
     chmod(path, 0o600);
 }
 
