@@ -9223,6 +9223,7 @@ fn without_clock(mut v: serde_json::Value) -> serde_json::Value {
     let o = v.as_object_mut().unwrap();
     o.remove("scan_timestamp");
     o.remove("scan_timestamp_iso");
+    o.remove("timing");
     for d in o.get_mut("diagnostics").and_then(|d| d.as_array_mut()).unwrap() {
         d.as_object_mut().unwrap().remove("duration_ms");
     }

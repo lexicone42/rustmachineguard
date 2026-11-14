@@ -152,6 +152,7 @@ pub enum Key {
     Diff,
     ExposureFindings,
     ScannersRun,
+    StartupMs,
     ExecProgram,
     WalkKind,
     WalkScope,
@@ -237,6 +238,7 @@ impl Key {
         Key::Diff,
         Key::ExposureFindings,
         Key::ScannersRun,
+        Key::StartupMs,
         Key::ExecProgram,
         Key::WalkKind,
         Key::WalkScope,
@@ -313,6 +315,7 @@ impl Key {
             Key::Diff => "rmguard.diff",
             Key::ExposureFindings => "rmguard.exposure_findings",
             Key::ScannersRun => "rmguard.scanners_run",
+            Key::StartupMs => "rmguard.scan.startup_ms",
             Key::ExecProgram => "rmguard.exec.program",
             Key::WalkKind => "rmguard.walk.kind",
             Key::WalkScope => "rmguard.walk.scope",
@@ -1019,7 +1022,7 @@ mod tests {
                 "{s}"
             );
         }
-        assert_eq!(Key::ALL.len(), 69, "a Key variant is missing from Key::ALL");
+        assert_eq!(Key::ALL.len(), 70, "a Key variant is missing from Key::ALL");
         assert!(
             !Key::ALL.iter().any(|k| k.as_str() == "process.executable.name"),
             "program names are exported only as the closed `rmguard.exec.program` set, never the open process.executable.name"

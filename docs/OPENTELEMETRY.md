@@ -345,6 +345,7 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.exposure_findings` | root | count |
 | `rmguard.findings.critical`, `rmguard.findings.high`, `rmguard.findings.medium`, `rmguard.findings.low` | root | findings of that severity (the same findings `--fail-on` and the report's risk summary count) |
 | `rmguard.scanners_run` | root | count of non-skipped diagnostics rows |
+| `rmguard.scan.startup_ms` | root | milliseconds from the kernel starting the process to `main` (Linux; from `/proc/self/stat` and `/proc/uptime`, exact to about 10 ms). The root span starts inside `main`, so this is the only time the trace does not cover; the JSON report's `timing` block has the same figure next to its phase rows |
 | `rmguard.jobs` | root | threads a scan phase may use (`--jobs`, or the default) |
 | `rmguard.otel.instance_id_set` | root | bool: `--otel-instance` or a `service.instance.id` in `OTEL_RESOURCE_ATTRIBUTES` was given ([Machine identity](#machine-identity)) |
 | `rmguard.catalog.version` | root, resource | the built-in threat catalog's version (the date of its last change, with a `.N` suffix for a later change that day: a constant compiled into the binary, also in `rmguard --version` and the JSON report's `catalog.builtin_version`). On the root span only when the built-in catalog was used (absent with `--no-builtin-catalog`); on the resource always, as a fact of the binary |

@@ -751,6 +751,14 @@ prints every path as it is tried, redacted and sanitized. The same numbers are i
 silently stopped working across machines. A scanner that stopped at a walk budget (the
 gitconfig nested-repository walk, the skills bundle walk) is marked `partial` in the
 table and `"truncated": true` in its JSON row: its results may be incomplete.
+Below the scanner rows the table lists where the run's wall time went, and `--format json`
+carries the same figures as `timing`: `wall_ms` (start of `main` to the finished report),
+`startup_ms` (the kernel starting the process to `main`, Linux only) and `phases`, in run
+order (`setup`, `device_info`, `scan`, `search_dirs`, `post_scan`, `catalog_load`,
+`exposure`, `mcp_probe`, `registry`, `finalize`). Each phase row covers everything since
+the previous one, so the rows add up to `wall_ms`: a slow run is always attributable to a
+phase, or to startup. Scanners run in parallel inside `scan`, so their own durations
+overlap and can add up to more than it.
 `--walk-budget N` sets the budget: N directories per project for the gitconfig walk
 (default 25,000), with the skills bundle walk's file and entry caps (default 31,250 and
 312,500) and the transcript file counts (default 125,000) scaled in the same ratio; a

@@ -470,6 +470,7 @@ fn make_report(
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: Summary {

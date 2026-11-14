@@ -1269,6 +1269,23 @@ fn render_diagnostics_inner(report: &ScanReport) -> String {
              (raise with --walk-budget).\n",
         );
     }
+    if !report.timing.is_empty() {
+        let t = &report.timing;
+        out.push_str(&format!("\n  {:<13} {:>7}\n", "phase", "ms"));
+        if let Some(ms) = t.startup_ms {
+            out.push_str(&format!(
+                "  {:<13} {:>7}  before main (loading the program)\n",
+                "startup", ms
+            ));
+        }
+        for p in &t.phases {
+            out.push_str(&format!("  {:<13} {:>7}\n", p.phase, p.duration_ms));
+        }
+        out.push_str(&format!(
+            "  {:<13} {:>7}  start of main to the finished report; scanners run in parallel inside \"scan\"\n",
+            "total", t.wall_ms
+        ));
+    }
     out.push('\n');
     out
 }

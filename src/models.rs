@@ -65,6 +65,10 @@ pub struct ScanReport {
     /// files_read=0.
     #[serde(default)]
     pub diagnostics: Vec<ScannerStat>,
+    /// Where this run's wall time went, phase by phase. Absent in reports from older
+    /// versions and in reports built without a scan.
+    #[serde(default, skip_serializing_if = "ScanTiming::is_empty")]
+    pub timing: ScanTiming,
     /// Which threat catalog the exposure findings were matched against. Absent in
     /// reports from older versions (read back as the default: no version, 0 entries).
     #[serde(default)]
@@ -1492,6 +1496,44 @@ impl ScanReport {
         }
         m
     }
+}
+
+/// Where one run's wall time went. The per-scanner rows in [`ScanReport::diagnostics`]
+/// cannot answer that alone: scanners run in parallel, and time spent before the first
+/// scanner or between phases belongs to none of them.
+///
+/// `phases` tile the time from the start of `main` to the point the report is complete
+/// (rendering and writing it come after and are not in it): each row covers everything
+/// since the previous row ended, so the rows sum to `wall_ms` and nothing is unaccounted
+/// inside the process. `startup_ms` is the time before that, from the kernel starting
+/// the process to `main` (loading the binary), where it can be read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ScanTiming {
+    /// Start of `main` to the report being complete, in milliseconds.
+    pub wall_ms: u64,
+    /// Process start to `main` (Linux, from `/proc/self/stat` and `/proc/uptime`; the
+    /// kernel counts in clock ticks, so it is exact to about 10 ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_ms: Option<u64>,
+    /// Phases in run order. `scan` is the global scanners and the home pass, run side
+    /// by side; its scanners' own durations overlap and can sum to more than it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<PhaseTiming>,
+}
+
+impl ScanTiming {
+    pub fn is_empty(&self) -> bool {
+        self.wall_ms == 0 && self.startup_ms.is_none() && self.phases.is_empty()
+    }
+}
+
+/// One row of [`ScanTiming::phases`]. `phase` is a closed set: `setup`, `device_info`,
+/// `scan`, `search_dirs`, `post_scan`, `catalog_load`, `exposure`, `mcp_probe`,
+/// `registry`, `finalize`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PhaseTiming {
+    pub phase: String,
+    pub duration_ms: u64,
 }
 
 /// One scanner's run. See [`ScanReport::diagnostics`].

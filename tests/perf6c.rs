@@ -66,7 +66,7 @@ fn rmguard(home: &Path, args: &[&str]) -> serde_json::Value {
         String::from_utf8_lossy(&out.stderr)
     );
     let mut v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    for k in ["scan_timestamp", "scan_timestamp_iso"] {
+    for k in ["scan_timestamp", "scan_timestamp_iso", "timing"] {
         v.as_object_mut().unwrap().remove(k);
     }
     if let Some(d) = v.get_mut("diagnostics").and_then(|d| d.as_array_mut()) {

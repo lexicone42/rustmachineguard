@@ -371,6 +371,7 @@ fn summary_counts_match_vector_lengths() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: Summary {
@@ -474,6 +475,7 @@ fn json_output_is_valid_json() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: Summary {
@@ -571,6 +573,7 @@ fn html_output_no_script_injection() {
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: Summary {
@@ -4044,6 +4047,7 @@ fn make_test_report(
         jetbrains_plugins: Vec::new(),
         persistence_artifacts: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: Summary {

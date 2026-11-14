@@ -732,7 +732,46 @@ fn scan_jobs(flag: Option<usize>) -> usize {
     flag.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8))
 }
 
+/// Laps of the main thread, for [`models::ScanTiming`]: each lap covers everything
+/// since the previous one, so the rows tile the run with nothing between them.
+struct PhaseClock {
+    start: Instant,
+    last: Instant,
+    rows: Vec<models::PhaseTiming>,
+}
+
+impl PhaseClock {
+    fn new() -> Self {
+        let now = Instant::now();
+        PhaseClock {
+            start: now,
+            last: now,
+            rows: Vec::new(),
+        }
+    }
+
+    fn lap(&mut self, phase: &'static str) {
+        let now = Instant::now();
+        self.rows.push(models::PhaseTiming {
+            phase: phase.to_string(),
+            duration_ms: now.duration_since(self.last).as_millis() as u64,
+        });
+        self.last = now;
+    }
+
+    fn finish(self, startup_ms: Option<u64>) -> models::ScanTiming {
+        models::ScanTiming {
+            wall_ms: self.last.duration_since(self.start).as_millis() as u64,
+            startup_ms,
+            phases: self.rows,
+        }
+    }
+}
+
 fn main() {
+    // Before anything else: how long the process existed before `main` ran.
+    let startup_ms = scanners::process_age::process_age_ms();
+    let mut clock = PhaseClock::new();
     let cli = Cli::parse();
 
     // Fleet report mode: aggregate a directory of JSON scans, don't scan locally.
@@ -862,6 +901,7 @@ fn main() {
         ]
     });
 
+    clock.lap("setup");
     let (primary_plat, device) = {
         let _p = otel::span("phase.device_info", || vec![Attr::str(Key::Phase, "device_info")]);
         // The working directory is a project of this pass only; every scan home (this one
@@ -871,6 +911,7 @@ fn main() {
         (plat, device)
     };
 
+    clock.lap("device_info");
     let now = chrono::Utc::now();
 
     let mut report = ScanReport {
@@ -909,6 +950,7 @@ fn main() {
         persistence_artifacts: Vec::new(),
         warnings: Vec::new(),
         diagnostics: Vec::new(),
+        timing: Default::default(),
         catalog: Default::default(),
         surfaces: Default::default(),
         summary: models::Summary {
@@ -954,6 +996,7 @@ fn main() {
     // Global scanners (PATH-based, platform-level) and the primary home pass, side by
     // side: see run_primary_phases for why they are independent.
     run_primary_phases(primary_plat.as_ref(), &skip, jobs, &mut report);
+    clock.lap("scan");
 
     // Extra home passes, one per --search-dirs entry, after the primary pair.
     for (i, extra_home) in search_dirs.iter().enumerate() {
@@ -968,6 +1011,10 @@ fn main() {
         run_jobs(home_jobs(alt_plat.as_ref(), &skip), jobs, &mut report);
     }
 
+    if !search_dirs.is_empty() {
+        clock.lap("search_dirs");
+    }
+
     // Deduplicate results that might appear from overlapping roots
     {
         let _p = otel::span("phase.dedupe", || vec![Attr::str(Key::Phase, "dedupe")]);
@@ -977,6 +1024,8 @@ fn main() {
     scanners::mcp::post_scan(&mut report);
     // Listeners (global) meet the env files (per home pass): see correlate_listeners.
     rustmachineguard::analysis_surfaces::correlate_listeners(&mut report);
+
+    clock.lap("post_scan");
 
     // Exposure catalog matching — built-in catalog + optional user catalog
     let catalog_phase = otel::span("phase.catalog_load", || vec![Attr::str(Key::Phase, "catalog_load")]);
@@ -1023,6 +1072,7 @@ fn main() {
     }
 
     drop(catalog_phase);
+    clock.lap("catalog_load");
 
     // Without a catalog the package scanners never run; say so in the table rather
     // than leaving two labels with no row at all, which reads as "never existed".
@@ -1182,6 +1232,8 @@ fn main() {
         }
     }
 
+    clock.lap("exposure");
+
     // MCP live probing (opt-in)
     // The two opt-in phases are the slowest and the only network-touching things this
     // tool does; they belong in the table like any scanner, and appear as skipped when
@@ -1190,6 +1242,7 @@ fn main() {
         report.mcp_probes = timed(&mut report.diagnostics, "mcp-probe", None, || {
             scanners::mcp_probe::probe_mcp_servers(&report.mcp_configs)
         });
+        clock.lap("mcp_probe");
     }
 
     // MCP registry verification (opt-in, network)
@@ -1198,6 +1251,7 @@ fn main() {
         report.mcp_registry_checks = timed(&mut report.diagnostics, "registry", None, || {
             rustmachineguard::registry::verify_servers(&report.mcp_configs)
         });
+        clock.lap("registry");
     }
 
     // Agent identity posture (static keys vs OAuth vs SPIFFE) — derived from the scan.
@@ -1229,6 +1283,9 @@ fn main() {
             .diagnostics
             .push(rustmachineguard::scanners::telemetry::skipped(label));
     }
+
+    clock.lap("finalize");
+    report.timing = clock.finish(startup_ms);
 
     // Diff mode: compare against a baseline scan. With --diff, stdout is the diff and `-o`
     // receives this scan in `--format`; `--fail-on` gates on this scan below, as in any run.
@@ -1343,6 +1400,10 @@ fn finish_scan(mut root: otel::SpanGuard, scan_start: Option<Instant>, report: &
                 Attr::int(Key::FindingsLow, low),
             ]
         });
+        // Time before `main`, which no span can cover (the root span starts in it).
+        if let Some(ms) = report.timing.startup_ms {
+            root.set(|| vec![Attr::int(Key::StartupMs, ms as i64)]);
+        }
         // The catalog the exposure findings were matched against: a constant of this
         // binary, present only when the built-in catalog was used.
         if report.catalog.builtin_version.is_some() {

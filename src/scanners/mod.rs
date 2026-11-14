@@ -30,6 +30,7 @@ pub mod persistence;
 pub mod playwright_mcp;
 pub mod plugin_lsp;
 pub(crate) mod prefetch;
+pub mod process_age;
 pub mod python_packages;
 pub mod rules_files;
 pub mod settings_scripts;
