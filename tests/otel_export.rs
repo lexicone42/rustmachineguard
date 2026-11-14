@@ -1606,6 +1606,11 @@ mod enabled {
                 };
                 // The project's 4,200 directories are past both walks' budgets: the
                 // nested-git walk's and the nested instruction-file walk's.
+                // `listeners` reads this machine's live /proc, so its flag depends on
+                // what happens to be running and is not asserted here.
+                if label == "listeners" {
+                    continue;
+                }
                 assert_eq!(
                     truncated,
                     matches!(label, "gitconfig" | "rules"),

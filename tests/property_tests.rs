@@ -3250,7 +3250,9 @@ fn builtin_catalog_version_ranges_flag_only_vulnerable() {
         flagged(sf, "2025.8.0"),
         "the date line has no fix for the 2026-10-25 advisories"
     );
-    assert!(!flagged(sf, "2.0.1"), "the patched server-filesystem must NOT flag");
+    // 2.0.1 fixed those; the 2026-11-11 advisories are fixed in 2.3.0.
+    assert!(flagged(sf, "2.0.1"), "2.0.1 still has the 2026-11-11 advisories");
+    assert!(!flagged(sf, "2.3.0"), "the patched server-filesystem must NOT flag");
     // mcp-remote: affected 0.0.5–0.1.15, fixed 0.1.16.
     assert!(flagged("mcp-remote", "0.1.10"), "a vulnerable mcp-remote must flag");
     assert!(!flagged("mcp-remote", "0.1.16"), "the patched mcp-remote must NOT flag");
@@ -3258,15 +3260,17 @@ fn builtin_catalog_version_ranges_flag_only_vulnerable() {
         !flagged("mcp-remote", "0.0.3"),
         "a below-affected mcp-remote must NOT flag"
     );
-    // inspector: two release lines. 0.x/1.x fixed 1.0.3 (the 2026-10-21 advisories
-    // subsumed the old <0.14.1 bound), 2.x fixed 2.12.0.
+    // inspector: two release lines, each with an older and a 2026-11 row.
     let insp = "@modelcontextprotocol/inspector";
     assert!(flagged(insp, "0.14.0"), "a vulnerable inspector must flag");
     assert!(flagged(insp, "0.14.1"), "0.14.1 still has the 1.0.3-fixed advisories");
     assert!(flagged(insp, "1.0.2"), "1.0.2 is the last vulnerable 1.x");
-    assert!(!flagged(insp, "1.0.3"), "the patched 1.x inspector must NOT flag");
+    // The 2026-11 advisories moved the fixes to 1.0.5 and 2.15.0.
+    assert!(flagged(insp, "1.0.4"), "1.0.4 still has GHSA-fvg8-f358-w2c8");
+    assert!(!flagged(insp, "1.0.5"), "the patched 1.x inspector must NOT flag");
     assert!(flagged(insp, "2.11.0"), "a vulnerable 2.x inspector must flag");
-    assert!(!flagged(insp, "2.12.0"), "the patched 2.x inspector must NOT flag");
+    assert!(flagged(insp, "2.14.0"), "2.14.0 still has the 2.15.0-fixed advisories");
+    assert!(!flagged(insp, "2.15.0"), "the patched 2.x inspector must NOT flag");
 }
 
 // ─── 2026-06 catalog refresh ──────────────────────────────────
@@ -3278,7 +3282,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        320,
+        353,
         "catalog size changed — update this pin and the count quoted in \
          docs/THREAT-CATALOG.md (README.md and docs/COVERAGE.md state no count)"
     );
@@ -4346,13 +4350,17 @@ fn newly_bounded_entries_stop_flagging_patched_installs() {
         !flagged("npm", "@modelcontextprotocol/sdk", "1.32.0"),
         "1.32.0 is patched"
     );
-    // mcp-server-git — CalVer, fixed 2025.9.25.
+    // mcp-server-git — CalVer; 2025.9.25 fixed the first CVEs, 2026.11.11 the 2026 ones.
     assert!(
         flagged("pypi", "mcp-server-git", "2025.9.1"),
         "pre-fix mcp-server-git flags"
     );
     assert!(
-        !flagged("pypi", "mcp-server-git", "2025.9.25"),
+        flagged("pypi", "mcp-server-git", "2025.9.25"),
+        "2025.9.25 still has the 2026-11-11 advisories"
+    );
+    assert!(
+        !flagged("pypi", "mcp-server-git", "2026.11.11"),
         "patched mcp-server-git must NOT flag"
     );
     // Third-party git MCP server — CVE-2025-53107 fixed 2.1.5, CVE-2026-85626 fixed 2.15.2.
@@ -4487,9 +4495,14 @@ fn agent_runtime_key_maps_only_known_tools() {
     assert_ne!(agent_runtime_key("Claude Cowork"), agent_runtime_key("Claude Code"));
     // The bare desktop-app inventory row carries no version and stays unmapped.
     assert_eq!(agent_runtime_key("Claude Desktop"), None);
-    // Kiro is two version lines; only the IDE has advisories today.
+    // Kiro is two version lines, each with its own key.
     assert_eq!(agent_runtime_key("Kiro IDE"), Some("kiro-ide"));
-    assert_eq!(agent_runtime_key("Kiro CLI"), None);
+    assert_eq!(agent_runtime_key("Kiro CLI"), Some("kiro-cli"));
+    assert_ne!(agent_runtime_key("Kiro CLI"), agent_runtime_key("Kiro IDE"));
+    // VS Code stable only: Insiders and the forks number their releases differently.
+    assert_eq!(agent_runtime_key("Visual Studio Code"), Some("vscode"));
+    assert_eq!(agent_runtime_key("Visual Studio Code Insiders"), None);
+    assert_eq!(agent_runtime_key("Cursor"), None);
     assert_eq!(agent_runtime_key("Aider"), None);
     assert_eq!(agent_runtime_key(""), None);
 }

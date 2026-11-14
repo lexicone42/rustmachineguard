@@ -927,6 +927,7 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         inline_secret_env_keys,
         inline_secret_header_keys: inline_secret_header_keys(cfg.get("headers")),
         env: shapes(cfg.get("env"), "="),
+        env_code_loading: env_code_loading(cfg.get("env")),
         headers: shapes(cfg.get("headers"), ": "),
         unpinned,
         extra_packages,
@@ -1295,6 +1296,84 @@ pub fn extract_inline_secret_env_keys(env: Option<&serde_json::Value>) -> Vec<St
         let Some(value) = val.as_str() else { continue };
         if crate::scanners::env_files::is_secret_key_name(key) && is_inline_literal(value) {
             out.push(key.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// NAMES of `env` entries that change what the server's launch command loads, so an
+/// innocuous `npx -y <official package>` runs other code. The shapes are the ones the
+/// MCP Inspector advisory GHSA-pp85-586h-2m95 names for an imported `server.json`
+/// (`NODE_OPTIONS`, `npm_config_registry`), plus the loader variables of the other
+/// runtimes a server is started with. The value is inspected for its shape only and is
+/// never stored.
+///
+/// - `NODE_OPTIONS` naming a preload flag (`--import`, `--require`, `-r`, `--loader`,
+///   `--experimental-loader`); a memory or warning flag alone is not reported.
+/// - `npm_config_registry` / `NPM_CONFIG_REGISTRY` / `UV_INDEX_URL` / `UV_DEFAULT_INDEX`
+///   / `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` set to a literal host other than the
+///   public registry.
+/// - `LD_PRELOAD`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `PYTHONSTARTUP`, `BASH_ENV`,
+///   `PERL5OPT`, `RUBYOPT` set to anything.
+pub fn env_code_loading(env: Option<&serde_json::Value>) -> Vec<String> {
+    const ALWAYS: &[&str] = &[
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONSTARTUP",
+        "BASH_ENV",
+        "PERL5OPT",
+        "RUBYOPT",
+    ];
+    const REGISTRIES: &[&str] = &[
+        "NPM_CONFIG_REGISTRY",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+    ];
+    const PUBLIC_REGISTRIES: &[&str] = &["registry.npmjs.org", "pypi.org", "registry.yarnpkg.com"];
+    const NODE_PRELOAD: &[&str] = &["--import", "--require", "--loader", "--experimental-loader"];
+    let Some(obj) = env.and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, val) in obj {
+        let Some(value) = val.as_str().map(str::trim) else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let upper = key.to_ascii_uppercase();
+        let hit = if ALWAYS.contains(&upper.as_str()) {
+            true
+        } else if upper == "NODE_OPTIONS" {
+            value.split_whitespace().any(|w| {
+                let flag = w.split('=').next().unwrap_or(w);
+                NODE_PRELOAD.contains(&flag) || flag == "-r"
+            })
+        } else if REGISTRIES.contains(&upper.as_str()) {
+            // A `${VAR}` reference is the user's own environment; only a literal URL
+            // in the config chooses the registry for whoever loads the file.
+            let lower = value.to_ascii_lowercase();
+            let host = lower
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or(&lower)
+                .split(['/', ':', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .rsplit('@')
+                .next()
+                .unwrap_or("");
+            lower.contains("://") && !PUBLIC_REGISTRIES.contains(&host)
+        } else {
+            false
+        };
+        if hit {
+            out.push(crate::scanners::sanitize_display(key, 64));
         }
     }
     out.sort();
@@ -1956,6 +2035,40 @@ mod inline_secret_tests {
             "DB_PASSWORD": ""
         });
         assert!(extract_inline_secret_env_keys(Some(&env)).is_empty());
+    }
+
+    #[test]
+    fn env_that_changes_what_the_launch_loads_is_named() {
+        let env = json!({
+            "NODE_OPTIONS": "--import=data:text/javascript,1",
+            "npm_config_registry": "http://203.0.113.9/",
+            "LD_PRELOAD": "/x/y.so",
+            "PORT": "8080",
+        });
+        assert_eq!(
+            env_code_loading(Some(&env)),
+            vec![
+                "LD_PRELOAD".to_string(),
+                "NODE_OPTIONS".to_string(),
+                "npm_config_registry".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn ordinary_runtime_env_is_not_code_loading() {
+        let env = json!({
+            "NODE_OPTIONS": "--max-old-space-size=4096 --no-warnings",
+            "npm_config_registry": "https://registry.npmjs.org/",
+            "PIP_INDEX_URL": "${COMPANY_INDEX}",
+            "UV_INDEX_URL": "https://pypi.org/simple",
+            "LD_PRELOAD": "",
+            "PYTHONSTARTUP": 3,
+        });
+        assert!(env_code_loading(Some(&env)).is_empty());
+        assert!(env_code_loading(None).is_empty());
+        let env = json!({"NODE_OPTIONS": "-r ./x.js"});
+        assert_eq!(env_code_loading(Some(&env)), vec!["NODE_OPTIONS".to_string()]);
     }
 
     #[test]

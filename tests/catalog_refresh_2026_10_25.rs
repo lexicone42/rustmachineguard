@@ -208,11 +208,17 @@ fn advisory_severity_values_are_valid() {
 fn server_filesystem_version_scheme_reset() {
     let cat = catalog();
     let sf = "@modelcontextprotocol/server-filesystem";
+    // 2.0.1 fixed the 2026-10-25 advisories; the 2026-11-11 ones are fixed in 2.3.0
+    // (catalog 2026-11-14), so 2.0.1 now matches only that later, Medium row and never
+    // a date-line or scheme-reset row.
+    let later = matches(&cat, "npm", sf, "2.0.1");
+    assert_eq!(later.len(), 1, "{later:?}");
+    assert_eq!(later[0].matched_range.as_deref(), Some(">=2.0.1, <2.3.0"));
     assert!(
-        matches(&cat, "npm", sf, "2.0.1").is_empty(),
-        "the fixed 2.0.1 must match no row"
+        matches(&cat, "npm", sf, "2.3.0").is_empty(),
+        "the fixed 2.3.0 must match no row"
     );
-    assert!(matches(&cat, "npm", sf, "2.0.2").is_empty());
+    assert!(matches(&cat, "npm", sf, "2.3.1").is_empty());
     let cases = [
         ("0.6.2", "<1.0.0"),
         ("0.9.0", "<1.0.0"),
@@ -360,9 +366,11 @@ fn new_vulnerable_rows_match_their_vulnerable_version_and_not_their_fix() {
             "{name} {bad} is a vulnerable-range row"
         );
         assert!(found[0].advisory.contains(id), "{name} {bad}: {id} not cited");
+        // A later advisory may cover the fix release with its own row (the 2026-11-14
+        // catalog does for server-filesystem 2.0.1); no row citing this id may.
         assert!(
-            matches(&cat, eco, name, fixed).is_empty(),
-            "{eco} {name} {fixed} is fixed and must not match"
+            matches(&cat, eco, name, fixed).iter().all(|f| !f.advisory.contains(id)),
+            "{eco} {name} {fixed} is fixed for {id} and must not match its row"
         );
     }
 }
@@ -655,7 +663,7 @@ mod e2e {
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
         let home = fs::canonicalize(&home).unwrap();
-        npm_global(&home, "@modelcontextprotocol/server-filesystem", "2.0.1");
+        npm_global(&home, "@modelcontextprotocol/server-filesystem", "2.3.0");
         npm_global(&home, "@modelcontextprotocol/server-everything", "2.0.0");
         npm_global(&home, "opencode-skills-collection", "4.1.7");
         uv_tool_dist(&home, "agent-app", "claude-agent-sdk", "0.2.120");

@@ -81,6 +81,10 @@ const DANGEROUS_PATTERNS: &[(&str, &str, &str)] = &[
     ("credential access", "API_KEY", "medium"),
     ("data exfiltration pattern", "| curl", "critical"),
     ("data exfiltration pattern", "| wget", "critical"),
+    // The comment the Miasma worm's November build opens its CLAUDE.md / AGENTS.md
+    // text with, before telling the assistant to run `scripts/setup.js` unread
+    // (SafeDep, safedep.io/testmetest-npm-worm-miasma-variant, updated 2026-11-09).
+    ("Miasma worm instruction marker", "DEVOPS-SEALED ::", "critical"),
 ];
 
 impl Scanner for RulesFilesScanner {

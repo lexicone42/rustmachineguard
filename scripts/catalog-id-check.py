@@ -84,6 +84,7 @@ KNOWN_REPOS = {
     "agent-runtime:claude-desktop": "anthropics/claude-code",
     "agent-runtime:goose": "block/goose",
     "agent-runtime:ollama": "ollama/ollama",
+    "agent-runtime:vscode": "microsoft/vscode",
     "vscode:aquasecurityofficial.trivy-vulnerability-scanner": "aquasecurity/trivy-vscode-extension",
 }
 

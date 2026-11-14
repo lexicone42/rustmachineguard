@@ -158,8 +158,11 @@ pub fn browser_catalog_ecosystem(browser: &str) -> &'static str {
 ///   "Claude Desktop" desktop-app row carries no version and stays unmapped.
 /// - `codex` is the Codex CLI (`codex --version` prints `codex-cli X.Y.Z`); Codex
 ///   Desktop uses 26.5xx.x numbering and is not inventoried.
-/// - `kiro-ide` is the Kiro IDE (`kiro` launcher, 0.x/1.x); the Kiro CLI (`kiro-cli`,
-///   1.x/2.x) is a different product line and stays unmapped until it has advisories.
+/// - `kiro-ide` is the Kiro IDE (`kiro` launcher, 0.x/1.x); `kiro-cli` is the Kiro CLI
+///   (formerly Amazon Q Developer CLI, 1.x/2.x), a different product line.
+/// - `vscode` is Visual Studio Code stable, from the IDE inventory. Insiders (one minor
+///   ahead, `-insider`) and the forks (Cursor, Windsurf) have their own version lines
+///   and stay unmapped.
 /// - `goose` and `ollama` are their CLIs; `ollama` is reached from the frameworks
 ///   inventory rather than the agents list.
 pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
@@ -171,6 +174,8 @@ pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
         "openai codex cli" | "codex cli" | "codex" => "codex",
         "goose" => "goose",
         "kiro ide" => "kiro-ide",
+        "kiro cli" => "kiro-cli",
+        "visual studio code" => "vscode",
         "ollama" => "ollama",
         _ => return None,
     })

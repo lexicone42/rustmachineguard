@@ -148,7 +148,7 @@ pub fn guidance(category: &str) -> Guidance {
             reference: "OWASP MCP Top 10 · EAA-006",
         },
         "MCP command" => Guidance {
-            what: "This MCP server's launch command fetches code at startup: a curl|bash-style bootstrap, or (for an enabled plugin's server) a package runner with no fixed version (`npx pkg@latest`, `npx pkg`, `uvx --from git+https://...` at the branch HEAD, `docker run image:latest`).",
+            what: "This MCP server's launch command fetches code at startup: a curl|bash-style bootstrap, or (for an enabled plugin's server) a package runner with no fixed version (`npx pkg@latest`, `npx pkg`, `uvx --from git+https://...` at the branch HEAD, `docker run image:latest`). Or its `env` block changes what that command loads: NODE_OPTIONS with a preload flag (--import, --require, --loader), a package registry other than the public one (npm_config_registry, PIP_INDEX_URL, UV_INDEX_URL), or a loader variable (LD_PRELOAD, DYLD_INSERT_LIBRARIES, PYTHONSTARTUP, BASH_ENV). rmguard reports the variable names, never the values.",
             why: "Every launch fetches and runs whatever the remote endpoint or registry currently serves. A plugin pinned to a reviewed commit still runs new, unreviewed server code when its MCP launch line floats, so whoever publishes the next release (or compromises the publisher) runs code on this machine.",
             fix: "Pin the server to a vetted, versioned package (`npx pkg@1.2.3`, `uvx --from git+https://...@<commit>`, an image digest). For a plugin, ask the plugin's maintainer to pin it, or disable the plugin's server in /mcp until it is pinned; review the launch command shown below before trusting it.",
             reference: "EAA-006 · supply-chain · code.claude.com/docs/en/plugins-reference#mcpservers",
@@ -1645,6 +1645,33 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
         f.push(exposure_finding(report, e));
     }
 
+    // `env` entries that change what a server's launch command loads (names only). A
+    // project server still awaiting approval is included: the approval prompt is where
+    // an `npx -y <official package>` line hides what its env block makes it run.
+    for mcp in &report.mcp_configs {
+        for s in mcp
+            .servers
+            .iter()
+            .filter(|s| s.enabled != Some(false) && !s.env_code_loading.is_empty())
+        {
+            f.push(Finding {
+                severity: if mcp.git_tracked { Severity::High } else { Severity::Medium },
+                category: "MCP command".into(),
+                title: format!(
+                    "MCP server '{}' sets {} in its env block — its launch command loads code or packages the command line does not show{}{}",
+                    s.name,
+                    s.env_code_loading.join(", "),
+                    if mcp.git_tracked { " (git-tracked config: the repository chooses it)" } else { "" },
+                    if s.awaits_approval { " — not yet approved; review before approving" } else { "" }
+                ),
+                location: mcp.config_path.clone(),
+                evidence: Some(crate::scanners::redact_secrets_in_text(
+                    format!("{} {}", s.command.as_deref().unwrap_or(""), s.args.join(" ")).trim(),
+                )),
+            });
+        }
+    }
+
     // MCP server configuration risks (transport encryption, over-broad scope). A disabled
     // plugin's servers and the claude.ai connectors are inventory only.
     let home = report.device.home_dir.as_str();
@@ -2134,6 +2161,26 @@ pub fn collect_findings(report: &ScanReport) -> Vec<Finding> {
                 Severity::High,
                 "Persistence",
                 format!("Reverse SSH tunnel started at boot: {}", a.detail),
+            ),
+            // Keys the VS Code 1.145.3 advisories name as Workspace Trust bypasses.
+            // `__proto__` has no use in a workspace file; an experiment override is
+            // rarer evidence, so it is one step lower unless the repository commits it.
+            "workspace-trust-bypass" => (
+                if a.sensitive_target || a.git_tracked {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                },
+                "Persistence",
+                format!(
+                    "VS Code workspace file carries a key used to bypass Workspace Trust: {}{}",
+                    a.detail,
+                    if a.git_tracked {
+                        " — git-tracked, so every clone carries it"
+                    } else {
+                        ""
+                    }
+                ),
             ),
             "dangling-plugin-record" => (
                 Severity::Low,

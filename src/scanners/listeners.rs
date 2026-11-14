@@ -42,8 +42,10 @@ pub const FLOOR_REASON: &str =
 pub const BASE_PIDS: usize = 4096;
 /// `/proc` entries looked at to find them (every user's pids are directory names).
 const MAX_PROC_ENTRIES: usize = 65_536;
-/// Descriptors listed per process.
-pub const MAX_FDS: usize = 1024;
+/// Descriptors listed per process. 65,536 is far past the usual soft limit (1,024) and
+/// covers a long-running agent that raised its own: a Claude Code process holding 4,096
+/// descriptors was cut at the earlier 1,024 cap, so a socket past it went unmapped.
+pub const MAX_FDS: usize = 65_536;
 /// Threads whose `children` file is read per process.
 const MAX_TASKS: usize = 1024;
 /// Bytes of `/proc/net/tcp{,6}` read (about 100,000 sockets).

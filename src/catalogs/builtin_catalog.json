@@ -84,28 +84,28 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
     "version_range": "<1.0.3",
-    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp; low GHSA-8qgq-27v6-55w3 (SSE authentication and custom headers logged verbatim, from 0.14.2, published 2026-10-21). The split packages @modelcontextprotocol/inspector-server and @modelcontextprotocol/inspector-client have their own rows. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22.",
+    "advisory": "MCP Inspector 0.x/1.x line: CVE-2025-49596 (CVSS 9.4, unauthenticated proxy RCE chainable with CSRF, fixed 0.14.1; Oligo Security), CVE-2025-58444 / GHSA-g9hg-qhmf-q45m (fixed 0.16.6), and nine advisories published 2026-10-21 fixed in 1.0.3, two critical: GHSA-4fc4-wcmh-4g86 (a malicious MCP OAuth callback switches the transport to stdio and runs local commands) and GHSA-6x67-4w4w-9f3w (a remote MCP App steals the proxy auth token and runs local commands); high GHSA-wmjf-2m46-2352 (missing auth); medium GHSA-2rq8-f55p-j2jp, GHSA-f6mc-jg3x-vq53 (/fetch leaks Authorization and Cookie across redirects), GHSA-m5pj-3536-3xcp; low GHSA-8qgq-27v6-55w3 (SSE authentication and custom headers logged verbatim, from 0.14.2, published 2026-10-21). The split packages @modelcontextprotocol/inspector-server and @modelcontextprotocol/inspector-client have their own rows. Fixed: 1.0.3 (the 2.x line has its own row). Source: Oligo Security, modelcontextprotocol/inspector advisories (reporters bhavya32, Lemohang Khaile, sondt99, CloneOfAlex). Verified against primary sources 2026-10-22. Later advisories on this line are fixed in 1.0.5: upgrade to 1.0.5 or later.",
     "advisory_severity": "critical"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server-filesystem",
     "version_range": "<1.0.0",
-    "advisory": "MCP filesystem server, original 0.x line (0.2.0 to 0.6.2): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), the EscapeRoute symlink and directory-containment bypasses enabling arbitrary file read/write (GHSA-q66q-fx2p-7w4m / GHSA-hc55-p739-j48w, affected <=0.6.2), and GHSA-53mr-w429-c597 (low, CVSS 2.2: ENOENT-fallback TOCTOU write outside allowedDirectories, affected below 2.0.1). The package then moved to date versions (2025.1.14 to 2026.8.31) and restarted on semver at 1.0.0 (2026-10-11); each line has its own row. Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory": "MCP filesystem server, original 0.x line (0.2.0 to 0.6.2): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), the EscapeRoute symlink and directory-containment bypasses enabling arbitrary file read/write (GHSA-q66q-fx2p-7w4m / GHSA-hc55-p739-j48w, affected <=0.6.2), and GHSA-53mr-w429-c597 (low, CVSS 2.2: ENOENT-fallback TOCTOU write outside allowedDirectories, affected below 2.0.1). The package then moved to date versions (2025.1.14 to 2026.8.31) and restarted on semver at 1.0.0 (2026-10-11); each line has its own row. Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25. Later advisories (2026-11-11) are fixed in 2.3.0: upgrade to 2.3.0 or later.",
     "advisory_severity": "high"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server-filesystem",
     "version_range": ">=2025.1.14, <=2026.8.31",
-    "advisory": "MCP filesystem server, date-versioned line (2025.1.14 to 2026.8.31, the last date release): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), EscapeRoute, below 2025.7.1; and four advisories published 2026-10-25 with no fix on this line: GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata) (GHSA-7rgq-gccq-qphx from 2025.8.21, GHSA-hhwq-wxfx-cj7g from 2025.7.1, GHSA-4gxg-m5jx-9j57 in 2026.8.31). No date release is fixed: upgrade to 2.0.1, the semver release that replaced the date line (it sorts below every date version, which is why the lines need separate rows). Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory": "MCP filesystem server, date-versioned line (2025.1.14 to 2026.8.31, the last date release): CVE-2025-53109 (CVSS 8.4) + CVE-2025-53110 (CVSS 7.3), EscapeRoute, below 2025.7.1; and four advisories published 2026-10-25 with no fix on this line: GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata) (GHSA-7rgq-gccq-qphx from 2025.8.21, GHSA-hhwq-wxfx-cj7g from 2025.7.1, GHSA-4gxg-m5jx-9j57 in 2026.8.31). No date release is fixed: upgrade to 2.0.1, the semver release that replaced the date line (it sorts below every date version, which is why the lines need separate rows). Fixed: 2.0.1. Source: Cymulate (EscapeRoute), modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25. Two more advisories published 2026-11-11 also have no fix on this line: GHSA-p9cv-8g75-4xcg (medium, CVSS 4.4: a symlink swapped after validation lets read_text_file return files outside the allowed directories; reporter ZackaryLoevseth) and GHSA-7m4x-rv66-mxhh (medium, CVSS 5.0: move_file's same-device rename leaves the source unpinned; reporter reservoir-cmyk). Upgrade to 2.3.0 or later. Verified against primary sources 2026-11-14.",
     "advisory_severity": "high"
   },
   {
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/server-filesystem",
     "version_range": ">=1.0.0, <2.0.1",
-    "advisory": "MCP filesystem server, semver line restarted 2026-10-11 (1.0.0, then 2.0.0 on 2026-10-19): GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata), all published 2026-10-25. Fixed: 2.0.1. Source: modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25.",
+    "advisory": "MCP filesystem server, semver line restarted 2026-10-11 (1.0.0, then 2.0.0 on 2026-10-19): GHSA-7rgq-gccq-qphx (medium, CVSS 4.2: a trailing quote or whitespace in a path escapes the allowed directory), GHSA-4gxg-m5jx-9j57 (medium, CVSS 5.3: a case-variant path creates a symlink outside the allowed directories), GHSA-53mr-w429-c597 (low, CVSS 2.2: the parent-directory ENOENT fallback is a TOCTOU race that lets a write land outside allowedDirectories) and GHSA-hhwq-wxfx-cj7g (low: list_directory_with_sizes follows symlinks for file metadata), all published 2026-10-25. Fixed: 2.0.1. Source: modelcontextprotocol/servers advisories. Verified against primary sources 2026-10-25. Later advisories (2026-11-11) are fixed in 2.3.0: upgrade to 2.3.0 or later.",
     "advisory_severity": "medium"
   },
   {
@@ -133,7 +133,7 @@
     "ecosystem": "pypi",
     "name": "mcp-server-git",
     "version_range": "<2025.9.25",
-    "advisory": "CVE-2025-68143 + CVE-2025-68144 + CVE-2025-68145: path traversal, Git CLI argument injection, path validation bypass. Chainable for full RCE. Source: Cyata, Endor Labs Affected: <2025.9.25 (GHSA-5cgr-j3jf-jw3v)."
+    "advisory": "CVE-2025-68143 + CVE-2025-68144 + CVE-2025-68145: path traversal, Git CLI argument injection, path validation bypass. Chainable for full RCE. Source: Cyata, Endor Labs Affected: <2025.9.25 (GHSA-5cgr-j3jf-jw3v). Later advisories (2026-10-28, 2026-11-11) are fixed in 2026.11.11: upgrade to 2026.11.11 or later."
   },
   {
     "ecosystem": "pypi",
@@ -902,7 +902,7 @@
     "ecosystem": "npm",
     "name": "@modelcontextprotocol/inspector",
     "version_range": ">=2.0.0, <2.12.0",
-    "advisory": "MCP Inspector 2.x line, fixed 2.12.0 (2026-10-21): GHSA-q978-78c7-phqw (high, CVSS 8.8: a remote MCP server's OAuth authorization URL reached PowerShell through the 'open' package, so $(...) subexpressions executed during sign-in on Windows/WSL), GHSA-vcc9-3xgm-p9v4 (high: incomplete fix for CVE-2025-49596, DNS-rebinding disclosure of the API token and stored OAuth tokens), GHSA-m5pj-3536-3xcp (medium: /api/fetch proxy has no size cap). Fixed: 2.12.0. Source: modelcontextprotocol/inspector advisories (Pillar Security / eilonc-pillar, 0xParth, hackyhunter, CloneOfAlex). Verified against primary sources 2026-10-22.",
+    "advisory": "MCP Inspector 2.x line, fixed 2.12.0 (2026-10-21): GHSA-q978-78c7-phqw (high, CVSS 8.8: a remote MCP server's OAuth authorization URL reached PowerShell through the 'open' package, so $(...) subexpressions executed during sign-in on Windows/WSL), GHSA-vcc9-3xgm-p9v4 (high: incomplete fix for CVE-2025-49596, DNS-rebinding disclosure of the API token and stored OAuth tokens), GHSA-m5pj-3536-3xcp (medium: /api/fetch proxy has no size cap). Fixed: 2.12.0. Source: modelcontextprotocol/inspector advisories (Pillar Security / eilonc-pillar, 0xParth, hackyhunter, CloneOfAlex). Verified against primary sources 2026-10-22. Later advisories on this line are fixed in 2.15.0: upgrade to 2.15.0 or later.",
     "advisory_severity": "high"
   },
   {
@@ -1801,5 +1801,187 @@
     "version_range": ">=2.2.0, <3.0.1",
     "advisory": "CVE-2026-62264 (GHSA-q344-5v34-gm84, high, CVSS 7.5): the HTTP transport accepted unauthenticated requests even with MCP_API_KEY configured. Affected: 2.2.0 to 3.0.0. Fixed: 3.0.1. Source: GitHub Advisory Database (reviewed, 2026-10-29).",
     "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@iobandamwer/cache-helper",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Replaced by the npm security holding package. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@iobandamwer/native-helper",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Replaced by the npm security holding package. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "path-stream-utils-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Replaced by the npm security holding package. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "event-bus-lite-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "data-pipeline-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "event-emitter-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "test-brotli-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "pixel-map-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "net-codec-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "log-rotate-testmetest",
+    "advisory": "Miasma-family worm ('testmetest' campaign): attacker-published package, never legitimate. Armed releases run a Bun-based credential stealer that spreads through stolen npm and GitHub tokens, installs a hostage-token monitor (net-health-checker / pkg-runtime; it wipes the home directory when the stolen GitHub token is revoked, so remove the monitor BEFORE revoking the token), and writes agent configuration (CLAUDE.md, AGENTS.md, .claude/settings.json SessionStart hook, .cursor/mcp.json, .cursor/rules, .vscode/tasks.json). C2 aiarmor[.]website, paleasbest[.]top. Unpublished from npm 2026-10-21/22. Source: SafeDep, Kunal Singh, 'testmetest npm Packages Carry a Miasma-Family Worm' (safedep.io/testmetest-npm-worm-miasma-variant, 2026-10-22, updated 2026-11-09) and its package table. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pystr-codec",
+    "advisory": "Malicious package (0.1.0, 0.1.1, 0.1.2; every release), Miasma family: a .pth file runs obfuscated JavaScript with Bun on every Python start, exfiltrates credentials to a public GitHub repository, persists, spreads, and destroys local data when the stolen credentials are invalidated. Removed from PyPI. GHSA-f93h-mc69-274w (critical, 2026-11-01), OSV MAL-2026-18432. Source: GitHub Advisory Database / OpenSSF malicious-packages (reporter kam193). Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "is-it-ai",
+    "advisory": "Malicious package (0.1.0, 0.1.1, 0.1.3), campaign '2026-10-is-it-ai': fingerprints the host, contacts a server, then downloads and runs whatever URL it returns. Removed from PyPI. GHSA-76h8-w3px-47hx (critical, 2026-10-31). Source: GitHub Advisory Database / OpenSSF malicious-packages (reporter kam193). Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "skills-analyzer",
+    "advisory": "Malicious package (0.1.0, 0.1.1, 0.1.2), campaign '2026-10-is-it-ai': posed as an agent-skills analyzer and pinned the malicious is-it-ai as a dependency (download-and-run stage). Removed from PyPI. GHSA-r92r-m9r8-78vj (critical, 2026-10-31). Source: GitHub Advisory Database / OpenSSF malicious-packages (reporter kam193). Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "nebulallm",
+    "advisory": "Malicious package (1.4.3), the PyPI sibling of the NEBULA npm campaign: a typosquat whose install downloads a JScript that fetches a malicious DLL. Removed from PyPI. GHSA-mvgr-2gjf-h99c (critical, 2026-10-25), OSV MAL-2026-18297. Source: GitHub Advisory Database / OpenSSF malicious-packages (reporter kam193). Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/mdd-doc-mcp",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. Removed from npm. GHSA-4q9j-4rv8-jp32 (critical, 2026-11-02). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/mmd-doc-mcp",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. Removed from npm. GHSA-f826-46h5-5rcq (critical, 2026-11-02). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/md-doc-mcp",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. Removed from npm. GHSA-rvw8-22w3-342v (critical, 2026-11-02). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@rfewqa-fes/mnm-doc-mcp",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. Removed from npm. GHSA-3qjp-mvhh-w85g (critical, 2026-11-12). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@claudecode/cli",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-vp2q-gp5r-xh5j (critical, 2026-11-13) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Not Anthropic's CLI, which is @anthropic-ai/claude-code. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@bestcoolman/dev-mcp",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-vgx2-8w7x-xr8v (critical, 2026-11-09) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "mcp-contract-tester",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-34p7-qcxm-gc39 (critical, 2026-11-10) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "agent-trace-kit",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-p844-4jjv-h39f (critical, 2026-11-10) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "depfix-ai",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-689j-99g2-vf2f (critical, 2026-11-12) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "monitoring-agent",
+    "advisory": "Malicious package: GitHub malware advisory GHSA-fvjv-j94x-c8wm (critical, 2026-10-26) covers every version, and npm replaced the package with its security holding package. The advisory publishes no analysis of the payload. Source: GitHub Advisory Database / npm Security. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "dsh-plugin-blender-3d",
+    "version": "0.2.1",
+    "advisory": "Malicious release of a DeepSeek Harness plugin: postinstall runs scripts/miner.sh, which installs XMRig and persists it as systemd units or an @reboot cron entry (pool networkservicesupp.flashhub[.]net:8443). 0.2.1 was removed from npm; 0.2.0 and earlier are not covered by the advisory. GHSA-c7hg-7rf4-q54h (critical, 2026-10-26). Source: GitHub Advisory Database / OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "vscode",
+    "version_range": "<1.145.3",
+    "advisory": "Visual Studio Code, 16 advisories published 2026-11-10 and fixed in 1.145.3. Workspace Trust bypasses that start a workspace's MCP server or apply restricted settings from an untrusted folder: CVE-2026-121662 / GHSA-fp22-hgv9-mq6q (a __proto__ key in .vscode/mcp.json or .vscode/settings.json), CVE-2026-121663 / GHSA-x5cm-xmvw-73rv (settings group key override), CVE-2026-121665 / GHSA-c367-h9jc-pjr7 (unregistered experiment override settings), CVE-2026-121661 / GHSA-g69c-c2mc-6h4j (restricted settings written as flat dotted keys), CVE-2026-119985 / GHSA-g3fj-wc2g-v3j5 (network workspace file). MCP: CVE-2026-120779 / GHSA-66hq-jw93-462h (elicitation notification renders a command link, CVSS 8.3), CVE-2026-119983 / GHSA-4x35-6qr8-ww48 (unvalidated SSE endpoint), CVE-2026-114171 / GHSA-crhv-2887-p3xr (malicious MCP installation link). Agent and extensions: CVE-2026-120782 / GHSA-w9fm-7vcm-cvq4 (agent-originated local commands run without terminal approval), CVE-2026-102230 / GHSA-f56j-7499-5hch (integrated-browser file upload), CVE-2026-70094 / GHSA-3grj-pfwj-fffm (JS debugger auto-attach), CVE-2026-121664 / GHSA-fr44-qgmq-4w24, CVE-2026-119975 / GHSA-h6q5-jg88-2p8v, CVE-2026-121660 / GHSA-5q2c-26xp-69q2, CVE-2026-120780 / GHSA-xfg5-fq3p-cx69, CVE-2026-119976 / GHSA-36gp-85m2-88vw. Stable builds only; forks (Cursor, Windsurf) have their own version lines and are not matched by this row. Fixed: 1.145.3. Source: microsoft/vscode security advisories. Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "agent-runtime",
+    "name": "kiro-cli",
+    "version_range": ">=1.16.0, <2.27.0",
+    "advisory": "CVE-2026-124848 (AWS bulletin 2026-178-AWS, 2026-11-10): Kiro CLI (formerly Amazon Q Developer CLI) created session transcripts and prompt history readable by other local users (~/.kiro, ~/.aws/amazonq/.cli_bash_history), on macOS and Linux. After upgrading, tighten what already exists: chmod -R go-rwx ~/.kiro. Fixed: 2.27.0. Source: aws.amazon.com/security/security-bulletins/2026-178-aws. Verified against primary sources 2026-11-14.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-server-git",
+    "version_range": ">=2025.9.25, <2026.11.11",
+    "advisory": "MCP git server: GHSA-6hqx-gqrx-c5r2 (high, CVSS 7.8: a repository's own git configuration, such as core.fsmonitor, hooks and filter drivers, executes commands during read-only tools), GHSA-w766-5x43-whvw (medium, CVSS 5.3: a nested .git file with gitdir: bypasses --repository confinement, fixed 2026.10.28; reporter ShieldPi1) and GHSA-q74p-4wrc-q7w6 (medium, CVSS 5.3: incomplete fix of the former, from 2026.10.28; reporter jashory). All three also affect releases below 2025.9.25, which have their own row. Fixed: 2026.11.11. Source: modelcontextprotocol/servers advisories (2026-10-28, 2026-11-11). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "mcp-server-fetch",
+    "version_range": ">=2026.10.24, <2026.11.11",
+    "advisory": "MCP fetch server: GHSA-f9hh-cmx9-2f23 (low, CVSS 3.1: robots.txt path-canonicalization bypass, affected from 0.6.1) and GHSA-3rxj-6jhw-qfv7 (low, CVSS 3.1: the SSRF guard treats IPv6 site-local fec0::/10 as public, from 2026.10.10; reporter ShieldPi1). Fixed: 2026.11.11. Source: modelcontextprotocol/servers advisories (2026-11-11). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "low"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/server-filesystem",
+    "version_range": ">=2.0.1, <2.3.0",
+    "advisory": "MCP filesystem server: GHSA-p9cv-8g75-4xcg (medium, CVSS 4.4: a symlink swapped after validation lets read_text_file return files outside the allowed directories; reporter ZackaryLoevseth) and GHSA-7m4x-rv66-mxhh (medium, CVSS 5.0: move_file's same-device rename leaves the source unpinned; reporter reservoir-cmyk). Both also affect earlier releases, which have their own rows. Fixed: 2.3.0. Source: modelcontextprotocol/servers advisories (2026-11-11). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector",
+    "version_range": ">=2.12.0, <2.15.0",
+    "advisory": "MCP Inspector 2.x: fixed in 2.14.0, GHSA-rwv7-mh2c-ff2p (medium: unvalidated runtimeArguments and identifier in server.json import), GHSA-h9j8-vj8g-v3gg (medium, CVSS 6.1: an MCP App escapes its CSP; reporter CloneOfAlex), GHSA-2fw8-7jmw-r937 (medium, CVSS 6.5: ReDoS through a tool output schema; reporter KillerX345). Fixed in 2.15.0, GHSA-9w48-x22j-rrm7 (medium, CVSS 6.5: a malicious MCP server crashes the proxy; reporter SounLabs), GHSA-5572-x678-xmv8 (medium, CVSS 5.0: daemon socket path authorization bypass, from 2.10.0), GHSA-pp85-586h-2m95 (low: environment-variable defaults in an imported server.json, such as NODE_OPTIONS, change what the previewed command runs; 2.14.0 only), GHSA-fvg8-f358-w2c8 (low, CVSS 3.1: SSRF guard gap). Fixed: 2.15.0. Source: modelcontextprotocol/inspector advisories (2026-11-04 to 2026-11-12). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector",
+    "version_range": ">=1.0.3, <1.0.5",
+    "advisory": "MCP Inspector 1.x: GHSA-2fw8-7jmw-r937 (medium, CVSS 6.5: ReDoS through a tool output schema, fixed 1.0.4; reporter KillerX345) and GHSA-fvg8-f358-w2c8 (low, CVSS 3.1: SSRF guard gap, fixed 1.0.5). Fixed: 1.0.5. Source: modelcontextprotocol/inspector advisories (2026-11-04, 2026-11-12). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "medium"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@modelcontextprotocol/inspector-server",
+    "version_range": ">=1.0.3, <1.0.5",
+    "advisory": "MCP Inspector server package: GHSA-fvg8-f358-w2c8 (low, CVSS 3.1: SSRF guard gap in fetchGuard). Fixed: 1.0.5. Source: modelcontextprotocol/inspector advisories (2026-11-12). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "low"
   }
 ]

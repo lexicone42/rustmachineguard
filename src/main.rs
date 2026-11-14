@@ -1155,6 +1155,19 @@ fn main() {
                 .exposure_findings
                 .extend(catalog.check_extension("agent-runtime", key, version, found_in));
         }
+        // The editor is an agent runtime too (its own MCP client, agent mode and
+        // Workspace Trust): VS Code stable is matched by its installed version.
+        for ide in report.ide_installations.iter().filter(|i| i.is_installed) {
+            let (Some(key), Some(version)) = (
+                scanners::exposure::agent_runtime_key(&ide.ide_type),
+                ide.version.as_deref(),
+            ) else {
+                continue;
+            };
+            report
+                .exposure_findings
+                .extend(catalog.check_extension("agent-runtime", key, version, &ide.install_path));
+        }
         // Local inference servers grew agent modes of their own (Ollama's Bash tool,
         // CVE-2026-102697), so the frameworks inventory feeds the same ecosystem.
         for fw in &report.ai_frameworks {

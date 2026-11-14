@@ -142,6 +142,42 @@ const HOME_IOC_PATHS: &[(&str, &str)] = &[
         ".apex/agent/mcp.json",
         "Apex Accelerator backdoored coding agent, REF8801 (2026-10)",
     ),
+    // Miasma-family worm ("testmetest" npm packages, `pystr-codec` on PyPI, the
+    // `strutil-core` gem): SafeDep, Kunal Singh, safedep.io/testmetest-npm-worm-miasma-
+    // variant (2026-10-22, updated 2026-11-09), and Socket, Kush Pandya, socket.dev/blog/
+    // shai-hulud-descendant-malicious-ruby-gem (2026-11-06; names `sync.py` under
+    // `runtimes`). The same hostage-token monitor as tensorlake's under a new name: per
+    // both write-ups, remove the monitor BEFORE revoking the GitHub token (a 401/403
+    // triggers `rm -rf ~/`). `~/.config/net-health-checker/token` holds the token;
+    // rmguard tests that the directory exists and never opens it.
+    (
+        ".local/bin/net-health-checker.sh",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        ".config/net-health-checker",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        ".config/systemd/user/net-health-checker.service",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        ".config/systemd/user/pkg-runtime.service",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        ".local/share/runtimes/sync.py",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        "Library/LaunchAgents/com.user.net-health-checker.plist",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        "Library/LaunchAgents/com.user.pkg-runtime.plist",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
     // Trojanized `anthropic.claude-code` 2.1.313 served by the Cursor Marketplace on
     // 2026-10-29: Cursor, cursor.com/blog/claude-code-extension-security-notice (the
     // LaunchAgent), and OpenSourceMalware, opensourcemalware.com/blog/trojanized-claude-
@@ -162,15 +198,36 @@ const HOME_IOC_PATHS: &[(&str, &str)] = &[
     ),
 ];
 /// Absolute paths (not under HOME) the same campaigns leave behind.
-const ABS_IOC_PATHS: &[(&str, &str)] = &[(
-    "/tmp/remote_code_loader.lock",
-    "litellm 1.107.0 remote-code loader (2026-10)",
-)];
+const ABS_IOC_PATHS: &[(&str, &str)] = &[
+    (
+        "/tmp/remote_code_loader.lock",
+        "litellm 1.107.0 remote-code loader (2026-10)",
+    ),
+    // SafeDep and Socket (see the Miasma rows above).
+    (
+        "/var/tmp/.fontconfig_state",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+];
 /// Known persistence artifacts relative to a project root.
-const PROJECT_IOC_PATHS: &[(&str, &str)] = &[(
-    ".github/workflows/runtime-update.yml",
-    "MemTensor sckit worm GitHub Actions dropper (2026-09)",
-)];
+const PROJECT_IOC_PATHS: &[(&str, &str)] = &[
+    (
+        ".github/workflows/runtime-update.yml",
+        "MemTensor sckit worm GitHub Actions dropper (2026-09)",
+    ),
+    // The November build pushes forged commits that add these next to a SessionStart
+    // hook, a Cursor rule and an MCP server (SafeDep's IOC table). `scripts/setup.js`
+    // and `.cursor/rules/setup.mdc` are ordinary names and are not listed alone; the
+    // hook, rules-file marker and `.claude/index.js` loader checks report those.
+    (
+        ".github/init.js",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+    (
+        ".github/init.ps1",
+        "Miasma / testmetest worm (npm, PyPI, RubyGems; 2026-10/11)",
+    ),
+];
 
 impl Scanner for PersistenceScanner {
     type Output = Vec<PersistenceArtifact>;
@@ -220,7 +277,7 @@ impl Scanner for PersistenceScanner {
         // slots and joined in the old per-project order (planted binaries, loader
         // staging, committed symlinks, project IOCs): the report is the same as the
         // project-by-project loop produced.
-        let mut per_project: Vec<[Vec<PersistenceArtifact>; 4]> = projects.iter().map(|_| Default::default()).collect();
+        let mut per_project: Vec<[Vec<PersistenceArtifact>; 5]> = projects.iter().map(|_| Default::default()).collect();
         let path_searches_cwd = path_searches_cwd(std::env::var_os("PATH").as_deref());
         {
             let _s = check("planted_binaries");
@@ -250,6 +307,12 @@ impl Scanner for PersistenceScanner {
                         slots[3].push(ioc(&p, proj, campaign, is_git_tracked(&p)));
                     }
                 }
+            }
+        }
+        {
+            let _s = check("workspace_trust");
+            for (proj, slots) in projects.iter().zip(per_project.iter_mut()) {
+                scan_workspace_trust_keys(proj, &home, &mut slots[4]);
             }
         }
         out.extend(per_project.into_iter().flat_map(|slots| slots.into_iter().flatten()));
@@ -293,7 +356,15 @@ impl Scanner for PersistenceScanner {
         }
 
         let mut seen = std::collections::HashSet::new();
-        out.retain(|a| seen.insert((a.kind.clone(), a.path.clone())));
+        out.retain(|a| {
+            // A workspace file can carry both trust-bypass keys: one row each.
+            let key = if a.kind == "workspace-trust-bypass" {
+                a.detail.clone()
+            } else {
+                String::new()
+            };
+            seen.insert((a.kind.clone(), a.path.clone(), key))
+        });
         out
     }
 }
@@ -662,6 +733,86 @@ fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> Persiste
     }
 }
 
+// ── VS Code workspace files ──────────────────────────────────────────────────
+
+/// Keys in a project's `.vscode/settings.json` or `.vscode/mcp.json` that the VS Code
+/// 1.145.3 advisories (2026-11-10) describe as Workspace Trust bypasses:
+///
+/// - a `__proto__` key at any depth: CVE-2026-121662 / GHSA-fp22-hgv9-mq6q, "a
+///   specially crafted `__proto__` key could change JavaScript's shared object
+///   prototype while VS Code merged the workspace configuration", starting the
+///   workspace's MCP server in Restricted Mode;
+/// - an `experiments.override.*` setting: CVE-2026-121665 / GHSA-c367-h9jc-pjr7,
+///   unregistered experiment overrides honoured from an untrusted workspace.
+///
+/// Neither key has a use in a workspace file, so they are reported whatever VS Code
+/// version is installed (a fork may not carry the fix). Key names only; no value is
+/// kept. The files are repository content: one whose real path leaves the project is
+/// not opened.
+fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
+    let root = crate::scanners::skills::project_containment_root(proj, home);
+    for name in ["settings.json", "mcp.json"] {
+        let path = proj.join(".vscode").join(name);
+        if !crate::scanners::probe_file(&path) {
+            continue;
+        }
+        let Some(content) = crate::scanners::read_bounded_within(&path, &root) else {
+            continue;
+        };
+        // Cheap pre-filter: nearly every workspace file has neither key.
+        if !content.contains("__proto__") && !content.contains("experiments.override.") {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&crate::scanners::vscode_tasks::strip_jsonc(&content))
+        else {
+            continue;
+        };
+        let mut details = Vec::new();
+        if has_key(&json, "__proto__", 0) {
+            details.push((format!("`__proto__` key in .vscode/{name} (CVE-2026-121662)"), true));
+        }
+        if name == "settings.json"
+            && json
+                .as_object()
+                .is_some_and(|o| o.keys().any(|k| k.starts_with("experiments.override.")))
+        {
+            details.push((
+                "`experiments.override.*` setting in .vscode/settings.json (CVE-2026-121665)".to_string(),
+                false,
+            ));
+        }
+        let git_tracked = if details.is_empty() {
+            false
+        } else {
+            is_git_tracked(&path)
+        };
+        for (detail, sensitive_target) in details {
+            out.push(PersistenceArtifact {
+                kind: "workspace-trust-bypass".into(),
+                path: sanitize_display(&path.to_string_lossy(), 512),
+                scope: sanitize_display(&proj.to_string_lossy(), 512),
+                detail,
+                git_tracked,
+                claimed: false,
+                sensitive_target,
+                bin: None,
+            });
+        }
+    }
+}
+
+/// True if `key` names a member of any object in `v` (bounded depth).
+fn has_key(v: &serde_json::Value, key: &str, depth: usize) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    match v {
+        serde_json::Value::Object(o) => o.iter().any(|(k, child)| k == key || has_key(child, key, depth + 1)),
+        serde_json::Value::Array(a) => a.iter().any(|child| has_key(child, key, depth + 1)),
+        _ => false,
+    }
+}
+
 // ── Python startup hooks ──────────────────────────────────────────────────────
 
 /// Walk one site-packages root for `.pth` import lines and `sitecustomize.py` /
@@ -976,6 +1127,7 @@ pub const CHECK_FAMILIES: &[&str] = &[
     "loader_staging",
     "committed_symlinks",
     "project_iocs",
+    "workspace_trust",
     "home_iocs",
     "crontab",
     "url_handlers",

@@ -322,6 +322,12 @@ pub struct McpServerDetail {
     /// The `env` block by SHAPE: `NAME=${REF}`, `NAME=$REF` or `NAME=<redacted>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
+    /// NAMES of `env` variables whose value makes the launched runtime load other code
+    /// or packages than the command line shows (`NODE_OPTIONS` with a preload flag,
+    /// `npm_config_registry` off the public registry, `LD_PRELOAD`, ...). Decided from
+    /// the value's shape inside the parser; the value is never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_code_loading: Vec<String>,
     /// The `headers` block by SHAPE: `Name: Bearer ${REF}` or `Name: <redacted>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<String>,
@@ -1123,7 +1129,7 @@ pub struct EnvAgentOverride {
 pub struct PersistenceArtifact {
     /// "python-startup-hook" | "planted-binary" | "escaping-symlink" | "loader-script" |
     /// "worm-ioc" | "url-handler" | "agent-bin" | "dangling-plugin-record" |
-    /// "reboot-reverse-tunnel"
+    /// "reboot-reverse-tunnel" | "workspace-trust-bypass"
     pub kind: String,
     pub path: String,
     /// The site-packages root, project root, or home the artifact was found under.
