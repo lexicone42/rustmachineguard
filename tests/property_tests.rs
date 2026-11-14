@@ -3350,7 +3350,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        362,
+        363,
         "catalog size changed — update this pin and the count quoted in \
          docs/THREAT-CATALOG.md (README.md and docs/COVERAGE.md state no count)"
     );
@@ -4568,6 +4568,8 @@ fn agent_runtime_key_maps_only_known_tools() {
     assert_eq!(agent_runtime_key("Kiro IDE"), Some("kiro-ide"));
     assert_eq!(agent_runtime_key("Kiro CLI"), Some("kiro-cli"));
     assert_ne!(agent_runtime_key("Kiro CLI"), agent_runtime_key("Kiro IDE"));
+    // Junie CLI: the build number its `current` link names (tests/junie_build.rs).
+    assert_eq!(agent_runtime_key("Junie CLI"), Some("junie-cli"));
     // VS Code stable only: Insiders and the forks number their releases differently.
     assert_eq!(agent_runtime_key("Visual Studio Code"), Some("vscode"));
     assert_eq!(agent_runtime_key("Visual Studio Code Insiders"), None);

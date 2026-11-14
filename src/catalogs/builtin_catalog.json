@@ -1943,6 +1943,13 @@
     "advisory_severity": "medium"
   },
   {
+    "ecosystem": "agent-runtime",
+    "name": "junie-cli",
+    "version_range": "<2929.5",
+    "advisory": "JetBrains Junie CLI: CVE-2026-111091 (high, CVSS 7.8: code execution via an untrusted project's MCP server configuration, fixed 26.8.3), CVE-2026-123315 (high, CVSS 7.0: command execution via the Allow Similar Commands option, fixed 26.8.24), CVE-2026-117530 (medium, CVSS 6.7: incomplete validation of allowlisted commands, fixed 26.8.17) and CVE-2026-123316 (medium, CVSS 5.5: sensitive environment variables in session event logs, fixed 26.6.29). The range is in build numbers, which is what an install records (~/.local/share/junie/versions/<build>): JetBrains' update-info.jsonl lists 2929.5 as the first build released as 26.8.24 and every lower build under an earlier release. Fixed: build 2929.5 (26.8.24). Sources: jetbrains.com/privacy-security/issues-fixed, the JetBrains CVE records, github.com/jetbrains-junie/junie update-info.jsonl. Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
     "ecosystem": "pypi",
     "name": "mcp-server-git",
     "version_range": ">=2025.9.25, <2026.11.11",

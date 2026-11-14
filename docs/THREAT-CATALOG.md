@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog (version `2026-11-14.2`) currently contains 362 entries
+that is automatically checked during every scan. The catalog (version `2026-11-14.3`) currently contains 363 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -133,9 +133,6 @@ Left out during the 2026-10-25 refresh:
 - **Goose** CVE-2026-111079 (terminal integration sends shell history to the LLM provider):
   the Red Hat record names no affected or fixed version, and an unbounded CVE row is
   forbidden by test.
-- **JetBrains Junie CLI** CVE-2026-111091 (fixed 26.8.3): there is no `agent-runtime` key
-  for Junie, and the npm packages (`@jetbrains/junie-cli` 1468.x, `@jetbrains/junie`
-  3110.x) do not use the vendor's 26.x numbering, so no bound can be stated.
 - **Z.ai ZCode** CVE-2026-88755 and **DeepSeek Harness (dsh)** CVE-2026-95183: a CNA
   record and a researcher gist only, no vendor source; dsh is identified by commit, not
   version.
@@ -633,6 +630,17 @@ To contribute additional entries, please open a PR with:
     Codex Desktop for Windows (CVE-2026-110930): not inventoried. The opencode entry of
     CVE-2026-119025: anomalyco/opencode has published no advisory for it. IBM ContextForge:
     no fixed version in the records.
+
+- **2026-11-14.3** (362 to 363 rows; 1 added). `agent-runtime` `junie-cli` `<2929.5`:
+  CVE-2026-111091, CVE-2026-123315, CVE-2026-117530 and CVE-2026-123316 (JetBrains CVE
+  records; fixed 26.6.29 to 26.8.24). The 2026-11-14.2 note above is superseded: rmguard
+  now reads the installed build from the `~/.local/share/junie/current` symlink without
+  running `junie`. An install records a build number, not the 26.x release the advisories
+  name, so the bound is the first build JetBrains' own `update-info.jsonl`
+  (github.com/jetbrains-junie/junie) lists as 26.8.24; build numbers in that file rise
+  with release dates, and the npm launchers (`@jetbrains/junie`, `@jetbrains/junie-cli`)
+  install the build their version names into the same tree. Not seen: a build started for
+  one invocation with `--use-version` or `JUNIE_VERSION`, and Junie on Windows.
 
 ## License
 

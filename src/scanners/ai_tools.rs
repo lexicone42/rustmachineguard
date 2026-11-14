@@ -300,7 +300,7 @@ const NPM_TOOLS: &[(&str, &str)] = &[
 
 /// Tools never started for a version: a GUI program (`warp-terminal` would open a window)
 /// or one whose version command is not `--version` (`amp version`, ampcode.com/docs/cli;
-/// Junie's is not documented).
+/// Junie's is not documented: its build is read from disk, see [`junie_current_build`]).
 const NO_SPAWN: &[&str] = &["Amp", "Junie CLI", "Warp", "Cline CLI", "Continue CLI"];
 
 /// `version` from the `package.json` of npm package `pkg` (scoped names included) whose
@@ -335,6 +335,34 @@ pub fn npm_bin_version(bin: &Path, pkg: &str) -> Option<String> {
     (crate::scanners::npm_packages::is_valid_version(&v)
         && crate::scanners::extract_version(&v).as_deref() == Some(v.as_str()))
     .then_some(v)
+}
+
+/// The Junie CLI build `junie` starts by default: the name of the directory the
+/// `~/.local/share/junie/current` symlink points at. Nothing is run and no file is opened;
+/// the link is read with `readlink`.
+///
+/// Layout, from the vendor's installer (junie.jetbrains.com/install.sh, read 2026-11-14)
+/// and the npm launchers' `postinstall.js` (`@jetbrains/junie`, `@jetbrains/junie-cli`),
+/// which write the same tree: "Shim: ~/.local/bin/junie", "Versions:
+/// ~/.local/share/junie/versions/<version>/junie", and `ln -sfn "$VERSIONS_DIR/$version"
+/// "$CURRENT_LINK"`. The shim resolves the default build the same way
+/// (`basename "$(readlink "$CURRENT_LINK")"`); a `--use-version` flag or `JUNIE_VERSION`
+/// can start another installed build for one invocation, which this does not see.
+///
+/// The name is a build number (`2548.5`), not the marketing version (`26.8.3`); the
+/// vendor's `update-info.jsonl` (github.com/jetbrains-junie/junie) maps one to the other,
+/// and the catalog's `junie-cli` rows are stated in build numbers. Accepted only when the
+/// link's target is `<something>/versions/<digits>.<digits>[.<digits>]`.
+pub fn junie_current_build(home: &Path) -> Option<String> {
+    let link = home.join(".local").join("share").join("junie").join("current");
+    let target = std::fs::read_link(&link).ok()?;
+    if target.parent()?.file_name()? != "versions" {
+        return None;
+    }
+    let build = target.file_name()?.to_str()?;
+    let parts: Vec<&str> = build.split('.').collect();
+    let numeric = |p: &&str| !p.is_empty() && p.len() <= 6 && p.bytes().all(|b| b.is_ascii_digit());
+    ((2..=3).contains(&parts.len()) && parts.iter().all(numeric)).then(|| build.to_string())
 }
 
 /// The version of tool `name` found at `path`: from its Python distribution on disk when
@@ -541,7 +569,11 @@ impl Scanner for AiToolsScanner {
                 .unwrap_or(false);
 
             if found_binary.is_some() || has_config {
-                let version = found_binary.as_ref().and_then(|p| tool_version(def.name, p));
+                let version = if def.name == "Junie CLI" {
+                    junie_current_build(&platform.home_dir())
+                } else {
+                    found_binary.as_ref().and_then(|p| tool_version(def.name, p))
+                };
 
                 let is_running = def.process_name.map(is_process_running).unwrap_or(false);
 

@@ -175,6 +175,7 @@ pub fn agent_runtime_key(tool_name: &str) -> Option<&'static str> {
         "goose" => "goose",
         "kiro ide" => "kiro-ide",
         "kiro cli" => "kiro-cli",
+        "junie cli" => "junie-cli",
         "visual studio code" => "vscode",
         "ollama" => "ollama",
         _ => return None,
