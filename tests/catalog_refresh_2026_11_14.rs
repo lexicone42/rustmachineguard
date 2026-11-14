@@ -101,3 +101,49 @@ fn vscode_and_kiro_cli_are_matched_by_their_own_version_lines() {
     // The IDE's row (`<0.8.135`) must not match a CLI version, nor the reverse.
     assert_eq!(runtime(&cat, "kiro-ide", "2.0.0"), 0);
 }
+
+// ─── 2026-11-14.2: the sweep's backlog ─────────────────────────────────────
+
+#[test]
+fn backlog_rows_match_their_windows_and_not_their_fixes() {
+    let cat = catalog();
+    for (eco, name, bad, fixed) in [
+        ("pypi", "pydantic-ai", "1.107.5", "1.107.10"),
+        ("pypi", "pydantic-ai", "1.107.9", "1.107.10"),
+        ("pypi", "pydantic-ai", "2.30.0", "2.66.0"),
+        ("pypi", "pydantic-ai-slim", "2.65.0", "2.66.0"),
+        ("pypi", "pydantic_ai_slim", "1.107.8", "1.107.10"),
+        ("pypi", "pydantic-ai-harness", "0.16.0", "0.66.0"),
+        ("npm", "fastmcp", "3.24.0", "4.26.1"),
+        ("npm", "fastmcp", "4.26.0", "4.26.1"),
+    ] {
+        assert_eq!(matches(&cat, eco, name, bad).len(), 1, "{name} {bad} matches one row");
+        assert!(matches(&cat, eco, name, fixed).is_empty(), "{name} {fixed} is clean");
+    }
+    // The npm fastmcp row starts at 3.24.0 and is not the PyPI project's.
+    assert!(matches(&cat, "npm", "fastmcp", "3.23.0").is_empty());
+    assert!(matches(&cat, "pypi", "fastmcp", "4.26.0").is_empty());
+}
+
+#[test]
+fn ifasn_packages_still_on_npm_are_matched_as_malware() {
+    let cat = catalog();
+    let all = matches(&cat, "npm", "@ifasn/mmdd-doc-mcp", "2.1.1");
+    assert_eq!(all.len(), 1);
+    assert!(all[0].matched_range.is_none(), "a malware row, not a vulnerable range");
+    assert_eq!(matches(&cat, "npm", "@ifasn/ms-doc-mcp", "2.0.9").len(), 1);
+    assert_eq!(matches(&cat, "npm", "@ifasn/ms-doc-mcp", "2.1.1").len(), 1);
+    // Releases the advisory does not name stay unmatched (exact rows).
+    assert!(matches(&cat, "npm", "@ifasn/ms-doc-mcp", "2.1.0").is_empty());
+}
+
+/// LiteLLM's proxy advisories are deliberately not rows: the package scanner cannot tell
+/// a proxy deployment from a library install, and the critical one needs an Enterprise
+/// license. Only the compromised releases match.
+#[test]
+fn litellm_stays_exact_version_malware_only() {
+    let cat = catalog();
+    assert_eq!(matches(&cat, "pypi", "litellm", "1.107.0").len(), 1);
+    assert!(matches(&cat, "pypi", "litellm", "1.83.7").is_empty());
+    assert!(matches(&cat, "pypi", "litellm", "1.106.0").is_empty());
+}

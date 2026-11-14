@@ -1983,5 +1983,64 @@
     "version_range": ">=1.0.3, <1.0.5",
     "advisory": "MCP Inspector server package: GHSA-fvg8-f358-w2c8 (low, CVSS 3.1: SSRF guard gap in fetchGuard). Fixed: 1.0.5. Source: modelcontextprotocol/inspector advisories (2026-11-12). Verified against primary sources 2026-11-14.",
     "advisory_severity": "low"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/mmdd-doc-mcp",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. The advisory lists 18 releases, 1.0.1 to 2.1.1; every release of the package is in it, and 2.1.1 was still on npm on 2026-11-14. GHSA-4h5p-w547-9qmv (critical, 2026-11-02). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/ms-doc-mcp",
+    "version": "2.0.9",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. The advisory names releases 2.0.9 and 2.1.1; the package was still on npm on 2026-11-14, from the publisher of four removed packages with the same payload, so treat any release with suspicion. GHSA-556m-xfwj-7wff (critical, 2026-11-04). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@ifasn/ms-doc-mcp",
+    "version": "2.1.1",
+    "advisory": "Malicious MCP server posing as a 'Markdown document toolkit': on start it probes cloud metadata services (Alibaba 100.100.100.200 RAM credentials, AWS, GCP, Azure) and writes the result to output/ dump files or sends it to 121.199.24[.]94. The advisory names releases 2.0.9 and 2.1.1; the package was still on npm on 2026-11-14, from the publisher of four removed packages with the same payload, so treat any release with suspicion. GHSA-556m-xfwj-7wff (critical, 2026-11-04). Source: GitHub Advisory Database, analysis by Amazon Inspector via OpenSSF malicious-packages. Verified against primary sources 2026-11-14."
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai",
+    "version_range": ">=1.107.5, <1.107.10",
+    "advisory": "Pydantic AI, advisories published 2026-10-20 to 2026-11-04 (pydantic/pydantic-ai): GHSA-4whf-38hw-pxxh (high, CVSS 7.5: fetching attacker-controlled HTML with web_fetch_tool stalls the process; reporter SounLabs) and GHSA-m5vj-8mcw-82qx (high, CVSS 7.5: local web fetching exhausts memory on nested JSON); GHSA-5fj9-5pjw-vpwc (medium, CVSS 6.8: the SSRF cloud-metadata guard misses Tencent Cloud's 169.254.0.23; reporter varun-1728), GHSA-xv4x-g8mx-ch56 (medium, CVSS 6.5: provider-native MCP credentials reach traces; reporter sharonyb), GHSA-jp94-mmr3-2pvv (medium: embedding extra_headers and extra_body recorded in traces), GHSA-4cj4-hgwf-4hc4 (medium, CVSS 5.9), GHSA-7494-925c-rrxv and GHSA-r879-rxgj-3g75 (medium, denial of service), GHSA-5ppx-9jq6-6pmw (low: domain allowlist resolves refused hostnames). Fixed: 1.107.10 (earlier releases have their own row). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai",
+    "version_range": ">=2.30.0, <2.66.0",
+    "advisory": "Pydantic AI, advisories published 2026-10-20 to 2026-11-04 (pydantic/pydantic-ai): GHSA-4whf-38hw-pxxh (high, CVSS 7.5: fetching attacker-controlled HTML with web_fetch_tool stalls the process; reporter SounLabs) and GHSA-m5vj-8mcw-82qx (high, CVSS 7.5: local web fetching exhausts memory on nested JSON); GHSA-5fj9-5pjw-vpwc (medium, CVSS 6.8: the SSRF cloud-metadata guard misses Tencent Cloud's 169.254.0.23; reporter varun-1728), GHSA-xv4x-g8mx-ch56 (medium, CVSS 6.5: provider-native MCP credentials reach traces; reporter sharonyb), GHSA-jp94-mmr3-2pvv (medium: embedding extra_headers and extra_body recorded in traces), GHSA-4cj4-hgwf-4hc4 (medium, CVSS 5.9), GHSA-7494-925c-rrxv and GHSA-r879-rxgj-3g75 (medium, denial of service), GHSA-5ppx-9jq6-6pmw (low: domain allowlist resolves refused hostnames); on the 2.x line also GHSA-5pfm-2g3g-gh85 (medium, CVSS 5.4: a client-submitted tool call can execute, 2.27.0 to 2.57.0; reporter napahlm), GHSA-mgmv-r532-pg36 (medium, CVSS 6.5: a credential in an MCP server URL path reaches chat frontends, 2.57.0 to 2.59.x) and GHSA-484x-x9m4-62cj (medium, CVSS 6.5, from 2.46.0). Fixed: 2.66.0 (earlier releases have their own row). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai-slim",
+    "version_range": ">=1.107.5, <1.107.10",
+    "advisory": "Pydantic AI, advisories published 2026-10-20 to 2026-11-04 (pydantic/pydantic-ai): GHSA-4whf-38hw-pxxh (high, CVSS 7.5: fetching attacker-controlled HTML with web_fetch_tool stalls the process; reporter SounLabs) and GHSA-m5vj-8mcw-82qx (high, CVSS 7.5: local web fetching exhausts memory on nested JSON); GHSA-5fj9-5pjw-vpwc (medium, CVSS 6.8: the SSRF cloud-metadata guard misses Tencent Cloud's 169.254.0.23; reporter varun-1728), GHSA-xv4x-g8mx-ch56 (medium, CVSS 6.5: provider-native MCP credentials reach traces; reporter sharonyb), GHSA-jp94-mmr3-2pvv (medium: embedding extra_headers and extra_body recorded in traces), GHSA-4cj4-hgwf-4hc4 (medium, CVSS 5.9), GHSA-7494-925c-rrxv and GHSA-r879-rxgj-3g75 (medium, denial of service), GHSA-5ppx-9jq6-6pmw (low: domain allowlist resolves refused hostnames). Fixed: 1.107.10 (earlier releases have their own row). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai-slim",
+    "version_range": ">=2.30.0, <2.66.0",
+    "advisory": "Pydantic AI, advisories published 2026-10-20 to 2026-11-04 (pydantic/pydantic-ai): GHSA-4whf-38hw-pxxh (high, CVSS 7.5: fetching attacker-controlled HTML with web_fetch_tool stalls the process; reporter SounLabs) and GHSA-m5vj-8mcw-82qx (high, CVSS 7.5: local web fetching exhausts memory on nested JSON); GHSA-5fj9-5pjw-vpwc (medium, CVSS 6.8: the SSRF cloud-metadata guard misses Tencent Cloud's 169.254.0.23; reporter varun-1728), GHSA-xv4x-g8mx-ch56 (medium, CVSS 6.5: provider-native MCP credentials reach traces; reporter sharonyb), GHSA-jp94-mmr3-2pvv (medium: embedding extra_headers and extra_body recorded in traces), GHSA-4cj4-hgwf-4hc4 (medium, CVSS 5.9), GHSA-7494-925c-rrxv and GHSA-r879-rxgj-3g75 (medium, denial of service), GHSA-5ppx-9jq6-6pmw (low: domain allowlist resolves refused hostnames); on the 2.x line also GHSA-5pfm-2g3g-gh85 (medium, CVSS 5.4: a client-submitted tool call can execute, 2.27.0 to 2.57.0; reporter napahlm), GHSA-mgmv-r532-pg36 (medium, CVSS 6.5: a credential in an MCP server URL path reaches chat frontends, 2.57.0 to 2.59.x) and GHSA-484x-x9m4-62cj (medium, CVSS 6.5, from 2.46.0). Fixed: 2.66.0 (earlier releases have their own row). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "pypi",
+    "name": "pydantic-ai-harness",
+    "version_range": ">=0.16.0, <0.66.0",
+    "advisory": "Pydantic AI Harness: GHSA-mfx5-pc32-32m8 (high, CVSS 7.5: private-key redaction takes exponential time on short input, a denial of service) and GHSA-5ppx-9jq6-6pmw (low, CVSS 3.7: domain allowlists resolve refused hostnames, from 0.52.0). Fixed: 0.66.0. Source: pydantic/pydantic-ai advisories (2026-11-04). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "fastmcp",
+    "version_range": ">=3.24.0, <4.26.1",
+    "advisory": "FastMCP for TypeScript (punkpeye/fastmcp; a different project from the PyPI fastmcp): GHSA-8j7c-qjcg-7rrv (high, CVSS 8.1: OAuthProxy consent is not bound to the user, so an attacker-registered client can obtain a victim's authorization, a confused deputy). Fixed: 4.26.1. Source: punkpeye/fastmcp advisories (2026-11-11; reporter parthg1901). Verified against primary sources 2026-11-14.",
+    "advisory_severity": "high"
   }
 ]

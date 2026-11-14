@@ -1,7 +1,7 @@
 # Built-in Threat Catalog
 
 rustmachineguard ships a built-in catalog of known-malicious and known-vulnerable packages
-that is automatically checked during every scan. The catalog (version `2026-11-14`) currently contains 353 entries
+that is automatically checked during every scan. The catalog (version `2026-11-14.2`) currently contains 362 entries
 covering malicious npm/PyPI packages, CVEs in MCP infrastructure, compromised VS Code
 extensions, malicious browser extensions, and — in the `agent-runtime` ecosystem — CVEs
 in the agent runtimes themselves (Claude Code, Claude Desktop/Cowork, Codex CLI, Copilot
@@ -610,6 +610,29 @@ To contribute additional entries, please open a PR with:
     and `pydantic-ai` proxy and trace advisories, IBM ContextForge (no fixed version in
     the records) and the opencode entry of CVE-2026-119025 (npm version mapping
     unconfirmed). These are the next refresh's backlog.
+
+- **2026-11-14.2** (353 to 362 rows; 9 added). The 2026-11-14 backlog, each id read from
+  its repository advisory or the GitHub Advisory Database.
+  - Malicious, still on npm on 2026-11-14: `@ifasn/mmdd-doc-mcp` (GHSA-4h5p-w547-9qmv; the
+    advisory lists all 18 releases, so the row is unbounded) and `@ifasn/ms-doc-mcp` 2.0.9
+    and 2.1.1 (GHSA-556m-xfwj-7wff; exact rows, the releases the advisory names).
+  - `pydantic-ai` and `pydantic-ai-slim` `>=1.107.5, <1.107.10` and `>=2.30.0, <2.66.0`
+    (high; thirteen advisories of 2026-10-20 to 2026-11-04, among them GHSA-4whf-38hw-pxxh,
+    GHSA-m5vj-8mcw-82qx, GHSA-xv4x-g8mx-ch56, GHSA-5pfm-2g3g-gh85, GHSA-mgmv-r532-pg36), and
+    `pydantic-ai-harness` `>=0.16.0, <0.66.0` (GHSA-mfx5-pc32-32m8, high).
+  - npm `fastmcp` (punkpeye/fastmcp, not the PyPI project) `>=3.24.0, <4.26.1`
+    (GHSA-8j7c-qjcg-7rrv, high).
+  - Still not catalogued, with reasons. LiteLLM's proxy advisories (GHSA-w4c7-34wj-hqm8,
+    GHSA-2rwg-2wh4-7c4f, CVE-2026-114612 and two older ones): they affect the proxy
+    server, the critical one only with an Enterprise license ("Open source deployments
+    without a license are not affected"), and the package scanner cannot tell a proxy
+    deployment from a library install, so a range row would grade most `litellm` installs
+    High for code they do not run; `litellm` keeps exact-version malware rows only. Junie
+    CLI (CVE-2026-123315 `<26.8.24`, CVE-2026-117530, CVE-2026-123316; JetBrains CVE
+    records): rmguard does not start `junie` for a version, so a row could never match.
+    Codex Desktop for Windows (CVE-2026-110930): not inventoried. The opencode entry of
+    CVE-2026-119025: anomalyco/opencode has published no advisory for it. IBM ContextForge:
+    no fixed version in the records.
 
 ## License
 

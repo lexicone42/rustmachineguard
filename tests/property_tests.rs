@@ -3285,7 +3285,7 @@ fn builtin_catalog_entry_count_is_pinned() {
     let catalog = ExposureCatalog::load_from_str(rustmachineguard::catalogs::BUILTIN_CATALOG).unwrap();
     assert_eq!(
         catalog.len(),
-        353,
+        362,
         "catalog size changed — update this pin and the count quoted in \
          docs/THREAT-CATALOG.md (README.md and docs/COVERAGE.md state no count)"
     );
