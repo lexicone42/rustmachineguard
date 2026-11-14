@@ -4,8 +4,10 @@
 
 use std::process::Command;
 
-fn scan(extra: &[&str]) -> (serde_json::Value, String) {
-    let home = std::env::temp_dir().join(format!("rmg-timing-{}-{}", std::process::id(), extra.len()));
+/// `tag` names the fixture directory: tests run in parallel in one process, so each
+/// needs its own.
+fn scan(tag: &str, extra: &[&str]) -> (serde_json::Value, String) {
+    let home = std::env::temp_dir().join(format!("rmg-timing-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let json = Command::new(env!("CARGO_BIN_EXE_rmguard"))
@@ -36,7 +38,7 @@ fn scan(extra: &[&str]) -> (serde_json::Value, String) {
 
 #[test]
 fn phases_are_the_closed_set_in_order_and_sum_to_the_wall_time() {
-    let (v, verbose) = scan(&[]);
+    let (v, verbose) = scan("phases", &[]);
     let t = &v["timing"];
     let phases: Vec<(&str, u64)> = t["phases"]
         .as_array()
@@ -74,7 +76,7 @@ fn phases_are_the_closed_set_in_order_and_sum_to_the_wall_time() {
 fn an_extra_search_dir_adds_its_own_phase_row() {
     let extra = std::env::temp_dir().join(format!("rmg-timing-extra-{}", std::process::id()));
     std::fs::create_dir_all(&extra).unwrap();
-    let (v, _) = scan(&["--search-dirs", extra.to_str().unwrap()]);
+    let (v, _) = scan("extra", &["--search-dirs", extra.to_str().unwrap()]);
     let _ = std::fs::remove_dir_all(&extra);
     let names: Vec<&str> = v["timing"]["phases"]
         .as_array()
@@ -87,7 +89,7 @@ fn an_extra_search_dir_adds_its_own_phase_row() {
 
 #[test]
 fn a_report_without_timing_still_loads() {
-    let (mut v, _) = scan(&[]);
+    let (mut v, _) = scan("older", &[]);
     v.as_object_mut().unwrap().remove("timing");
     let r: rustmachineguard::models::ScanReport = serde_json::from_value(v).expect("older report loads");
     assert!(r.timing.is_empty());

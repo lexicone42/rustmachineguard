@@ -33,7 +33,7 @@ The variables only choose **where** `--otel` sends:
   `http://localhost:4318`. https works (rustls, the same TLS stack as `--verify-registry`).
 - `OTEL_EXPORTER_OTLP_HEADERS` (e.g. an API key for a hosted backend) is honored. It is
   never handed on: every process rmguard starts (a probed MCP server, a `--version`
-  probe, `git`, `ps`, `ssh-keygen`) gets an environment with **every** `OTEL_*`
+  probe, `git`, `ps`) gets an environment with **every** `OTEL_*`
   variable removed, with or without `--otel`. A probed server command is written by
   whoever wrote the MCP config, and must not be able to read your collector key.
 - `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` are honored. What you add there is
@@ -133,8 +133,7 @@ rmguard.scan                                   (root; one trace per run)
 │   ├── scanner.mcp
 │   ├── scanner.envfiles
 │   │   └── exec.git_tracked                   (`git ls-files --error-unmatch`)
-│   ├── scanner.ssh
-│   │   └── exec.ssh_keygen
+│   ├── scanner.ssh                            (key file headers only; nothing is run)
 │   ├── scanner.authkeys                       (~/.ssh/authorized_keys{,2}, sshd_config when readable; nothing is run)
 │   ├── scanner.skills
 │   │   └── skills.walk                        (one per walk: commands, agents, hooks,
@@ -359,8 +358,8 @@ they count in the `settings` and `skills` scanner spans and diagnostics (and in 
 | `rmguard.duration_ms` | scanner.* | as in diagnostics |
 | `rmguard.files.read`, `rmguard.files.missing`, `rmguard.items` | scanner.* | as in diagnostics |
 | `rmguard.scanner.truncated` | scanner.* | bool: the scanner stopped at a walk budget (the gitconfig nested walk, the skills bundle walk, the rules nested walk); `truncated` in diagnostics |
-| `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `ssh_keygen` \| `git_check_ignore` |
-| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `ssh-keygen`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs (the round-4 names `cline`, `cn`, `amp`, `junie` and `warp-terminal` are listed so a trace names them, although `cn` and `amp` are versioned from `package.json` and `junie` and `warp-terminal` are never run), model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
+| `rmguard.exec.site` | exec.*, metric | `version_probe` \| `verify_binary` \| `git_tracked` \| `output_with_timeout` \| `process_list` \| `git_check_ignore` |
+| `rmguard.exec.program` | exec.*, version.read, metric | the program's basename if it is one rmguard itself runs (`otel::EXEC_PROGRAMS`: `git`, `ps`, `sw_vers`, `defaults`, `node`, `npm`, `yarn`, `pnpm`, `bun`, the AI CLIs (the round-4 names `cline`, `cn`, `amp`, `junie` and `warp-terminal` are listed so a trace names them, although `cn` and `amp` are versioned from `package.json` and `junie` and `warp-terminal` are never run), model servers, container runtimes, notebook servers and IDE launchers the scanners probe), else `other` |
 | `rmguard.exec.outcome` | exec.*, metric | `ok` \| `nonzero` \| `spawn_failed` \| `timeout` \| `wait_failed` \| `unknown` |
 | `process.exit.code` | exec.* | exit code, when the child exited normally |
 | `rmguard.skills.projects` | scanner.skills | number of project directories walked (no path, no index) |

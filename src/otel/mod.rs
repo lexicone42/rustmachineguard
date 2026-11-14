@@ -671,7 +671,7 @@ pub fn record_posture(findings: &[crate::analysis::Finding], summary: &crate::mo
 
 /// The programs rmguard itself chooses to run, by basename: the value set of
 /// `rmguard.exec.program`. Every `--version` probe, verification run, `git`, the
-/// process-list snapshot and `ssh-keygen`; `tests` in `crate::scanners` keep it in step
+/// process-list snapshot; `tests` in `crate::scanners` keep it in step
 /// with the scanners' binary tables. Anything else (a renamed binary, a desktop app's
 /// own executable name, an MCP server command, which never reaches [`exec_span`]) is
 /// exported as `other`.
@@ -679,7 +679,6 @@ pub const EXEC_PROGRAMS: &[&str] = &[
     // rmguard's own helpers
     "git",
     "ps",
-    "ssh-keygen",
     "sw_vers",
     "defaults",
     // node toolchain (scanner.node)

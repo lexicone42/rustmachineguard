@@ -2535,7 +2535,7 @@ pub fn git_command() -> std::process::Command {
     cmd
 }
 
-/// The only directories a system tool (`ps`, `ssh-keygen`, `sw_vers`, `defaults`) is run
+/// The only directories a system tool (`ps`, `sw_vers`, `defaults`) is run
 /// from, in this order. They are root-owned on every supported system (SIP-protected on
 /// macOS; `/run/current-system/sw/bin` is NixOS's system profile), so neither the
 /// user's PATH nor the directory a scan runs in can put a program of that name in front
@@ -4641,7 +4641,7 @@ podman <defunct>\njupyter-noteboo\nClaude\nGitHub Copilot\nlimactlx\nCOLIMA\nvll
     /// `rmguard.exec.program` table, so the trace names it rather than `other`.
     #[test]
     fn every_spawned_program_is_in_the_exec_program_table() {
-        let mut programs: Vec<&str> = vec!["git", "ps", "ssh-keygen", "claude-desktop"];
+        let mut programs: Vec<&str> = vec!["git", "ps", "claude-desktop"];
         programs.extend(ai_tools::spawn_and_process_names().0);
         programs.extend(ai_frameworks::spawn_and_process_names().0);
         programs.extend(container_tools::spawn_and_process_names().0);

@@ -74,7 +74,7 @@ API keys (redacted), tool aliases. `OLLAMA_HOST` is classified the way Ollama pa
 
 *Key inventory with passphrase audit.*
 
-RSA, ECDSA, Ed25519/OpenSSH with passphrase detection. Every key is a row in `ssh_keys`; keys without a passphrase are one High per home ("N SSH private keys without a passphrase", located at `<home>/.ssh`, the keys listed relative to it), a single key keeps its own title and path
+RSA, ECDSA, Ed25519/OpenSSH with passphrase detection, read from each key file's header (the first line and at most 32 characters after it: the format label, and the cipher name or `Proc-Type` line); no key material is read and no program is run. Every key is a row in `ssh_keys`; keys without a passphrase are one High per home ("N SSH private keys without a passphrase", located at `<home>/.ssh`, the keys listed relative to it), a single key keeps its own title and path
 
 ### SSH Authorized Keys
 

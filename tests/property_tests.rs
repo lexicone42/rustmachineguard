@@ -246,7 +246,7 @@ fn classify_key_no_private_key_header_means_not_a_key() {
         "",
     ];
     for input in inputs {
-        let (is_key, _, _) = classify_key(input, input, std::path::Path::new("/dev/null"));
+        let (is_key, _, _) = classify_key(input, "");
         assert!(!is_key, "should not be a key: {input}");
     }
 }
@@ -262,7 +262,7 @@ fn classify_key_known_headers_produce_correct_types() {
         ("-----BEGIN PRIVATE KEY-----", "unknown"),
     ];
     for (header, expected_type) in cases {
-        let (is_key, key_type, _) = classify_key(header, header, std::path::Path::new("/dev/null"));
+        let (is_key, key_type, _) = classify_key(header, "");
         assert!(is_key, "should be a key: {header}");
         assert_eq!(key_type, expected_type, "wrong type for {header}");
     }
@@ -270,23 +270,22 @@ fn classify_key_known_headers_produce_correct_types() {
 
 #[test]
 fn classify_key_pem_encrypted_marker_detected() {
+    use rustmachineguard::models::PassphraseStatus;
     use rustmachineguard::scanners::ssh_keys::classify_key;
     let header = "-----BEGIN RSA PRIVATE KEY-----";
-    let content_encrypted = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC\nbase64";
-    let content_plain = "-----BEGIN RSA PRIVATE KEY-----\nbase64data";
-
-    let (_, _, status) = classify_key(header, content_encrypted, std::path::Path::new("/dev/null"));
+    // The four characters after the first line: `Proc-Type: 4,ENCRYPTED` or the DER.
+    assert_eq!(classify_key(header, "Proc").2, PassphraseStatus::Encrypted);
+    assert_eq!(classify_key(header, "MIIE").2, PassphraseStatus::NoPassphrase);
+    // A file that ends after its first line says nothing either way.
+    assert_eq!(classify_key(header, "").2, PassphraseStatus::Unknown);
+    // PKCS#8 says it in the label.
     assert_eq!(
-        status,
-        rustmachineguard::models::PassphraseStatus::Encrypted,
-        "should detect ENCRYPTED"
+        classify_key("-----BEGIN ENCRYPTED PRIVATE KEY-----", "").2,
+        PassphraseStatus::Encrypted
     );
-
-    let (_, _, status) = classify_key(header, content_plain, std::path::Path::new("/dev/null"));
     assert_eq!(
-        status,
-        rustmachineguard::models::PassphraseStatus::NoPassphrase,
-        "should not detect ENCRYPTED"
+        classify_key("-----BEGIN PRIVATE KEY-----", "").2,
+        PassphraseStatus::NoPassphrase
     );
 }
 
@@ -2828,14 +2827,80 @@ fn passphrase_status_serializes_correctly() {
 }
 
 #[test]
-fn classify_key_openssh_without_ssh_keygen_returns_unknown_on_bad_path() {
+fn classify_key_openssh_reads_the_cipher_name_from_the_header() {
+    use base64::Engine as _;
+    use rustmachineguard::models::PassphraseStatus;
     use rustmachineguard::scanners::ssh_keys::classify_key;
     let header = "-----BEGIN OPENSSH PRIVATE KEY-----";
-    let content = "-----BEGIN OPENSSH PRIVATE KEY-----\nbase64data";
-    // Using a non-existent path forces ssh-keygen to fail (if available) or return unknown
-    let (is_key, key_type, _status) = classify_key(header, content, std::path::Path::new("/nonexistent/path/key"));
-    assert!(is_key);
-    assert_eq!(key_type, "openssh");
+    // openssh-key-v1: magic, then `string ciphername`. 32 base64 characters = 24 bytes.
+    let head = |cipher: &str| {
+        let mut b = b"openssh-key-v1\0".to_vec();
+        b.extend((cipher.len() as u32).to_be_bytes());
+        b.extend(cipher.as_bytes());
+        b.extend([0, 0, 0, 4, b'n', b'o', b'n', b'e']);
+        base64::engine::general_purpose::STANDARD.encode(&b[..24])
+    };
+    assert_eq!(head("none").len(), 32);
+    assert_eq!(
+        classify_key(header, &head("none")),
+        (true, "openssh".to_string(), PassphraseStatus::NoPassphrase)
+    );
+    assert_eq!(classify_key(header, &head("aes256-ctr")).2, PassphraseStatus::Encrypted);
+    assert_eq!(
+        classify_key(header, &head("chacha20-poly1305@openssh.com")).2,
+        PassphraseStatus::Encrypted
+    );
+    // Not the format, truncated, or not base64: unknown, never "no passphrase".
+    for bad in [
+        "",
+        "AAAA",
+        "base64data",
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        &head("none")[..28],
+    ] {
+        assert_eq!(classify_key(header, bad).2, PassphraseStatus::Unknown, "{bad}");
+    }
+}
+
+/// The reader stops inside the header: the first line, then 32 characters for an
+/// OpenSSH key, 4 for traditional PEM, none otherwise. Every byte after that is key
+/// material and must never be requested.
+#[test]
+fn key_head_reader_never_reads_past_the_header() {
+    use rustmachineguard::scanners::ssh_keys::read_key_head_from;
+    struct Counting<'a>(&'a [u8], usize);
+    impl std::io::Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.0.len() - self.1);
+            buf[..n].copy_from_slice(&self.0[self.1..self.1 + n]);
+            self.1 += n;
+            Ok(n)
+        }
+    }
+    let body = "K".repeat(600);
+    for (first, tail) in [
+        ("-----BEGIN OPENSSH PRIVATE KEY-----", 32),
+        ("-----BEGIN RSA PRIVATE KEY-----", 4),
+        ("-----BEGIN EC PRIVATE KEY-----", 4),
+        ("-----BEGIN DSA PRIVATE KEY-----", 4),
+        ("-----BEGIN PRIVATE KEY-----", 0),
+        ("-----BEGIN ENCRYPTED PRIVATE KEY-----", 0),
+        ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a public key line", 0),
+    ] {
+        for eol in ["\n", "\r\n"] {
+            let text = format!("{first}{eol}{body}");
+            let mut r = Counting(text.as_bytes(), 0);
+            let head = read_key_head_from(&mut r).expect("head");
+            assert_eq!(head.first_line, first);
+            assert_eq!(head.next.len(), tail, "{first}");
+            assert_eq!(r.1, first.len() + eol.len() + tail, "{first}: bytes consumed");
+        }
+    }
+    // A long first line is not a key file, and reading stops at the cap.
+    let long = "K".repeat(4096);
+    let mut r = Counting(long.as_bytes(), 0);
+    assert!(read_key_head_from(&mut r).is_none());
+    assert!(r.1 <= 65, "{}", r.1);
 }
 
 #[test]
