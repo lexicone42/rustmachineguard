@@ -1329,10 +1329,7 @@ fn is_inline_literal(value: &str) -> bool {
         "<",
         "...",
     ];
-    if PLACEHOLDERS.iter().any(|p| lower.starts_with(p)) {
-        return false;
-    }
-    true
+    !PLACEHOLDERS.iter().any(|p| lower.starts_with(p))
 }
 
 /// Infer package ecosystem, name, and version from a launcher command and its args.

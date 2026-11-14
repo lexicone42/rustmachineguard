@@ -1,0 +1,49 @@
+# cargo-deny policy: `cargo deny check`. Run in CI next to cargo-audit.
+# A supply-chain scanner should hold its own dependency tree to a stated policy.
+
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities, unsound and unmaintained crates all fail. Add an `ignore`
+# entry only with the advisory ID and a reason.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Every licence the tree may use. rmguard itself is Apache-2.0; everything here is
+# permissive except MPL-2.0, which is file-level copyleft and is satisfied by
+# shipping those crates unmodified (colored, option-ext).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "MPL-2.0",
+    # webpki-roots: the Mozilla CA bundle, as data.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# Crates removed on purpose; keep them out.
+deny = [
+    { crate = "unsafe-libyaml", reason = "unmaintained libyaml translation (RUSTSEC-2024-0449); YAML goes through serde-saphyr" },
+    { crate = "serde_yaml", reason = "deprecated; YAML goes through serde-saphyr" },
+    { crate = "openssl-sys", reason = "TLS is rustls; no system OpenSSL linkage" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

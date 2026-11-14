@@ -89,7 +89,7 @@ jobs:
       - run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
 
   audit:
-    name: dependency audit (RustSec)
+    name: dependency audit (RustSec + cargo-deny)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -100,3 +100,7 @@ jobs:
       # standard it scans for. Warnings (unmaintained/unsound advisories) are
       # reported; vulnerabilities fail the job.
       - run: cargo audit
+      # Licence allow-list, banned crates, registry sources, yanked and
+      # unmaintained crates: the policy is deny.toml.
+      - run: cargo install --locked cargo-deny
+      - run: cargo deny check
