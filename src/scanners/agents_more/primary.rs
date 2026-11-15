@@ -632,8 +632,8 @@ fn copilot_lsp(cx: &mut Ctx, path: &Path, scope: Scope, proj: Option<&Path>) {
 ///   file or the user's; `mcp.allowed` ("only servers from this list ... will be
 ///   connected to") is applied to its own file only, since a narrower list never hides a
 ///   repository's server from the grade. Project servers load in a trusted folder; the
-///   system settings file and extensions' `gemini-extension.json` servers are not read
-///   (a floor).
+///   system settings file's servers are not read (a floor). Extensions'
+///   `gemini-extension.json` servers are read (see the body).
 fn gemini(cx: &mut Ctx) {
     let home = cx.home.to_path_buf();
     if let Some(dir) = plain_dir(&home, ".gemini/policies") {
@@ -666,6 +666,44 @@ fn gemini(cx: &mut Ctx) {
         });
     }
     let user_excluded = user_excluded.into_inner();
+    // Extensions (`docs/extensions/reference.md`, fetched 2026-11-14): "Gemini CLI loads
+    // extensions from `<home>/.gemini/extensions`", each with a `gemini-extension.json`
+    // whose `mcpServers` is "A map of MCP servers to settings ... all MCP server
+    // configuration options are supported except for `trust`", so `trust` is dropped
+    // here. A linked extension (`gemini extensions link`) is a symlinked directory and is
+    // read like an installed one. Not applied: `extension-enablement.json`, whose rules
+    // are per working directory ("Extensions are enabled globally by default"), so a
+    // disabled extension's servers are still listed.
+    if let Some(dir) = plain_dir(&home, ".gemini/extensions")
+        && let Ok(rd) = crate::scanners::probe_read_dir(&dir)
+    {
+        let mut manifests: Vec<PathBuf> = rd
+            .flatten()
+            .take(MAX_LIST)
+            .map(|e| e.path().join("gemini-extension.json"))
+            .filter(|m| crate::scanners::probe_file(m))
+            .collect();
+        manifests.sort();
+        let file = McpFile {
+            agent: "gemini",
+            source: "Gemini CLI extension",
+            vendor: "Google",
+            read_by: &[],
+        };
+        for manifest in manifests {
+            shaped_mcp(cx, &file, &manifest, Scope::User, None, |v, p| {
+                let mut v = v.clone();
+                if let Some(servers) = v.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+                    for cfg in servers.values_mut() {
+                        if let Some(o) = cfg.as_object_mut() {
+                            o.remove("trust");
+                        }
+                    }
+                }
+                gemini_mcp_shape(&v, p, &user_excluded)
+            });
+        }
+    }
     for proj in cx.projects.clone() {
         gemini_agents(cx, &proj, Scope::Project);
         if plain_dir(&proj, ".gemini").is_some() {

@@ -127,9 +127,10 @@ Floors of [the new surfaces](COVERAGE.md#new-surfaces-of-covered-agents-and-the-
   only), and `disabledMcpServers` in `~/.copilot/settings.json` is not applied; VS Code
   profiles other than the default (`User/profiles/<id>/mcp.json`, undocumented layout),
   `envFile` contents, per-server `sandboxEnabled` and the `chat.mcp.discovery.enabled`
-  sources are not read; Gemini CLI's system settings file and extensions'
-  `gemini-extension.json` servers are not read, and `mcp.allowed` from another settings
-  file is not applied. A project `.mcp.json` server awaiting Claude Code approval is
+  sources are not read; Gemini CLI's system settings file is not read for servers, `mcp.allowed` from another
+  settings file is not applied, and an extension's servers
+  (`~/.gemini/extensions/<e>/gemini-extension.json`) are listed whether or not
+  `extension-enablement.json` disables the extension for a directory. A project `.mcp.json` server awaiting Claude Code approval is
   graded as inactive even though Copilot CLI loads it in a trusted folder.
 - **Codex:** `/etc/codex/requirements.toml` only restricts and is not graded (its hooks
   are read); execpolicy rules are read lexically, not evaluated as Starlark, and only a

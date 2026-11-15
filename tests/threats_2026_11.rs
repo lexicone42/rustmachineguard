@@ -475,3 +475,36 @@ fn ssh_classifier_does_not_guess() {
     assert!(read_key_head_from(&mut r).is_none());
     assert_eq!(r.1, 4);
 }
+
+#[test]
+fn vscode_code_workspace_file_settings_are_checked_for_the_same_keys() {
+    let (home, proj) = home_and_project("wstrust-cw");
+    write(
+        &proj.join("team.code-workspace"),
+        "{\n // folders\n \"folders\": [{\"path\": \".\"}],\n \"settings\": {\"experiments.override.t\": true, \"x\": {\"__proto__\": {}}}\n}",
+    );
+    // Control: an ordinary workspace file; `experiments.override.` outside `settings`.
+    let other = home.join("other");
+    write(
+        &other.join("o.code-workspace"),
+        "{\"folders\": [{\"path\": \".\", \"experiments.override.t\": 1}], \"settings\": {\"editor.tabSize\": 2}}",
+    );
+    write(
+        &home.join(".claude.json"),
+        &format!(
+            "{{\"projects\":{{\"{}\":{{}},\"{}\":{{}}}}}}",
+            proj.display(),
+            other.display()
+        ),
+    );
+    let (_text, _v, f) = scan(&home, &proj, &["persistence"]);
+    let _ = fs::remove_dir_all(&home);
+    assert_eq!(sev(&f, "CVE-2026-121662"), vec![Severity::High], "{}", dump(&f));
+    assert_eq!(sev(&f, "CVE-2026-121665"), vec![Severity::Medium], "{}", dump(&f));
+    assert!(
+        f.iter().any(|f| f.title.contains("team.code-workspace")),
+        "{}",
+        dump(&f)
+    );
+    assert!(!f.iter().any(|f| f.location.contains("/other/")), "{}", dump(&f));
+}

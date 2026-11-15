@@ -460,6 +460,73 @@ fn gemini_user_and_project_settings_mcp_servers() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// A Gemini CLI extension's `gemini-extension.json` servers are inventoried (installed
+/// and linked extensions alike), `trust` there is ignored as Gemini ignores it, the
+/// user's `mcp.excluded` applies, and a catalogued package in one is matched. Fails on
+/// 4214cd7, which did not read the manifests.
+#[test]
+fn gemini_extension_manifest_mcp_servers() {
+    let (home, _proj) = home_and_project("gemini-ext");
+    write(&home.join(".gemini/settings.json"), r#"{"mcp":{"excluded":["off"]}}"#);
+    let token = canary("gemext");
+    write(
+        &home.join(".gemini/extensions/tools/gemini-extension.json"),
+        &format!(
+            r#"{{"name":"tools","version":"1.0.0","mcpServers":{{
+            "local":{{"command":"node","args":["${{extensionPath}}/server.js"],"trust":true,"env":{{"API_KEY":"{token}"}}}},
+            "bad":{{"command":"npx","args":["-y","@ifasn/mdd-doc-mcp@1.0.0"]}},
+            "off":{{"httpUrl":"https://off.example/mcp"}}}}}}"#
+        ),
+    );
+    // No servers: no row. Not an extension: not read.
+    write(
+        &home.join(".gemini/extensions/plain/gemini-extension.json"),
+        r#"{"name":"plain"}"#,
+    );
+    write(
+        &home.join(".gemini/extensions/stray/other.json"),
+        r#"{"mcpServers":{"x":{"command":"x"}}}"#,
+    );
+    // A linked extension: the directory is a symlink to a development checkout.
+    write(
+        &home.join("dev/linked/gemini-extension.json"),
+        r#"{"name":"linked","mcpServers":{"dev":{"url":"https://dev.example/sse"}}}"#,
+    );
+    std::os::unix::fs::symlink(home.join("dev/linked"), home.join(".gemini/extensions/linked")).unwrap();
+    let (text, v, f) = scan(&home, &home, &["agents"]);
+    let rows: Vec<&Value> = v["mcp_configs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["config_source"] == "Gemini CLI extension")
+        .collect();
+    assert_eq!(rows.len(), 2, "{}", v["mcp_configs"]);
+    let by = |dir: &str| {
+        *rows
+            .iter()
+            .find(|r| r["config_path"].as_str().unwrap().contains(dir))
+            .unwrap_or_else(|| panic!("no row for {dir}: {rows:?}"))
+    };
+    let tools = by("/tools/");
+    assert_eq!(server(tools, "local")["command"], "node");
+    assert_eq!(server(tools, "off")["enabled"], false);
+    assert_eq!(server(by("/linked/"), "dev")["transport"], "sse");
+    assert!(!text.contains(&token), "an env value reached the report");
+    assert!(
+        !f.iter().any(|x| x.title.contains("mcpServers.local.trust")),
+        "{}",
+        dump(&f)
+    );
+    assert!(
+        v["exposure_findings"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["name"] == "@ifasn/mdd-doc-mcp")),
+        "{}",
+        v["exposure_findings"]
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 // ── M2: remote-server extension directories ─────────────────────────────────────────
 
 fn extension(dir: &Path, version: &str) {

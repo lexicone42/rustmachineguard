@@ -735,7 +735,8 @@ fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> Persiste
 
 // ── VS Code workspace files ──────────────────────────────────────────────────
 
-/// Keys in a project's `.vscode/settings.json` or `.vscode/mcp.json` that the VS Code
+/// Keys in a project's `.vscode/settings.json`, `.vscode/mcp.json` or root
+/// `*.code-workspace` file that the VS Code
 /// 1.145.3 advisories (2026-11-10) describe as Workspace Trust bypasses:
 ///
 /// - a `__proto__` key at any depth: CVE-2026-121662 / GHSA-fp22-hgv9-mq6q, "a
@@ -751,8 +752,32 @@ fn ioc(path: &Path, scope: &Path, campaign: &str, git_tracked: bool) -> Persiste
 /// not opened.
 fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<PersistenceArtifact>) {
     let root = crate::scanners::skills::project_containment_root(proj, home);
-    for name in ["settings.json", "mcp.json"] {
-        let path = proj.join(".vscode").join(name);
+    // (file, name shown, where its settings keys live: a JSON pointer, or None).
+    let mut files: Vec<(PathBuf, String, Option<&str>)> = vec![
+        (
+            proj.join(".vscode").join("settings.json"),
+            ".vscode/settings.json".into(),
+            Some(""),
+        ),
+        (proj.join(".vscode").join("mcp.json"), ".vscode/mcp.json".into(), None),
+    ];
+    // A `*.code-workspace` file at the project root carries the same workspace
+    // configuration under `settings` (code.visualstudio.com/docs/editing/workspaces/
+    // multi-root-workspaces, "Workspace file schema").
+    if let Ok(rd) = crate::scanners::probe_read_dir(proj) {
+        let mut ws: Vec<String> = rd
+            .flatten()
+            .take(4096)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".code-workspace"))
+            .collect();
+        ws.sort();
+        for n in ws.into_iter().take(8) {
+            files.push((proj.join(&n), sanitize_display(&n, 128), Some("/settings")));
+        }
+    }
+    for (path, name, settings_at) in files {
+        let name = name.as_str();
         if !crate::scanners::probe_file(&path) {
             continue;
         }
@@ -774,7 +799,7 @@ fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<Persistence
                     path: sanitize_display(&path.to_string_lossy(), 512),
                     scope: sanitize_display(&proj.to_string_lossy(), 512),
                     detail: format!(
-                        "`__proto__` in .vscode/{name}, which does not parse as JSON here and may still be read by VS Code (CVE-2026-121662)"
+                        "`__proto__` in {name}, which does not parse as JSON here and may still be read by VS Code (CVE-2026-121662)"
                     ),
                     git_tracked: is_git_tracked(&path),
                     claimed: false,
@@ -785,15 +810,15 @@ fn scan_workspace_trust_keys(proj: &Path, home: &Path, out: &mut Vec<Persistence
             continue;
         };
         if has_key(&json, "__proto__", 0) {
-            details.push((format!("`__proto__` key in .vscode/{name} (CVE-2026-121662)"), true));
+            details.push((format!("`__proto__` key in {name} (CVE-2026-121662)"), true));
         }
-        if name == "settings.json"
-            && json
-                .as_object()
-                .is_some_and(|o| o.keys().any(|k| k.starts_with("experiments.override.")))
+        if settings_at
+            .and_then(|at| json.pointer(at))
+            .and_then(|v| v.as_object())
+            .is_some_and(|o| o.keys().any(|k| k.starts_with("experiments.override.")))
         {
             details.push((
-                "`experiments.override.*` setting in .vscode/settings.json (CVE-2026-121665)".to_string(),
+                format!("`experiments.override.*` setting in {name} (CVE-2026-121665)"),
                 false,
             ));
         }
