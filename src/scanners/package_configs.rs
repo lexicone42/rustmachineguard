@@ -53,6 +53,40 @@ impl Scanner for PackageConfigsScanner {
             }
         }
 
+        // uv's user and system files (docs.astral.sh/uv/concepts/configuration-files:
+        // "`~/.config/uv/uv.toml`" and "`/etc/uv/uv.toml`"); a project's is read below.
+        for path in [
+            home.join(".config/uv/uv.toml"),
+            crate::scanners::system_path("/etc/uv/uv.toml"),
+        ] {
+            if crate::scanners::probe_file(&path)
+                && let Some(content) = crate::scanners::read_bounded(&path)
+            {
+                let facts = project_uv_toml_facts(&content);
+                let mut findings = Vec::new();
+                for h in &facts.registry_hosts {
+                    findings.push(PackageConfigFinding {
+                        severity: "high".to_string(),
+                        description: format!("Custom PyPI index: {h}"),
+                    });
+                }
+                for t in &facts.tls_disabled {
+                    findings.push(PackageConfigFinding {
+                        severity: "high".to_string(),
+                        description: format!("TLS verification relaxed: {t}"),
+                    });
+                }
+                if !findings.is_empty() {
+                    results.push(PackageConfigAudit {
+                        manager: "uv".to_string(),
+                        config_path: path.display().to_string(),
+                        findings,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
         // Bun's global config is `~/.bunfig.toml`; the un-dotted name is the
         // per-project form. Only the dotted one existed here, so a global bun
         // registry override was never read at all.
@@ -94,16 +128,46 @@ impl Scanner for PackageConfigsScanner {
     }
 }
 
+/// The user `.npmrc`, pnpm's global `rc` (the same format; pnpm.io/npmrc: "the global
+/// config file ... `~/.config/pnpm/rc`", macOS `~/Library/Preferences/pnpm/rc`), and npm's
+/// global config, "`$PREFIX/etc/npmrc`" (docs.npmjs.com/cli/configuring-npm/npmrc), for
+/// the usual prefixes. Machine-wide paths go through `system_path`, so the end-to-end
+/// tests do not read the host's.
 fn npmrc_paths(home: &Path) -> Vec<PathBuf> {
-    vec![home.join(".npmrc"), PathBuf::from("/etc/npmrc")]
+    let mut v = vec![
+        home.join(".npmrc"),
+        home.join(".config/pnpm/rc"),
+        home.join("Library/Preferences/pnpm/rc"),
+    ];
+    for p in [
+        "/etc/npmrc",
+        "/usr/etc/npmrc",
+        "/usr/local/etc/npmrc",
+        "/opt/homebrew/etc/npmrc",
+    ] {
+        v.push(crate::scanners::system_path(p));
+    }
+    v
 }
 
+/// pip's user, legacy-user and global files (pip.pypa.io/en/stable/topics/configuration:
+/// "`$HOME/.config/pip/pip.conf`", "`$HOME/.pip/pip.conf`", macOS "`$HOME/Library/
+/// Application Support/pip/pip.conf`"; global "`/etc/pip.conf`", "`/etc/xdg/pip/pip.conf`",
+/// macOS "`/Library/Application Support/pip/pip.conf`").
 fn pip_config_paths(home: &Path) -> Vec<PathBuf> {
-    vec![
+    let mut v = vec![
         home.join(".config/pip/pip.conf"),
         home.join(".pip/pip.conf"),
-        PathBuf::from("/etc/pip.conf"),
-    ]
+        home.join("Library/Application Support/pip/pip.conf"),
+    ];
+    for p in [
+        "/etc/pip.conf",
+        "/etc/xdg/pip/pip.conf",
+        "/Library/Application Support/pip/pip.conf",
+    ] {
+        v.push(crate::scanners::system_path(p));
+    }
+    v
 }
 
 fn yarn_config_paths(home: &Path) -> Vec<(String, PathBuf)> {
@@ -182,7 +246,13 @@ pub fn audit_pip_config(content: &str) -> Vec<PackageConfigFinding> {
 
         if lower.starts_with("index-url") || lower.starts_with("extra-index-url") {
             let val = line.split_once('=').map(|x| x.1).unwrap_or("").trim();
-            if !val.contains("pypi.org") {
+            // Every URL of the value, by parsed host: `contains("pypi.org")` called
+            // `https://pypi.org.evil.example/simple` the public index.
+            if val.is_empty()
+                || val
+                    .split_whitespace()
+                    .any(|u| !crate::scanners::is_official_registry(u, &["pypi.org"]))
+            {
                 findings.push(PackageConfigFinding {
                     severity: "high".to_string(),
                     description: format!("Custom PyPI index: {}", redact(val)),
