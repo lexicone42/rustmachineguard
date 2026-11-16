@@ -876,6 +876,21 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         .enumerate()
         .map(|(i, a)| redact_arg(a, i.checked_sub(1).and_then(|j| raw_args.get(j)).map(String::as_str)))
         .collect();
+    // A launch through `env`: the assignments are environment values, shown by name only.
+    let (command_shown, args) = match command.as_deref() {
+        Some(c) if c.split_whitespace().count() == 1 && is_env_program(c.trim()) => {
+            let mut args = args;
+            redact_env_assignments(&mut args);
+            (None, args)
+        }
+        Some(c) if is_env_program(c.split_whitespace().next().unwrap_or("")) => {
+            let mut words: Vec<String> = c.split_whitespace().map(str::to_string).collect();
+            let (head, tail) = words.split_at_mut(1);
+            redact_env_assignments(tail);
+            (Some(format!("{} {}", head[0], tail.join(" "))), args)
+        }
+        _ => (None, args),
+    };
 
     // Determine transport type. Prefer an explicit "type"/"transport" field;
     // fall back to structural inference. The MCP spec replaced standalone SSE
@@ -918,7 +933,10 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         transport,
         // Stored redacted: users routinely write the whole launch line into `command`,
         // and this field ships in JSON, Blueprint and SBOM.
-        command: command.as_deref().map(crate::scanners::redact_secrets_in_text),
+        command: command_shown
+            .as_deref()
+            .or(command.as_deref())
+            .map(crate::scanners::redact_secrets_in_text),
         args,
         package_ecosystem: ecosystem,
         package_name: pkg_name,
@@ -927,7 +945,15 @@ fn parse_server_detail(name: &str, cfg: &serde_json::Value) -> McpServerDetail {
         inline_secret_env_keys,
         inline_secret_header_keys: inline_secret_header_keys(cfg.get("headers")),
         env: shapes(cfg.get("env"), "="),
-        env_code_loading: env_code_loading(cfg.get("env")),
+        env_code_loading: {
+            let mut names = env_code_loading(cfg.get("env"));
+            if let Some(cmd) = command.as_deref() {
+                names.extend(env_code_loading(Some(&env_command_assignments(cmd, &raw_args))));
+                names.sort();
+                names.dedup();
+            }
+            names
+        },
         headers: shapes(cfg.get("headers"), ": "),
         unpinned,
         extra_packages,
@@ -1419,6 +1445,72 @@ pub fn env_code_loading(env: Option<&serde_json::Value>) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+/// The `NAME=value` assignments of a launch through `env`: `command: "env"` with
+/// `args: ["NODE_OPTIONS=--require /x.js", "npx", ...]`, or the whole line written into
+/// `command`. They set the server's environment exactly as an `env` block does, so they
+/// get the same check ([`env_code_loading`]). Reading stops at the program name; `env`'s
+/// own options (`-i`, `-u NAME`, `--unset=NAME`, `-C dir`) are skipped. Values are
+/// classified by the caller and never stored.
+pub fn env_command_assignments(command: &str, args: &[String]) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let words: Vec<&str> = command.split_whitespace().collect();
+    // In `args` each element is one argument (a value may hold spaces); a whole line in
+    // `command` was split on whitespace, so a value there ends at the first space.
+    let rest: Vec<&str> = if words.len() > 1 {
+        words[1..].to_vec()
+    } else {
+        args.iter().map(String::as_str).collect()
+    };
+    if is_env_program(words.first().copied().unwrap_or("")) {
+        for i in env_assignment_positions(&rest) {
+            if let Some((k, v)) = rest[i].split_once('=') {
+                out.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+            }
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+fn is_env_program(word: &str) -> bool {
+    word.rsplit(['/', '\\']).next() == Some("env")
+}
+
+/// Indexes of the `NAME=value` words that `env` would read as assignments: those before
+/// the program name, past `env`'s own options.
+fn env_assignment_positions(words: &[&str]) -> Vec<usize> {
+    let mut at = Vec::new();
+    let mut i = 0;
+    while i < words.len().min(64) {
+        let w = words[i];
+        if matches!(w, "-u" | "--unset" | "-C" | "--chdir") {
+            i += 1;
+        } else if w.starts_with('-') {
+        } else if w.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty()
+                && k.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'@' | b':' | b'-' | b'.'))
+        }) {
+            at.push(i);
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    at
+}
+
+/// `words` with each `env` assignment's value replaced, as an `env` block's values are:
+/// `NODE_OPTIONS=<redacted>`.
+fn redact_env_assignments(words: &mut [String]) {
+    let view: Vec<&str> = words.iter().map(String::as_str).collect();
+    let at = env_assignment_positions(&view);
+    for i in at {
+        if let Some((k, _)) = words[i].split_once('=') {
+            words[i] = format!("{k}=<redacted>");
+        }
+    }
 }
 
 /// True if `value` is a hardcoded literal rather than an env reference or placeholder.

